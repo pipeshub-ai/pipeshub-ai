@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from typing import List
 
 from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
@@ -14,15 +13,12 @@ class IConnectorFactory(ABC):
     @abstractmethod
     def create_connector(self, connector_type: ConnectorType, config: ConnectorConfig) -> BaseConnector:
         """Create a connector instance"""
-        pass
 
     @abstractmethod
-    def get_supported_connectors(self) -> List[ConnectorType]:
+    def get_supported_connectors(self) -> list[ConnectorType]:
         """Get list of supported connector types"""
-        pass
 
     @abstractmethod
     def validate_connector_type(self, connector_type: ConnectorType) -> bool:
         """Validate if connector type is supported"""
-        pass
 

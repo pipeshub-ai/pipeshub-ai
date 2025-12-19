@@ -3,7 +3,7 @@
 import json
 import logging
 from dataclasses import asdict
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from kiota_abstractions.base_request_configuration import (  # type: ignore
     RequestConfiguration,
@@ -28,18 +28,19 @@ from app.sources.client.microsoft.microsoft import MSGraphClient
 # Teams-specific response wrapper
 class TeamsResponse:
     """Standardized Teams API response wrapper."""
-    success: bool
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    message: Optional[str] = None
 
-    def __init__(self, success: bool, data: Optional[Dict[str, Any]] = None, error: Optional[str] = None, message: Optional[str] = None) -> None:
+    success: bool
+    data: dict[str, Any] | None = None
+    error: str | None = None
+    message: str | None = None
+
+    def __init__(self, success: bool, data: dict[str, Any] | None = None, error: str | None = None, message: str | None = None) -> None:
         self.success = success
         self.data = data
         self.error = error
         self.message = message
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     def to_json(self) -> str:
@@ -49,8 +50,7 @@ class TeamsResponse:
 logger = logging.getLogger(__name__)
 
 class TeamsDataSource:
-    """
-    Microsoft Teams API client with comprehensive endpoint coverage.
+    """Microsoft Teams API client with comprehensive endpoint coverage.
 
     Supports Teams operations including:
     - Team management: Create, update, delete, archive teams
@@ -90,19 +90,19 @@ class TeamsDataSource:
             error_msg = None
 
             # Enhanced error response handling for Teams operations
-            if hasattr(response, 'error'):
+            if hasattr(response, "error"):
                 success = False
                 error_msg = str(response.error)
-            elif isinstance(response, dict) and 'error' in response:
+            elif isinstance(response, dict) and "error" in response:
                 success = False
-                error_info = response['error']
+                error_info = response["error"]
                 if isinstance(error_info, dict):
-                    error_code = error_info.get('code', 'Unknown')
-                    error_message = error_info.get('message', 'No message')
+                    error_code = error_info.get("code", "Unknown")
+                    error_message = error_info.get("message", "No message")
                     error_msg = f"{error_code}: {error_message}"
                 else:
                     error_msg = str(error_info)
-            elif hasattr(response, 'code') and hasattr(response, 'message'):
+            elif hasattr(response, "code") and hasattr(response, "message"):
                 success = False
                 error_msg = f"{response.code}: {response.message}"
             return TeamsResponse(
@@ -114,7 +114,7 @@ class TeamsDataSource:
             logger.error(f"Error handling Teams response: {e}")
             return TeamsResponse(success=False, error=str(e))
 
-    def get_data_source(self) -> 'TeamsDataSource':
+    def get_data_source(self) -> "TeamsDataSource":
         """Get the underlying Teams client."""
         return self
 
@@ -122,9 +122,7 @@ class TeamsDataSource:
 
 
     async def teams_team_delete_team(self, team_id: str) -> TeamsResponse:
-
-        """
-        Delete entity from teams
+        """Delete entity from teams
         Teams operation: DELETE /teams/{team-id}
         Operation type: teams
         Args:
@@ -140,10 +138,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_get_team(self, team_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get team
+    async def teams_team_get_team(self, team_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get team
         Teams operation: GET /teams/{team-id}
         Operation type: teams
         Args:
@@ -183,10 +179,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_update_team(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update team
+    async def teams_team_update_team(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update team
         Teams operation: PATCH /teams/{team-id}
         Operation type: teams
         Args:
@@ -203,10 +197,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_get_group(self, team_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get group from teams
+    async def teams_get_group(self, team_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get group from teams
         Teams operation: GET /teams/{team-id}/group
         Operation type: teams
         Args:
@@ -246,10 +238,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_create_installed_apps(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Add app to team
+    async def teams_create_installed_apps(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Add app to team
         Teams operation: POST /teams/{team-id}/installedApps
         Operation type: teams
         Args:
@@ -267,9 +257,7 @@ class TeamsDataSource:
 
 
     async def teams_delete_installed_apps(self, team_id: str, teamsAppInstallation_id: str) -> TeamsResponse:
-
-        """
-        Remove app from team
+        """Remove app from team
         Teams operation: DELETE /teams/{team-id}/installedApps/{teamsAppInstallation-id}
         Operation type: teams
         Args:
@@ -286,10 +274,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_get_installed_apps(self, team_id: str, teamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get installed app in team
+    async def teams_get_installed_apps(self, team_id: str, teamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get installed app in team
         Teams operation: GET /teams/{team-id}/installedApps/{teamsAppInstallation-id}
         Operation type: teams
         Args:
@@ -330,10 +316,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_update_installed_apps(self, team_id: str, teamsAppInstallation_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property installedApps in teams
+    async def teams_update_installed_apps(self, team_id: str, teamsAppInstallation_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property installedApps in teams
         Teams operation: PATCH /teams/{team-id}/installedApps/{teamsAppInstallation-id}
         Operation type: teams
         Args:
@@ -351,10 +335,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_installed_apps_get_teams_app(self, team_id: str, teamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamsApp from teams
+    async def teams_installed_apps_get_teams_app(self, team_id: str, teamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamsApp from teams
         Teams operation: GET /teams/{team-id}/installedApps/{teamsAppInstallation-id}/teamsApp
         Operation type: teams
         Args:
@@ -395,10 +377,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_installed_apps_get_teams_app_definition(self, team_id: str, teamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamsAppDefinition from teams
+    async def teams_installed_apps_get_teams_app_definition(self, team_id: str, teamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamsAppDefinition from teams
         Teams operation: GET /teams/{team-id}/installedApps/{teamsAppInstallation-id}/teamsAppDefinition
         Operation type: teams
         Args:
@@ -439,10 +419,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_installed_apps_teams_app_installation_upgrade(self, team_id: str, teamsAppInstallation_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action upgrade
+    async def teams_team_installed_apps_teams_app_installation_upgrade(self, team_id: str, teamsAppInstallation_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action upgrade
         Teams operation: POST /teams/{team-id}/installedApps/{teamsAppInstallation-id}/upgrade
         Operation type: teams
         Args:
@@ -460,10 +438,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_create_operations(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to operations for teams
+    async def teams_create_operations(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to operations for teams
         Teams operation: POST /teams/{team-id}/operations
         Operation type: teams
         Args:
@@ -481,9 +457,7 @@ class TeamsDataSource:
 
 
     async def teams_delete_operations(self, team_id: str, teamsAsyncOperation_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property operations for teams
+        """Delete navigation property operations for teams
         Teams operation: DELETE /teams/{team-id}/operations/{teamsAsyncOperation-id}
         Operation type: teams
         Args:
@@ -500,10 +474,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_get_operations(self, team_id: str, teamsAsyncOperation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get operations from teams
+    async def teams_get_operations(self, team_id: str, teamsAsyncOperation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get operations from teams
         Teams operation: GET /teams/{team-id}/operations/{teamsAsyncOperation-id}
         Operation type: teams
         Args:
@@ -544,10 +516,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_update_operations(self, team_id: str, teamsAsyncOperation_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property operations in teams
+    async def teams_update_operations(self, team_id: str, teamsAsyncOperation_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property operations in teams
         Teams operation: PATCH /teams/{team-id}/operations/{teamsAsyncOperation-id}
         Operation type: teams
         Args:
@@ -565,10 +535,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_get_photo(self, team_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get profilePhoto
+    async def teams_get_photo(self, team_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get profilePhoto
         Teams operation: GET /teams/{team-id}/photo
         Operation type: teams
         Args:
@@ -609,9 +577,7 @@ class TeamsDataSource:
 
 
     async def teams_delete_primary_channel(self, team_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property primaryChannel for teams
+        """Delete navigation property primaryChannel for teams
         Teams operation: DELETE /teams/{team-id}/primaryChannel
         Operation type: teams
         Args:
@@ -627,10 +593,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_get_primary_channel(self, team_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get primaryChannel
+    async def teams_get_primary_channel(self, team_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get primaryChannel
         Teams operation: GET /teams/{team-id}/primaryChannel
         Operation type: teams
         Args:
@@ -670,10 +634,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_update_primary_channel(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property primaryChannel in teams
+    async def teams_update_primary_channel(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property primaryChannel in teams
         Teams operation: PATCH /teams/{team-id}/primaryChannel
         Operation type: teams
         Args:
@@ -690,10 +652,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_primary_channel_create_all_members(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to allMembers for teams
+    async def teams_primary_channel_create_all_members(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to allMembers for teams
         Teams operation: POST /teams/{team-id}/primaryChannel/allMembers
         Operation type: teams
         Args:
@@ -710,10 +670,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_primary_channel_all_members_add(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def teams_team_primary_channel_all_members_add(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /teams/{team-id}/primaryChannel/allMembers/add
         Operation type: teams
         Args:
@@ -730,10 +688,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_primary_channel_all_members_remove(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def teams_team_primary_channel_all_members_remove(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /teams/{team-id}/primaryChannel/allMembers/remove
         Operation type: teams
         Args:
@@ -751,9 +707,7 @@ class TeamsDataSource:
 
 
     async def teams_primary_channel_delete_all_members(self, team_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property allMembers for teams
+        """Delete navigation property allMembers for teams
         Teams operation: DELETE /teams/{team-id}/primaryChannel/allMembers/{conversationMember-id}
         Operation type: teams
         Args:
@@ -770,10 +724,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_primary_channel_update_all_members(self, team_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property allMembers in teams
+    async def teams_primary_channel_update_all_members(self, team_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property allMembers in teams
         Teams operation: PATCH /teams/{team-id}/primaryChannel/allMembers/{conversationMember-id}
         Operation type: teams
         Args:
@@ -791,10 +743,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_primary_channel_get_files_folder(self, team_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get filesFolder from teams
+    async def teams_primary_channel_get_files_folder(self, team_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get filesFolder from teams
         Teams operation: GET /teams/{team-id}/primaryChannel/filesFolder
         Operation type: teams
         Args:
@@ -834,10 +784,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_primary_channel_create_members(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to members for teams
+    async def teams_primary_channel_create_members(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to members for teams
         Teams operation: POST /teams/{team-id}/primaryChannel/members
         Operation type: teams
         Args:
@@ -854,10 +802,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_primary_channel_members_add(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def teams_team_primary_channel_members_add(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /teams/{team-id}/primaryChannel/members/add
         Operation type: teams
         Args:
@@ -874,10 +820,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_primary_channel_members_remove(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def teams_team_primary_channel_members_remove(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /teams/{team-id}/primaryChannel/members/remove
         Operation type: teams
         Args:
@@ -895,9 +839,7 @@ class TeamsDataSource:
 
 
     async def teams_primary_channel_delete_members(self, team_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property members for teams
+        """Delete navigation property members for teams
         Teams operation: DELETE /teams/{team-id}/primaryChannel/members/{conversationMember-id}
         Operation type: teams
         Args:
@@ -914,10 +856,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_primary_channel_get_members(self, team_id: str, conversationMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get members from teams
+    async def teams_primary_channel_get_members(self, team_id: str, conversationMember_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get members from teams
         Teams operation: GET /teams/{team-id}/primaryChannel/members/{conversationMember-id}
         Operation type: teams
         Args:
@@ -958,10 +898,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_primary_channel_update_members(self, team_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property members in teams
+    async def teams_primary_channel_update_members(self, team_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property members in teams
         Teams operation: PATCH /teams/{team-id}/primaryChannel/members/{conversationMember-id}
         Operation type: teams
         Args:
@@ -979,10 +917,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_primary_channel_provision_email(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action provisionEmail
+    async def teams_team_primary_channel_provision_email(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action provisionEmail
         Teams operation: POST /teams/{team-id}/primaryChannel/provisionEmail
         Operation type: teams
         Args:
@@ -998,10 +934,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_primary_channel_remove_email(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action removeEmail
+    async def teams_team_primary_channel_remove_email(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action removeEmail
         Teams operation: POST /teams/{team-id}/primaryChannel/removeEmail
         Operation type: teams
         Args:
@@ -1018,9 +952,7 @@ class TeamsDataSource:
 
 
     async def teams_delete_schedule(self, team_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property schedule for teams
+        """Delete navigation property schedule for teams
         Teams operation: DELETE /teams/{team-id}/schedule
         Operation type: teams
         Args:
@@ -1036,10 +968,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_get_schedule(self, team_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get schedule
+    async def teams_get_schedule(self, team_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get schedule
         Teams operation: GET /teams/{team-id}/schedule
         Operation type: teams
         Args:
@@ -1079,10 +1009,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_set_schedule(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create or replace schedule
+    async def teams_set_schedule(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create or replace schedule
         Teams operation: PUT /teams/{team-id}/schedule
         Operation type: teams
         Args:
@@ -1099,10 +1027,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_create_day_notes(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to dayNotes for teams
+    async def teams_schedule_create_day_notes(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to dayNotes for teams
         Teams operation: POST /teams/{team-id}/schedule/dayNotes
         Operation type: teams
         Args:
@@ -1120,9 +1046,7 @@ class TeamsDataSource:
 
 
     async def teams_schedule_delete_day_notes(self, team_id: str, dayNote_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property dayNotes for teams
+        """Delete navigation property dayNotes for teams
         Teams operation: DELETE /teams/{team-id}/schedule/dayNotes/{dayNote-id}
         Operation type: teams
         Args:
@@ -1139,10 +1063,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_get_day_notes(self, team_id: str, dayNote_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get dayNotes from teams
+    async def teams_schedule_get_day_notes(self, team_id: str, dayNote_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get dayNotes from teams
         Teams operation: GET /teams/{team-id}/schedule/dayNotes/{dayNote-id}
         Operation type: teams
         Args:
@@ -1183,10 +1105,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_update_day_notes(self, team_id: str, dayNote_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property dayNotes in teams
+    async def teams_schedule_update_day_notes(self, team_id: str, dayNote_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property dayNotes in teams
         Teams operation: PATCH /teams/{team-id}/schedule/dayNotes/{dayNote-id}
         Operation type: teams
         Args:
@@ -1204,10 +1124,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_create_offer_shift_requests(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create offerShiftRequest
+    async def teams_schedule_create_offer_shift_requests(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create offerShiftRequest
         Teams operation: POST /teams/{team-id}/schedule/offerShiftRequests
         Operation type: teams
         Args:
@@ -1225,9 +1143,7 @@ class TeamsDataSource:
 
 
     async def teams_schedule_delete_offer_shift_requests(self, team_id: str, offerShiftRequest_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property offerShiftRequests for teams
+        """Delete navigation property offerShiftRequests for teams
         Teams operation: DELETE /teams/{team-id}/schedule/offerShiftRequests/{offerShiftRequest-id}
         Operation type: teams
         Args:
@@ -1244,10 +1160,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_get_offer_shift_requests(self, team_id: str, offerShiftRequest_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get offerShiftRequest
+    async def teams_schedule_get_offer_shift_requests(self, team_id: str, offerShiftRequest_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get offerShiftRequest
         Teams operation: GET /teams/{team-id}/schedule/offerShiftRequests/{offerShiftRequest-id}
         Operation type: teams
         Args:
@@ -1288,10 +1202,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_update_offer_shift_requests(self, team_id: str, offerShiftRequest_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property offerShiftRequests in teams
+    async def teams_schedule_update_offer_shift_requests(self, team_id: str, offerShiftRequest_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property offerShiftRequests in teams
         Teams operation: PATCH /teams/{team-id}/schedule/offerShiftRequests/{offerShiftRequest-id}
         Operation type: teams
         Args:
@@ -1309,10 +1221,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_create_open_shift_change_requests(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create openShiftChangeRequest
+    async def teams_schedule_create_open_shift_change_requests(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create openShiftChangeRequest
         Teams operation: POST /teams/{team-id}/schedule/openShiftChangeRequests
         Operation type: teams
         Args:
@@ -1330,9 +1240,7 @@ class TeamsDataSource:
 
 
     async def teams_schedule_delete_open_shift_change_requests(self, team_id: str, openShiftChangeRequest_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property openShiftChangeRequests for teams
+        """Delete navigation property openShiftChangeRequests for teams
         Teams operation: DELETE /teams/{team-id}/schedule/openShiftChangeRequests/{openShiftChangeRequest-id}
         Operation type: teams
         Args:
@@ -1349,10 +1257,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_get_open_shift_change_requests(self, team_id: str, openShiftChangeRequest_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get openShiftChangeRequest
+    async def teams_schedule_get_open_shift_change_requests(self, team_id: str, openShiftChangeRequest_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get openShiftChangeRequest
         Teams operation: GET /teams/{team-id}/schedule/openShiftChangeRequests/{openShiftChangeRequest-id}
         Operation type: teams
         Args:
@@ -1393,10 +1299,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_update_open_shift_change_requests(self, team_id: str, openShiftChangeRequest_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property openShiftChangeRequests in teams
+    async def teams_schedule_update_open_shift_change_requests(self, team_id: str, openShiftChangeRequest_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property openShiftChangeRequests in teams
         Teams operation: PATCH /teams/{team-id}/schedule/openShiftChangeRequests/{openShiftChangeRequest-id}
         Operation type: teams
         Args:
@@ -1414,10 +1318,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_create_open_shifts(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create openShift
+    async def teams_schedule_create_open_shifts(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create openShift
         Teams operation: POST /teams/{team-id}/schedule/openShifts
         Operation type: teams
         Args:
@@ -1435,9 +1337,7 @@ class TeamsDataSource:
 
 
     async def teams_schedule_delete_open_shifts(self, team_id: str, openShift_id: str) -> TeamsResponse:
-
-        """
-        Delete openShift
+        """Delete openShift
         Teams operation: DELETE /teams/{team-id}/schedule/openShifts/{openShift-id}
         Operation type: teams
         Args:
@@ -1454,10 +1354,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_get_open_shifts(self, team_id: str, openShift_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get openShift
+    async def teams_schedule_get_open_shifts(self, team_id: str, openShift_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get openShift
         Teams operation: GET /teams/{team-id}/schedule/openShifts/{openShift-id}
         Operation type: teams
         Args:
@@ -1498,10 +1396,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_update_open_shifts(self, team_id: str, openShift_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update openShift
+    async def teams_schedule_update_open_shifts(self, team_id: str, openShift_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update openShift
         Teams operation: PATCH /teams/{team-id}/schedule/openShifts/{openShift-id}
         Operation type: teams
         Args:
@@ -1519,10 +1415,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_create_scheduling_groups(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create schedulingGroup
+    async def teams_schedule_create_scheduling_groups(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create schedulingGroup
         Teams operation: POST /teams/{team-id}/schedule/schedulingGroups
         Operation type: teams
         Args:
@@ -1540,9 +1434,7 @@ class TeamsDataSource:
 
 
     async def teams_schedule_delete_scheduling_groups(self, team_id: str, schedulingGroup_id: str) -> TeamsResponse:
-
-        """
-        Delete schedulingGroup
+        """Delete schedulingGroup
         Teams operation: DELETE /teams/{team-id}/schedule/schedulingGroups/{schedulingGroup-id}
         Operation type: teams
         Args:
@@ -1559,10 +1451,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_get_scheduling_groups(self, team_id: str, schedulingGroup_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get schedulingGroup
+    async def teams_schedule_get_scheduling_groups(self, team_id: str, schedulingGroup_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get schedulingGroup
         Teams operation: GET /teams/{team-id}/schedule/schedulingGroups/{schedulingGroup-id}
         Operation type: teams
         Args:
@@ -1603,10 +1493,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_update_scheduling_groups(self, team_id: str, schedulingGroup_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Replace schedulingGroup
+    async def teams_schedule_update_scheduling_groups(self, team_id: str, schedulingGroup_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Replace schedulingGroup
         Teams operation: PATCH /teams/{team-id}/schedule/schedulingGroups/{schedulingGroup-id}
         Operation type: teams
         Args:
@@ -1624,10 +1512,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_create_shifts(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create shift
+    async def teams_schedule_create_shifts(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create shift
         Teams operation: POST /teams/{team-id}/schedule/shifts
         Operation type: teams
         Args:
@@ -1645,9 +1531,7 @@ class TeamsDataSource:
 
 
     async def teams_schedule_delete_shifts(self, team_id: str, shift_id: str) -> TeamsResponse:
-
-        """
-        Delete shift
+        """Delete shift
         Teams operation: DELETE /teams/{team-id}/schedule/shifts/{shift-id}
         Operation type: teams
         Args:
@@ -1664,10 +1548,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_get_shifts(self, team_id: str, shift_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get shift
+    async def teams_schedule_get_shifts(self, team_id: str, shift_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get shift
         Teams operation: GET /teams/{team-id}/schedule/shifts/{shift-id}
         Operation type: teams
         Args:
@@ -1708,10 +1590,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_update_shifts(self, team_id: str, shift_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Replace shift
+    async def teams_schedule_update_shifts(self, team_id: str, shift_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Replace shift
         Teams operation: PATCH /teams/{team-id}/schedule/shifts/{shift-id}
         Operation type: teams
         Args:
@@ -1729,10 +1609,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_create_swap_shifts_change_requests(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create swapShiftsChangeRequest
+    async def teams_schedule_create_swap_shifts_change_requests(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create swapShiftsChangeRequest
         Teams operation: POST /teams/{team-id}/schedule/swapShiftsChangeRequests
         Operation type: teams
         Args:
@@ -1750,9 +1628,7 @@ class TeamsDataSource:
 
 
     async def teams_schedule_delete_swap_shifts_change_requests(self, team_id: str, swapShiftsChangeRequest_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property swapShiftsChangeRequests for teams
+        """Delete navigation property swapShiftsChangeRequests for teams
         Teams operation: DELETE /teams/{team-id}/schedule/swapShiftsChangeRequests/{swapShiftsChangeRequest-id}
         Operation type: teams
         Args:
@@ -1769,10 +1645,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_get_swap_shifts_change_requests(self, team_id: str, swapShiftsChangeRequest_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get swapShiftsChangeRequest
+    async def teams_schedule_get_swap_shifts_change_requests(self, team_id: str, swapShiftsChangeRequest_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get swapShiftsChangeRequest
         Teams operation: GET /teams/{team-id}/schedule/swapShiftsChangeRequests/{swapShiftsChangeRequest-id}
         Operation type: teams
         Args:
@@ -1813,10 +1687,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_update_swap_shifts_change_requests(self, team_id: str, swapShiftsChangeRequest_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property swapShiftsChangeRequests in teams
+    async def teams_schedule_update_swap_shifts_change_requests(self, team_id: str, swapShiftsChangeRequest_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property swapShiftsChangeRequests in teams
         Teams operation: PATCH /teams/{team-id}/schedule/swapShiftsChangeRequests/{swapShiftsChangeRequest-id}
         Operation type: teams
         Args:
@@ -1834,10 +1706,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_create_time_cards(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create timeCard
+    async def teams_schedule_create_time_cards(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create timeCard
         Teams operation: POST /teams/{team-id}/schedule/timeCards
         Operation type: teams
         Args:
@@ -1854,10 +1724,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_schedule_time_cards_clock_in(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action clockIn
+    async def teams_team_schedule_time_cards_clock_in(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action clockIn
         Teams operation: POST /teams/{team-id}/schedule/timeCards/clockIn
         Operation type: teams
         Args:
@@ -1875,9 +1743,7 @@ class TeamsDataSource:
 
 
     async def teams_schedule_delete_time_cards(self, team_id: str, timeCard_id: str) -> TeamsResponse:
-
-        """
-        Delete timeCard
+        """Delete timeCard
         Teams operation: DELETE /teams/{team-id}/schedule/timeCards/{timeCard-id}
         Operation type: teams
         Args:
@@ -1894,10 +1760,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_get_time_cards(self, team_id: str, timeCard_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get timeCards from teams
+    async def teams_schedule_get_time_cards(self, team_id: str, timeCard_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get timeCards from teams
         Teams operation: GET /teams/{team-id}/schedule/timeCards/{timeCard-id}
         Operation type: teams
         Args:
@@ -1938,10 +1802,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_update_time_cards(self, team_id: str, timeCard_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property timeCards in teams
+    async def teams_schedule_update_time_cards(self, team_id: str, timeCard_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property timeCards in teams
         Teams operation: PATCH /teams/{team-id}/schedule/timeCards/{timeCard-id}
         Operation type: teams
         Args:
@@ -1959,10 +1821,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_schedule_time_cards_time_card_clock_out(self, team_id: str, timeCard_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action clockOut
+    async def teams_team_schedule_time_cards_time_card_clock_out(self, team_id: str, timeCard_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action clockOut
         Teams operation: POST /teams/{team-id}/schedule/timeCards/{timeCard-id}/clockOut
         Operation type: teams
         Args:
@@ -1980,10 +1840,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_schedule_time_cards_time_card_confirm(self, team_id: str, timeCard_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action confirm
+    async def teams_team_schedule_time_cards_time_card_confirm(self, team_id: str, timeCard_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action confirm
         Teams operation: POST /teams/{team-id}/schedule/timeCards/{timeCard-id}/confirm
         Operation type: teams
         Args:
@@ -2000,10 +1858,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_schedule_time_cards_time_card_end_break(self, team_id: str, timeCard_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action endBreak
+    async def teams_team_schedule_time_cards_time_card_end_break(self, team_id: str, timeCard_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action endBreak
         Teams operation: POST /teams/{team-id}/schedule/timeCards/{timeCard-id}/endBreak
         Operation type: teams
         Args:
@@ -2021,10 +1877,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_schedule_time_cards_time_card_start_break(self, team_id: str, timeCard_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action startBreak
+    async def teams_team_schedule_time_cards_time_card_start_break(self, team_id: str, timeCard_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action startBreak
         Teams operation: POST /teams/{team-id}/schedule/timeCards/{timeCard-id}/startBreak
         Operation type: teams
         Args:
@@ -2042,10 +1896,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_create_time_off_reasons(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create timeOffReason
+    async def teams_schedule_create_time_off_reasons(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create timeOffReason
         Teams operation: POST /teams/{team-id}/schedule/timeOffReasons
         Operation type: teams
         Args:
@@ -2063,9 +1915,7 @@ class TeamsDataSource:
 
 
     async def teams_schedule_delete_time_off_reasons(self, team_id: str, timeOffReason_id: str) -> TeamsResponse:
-
-        """
-        Delete timeOffReason
+        """Delete timeOffReason
         Teams operation: DELETE /teams/{team-id}/schedule/timeOffReasons/{timeOffReason-id}
         Operation type: teams
         Args:
@@ -2082,10 +1932,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_get_time_off_reasons(self, team_id: str, timeOffReason_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get timeOffReason
+    async def teams_schedule_get_time_off_reasons(self, team_id: str, timeOffReason_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get timeOffReason
         Teams operation: GET /teams/{team-id}/schedule/timeOffReasons/{timeOffReason-id}
         Operation type: teams
         Args:
@@ -2126,10 +1974,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_update_time_off_reasons(self, team_id: str, timeOffReason_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Replace timeOffReason
+    async def teams_schedule_update_time_off_reasons(self, team_id: str, timeOffReason_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Replace timeOffReason
         Teams operation: PATCH /teams/{team-id}/schedule/timeOffReasons/{timeOffReason-id}
         Operation type: teams
         Args:
@@ -2147,10 +1993,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_create_time_off_requests(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create timeOffRequest
+    async def teams_schedule_create_time_off_requests(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create timeOffRequest
         Teams operation: POST /teams/{team-id}/schedule/timeOffRequests
         Operation type: teams
         Args:
@@ -2168,9 +2012,7 @@ class TeamsDataSource:
 
 
     async def teams_schedule_delete_time_off_requests(self, team_id: str, timeOffRequest_id: str) -> TeamsResponse:
-
-        """
-        Delete timeOffRequest
+        """Delete timeOffRequest
         Teams operation: DELETE /teams/{team-id}/schedule/timeOffRequests/{timeOffRequest-id}
         Operation type: teams
         Args:
@@ -2187,10 +2029,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_get_time_off_requests(self, team_id: str, timeOffRequest_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get timeOffRequest
+    async def teams_schedule_get_time_off_requests(self, team_id: str, timeOffRequest_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get timeOffRequest
         Teams operation: GET /teams/{team-id}/schedule/timeOffRequests/{timeOffRequest-id}
         Operation type: teams
         Args:
@@ -2231,10 +2071,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_update_time_off_requests(self, team_id: str, timeOffRequest_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property timeOffRequests in teams
+    async def teams_schedule_update_time_off_requests(self, team_id: str, timeOffRequest_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property timeOffRequests in teams
         Teams operation: PATCH /teams/{team-id}/schedule/timeOffRequests/{timeOffRequest-id}
         Operation type: teams
         Args:
@@ -2252,10 +2090,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_create_times_off(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create timeOff
+    async def teams_schedule_create_times_off(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create timeOff
         Teams operation: POST /teams/{team-id}/schedule/timesOff
         Operation type: teams
         Args:
@@ -2273,9 +2109,7 @@ class TeamsDataSource:
 
 
     async def teams_schedule_delete_times_off(self, team_id: str, timeOff_id: str) -> TeamsResponse:
-
-        """
-        Delete timeOff
+        """Delete timeOff
         Teams operation: DELETE /teams/{team-id}/schedule/timesOff/{timeOff-id}
         Operation type: teams
         Args:
@@ -2292,10 +2126,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_get_times_off(self, team_id: str, timeOff_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get timeOff
+    async def teams_schedule_get_times_off(self, team_id: str, timeOff_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get timeOff
         Teams operation: GET /teams/{team-id}/schedule/timesOff/{timeOff-id}
         Operation type: teams
         Args:
@@ -2336,10 +2168,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_schedule_update_times_off(self, team_id: str, timeOff_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Replace timeOff
+    async def teams_schedule_update_times_off(self, team_id: str, timeOff_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Replace timeOff
         Teams operation: PATCH /teams/{team-id}/schedule/timesOff/{timeOff-id}
         Operation type: teams
         Args:
@@ -2357,10 +2187,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_send_activity_notification(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action sendActivityNotification
+    async def teams_team_send_activity_notification(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action sendActivityNotification
         Teams operation: POST /teams/{team-id}/sendActivityNotification
         Operation type: teams
         Args:
@@ -2377,10 +2205,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_create_tags(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create teamworkTag
+    async def teams_create_tags(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create teamworkTag
         Teams operation: POST /teams/{team-id}/tags
         Operation type: teams
         Args:
@@ -2398,9 +2224,7 @@ class TeamsDataSource:
 
 
     async def teams_delete_tags(self, team_id: str, teamworkTag_id: str) -> TeamsResponse:
-
-        """
-        Delete teamworkTag
+        """Delete teamworkTag
         Teams operation: DELETE /teams/{team-id}/tags/{teamworkTag-id}
         Operation type: teams
         Args:
@@ -2417,10 +2241,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_get_tags(self, team_id: str, teamworkTag_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamworkTag
+    async def teams_get_tags(self, team_id: str, teamworkTag_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamworkTag
         Teams operation: GET /teams/{team-id}/tags/{teamworkTag-id}
         Operation type: teams
         Args:
@@ -2461,10 +2283,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_update_tags(self, team_id: str, teamworkTag_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update teamworkTag
+    async def teams_update_tags(self, team_id: str, teamworkTag_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update teamworkTag
         Teams operation: PATCH /teams/{team-id}/tags/{teamworkTag-id}
         Operation type: teams
         Args:
@@ -2482,10 +2302,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_tags_create_members(self, team_id: str, teamworkTag_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create teamworkTagMember
+    async def teams_tags_create_members(self, team_id: str, teamworkTag_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create teamworkTagMember
         Teams operation: POST /teams/{team-id}/tags/{teamworkTag-id}/members
         Operation type: teams
         Args:
@@ -2504,9 +2322,7 @@ class TeamsDataSource:
 
 
     async def teams_tags_delete_members(self, team_id: str, teamworkTag_id: str, teamworkTagMember_id: str) -> TeamsResponse:
-
-        """
-        Delete teamworkTagMember
+        """Delete teamworkTagMember
         Teams operation: DELETE /teams/{team-id}/tags/{teamworkTag-id}/members/{teamworkTagMember-id}
         Operation type: teams
         Args:
@@ -2524,10 +2340,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_tags_get_members(self, team_id: str, teamworkTag_id: str, teamworkTagMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamworkTagMember
+    async def teams_tags_get_members(self, team_id: str, teamworkTag_id: str, teamworkTagMember_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamworkTagMember
         Teams operation: GET /teams/{team-id}/tags/{teamworkTag-id}/members/{teamworkTagMember-id}
         Operation type: teams
         Args:
@@ -2569,10 +2383,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_tags_update_members(self, team_id: str, teamworkTag_id: str, teamworkTagMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property members in teams
+    async def teams_tags_update_members(self, team_id: str, teamworkTag_id: str, teamworkTagMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property members in teams
         Teams operation: PATCH /teams/{team-id}/tags/{teamworkTag-id}/members/{teamworkTagMember-id}
         Operation type: teams
         Args:
@@ -2591,10 +2403,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_get_template(self, team_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get template from teams
+    async def teams_get_template(self, team_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get template from teams
         Teams operation: GET /teams/{team-id}/template
         Operation type: teams
         Args:
@@ -2636,10 +2446,8 @@ class TeamsDataSource:
     # ========== CHANNELS OPERATIONS (19 methods) ==========
 
 
-    async def teams_create_channels(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create channel
+    async def teams_create_channels(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create channel
         Teams operation: POST /teams/{team-id}/channels
         Operation type: channels
         Args:
@@ -2657,9 +2465,7 @@ class TeamsDataSource:
 
 
     async def teams_delete_channels(self, team_id: str, channel_id: str) -> TeamsResponse:
-
-        """
-        Delete channel
+        """Delete channel
         Teams operation: DELETE /teams/{team-id}/channels/{channel-id}
         Operation type: channels
         Args:
@@ -2676,10 +2482,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_update_channels(self, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Patch channel
+    async def teams_update_channels(self, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Patch channel
         Teams operation: PATCH /teams/{team-id}/channels/{channel-id}
         Operation type: channels
         Args:
@@ -2697,10 +2501,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_channels_create_all_members(self, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to allMembers for teams
+    async def teams_channels_create_all_members(self, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to allMembers for teams
         Teams operation: POST /teams/{team-id}/channels/{channel-id}/allMembers
         Operation type: channels
         Args:
@@ -2718,10 +2520,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_channels_channel_all_members_add(self, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def teams_team_channels_channel_all_members_add(self, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /teams/{team-id}/channels/{channel-id}/allMembers/add
         Operation type: channels
         Args:
@@ -2739,10 +2539,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_channels_channel_all_members_remove(self, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def teams_team_channels_channel_all_members_remove(self, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /teams/{team-id}/channels/{channel-id}/allMembers/remove
         Operation type: channels
         Args:
@@ -2761,9 +2559,7 @@ class TeamsDataSource:
 
 
     async def teams_channels_delete_all_members(self, team_id: str, channel_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property allMembers for teams
+        """Delete navigation property allMembers for teams
         Teams operation: DELETE /teams/{team-id}/channels/{channel-id}/allMembers/{conversationMember-id}
         Operation type: channels
         Args:
@@ -2781,10 +2577,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_channels_update_all_members(self, team_id: str, channel_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property allMembers in teams
+    async def teams_channels_update_all_members(self, team_id: str, channel_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property allMembers in teams
         Teams operation: PATCH /teams/{team-id}/channels/{channel-id}/allMembers/{conversationMember-id}
         Operation type: channels
         Args:
@@ -2803,10 +2597,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_channels_get_files_folder(self, team_id: str, channel_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get filesFolder
+    async def teams_channels_get_files_folder(self, team_id: str, channel_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get filesFolder
         Teams operation: GET /teams/{team-id}/channels/{channel-id}/filesFolder
         Operation type: channels
         Args:
@@ -2847,10 +2639,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_channels_create_members(self, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Add conversationMember
+    async def teams_channels_create_members(self, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Add conversationMember
         Teams operation: POST /teams/{team-id}/channels/{channel-id}/members
         Operation type: channels
         Args:
@@ -2868,10 +2658,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_channels_channel_members_add(self, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def teams_team_channels_channel_members_add(self, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /teams/{team-id}/channels/{channel-id}/members/add
         Operation type: channels
         Args:
@@ -2889,10 +2677,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_channels_channel_members_remove(self, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def teams_team_channels_channel_members_remove(self, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /teams/{team-id}/channels/{channel-id}/members/remove
         Operation type: channels
         Args:
@@ -2910,10 +2696,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_channels_get_members(self, team_id: str, channel_id: str, conversationMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get member of channel
+    async def teams_channels_get_members(self, team_id: str, channel_id: str, conversationMember_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get member of channel
         Teams operation: GET /teams/{team-id}/channels/{channel-id}/members/{conversationMember-id}
         Operation type: channels
         Args:
@@ -2955,10 +2739,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_channels_update_members(self, team_id: str, channel_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update conversationMember
+    async def teams_channels_update_members(self, team_id: str, channel_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update conversationMember
         Teams operation: PATCH /teams/{team-id}/channels/{channel-id}/members/{conversationMember-id}
         Operation type: channels
         Args:
@@ -2977,10 +2759,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_channels_channel_provision_email(self, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action provisionEmail
+    async def teams_team_channels_channel_provision_email(self, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action provisionEmail
         Teams operation: POST /teams/{team-id}/channels/{channel-id}/provisionEmail
         Operation type: channels
         Args:
@@ -2997,10 +2777,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_channels_channel_remove_email(self, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action removeEmail
+    async def teams_team_channels_channel_remove_email(self, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action removeEmail
         Teams operation: POST /teams/{team-id}/channels/{channel-id}/removeEmail
         Operation type: channels
         Args:
@@ -3017,10 +2795,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_channels_create_tabs(self, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Add tab to channel
+    async def teams_channels_create_tabs(self, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Add tab to channel
         Teams operation: POST /teams/{team-id}/channels/{channel-id}/tabs
         Operation type: channels
         Args:
@@ -3039,9 +2815,7 @@ class TeamsDataSource:
 
 
     async def teams_channels_delete_tabs(self, team_id: str, channel_id: str, teamsTab_id: str) -> TeamsResponse:
-
-        """
-        Delete tab from channel
+        """Delete tab from channel
         Teams operation: DELETE /teams/{team-id}/channels/{channel-id}/tabs/{teamsTab-id}
         Operation type: channels
         Args:
@@ -3059,10 +2833,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_channels_get_tabs(self, team_id: str, channel_id: str, teamsTab_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get tab
+    async def teams_channels_get_tabs(self, team_id: str, channel_id: str, teamsTab_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get tab
         Teams operation: GET /teams/{team-id}/channels/{channel-id}/tabs/{teamsTab-id}
         Operation type: channels
         Args:
@@ -3107,9 +2879,7 @@ class TeamsDataSource:
 
 
     async def chats_chat_create_chat(self, body: Chat) -> TeamsResponse:
-
-        """
-        Create chat
+        """Create chat
         Teams operation: POST /chats
         Operation type: chats
         Args:
@@ -3126,9 +2896,7 @@ class TeamsDataSource:
 
 
     async def chats_chat_update_chat(self, chat_id: str, body: Chat) -> TeamsResponse:
-
-        """
-        Update chat
+        """Update chat
         Teams operation: PATCH /chats/{chat-id}
         Operation type: chats
         Args:
@@ -3146,9 +2914,7 @@ class TeamsDataSource:
 
 
     async def chats_chat_hide_for_user(self, chat_id: str, body: Chat) -> TeamsResponse:
-
-        """
-        Invoke action hideForUser
+        """Invoke action hideForUser
         Teams operation: POST /chats/{chat-id}/hideForUser
         Operation type: chats
         Args:
@@ -3166,9 +2932,7 @@ class TeamsDataSource:
 
 
     async def chats_create_installed_apps(self, chat_id: str, body: Chat) -> TeamsResponse:
-
-        """
-        Add app to chat
+        """Add app to chat
         Teams operation: POST /chats/{chat-id}/installedApps
         Operation type: chats
         Args:
@@ -3186,9 +2950,7 @@ class TeamsDataSource:
 
 
     async def chats_delete_installed_apps(self, chat_id: str, teamsAppInstallation_id: str) -> TeamsResponse:
-
-        """
-        Uninstall app in a chat
+        """Uninstall app in a chat
         Teams operation: DELETE /chats/{chat-id}/installedApps/{teamsAppInstallation-id}
         Operation type: chats
         Args:
@@ -3205,10 +2967,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def chats_get_installed_apps(self, chat_id: str, teamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get installed app in chat
+    async def chats_get_installed_apps(self, chat_id: str, teamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get installed app in chat
         Teams operation: GET /chats/{chat-id}/installedApps/{teamsAppInstallation-id}
         Operation type: chats
         Args:
@@ -3250,9 +3010,7 @@ class TeamsDataSource:
 
 
     async def chats_update_installed_apps(self, chat_id: str, teamsAppInstallation_id: str, body: Chat) -> TeamsResponse:
-
-        """
-        Update the navigation property installedApps in chats
+        """Update the navigation property installedApps in chats
         Teams operation: PATCH /chats/{chat-id}/installedApps/{teamsAppInstallation-id}
         Operation type: chats
         Args:
@@ -3270,10 +3028,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def chats_installed_apps_get_teams_app(self, chat_id: str, teamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamsApp from chats
+    async def chats_installed_apps_get_teams_app(self, chat_id: str, teamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamsApp from chats
         Teams operation: GET /chats/{chat-id}/installedApps/{teamsAppInstallation-id}/teamsApp
         Operation type: chats
         Args:
@@ -3314,10 +3070,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def chats_installed_apps_get_teams_app_definition(self, chat_id: str, teamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamsAppDefinition from chats
+    async def chats_installed_apps_get_teams_app_definition(self, chat_id: str, teamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamsAppDefinition from chats
         Teams operation: GET /chats/{chat-id}/installedApps/{teamsAppInstallation-id}/teamsAppDefinition
         Operation type: chats
         Args:
@@ -3359,9 +3113,7 @@ class TeamsDataSource:
 
 
     async def chats_chat_installed_apps_teams_app_installation_upgrade(self, chat_id: str, teamsAppInstallation_id: str, body: Chat) -> TeamsResponse:
-
-        """
-        Invoke action upgrade
+        """Invoke action upgrade
         Teams operation: POST /chats/{chat-id}/installedApps/{teamsAppInstallation-id}/upgrade
         Operation type: chats
         Args:
@@ -3379,10 +3131,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def chats_chat_mark_chat_read_for_user(self, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action markChatReadForUser
+    async def chats_chat_mark_chat_read_for_user(self, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action markChatReadForUser
         Teams operation: POST /chats/{chat-id}/markChatReadForUser
         Operation type: chats
         Args:
@@ -3399,10 +3149,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def chats_chat_mark_chat_unread_for_user(self, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action markChatUnreadForUser
+    async def chats_chat_mark_chat_unread_for_user(self, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action markChatUnreadForUser
         Teams operation: POST /chats/{chat-id}/markChatUnreadForUser
         Operation type: chats
         Args:
@@ -3419,10 +3167,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def chats_create_members(self, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Add member to a chat
+    async def chats_create_members(self, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Add member to a chat
         Teams operation: POST /chats/{chat-id}/members
         Operation type: chats
         Args:
@@ -3439,10 +3185,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def chats_chat_members_add(self, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def chats_chat_members_add(self, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /chats/{chat-id}/members/add
         Operation type: chats
         Args:
@@ -3459,10 +3203,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def chats_chat_members_remove(self, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def chats_chat_members_remove(self, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /chats/{chat-id}/members/remove
         Operation type: chats
         Args:
@@ -3480,9 +3222,7 @@ class TeamsDataSource:
 
 
     async def chats_delete_members(self, chat_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Remove member from chat
+        """Remove member from chat
         Teams operation: DELETE /chats/{chat-id}/members/{conversationMember-id}
         Operation type: chats
         Args:
@@ -3499,10 +3239,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def chats_get_members(self, chat_id: str, conversationMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get conversationMember
+    async def chats_get_members(self, chat_id: str, conversationMember_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get conversationMember
         Teams operation: GET /chats/{chat-id}/members/{conversationMember-id}
         Operation type: chats
         Args:
@@ -3543,10 +3281,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def chats_update_members(self, chat_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property members in chats
+    async def chats_update_members(self, chat_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property members in chats
         Teams operation: PATCH /chats/{chat-id}/members/{conversationMember-id}
         Operation type: chats
         Args:
@@ -3564,10 +3300,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def chats_chat_send_activity_notification(self, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action sendActivityNotification
+    async def chats_chat_send_activity_notification(self, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action sendActivityNotification
         Teams operation: POST /chats/{chat-id}/sendActivityNotification
         Operation type: chats
         Args:
@@ -3584,10 +3318,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def chats_create_tabs(self, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Add tab to chat
+    async def chats_create_tabs(self, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Add tab to chat
         Teams operation: POST /chats/{chat-id}/tabs
         Operation type: chats
         Args:
@@ -3605,9 +3337,7 @@ class TeamsDataSource:
 
 
     async def chats_delete_tabs(self, chat_id: str, teamsTab_id: str) -> TeamsResponse:
-
-        """
-        Delete tab from chat
+        """Delete tab from chat
         Teams operation: DELETE /chats/{chat-id}/tabs/{teamsTab-id}
         Operation type: chats
         Args:
@@ -3624,10 +3354,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def chats_get_tabs(self, chat_id: str, teamsTab_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get tab in chat
+    async def chats_get_tabs(self, chat_id: str, teamsTab_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get tab in chat
         Teams operation: GET /chats/{chat-id}/tabs/{teamsTab-id}
         Operation type: chats
         Args:
@@ -3668,10 +3396,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def chats_chat_unhide_for_user(self, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action unhideForUser
+    async def chats_chat_unhide_for_user(self, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action unhideForUser
         Teams operation: POST /chats/{chat-id}/unhideForUser
         Operation type: chats
         Args:
@@ -3688,10 +3414,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_create_chats(self, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to chats for me
+    async def me_create_chats(self, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to chats for me
         Teams operation: POST /me/chats
         Operation type: chats
         Args:
@@ -3708,9 +3432,7 @@ class TeamsDataSource:
 
 
     async def me_delete_chats(self, chat_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property chats for me
+        """Delete navigation property chats for me
         Teams operation: DELETE /me/chats/{chat-id}
         Operation type: chats
         Args:
@@ -3726,10 +3448,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_get_chats(self, chat_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get chats from me
+    async def me_get_chats(self, chat_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get chats from me
         Teams operation: GET /me/chats/{chat-id}
         Operation type: chats
         Args:
@@ -3769,10 +3489,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_update_chats(self, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property chats in me
+    async def me_update_chats(self, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property chats in me
         Teams operation: PATCH /me/chats/{chat-id}
         Operation type: chats
         Args:
@@ -3789,10 +3507,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_chats_chat_hide_for_user(self, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action hideForUser
+    async def me_chats_chat_hide_for_user(self, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action hideForUser
         Teams operation: POST /me/chats/{chat-id}/hideForUser
         Operation type: chats
         Args:
@@ -3809,10 +3525,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_chats_create_installed_apps(self, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to installedApps for me
+    async def me_chats_create_installed_apps(self, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to installedApps for me
         Teams operation: POST /me/chats/{chat-id}/installedApps
         Operation type: chats
         Args:
@@ -3830,9 +3544,7 @@ class TeamsDataSource:
 
 
     async def me_chats_delete_installed_apps(self, chat_id: str, teamsAppInstallation_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property installedApps for me
+        """Delete navigation property installedApps for me
         Teams operation: DELETE /me/chats/{chat-id}/installedApps/{teamsAppInstallation-id}
         Operation type: chats
         Args:
@@ -3849,10 +3561,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_chats_get_installed_apps(self, chat_id: str, teamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get installedApps from me
+    async def me_chats_get_installed_apps(self, chat_id: str, teamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get installedApps from me
         Teams operation: GET /me/chats/{chat-id}/installedApps/{teamsAppInstallation-id}
         Operation type: chats
         Args:
@@ -3893,10 +3603,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_chats_update_installed_apps(self, chat_id: str, teamsAppInstallation_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property installedApps in me
+    async def me_chats_update_installed_apps(self, chat_id: str, teamsAppInstallation_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property installedApps in me
         Teams operation: PATCH /me/chats/{chat-id}/installedApps/{teamsAppInstallation-id}
         Operation type: chats
         Args:
@@ -3914,10 +3622,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_chats_installed_apps_get_teams_app(self, chat_id: str, teamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamsApp from me
+    async def me_chats_installed_apps_get_teams_app(self, chat_id: str, teamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamsApp from me
         Teams operation: GET /me/chats/{chat-id}/installedApps/{teamsAppInstallation-id}/teamsApp
         Operation type: chats
         Args:
@@ -3958,10 +3664,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_chats_installed_apps_get_teams_app_definition(self, chat_id: str, teamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamsAppDefinition from me
+    async def me_chats_installed_apps_get_teams_app_definition(self, chat_id: str, teamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamsAppDefinition from me
         Teams operation: GET /me/chats/{chat-id}/installedApps/{teamsAppInstallation-id}/teamsAppDefinition
         Operation type: chats
         Args:
@@ -4002,10 +3706,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_chats_chat_installed_apps_teams_app_installation_upgrade(self, chat_id: str, teamsAppInstallation_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action upgrade
+    async def me_chats_chat_installed_apps_teams_app_installation_upgrade(self, chat_id: str, teamsAppInstallation_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action upgrade
         Teams operation: POST /me/chats/{chat-id}/installedApps/{teamsAppInstallation-id}/upgrade
         Operation type: chats
         Args:
@@ -4023,10 +3725,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_chats_chat_mark_chat_read_for_user(self, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action markChatReadForUser
+    async def me_chats_chat_mark_chat_read_for_user(self, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action markChatReadForUser
         Teams operation: POST /me/chats/{chat-id}/markChatReadForUser
         Operation type: chats
         Args:
@@ -4043,10 +3743,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_chats_chat_mark_chat_unread_for_user(self, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action markChatUnreadForUser
+    async def me_chats_chat_mark_chat_unread_for_user(self, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action markChatUnreadForUser
         Teams operation: POST /me/chats/{chat-id}/markChatUnreadForUser
         Operation type: chats
         Args:
@@ -4063,10 +3761,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_chats_create_members(self, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to members for me
+    async def me_chats_create_members(self, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to members for me
         Teams operation: POST /me/chats/{chat-id}/members
         Operation type: chats
         Args:
@@ -4083,10 +3779,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_chats_chat_members_add(self, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def me_chats_chat_members_add(self, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /me/chats/{chat-id}/members/add
         Operation type: chats
         Args:
@@ -4103,10 +3797,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_chats_chat_members_remove(self, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def me_chats_chat_members_remove(self, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /me/chats/{chat-id}/members/remove
         Operation type: chats
         Args:
@@ -4124,9 +3816,7 @@ class TeamsDataSource:
 
 
     async def me_chats_delete_members(self, chat_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property members for me
+        """Delete navigation property members for me
         Teams operation: DELETE /me/chats/{chat-id}/members/{conversationMember-id}
         Operation type: chats
         Args:
@@ -4143,10 +3833,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_chats_get_members(self, chat_id: str, conversationMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get members from me
+    async def me_chats_get_members(self, chat_id: str, conversationMember_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get members from me
         Teams operation: GET /me/chats/{chat-id}/members/{conversationMember-id}
         Operation type: chats
         Args:
@@ -4187,10 +3875,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_chats_update_members(self, chat_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property members in me
+    async def me_chats_update_members(self, chat_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property members in me
         Teams operation: PATCH /me/chats/{chat-id}/members/{conversationMember-id}
         Operation type: chats
         Args:
@@ -4208,10 +3894,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_chats_chat_send_activity_notification(self, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action sendActivityNotification
+    async def me_chats_chat_send_activity_notification(self, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action sendActivityNotification
         Teams operation: POST /me/chats/{chat-id}/sendActivityNotification
         Operation type: chats
         Args:
@@ -4228,10 +3912,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_chats_create_tabs(self, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to tabs for me
+    async def me_chats_create_tabs(self, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to tabs for me
         Teams operation: POST /me/chats/{chat-id}/tabs
         Operation type: chats
         Args:
@@ -4249,9 +3931,7 @@ class TeamsDataSource:
 
 
     async def me_chats_delete_tabs(self, chat_id: str, teamsTab_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property tabs for me
+        """Delete navigation property tabs for me
         Teams operation: DELETE /me/chats/{chat-id}/tabs/{teamsTab-id}
         Operation type: chats
         Args:
@@ -4268,10 +3948,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_chats_get_tabs(self, chat_id: str, teamsTab_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get tabs from me
+    async def me_chats_get_tabs(self, chat_id: str, teamsTab_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get tabs from me
         Teams operation: GET /me/chats/{chat-id}/tabs/{teamsTab-id}
         Operation type: chats
         Args:
@@ -4312,10 +3990,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_chats_update_tabs(self, chat_id: str, teamsTab_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property tabs in me
+    async def me_chats_update_tabs(self, chat_id: str, teamsTab_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property tabs in me
         Teams operation: PATCH /me/chats/{chat-id}/tabs/{teamsTab-id}
         Operation type: chats
         Args:
@@ -4333,10 +4009,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_chats_chat_unhide_for_user(self, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action unhideForUser
+    async def me_chats_chat_unhide_for_user(self, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action unhideForUser
         Teams operation: POST /me/chats/{chat-id}/unhideForUser
         Operation type: chats
         Args:
@@ -4354,9 +4028,7 @@ class TeamsDataSource:
 
 
     async def users_create_chats(self, user_id: str, body: Chat) -> TeamsResponse:
-
-        """
-        Create new navigation property to chats for users
+        """Create new navigation property to chats for users
         Teams operation: POST /users/{user-id}/chats
         Operation type: chats
         Args:
@@ -4374,9 +4046,7 @@ class TeamsDataSource:
 
 
     async def users_delete_chats(self, user_id: str, chat_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property chats for users
+        """Delete navigation property chats for users
         Teams operation: DELETE /users/{user-id}/chats/{chat-id}
         Operation type: chats
         Args:
@@ -4393,10 +4063,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_update_chats(self, user_id: str, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property chats in users
+    async def users_update_chats(self, user_id: str, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property chats in users
         Teams operation: PATCH /users/{user-id}/chats/{chat-id}
         Operation type: chats
         Args:
@@ -4414,10 +4082,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_chats_chat_hide_for_user(self, user_id: str, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action hideForUser
+    async def users_user_chats_chat_hide_for_user(self, user_id: str, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action hideForUser
         Teams operation: POST /users/{user-id}/chats/{chat-id}/hideForUser
         Operation type: chats
         Args:
@@ -4435,10 +4101,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_chats_create_installed_apps(self, user_id: str, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to installedApps for users
+    async def users_chats_create_installed_apps(self, user_id: str, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to installedApps for users
         Teams operation: POST /users/{user-id}/chats/{chat-id}/installedApps
         Operation type: chats
         Args:
@@ -4457,9 +4121,7 @@ class TeamsDataSource:
 
 
     async def users_chats_delete_installed_apps(self, user_id: str, chat_id: str, teamsAppInstallation_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property installedApps for users
+        """Delete navigation property installedApps for users
         Teams operation: DELETE /users/{user-id}/chats/{chat-id}/installedApps/{teamsAppInstallation-id}
         Operation type: chats
         Args:
@@ -4477,10 +4139,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_chats_get_installed_apps(self, user_id: str, chat_id: str, teamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get installedApps from users
+    async def users_chats_get_installed_apps(self, user_id: str, chat_id: str, teamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get installedApps from users
         Teams operation: GET /users/{user-id}/chats/{chat-id}/installedApps/{teamsAppInstallation-id}
         Operation type: chats
         Args:
@@ -4522,10 +4182,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_chats_update_installed_apps(self, user_id: str, chat_id: str, teamsAppInstallation_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property installedApps in users
+    async def users_chats_update_installed_apps(self, user_id: str, chat_id: str, teamsAppInstallation_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property installedApps in users
         Teams operation: PATCH /users/{user-id}/chats/{chat-id}/installedApps/{teamsAppInstallation-id}
         Operation type: chats
         Args:
@@ -4544,10 +4202,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_chats_installed_apps_get_teams_app(self, user_id: str, chat_id: str, teamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamsApp from users
+    async def users_chats_installed_apps_get_teams_app(self, user_id: str, chat_id: str, teamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamsApp from users
         Teams operation: GET /users/{user-id}/chats/{chat-id}/installedApps/{teamsAppInstallation-id}/teamsApp
         Operation type: chats
         Args:
@@ -4589,10 +4245,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_chats_installed_apps_get_teams_app_definition(self, user_id: str, chat_id: str, teamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamsAppDefinition from users
+    async def users_chats_installed_apps_get_teams_app_definition(self, user_id: str, chat_id: str, teamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamsAppDefinition from users
         Teams operation: GET /users/{user-id}/chats/{chat-id}/installedApps/{teamsAppInstallation-id}/teamsAppDefinition
         Operation type: chats
         Args:
@@ -4634,10 +4288,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_chats_chat_installed_apps_teams_app_installation_upgrade(self, user_id: str, chat_id: str, teamsAppInstallation_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action upgrade
+    async def users_user_chats_chat_installed_apps_teams_app_installation_upgrade(self, user_id: str, chat_id: str, teamsAppInstallation_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action upgrade
         Teams operation: POST /users/{user-id}/chats/{chat-id}/installedApps/{teamsAppInstallation-id}/upgrade
         Operation type: chats
         Args:
@@ -4656,10 +4308,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_chats_chat_mark_chat_read_for_user(self, user_id: str, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action markChatReadForUser
+    async def users_user_chats_chat_mark_chat_read_for_user(self, user_id: str, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action markChatReadForUser
         Teams operation: POST /users/{user-id}/chats/{chat-id}/markChatReadForUser
         Operation type: chats
         Args:
@@ -4677,10 +4327,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_chats_chat_mark_chat_unread_for_user(self, user_id: str, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action markChatUnreadForUser
+    async def users_user_chats_chat_mark_chat_unread_for_user(self, user_id: str, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action markChatUnreadForUser
         Teams operation: POST /users/{user-id}/chats/{chat-id}/markChatUnreadForUser
         Operation type: chats
         Args:
@@ -4698,10 +4346,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_chats_create_members(self, user_id: str, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to members for users
+    async def users_chats_create_members(self, user_id: str, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to members for users
         Teams operation: POST /users/{user-id}/chats/{chat-id}/members
         Operation type: chats
         Args:
@@ -4719,10 +4365,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_chats_chat_members_add(self, user_id: str, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def users_user_chats_chat_members_add(self, user_id: str, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /users/{user-id}/chats/{chat-id}/members/add
         Operation type: chats
         Args:
@@ -4740,10 +4384,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_chats_chat_members_remove(self, user_id: str, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def users_user_chats_chat_members_remove(self, user_id: str, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /users/{user-id}/chats/{chat-id}/members/remove
         Operation type: chats
         Args:
@@ -4762,9 +4404,7 @@ class TeamsDataSource:
 
 
     async def users_chats_delete_members(self, user_id: str, chat_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property members for users
+        """Delete navigation property members for users
         Teams operation: DELETE /users/{user-id}/chats/{chat-id}/members/{conversationMember-id}
         Operation type: chats
         Args:
@@ -4782,10 +4422,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_chats_get_members(self, user_id: str, chat_id: str, conversationMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get members from users
+    async def users_chats_get_members(self, user_id: str, chat_id: str, conversationMember_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get members from users
         Teams operation: GET /users/{user-id}/chats/{chat-id}/members/{conversationMember-id}
         Operation type: chats
         Args:
@@ -4827,10 +4465,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_chats_update_members(self, user_id: str, chat_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property members in users
+    async def users_chats_update_members(self, user_id: str, chat_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property members in users
         Teams operation: PATCH /users/{user-id}/chats/{chat-id}/members/{conversationMember-id}
         Operation type: chats
         Args:
@@ -4849,10 +4485,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_chats_chat_send_activity_notification(self, user_id: str, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action sendActivityNotification
+    async def users_user_chats_chat_send_activity_notification(self, user_id: str, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action sendActivityNotification
         Teams operation: POST /users/{user-id}/chats/{chat-id}/sendActivityNotification
         Operation type: chats
         Args:
@@ -4870,10 +4504,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_chats_create_tabs(self, user_id: str, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to tabs for users
+    async def users_chats_create_tabs(self, user_id: str, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to tabs for users
         Teams operation: POST /users/{user-id}/chats/{chat-id}/tabs
         Operation type: chats
         Args:
@@ -4892,9 +4524,7 @@ class TeamsDataSource:
 
 
     async def users_chats_delete_tabs(self, user_id: str, chat_id: str, teamsTab_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property tabs for users
+        """Delete navigation property tabs for users
         Teams operation: DELETE /users/{user-id}/chats/{chat-id}/tabs/{teamsTab-id}
         Operation type: chats
         Args:
@@ -4912,10 +4542,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_chats_get_tabs(self, user_id: str, chat_id: str, teamsTab_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get tabs from users
+    async def users_chats_get_tabs(self, user_id: str, chat_id: str, teamsTab_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get tabs from users
         Teams operation: GET /users/{user-id}/chats/{chat-id}/tabs/{teamsTab-id}
         Operation type: chats
         Args:
@@ -4957,10 +4585,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_chats_update_tabs(self, user_id: str, chat_id: str, teamsTab_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property tabs in users
+    async def users_chats_update_tabs(self, user_id: str, chat_id: str, teamsTab_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property tabs in users
         Teams operation: PATCH /users/{user-id}/chats/{chat-id}/tabs/{teamsTab-id}
         Operation type: chats
         Args:
@@ -4979,10 +4605,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_chats_chat_unhide_for_user(self, user_id: str, chat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action unhideForUser
+    async def users_user_chats_chat_unhide_for_user(self, user_id: str, chat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action unhideForUser
         Teams operation: POST /users/{user-id}/chats/{chat-id}/unhideForUser
         Operation type: chats
         Args:
@@ -5002,10 +4626,8 @@ class TeamsDataSource:
     # ========== MEMBERS OPERATIONS (6 methods) ==========
 
 
-    async def teams_create_members(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Add member to team
+    async def teams_create_members(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Add member to team
         Teams operation: POST /teams/{team-id}/members
         Operation type: members
         Args:
@@ -5022,10 +4644,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_members_add(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def teams_team_members_add(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /teams/{team-id}/members/add
         Operation type: members
         Args:
@@ -5042,10 +4662,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_members_remove(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def teams_team_members_remove(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /teams/{team-id}/members/remove
         Operation type: members
         Args:
@@ -5063,9 +4681,7 @@ class TeamsDataSource:
 
 
     async def teams_delete_members(self, team_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Remove member from team
+        """Remove member from team
         Teams operation: DELETE /teams/{team-id}/members/{conversationMember-id}
         Operation type: members
         Args:
@@ -5082,10 +4698,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_get_members(self, team_id: str, conversationMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get member of team
+    async def teams_get_members(self, team_id: str, conversationMember_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get member of team
         Teams operation: GET /teams/{team-id}/members/{conversationMember-id}
         Operation type: members
         Args:
@@ -5126,10 +4740,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_update_members(self, team_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update member in team
+    async def teams_update_members(self, team_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update member in team
         Teams operation: PATCH /teams/{team-id}/members/{conversationMember-id}
         Operation type: members
         Args:
@@ -5149,10 +4761,8 @@ class TeamsDataSource:
     # ========== APPS OPERATIONS (32 methods) ==========
 
 
-    async def groups_team_channels_create_tabs(self, group_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to tabs for groups
+    async def groups_team_channels_create_tabs(self, group_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to tabs for groups
         Teams operation: POST /groups/{group-id}/team/channels/{channel-id}/tabs
         Operation type: apps
         Args:
@@ -5171,9 +4781,7 @@ class TeamsDataSource:
 
 
     async def groups_team_channels_delete_tabs(self, group_id: str, channel_id: str, teamsTab_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property tabs for groups
+        """Delete navigation property tabs for groups
         Teams operation: DELETE /groups/{group-id}/team/channels/{channel-id}/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5191,10 +4799,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_channels_get_tabs(self, group_id: str, channel_id: str, teamsTab_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get tabs from groups
+    async def groups_team_channels_get_tabs(self, group_id: str, channel_id: str, teamsTab_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get tabs from groups
         Teams operation: GET /groups/{group-id}/team/channels/{channel-id}/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5236,10 +4842,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_channels_update_tabs(self, group_id: str, channel_id: str, teamsTab_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property tabs in groups
+    async def groups_team_channels_update_tabs(self, group_id: str, channel_id: str, teamsTab_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property tabs in groups
         Teams operation: PATCH /groups/{group-id}/team/channels/{channel-id}/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5258,10 +4862,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_primary_channel_create_tabs(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to tabs for groups
+    async def groups_team_primary_channel_create_tabs(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to tabs for groups
         Teams operation: POST /groups/{group-id}/team/primaryChannel/tabs
         Operation type: apps
         Args:
@@ -5279,9 +4881,7 @@ class TeamsDataSource:
 
 
     async def groups_team_primary_channel_delete_tabs(self, group_id: str, teamsTab_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property tabs for groups
+        """Delete navigation property tabs for groups
         Teams operation: DELETE /groups/{group-id}/team/primaryChannel/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5298,10 +4898,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_primary_channel_get_tabs(self, group_id: str, teamsTab_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get tabs from groups
+    async def groups_team_primary_channel_get_tabs(self, group_id: str, teamsTab_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get tabs from groups
         Teams operation: GET /groups/{group-id}/team/primaryChannel/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5342,10 +4940,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_primary_channel_update_tabs(self, group_id: str, teamsTab_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property tabs in groups
+    async def groups_team_primary_channel_update_tabs(self, group_id: str, teamsTab_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property tabs in groups
         Teams operation: PATCH /groups/{group-id}/team/primaryChannel/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5363,10 +4959,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_channels_create_tabs(self, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to tabs for me
+    async def me_joined_teams_channels_create_tabs(self, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to tabs for me
         Teams operation: POST /me/joinedTeams/{team-id}/channels/{channel-id}/tabs
         Operation type: apps
         Args:
@@ -5385,9 +4979,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_channels_delete_tabs(self, team_id: str, channel_id: str, teamsTab_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property tabs for me
+        """Delete navigation property tabs for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/channels/{channel-id}/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5405,10 +4997,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_channels_get_tabs(self, team_id: str, channel_id: str, teamsTab_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get tabs from me
+    async def me_joined_teams_channels_get_tabs(self, team_id: str, channel_id: str, teamsTab_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get tabs from me
         Teams operation: GET /me/joinedTeams/{team-id}/channels/{channel-id}/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5450,10 +5040,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_channels_update_tabs(self, team_id: str, channel_id: str, teamsTab_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property tabs in me
+    async def me_joined_teams_channels_update_tabs(self, team_id: str, channel_id: str, teamsTab_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property tabs in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/channels/{channel-id}/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5472,10 +5060,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_primary_channel_create_tabs(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to tabs for me
+    async def me_joined_teams_primary_channel_create_tabs(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to tabs for me
         Teams operation: POST /me/joinedTeams/{team-id}/primaryChannel/tabs
         Operation type: apps
         Args:
@@ -5493,9 +5079,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_primary_channel_delete_tabs(self, team_id: str, teamsTab_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property tabs for me
+        """Delete navigation property tabs for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/primaryChannel/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5512,10 +5096,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_primary_channel_get_tabs(self, team_id: str, teamsTab_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get tabs from me
+    async def me_joined_teams_primary_channel_get_tabs(self, team_id: str, teamsTab_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get tabs from me
         Teams operation: GET /me/joinedTeams/{team-id}/primaryChannel/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5556,10 +5138,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_primary_channel_update_tabs(self, team_id: str, teamsTab_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property tabs in me
+    async def me_joined_teams_primary_channel_update_tabs(self, team_id: str, teamsTab_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property tabs in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/primaryChannel/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5577,10 +5157,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_primary_channel_create_tabs(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to tabs for teams
+    async def teams_primary_channel_create_tabs(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to tabs for teams
         Teams operation: POST /teams/{team-id}/primaryChannel/tabs
         Operation type: apps
         Args:
@@ -5598,9 +5176,7 @@ class TeamsDataSource:
 
 
     async def teams_primary_channel_delete_tabs(self, team_id: str, teamsTab_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property tabs for teams
+        """Delete navigation property tabs for teams
         Teams operation: DELETE /teams/{team-id}/primaryChannel/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5617,10 +5193,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_primary_channel_get_tabs(self, team_id: str, teamsTab_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get tabs from teams
+    async def teams_primary_channel_get_tabs(self, team_id: str, teamsTab_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get tabs from teams
         Teams operation: GET /teams/{team-id}/primaryChannel/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5661,10 +5235,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_primary_channel_update_tabs(self, team_id: str, teamsTab_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property tabs in teams
+    async def teams_primary_channel_update_tabs(self, team_id: str, teamsTab_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property tabs in teams
         Teams operation: PATCH /teams/{team-id}/primaryChannel/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5682,10 +5254,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_deleted_teams_channels_create_tabs(self, deletedTeam_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to tabs for teamwork
+    async def teamwork_deleted_teams_channels_create_tabs(self, deletedTeam_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to tabs for teamwork
         Teams operation: POST /teamwork/deletedTeams/{deletedTeam-id}/channels/{channel-id}/tabs
         Operation type: apps
         Args:
@@ -5704,9 +5274,7 @@ class TeamsDataSource:
 
 
     async def teamwork_deleted_teams_channels_delete_tabs(self, deletedTeam_id: str, channel_id: str, teamsTab_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property tabs for teamwork
+        """Delete navigation property tabs for teamwork
         Teams operation: DELETE /teamwork/deletedTeams/{deletedTeam-id}/channels/{channel-id}/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5724,10 +5292,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_deleted_teams_channels_get_tabs(self, deletedTeam_id: str, channel_id: str, teamsTab_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get tabs from teamwork
+    async def teamwork_deleted_teams_channels_get_tabs(self, deletedTeam_id: str, channel_id: str, teamsTab_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get tabs from teamwork
         Teams operation: GET /teamwork/deletedTeams/{deletedTeam-id}/channels/{channel-id}/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5769,10 +5335,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_deleted_teams_channels_update_tabs(self, deletedTeam_id: str, channel_id: str, teamsTab_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property tabs in teamwork
+    async def teamwork_deleted_teams_channels_update_tabs(self, deletedTeam_id: str, channel_id: str, teamsTab_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property tabs in teamwork
         Teams operation: PATCH /teamwork/deletedTeams/{deletedTeam-id}/channels/{channel-id}/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5791,10 +5355,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_channels_create_tabs(self, user_id: str, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to tabs for users
+    async def users_joined_teams_channels_create_tabs(self, user_id: str, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to tabs for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/channels/{channel-id}/tabs
         Operation type: apps
         Args:
@@ -5814,9 +5376,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_channels_delete_tabs(self, user_id: str, team_id: str, channel_id: str, teamsTab_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property tabs for users
+        """Delete navigation property tabs for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/channels/{channel-id}/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5835,10 +5395,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_channels_get_tabs(self, user_id: str, team_id: str, channel_id: str, teamsTab_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get tabs from users
+    async def users_joined_teams_channels_get_tabs(self, user_id: str, team_id: str, channel_id: str, teamsTab_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get tabs from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/channels/{channel-id}/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5881,10 +5439,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_channels_update_tabs(self, user_id: str, team_id: str, channel_id: str, teamsTab_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property tabs in users
+    async def users_joined_teams_channels_update_tabs(self, user_id: str, team_id: str, channel_id: str, teamsTab_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property tabs in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/channels/{channel-id}/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5904,10 +5460,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_primary_channel_create_tabs(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to tabs for users
+    async def users_joined_teams_primary_channel_create_tabs(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to tabs for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/primaryChannel/tabs
         Operation type: apps
         Args:
@@ -5926,9 +5480,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_primary_channel_delete_tabs(self, user_id: str, team_id: str, teamsTab_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property tabs for users
+        """Delete navigation property tabs for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/primaryChannel/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5946,10 +5498,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_primary_channel_get_tabs(self, user_id: str, team_id: str, teamsTab_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get tabs from users
+    async def users_joined_teams_primary_channel_get_tabs(self, user_id: str, team_id: str, teamsTab_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get tabs from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/primaryChannel/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -5991,10 +5541,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_primary_channel_update_tabs(self, user_id: str, team_id: str, teamsTab_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property tabs in users
+    async def users_joined_teams_primary_channel_update_tabs(self, user_id: str, team_id: str, teamsTab_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property tabs in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/primaryChannel/tabs/{teamsTab-id}
         Operation type: apps
         Args:
@@ -6016,9 +5564,7 @@ class TeamsDataSource:
 
 
     async def me_delete_teamwork(self) -> TeamsResponse:
-
-        """
-        Delete navigation property teamwork for me
+        """Delete navigation property teamwork for me
         Teams operation: DELETE /me/teamwork
         Operation type: teamwork
         Args:
@@ -6034,10 +5580,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_get_teamwork(self, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamwork from me
+    async def me_get_teamwork(self, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamwork from me
         Teams operation: GET /me/teamwork
         Operation type: teamwork
         Args:
@@ -6076,10 +5620,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_update_teamwork(self, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property teamwork in me
+    async def me_update_teamwork(self, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property teamwork in me
         Teams operation: PATCH /me/teamwork
         Operation type: teamwork
         Args:
@@ -6095,10 +5637,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_teamwork_create_associated_teams(self, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to associatedTeams for me
+    async def me_teamwork_create_associated_teams(self, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to associatedTeams for me
         Teams operation: POST /me/teamwork/associatedTeams
         Operation type: teamwork
         Args:
@@ -6115,9 +5655,7 @@ class TeamsDataSource:
 
 
     async def me_teamwork_delete_associated_teams(self, associatedTeamInfo_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property associatedTeams for me
+        """Delete navigation property associatedTeams for me
         Teams operation: DELETE /me/teamwork/associatedTeams/{associatedTeamInfo-id}
         Operation type: teamwork
         Args:
@@ -6133,10 +5671,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_teamwork_update_associated_teams(self, associatedTeamInfo_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property associatedTeams in me
+    async def me_teamwork_update_associated_teams(self, associatedTeamInfo_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property associatedTeams in me
         Teams operation: PATCH /me/teamwork/associatedTeams/{associatedTeamInfo-id}
         Operation type: teamwork
         Args:
@@ -6153,10 +5689,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_teamwork_associated_teams_get_team(self, associatedTeamInfo_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get team from me
+    async def me_teamwork_associated_teams_get_team(self, associatedTeamInfo_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get team from me
         Teams operation: GET /me/teamwork/associatedTeams/{associatedTeamInfo-id}/team
         Operation type: teamwork
         Args:
@@ -6196,10 +5730,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_teamwork_create_installed_apps(self, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to installedApps for me
+    async def me_teamwork_create_installed_apps(self, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to installedApps for me
         Teams operation: POST /me/teamwork/installedApps
         Operation type: teamwork
         Args:
@@ -6216,9 +5748,7 @@ class TeamsDataSource:
 
 
     async def me_teamwork_delete_installed_apps(self, userScopeTeamsAppInstallation_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property installedApps for me
+        """Delete navigation property installedApps for me
         Teams operation: DELETE /me/teamwork/installedApps/{userScopeTeamsAppInstallation-id}
         Operation type: teamwork
         Args:
@@ -6234,10 +5764,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_teamwork_get_installed_apps(self, userScopeTeamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get installedApps from me
+    async def me_teamwork_get_installed_apps(self, userScopeTeamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get installedApps from me
         Teams operation: GET /me/teamwork/installedApps/{userScopeTeamsAppInstallation-id}
         Operation type: teamwork
         Args:
@@ -6277,10 +5805,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_teamwork_update_installed_apps(self, userScopeTeamsAppInstallation_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property installedApps in me
+    async def me_teamwork_update_installed_apps(self, userScopeTeamsAppInstallation_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property installedApps in me
         Teams operation: PATCH /me/teamwork/installedApps/{userScopeTeamsAppInstallation-id}
         Operation type: teamwork
         Args:
@@ -6297,10 +5823,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_teamwork_installed_apps_get_chat(self, userScopeTeamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get chat from me
+    async def me_teamwork_installed_apps_get_chat(self, userScopeTeamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get chat from me
         Teams operation: GET /me/teamwork/installedApps/{userScopeTeamsAppInstallation-id}/chat
         Operation type: teamwork
         Args:
@@ -6340,10 +5864,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_teamwork_installed_apps_get_teams_app(self, userScopeTeamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamsApp from me
+    async def me_teamwork_installed_apps_get_teams_app(self, userScopeTeamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamsApp from me
         Teams operation: GET /me/teamwork/installedApps/{userScopeTeamsAppInstallation-id}/teamsApp
         Operation type: teamwork
         Args:
@@ -6383,10 +5905,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_teamwork_installed_apps_get_teams_app_definition(self, userScopeTeamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamsAppDefinition from me
+    async def me_teamwork_installed_apps_get_teams_app_definition(self, userScopeTeamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamsAppDefinition from me
         Teams operation: GET /me/teamwork/installedApps/{userScopeTeamsAppInstallation-id}/teamsAppDefinition
         Operation type: teamwork
         Args:
@@ -6426,10 +5946,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_teamwork_send_activity_notification(self, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action sendActivityNotification
+    async def me_teamwork_send_activity_notification(self, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action sendActivityNotification
         Teams operation: POST /me/teamwork/sendActivityNotification
         Operation type: teamwork
         Args:
@@ -6445,10 +5963,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_teamwork_get_teamwork(self, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamwork
+    async def teamwork_teamwork_get_teamwork(self, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamwork
         Teams operation: GET /teamwork
         Operation type: teamwork
         Args:
@@ -6487,10 +6003,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_teamwork_update_teamwork(self, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update teamwork
+    async def teamwork_teamwork_update_teamwork(self, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update teamwork
         Teams operation: PATCH /teamwork
         Operation type: teamwork
         Args:
@@ -6506,10 +6020,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_create_deleted_chats(self, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to deletedChats for teamwork
+    async def teamwork_create_deleted_chats(self, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to deletedChats for teamwork
         Teams operation: POST /teamwork/deletedChats
         Operation type: teamwork
         Args:
@@ -6526,9 +6038,7 @@ class TeamsDataSource:
 
 
     async def teamwork_delete_deleted_chats(self, deletedChat_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property deletedChats for teamwork
+        """Delete navigation property deletedChats for teamwork
         Teams operation: DELETE /teamwork/deletedChats/{deletedChat-id}
         Operation type: teamwork
         Args:
@@ -6544,10 +6054,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_get_deleted_chats(self, deletedChat_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get deletedChat
+    async def teamwork_get_deleted_chats(self, deletedChat_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get deletedChat
         Teams operation: GET /teamwork/deletedChats/{deletedChat-id}
         Operation type: teamwork
         Args:
@@ -6587,10 +6095,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_update_deleted_chats(self, deletedChat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property deletedChats in teamwork
+    async def teamwork_update_deleted_chats(self, deletedChat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property deletedChats in teamwork
         Teams operation: PATCH /teamwork/deletedChats/{deletedChat-id}
         Operation type: teamwork
         Args:
@@ -6607,10 +6113,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_deleted_chats_deleted_chat_undo_delete(self, deletedChat_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action undoDelete
+    async def teamwork_deleted_chats_deleted_chat_undo_delete(self, deletedChat_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action undoDelete
         Teams operation: POST /teamwork/deletedChats/{deletedChat-id}/undoDelete
         Operation type: teamwork
         Args:
@@ -6626,10 +6130,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_create_deleted_teams(self, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to deletedTeams for teamwork
+    async def teamwork_create_deleted_teams(self, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to deletedTeams for teamwork
         Teams operation: POST /teamwork/deletedTeams
         Operation type: teamwork
         Args:
@@ -6646,9 +6148,7 @@ class TeamsDataSource:
 
 
     async def teamwork_delete_deleted_teams(self, deletedTeam_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property deletedTeams for teamwork
+        """Delete navigation property deletedTeams for teamwork
         Teams operation: DELETE /teamwork/deletedTeams/{deletedTeam-id}
         Operation type: teamwork
         Args:
@@ -6664,10 +6164,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_get_deleted_teams(self, deletedTeam_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get deletedTeams from teamwork
+    async def teamwork_get_deleted_teams(self, deletedTeam_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get deletedTeams from teamwork
         Teams operation: GET /teamwork/deletedTeams/{deletedTeam-id}
         Operation type: teamwork
         Args:
@@ -6707,10 +6205,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_update_deleted_teams(self, deletedTeam_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property deletedTeams in teamwork
+    async def teamwork_update_deleted_teams(self, deletedTeam_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property deletedTeams in teamwork
         Teams operation: PATCH /teamwork/deletedTeams/{deletedTeam-id}
         Operation type: teamwork
         Args:
@@ -6727,10 +6223,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_deleted_teams_create_channels(self, deletedTeam_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to channels for teamwork
+    async def teamwork_deleted_teams_create_channels(self, deletedTeam_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to channels for teamwork
         Teams operation: POST /teamwork/deletedTeams/{deletedTeam-id}/channels
         Operation type: teamwork
         Args:
@@ -6748,9 +6242,7 @@ class TeamsDataSource:
 
 
     async def teamwork_deleted_teams_delete_channels(self, deletedTeam_id: str, channel_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property channels for teamwork
+        """Delete navigation property channels for teamwork
         Teams operation: DELETE /teamwork/deletedTeams/{deletedTeam-id}/channels/{channel-id}
         Operation type: teamwork
         Args:
@@ -6767,10 +6259,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_deleted_teams_update_channels(self, deletedTeam_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property channels in teamwork
+    async def teamwork_deleted_teams_update_channels(self, deletedTeam_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property channels in teamwork
         Teams operation: PATCH /teamwork/deletedTeams/{deletedTeam-id}/channels/{channel-id}
         Operation type: teamwork
         Args:
@@ -6788,10 +6278,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_deleted_teams_channels_create_all_members(self, deletedTeam_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to allMembers for teamwork
+    async def teamwork_deleted_teams_channels_create_all_members(self, deletedTeam_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to allMembers for teamwork
         Teams operation: POST /teamwork/deletedTeams/{deletedTeam-id}/channels/{channel-id}/allMembers
         Operation type: teamwork
         Args:
@@ -6809,10 +6297,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_deleted_teams_deleted_team_channels_channel_all_members_add(self, deletedTeam_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def teamwork_deleted_teams_deleted_team_channels_channel_all_members_add(self, deletedTeam_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /teamwork/deletedTeams/{deletedTeam-id}/channels/{channel-id}/allMembers/add
         Operation type: teamwork
         Args:
@@ -6830,10 +6316,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_deleted_teams_deleted_team_channels_channel_all_members_remove(self, deletedTeam_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def teamwork_deleted_teams_deleted_team_channels_channel_all_members_remove(self, deletedTeam_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /teamwork/deletedTeams/{deletedTeam-id}/channels/{channel-id}/allMembers/remove
         Operation type: teamwork
         Args:
@@ -6852,9 +6336,7 @@ class TeamsDataSource:
 
 
     async def teamwork_deleted_teams_channels_delete_all_members(self, deletedTeam_id: str, channel_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property allMembers for teamwork
+        """Delete navigation property allMembers for teamwork
         Teams operation: DELETE /teamwork/deletedTeams/{deletedTeam-id}/channels/{channel-id}/allMembers/{conversationMember-id}
         Operation type: teamwork
         Args:
@@ -6872,10 +6354,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_deleted_teams_channels_update_all_members(self, deletedTeam_id: str, channel_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property allMembers in teamwork
+    async def teamwork_deleted_teams_channels_update_all_members(self, deletedTeam_id: str, channel_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property allMembers in teamwork
         Teams operation: PATCH /teamwork/deletedTeams/{deletedTeam-id}/channels/{channel-id}/allMembers/{conversationMember-id}
         Operation type: teamwork
         Args:
@@ -6894,10 +6374,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_deleted_teams_channels_get_files_folder(self, deletedTeam_id: str, channel_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get filesFolder from teamwork
+    async def teamwork_deleted_teams_channels_get_files_folder(self, deletedTeam_id: str, channel_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get filesFolder from teamwork
         Teams operation: GET /teamwork/deletedTeams/{deletedTeam-id}/channels/{channel-id}/filesFolder
         Operation type: teamwork
         Args:
@@ -6938,10 +6416,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_deleted_teams_channels_create_members(self, deletedTeam_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to members for teamwork
+    async def teamwork_deleted_teams_channels_create_members(self, deletedTeam_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to members for teamwork
         Teams operation: POST /teamwork/deletedTeams/{deletedTeam-id}/channels/{channel-id}/members
         Operation type: teamwork
         Args:
@@ -6959,10 +6435,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_deleted_teams_deleted_team_channels_channel_members_add(self, deletedTeam_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def teamwork_deleted_teams_deleted_team_channels_channel_members_add(self, deletedTeam_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /teamwork/deletedTeams/{deletedTeam-id}/channels/{channel-id}/members/add
         Operation type: teamwork
         Args:
@@ -6980,10 +6454,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_deleted_teams_deleted_team_channels_channel_members_remove(self, deletedTeam_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def teamwork_deleted_teams_deleted_team_channels_channel_members_remove(self, deletedTeam_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /teamwork/deletedTeams/{deletedTeam-id}/channels/{channel-id}/members/remove
         Operation type: teamwork
         Args:
@@ -7002,9 +6474,7 @@ class TeamsDataSource:
 
 
     async def teamwork_deleted_teams_channels_delete_members(self, deletedTeam_id: str, channel_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property members for teamwork
+        """Delete navigation property members for teamwork
         Teams operation: DELETE /teamwork/deletedTeams/{deletedTeam-id}/channels/{channel-id}/members/{conversationMember-id}
         Operation type: teamwork
         Args:
@@ -7022,10 +6492,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_deleted_teams_channels_get_members(self, deletedTeam_id: str, channel_id: str, conversationMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get members from teamwork
+    async def teamwork_deleted_teams_channels_get_members(self, deletedTeam_id: str, channel_id: str, conversationMember_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get members from teamwork
         Teams operation: GET /teamwork/deletedTeams/{deletedTeam-id}/channels/{channel-id}/members/{conversationMember-id}
         Operation type: teamwork
         Args:
@@ -7067,10 +6535,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_deleted_teams_channels_update_members(self, deletedTeam_id: str, channel_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property members in teamwork
+    async def teamwork_deleted_teams_channels_update_members(self, deletedTeam_id: str, channel_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property members in teamwork
         Teams operation: PATCH /teamwork/deletedTeams/{deletedTeam-id}/channels/{channel-id}/members/{conversationMember-id}
         Operation type: teamwork
         Args:
@@ -7089,10 +6555,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_deleted_teams_deleted_team_channels_channel_provision_email(self, deletedTeam_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action provisionEmail
+    async def teamwork_deleted_teams_deleted_team_channels_channel_provision_email(self, deletedTeam_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action provisionEmail
         Teams operation: POST /teamwork/deletedTeams/{deletedTeam-id}/channels/{channel-id}/provisionEmail
         Operation type: teamwork
         Args:
@@ -7109,10 +6573,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_deleted_teams_deleted_team_channels_channel_remove_email(self, deletedTeam_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action removeEmail
+    async def teamwork_deleted_teams_deleted_team_channels_channel_remove_email(self, deletedTeam_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action removeEmail
         Teams operation: POST /teamwork/deletedTeams/{deletedTeam-id}/channels/{channel-id}/removeEmail
         Operation type: teamwork
         Args:
@@ -7129,10 +6591,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_send_activity_notification_to_recipients(self, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action sendActivityNotificationToRecipients
+    async def teamwork_send_activity_notification_to_recipients(self, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action sendActivityNotificationToRecipients
         Teams operation: POST /teamwork/sendActivityNotificationToRecipients
         Operation type: teamwork
         Args:
@@ -7149,9 +6609,7 @@ class TeamsDataSource:
 
 
     async def teamwork_delete_teams_app_settings(self) -> TeamsResponse:
-
-        """
-        Delete navigation property teamsAppSettings for teamwork
+        """Delete navigation property teamsAppSettings for teamwork
         Teams operation: DELETE /teamwork/teamsAppSettings
         Operation type: teamwork
         Args:
@@ -7167,10 +6625,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_get_teams_app_settings(self, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamsAppSettings
+    async def teamwork_get_teams_app_settings(self, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamsAppSettings
         Teams operation: GET /teamwork/teamsAppSettings
         Operation type: teamwork
         Args:
@@ -7209,10 +6665,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_update_teams_app_settings(self, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update teamsAppSettings
+    async def teamwork_update_teams_app_settings(self, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update teamsAppSettings
         Teams operation: PATCH /teamwork/teamsAppSettings
         Operation type: teamwork
         Args:
@@ -7228,10 +6682,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_create_workforce_integrations(self, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create workforceIntegration
+    async def teamwork_create_workforce_integrations(self, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create workforceIntegration
         Teams operation: POST /teamwork/workforceIntegrations
         Operation type: teamwork
         Args:
@@ -7248,9 +6700,7 @@ class TeamsDataSource:
 
 
     async def teamwork_delete_workforce_integrations(self, workforceIntegration_id: str) -> TeamsResponse:
-
-        """
-        Delete workforceIntegration
+        """Delete workforceIntegration
         Teams operation: DELETE /teamwork/workforceIntegrations/{workforceIntegration-id}
         Operation type: teamwork
         Args:
@@ -7266,10 +6716,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_get_workforce_integrations(self, workforceIntegration_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get workforceIntegration
+    async def teamwork_get_workforce_integrations(self, workforceIntegration_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get workforceIntegration
         Teams operation: GET /teamwork/workforceIntegrations/{workforceIntegration-id}
         Operation type: teamwork
         Args:
@@ -7309,10 +6757,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teamwork_update_workforce_integrations(self, workforceIntegration_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update workforceIntegration
+    async def teamwork_update_workforce_integrations(self, workforceIntegration_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update workforceIntegration
         Teams operation: PATCH /teamwork/workforceIntegrations/{workforceIntegration-id}
         Operation type: teamwork
         Args:
@@ -7330,9 +6776,7 @@ class TeamsDataSource:
 
 
     async def users_delete_teamwork(self, user_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property teamwork for users
+        """Delete navigation property teamwork for users
         Teams operation: DELETE /users/{user-id}/teamwork
         Operation type: teamwork
         Args:
@@ -7348,10 +6792,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_get_teamwork(self, user_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get userTeamwork
+    async def users_get_teamwork(self, user_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get userTeamwork
         Teams operation: GET /users/{user-id}/teamwork
         Operation type: teamwork
         Args:
@@ -7391,10 +6833,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_update_teamwork(self, user_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property teamwork in users
+    async def users_update_teamwork(self, user_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property teamwork in users
         Teams operation: PATCH /users/{user-id}/teamwork
         Operation type: teamwork
         Args:
@@ -7411,10 +6851,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_teamwork_create_associated_teams(self, user_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to associatedTeams for users
+    async def users_teamwork_create_associated_teams(self, user_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to associatedTeams for users
         Teams operation: POST /users/{user-id}/teamwork/associatedTeams
         Operation type: teamwork
         Args:
@@ -7432,9 +6870,7 @@ class TeamsDataSource:
 
 
     async def users_teamwork_delete_associated_teams(self, user_id: str, associatedTeamInfo_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property associatedTeams for users
+        """Delete navigation property associatedTeams for users
         Teams operation: DELETE /users/{user-id}/teamwork/associatedTeams/{associatedTeamInfo-id}
         Operation type: teamwork
         Args:
@@ -7451,10 +6887,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_teamwork_update_associated_teams(self, user_id: str, associatedTeamInfo_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property associatedTeams in users
+    async def users_teamwork_update_associated_teams(self, user_id: str, associatedTeamInfo_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property associatedTeams in users
         Teams operation: PATCH /users/{user-id}/teamwork/associatedTeams/{associatedTeamInfo-id}
         Operation type: teamwork
         Args:
@@ -7472,10 +6906,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_teamwork_associated_teams_get_team(self, user_id: str, associatedTeamInfo_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get team from users
+    async def users_teamwork_associated_teams_get_team(self, user_id: str, associatedTeamInfo_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get team from users
         Teams operation: GET /users/{user-id}/teamwork/associatedTeams/{associatedTeamInfo-id}/team
         Operation type: teamwork
         Args:
@@ -7516,10 +6948,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_teamwork_create_installed_apps(self, user_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Install app for user
+    async def users_teamwork_create_installed_apps(self, user_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Install app for user
         Teams operation: POST /users/{user-id}/teamwork/installedApps
         Operation type: teamwork
         Args:
@@ -7537,9 +6967,7 @@ class TeamsDataSource:
 
 
     async def users_teamwork_delete_installed_apps(self, user_id: str, userScopeTeamsAppInstallation_id: str) -> TeamsResponse:
-
-        """
-        Uninstall app for user
+        """Uninstall app for user
         Teams operation: DELETE /users/{user-id}/teamwork/installedApps/{userScopeTeamsAppInstallation-id}
         Operation type: teamwork
         Args:
@@ -7556,10 +6984,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_teamwork_get_installed_apps(self, user_id: str, userScopeTeamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get installed app for user
+    async def users_teamwork_get_installed_apps(self, user_id: str, userScopeTeamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get installed app for user
         Teams operation: GET /users/{user-id}/teamwork/installedApps/{userScopeTeamsAppInstallation-id}
         Operation type: teamwork
         Args:
@@ -7600,10 +7026,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_teamwork_update_installed_apps(self, user_id: str, userScopeTeamsAppInstallation_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property installedApps in users
+    async def users_teamwork_update_installed_apps(self, user_id: str, userScopeTeamsAppInstallation_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property installedApps in users
         Teams operation: PATCH /users/{user-id}/teamwork/installedApps/{userScopeTeamsAppInstallation-id}
         Operation type: teamwork
         Args:
@@ -7621,10 +7045,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_teamwork_installed_apps_get_chat(self, user_id: str, userScopeTeamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get chat between user and teamsApp
+    async def users_teamwork_installed_apps_get_chat(self, user_id: str, userScopeTeamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get chat between user and teamsApp
         Teams operation: GET /users/{user-id}/teamwork/installedApps/{userScopeTeamsAppInstallation-id}/chat
         Operation type: teamwork
         Args:
@@ -7665,10 +7087,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_teamwork_installed_apps_get_teams_app(self, user_id: str, userScopeTeamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamsApp from users
+    async def users_teamwork_installed_apps_get_teams_app(self, user_id: str, userScopeTeamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamsApp from users
         Teams operation: GET /users/{user-id}/teamwork/installedApps/{userScopeTeamsAppInstallation-id}/teamsApp
         Operation type: teamwork
         Args:
@@ -7709,10 +7129,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_teamwork_installed_apps_get_teams_app_definition(self, user_id: str, userScopeTeamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamsAppDefinition from users
+    async def users_teamwork_installed_apps_get_teams_app_definition(self, user_id: str, userScopeTeamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamsAppDefinition from users
         Teams operation: GET /users/{user-id}/teamwork/installedApps/{userScopeTeamsAppInstallation-id}/teamsAppDefinition
         Operation type: teamwork
         Args:
@@ -7753,10 +7171,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_teamwork_send_activity_notification(self, user_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action sendActivityNotification
+    async def users_user_teamwork_send_activity_notification(self, user_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action sendActivityNotification
         Teams operation: POST /users/{user-id}/teamwork/sendActivityNotification
         Operation type: teamwork
         Args:
@@ -7776,9 +7192,7 @@ class TeamsDataSource:
 
 
     async def app_catalogs_delete_teams_apps(self, teamsApp_id: str) -> TeamsResponse:
-
-        """
-        Delete teamsApp
+        """Delete teamsApp
         Teams operation: DELETE /appCatalogs/teamsApps/{teamsApp-id}
         Operation type: general
         Args:
@@ -7794,10 +7208,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def app_catalogs_get_teams_apps(self, teamsApp_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamsApps from appCatalogs
+    async def app_catalogs_get_teams_apps(self, teamsApp_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamsApps from appCatalogs
         Teams operation: GET /appCatalogs/teamsApps/{teamsApp-id}
         Operation type: general
         Args:
@@ -7837,10 +7249,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def app_catalogs_update_teams_apps(self, teamsApp_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property teamsApps in appCatalogs
+    async def app_catalogs_update_teams_apps(self, teamsApp_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property teamsApps in appCatalogs
         Teams operation: PATCH /appCatalogs/teamsApps/{teamsApp-id}
         Operation type: general
         Args:
@@ -7857,10 +7267,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def app_catalogs_teams_apps_create_app_definitions(self, teamsApp_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update teamsApp
+    async def app_catalogs_teams_apps_create_app_definitions(self, teamsApp_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update teamsApp
         Teams operation: POST /appCatalogs/teamsApps/{teamsApp-id}/appDefinitions
         Operation type: general
         Args:
@@ -7878,9 +7286,7 @@ class TeamsDataSource:
 
 
     async def app_catalogs_teams_apps_delete_app_definitions(self, teamsApp_id: str, teamsAppDefinition_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property appDefinitions for appCatalogs
+        """Delete navigation property appDefinitions for appCatalogs
         Teams operation: DELETE /appCatalogs/teamsApps/{teamsApp-id}/appDefinitions/{teamsAppDefinition-id}
         Operation type: general
         Args:
@@ -7897,10 +7303,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def app_catalogs_teams_apps_get_app_definitions(self, teamsApp_id: str, teamsAppDefinition_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get appDefinitions from appCatalogs
+    async def app_catalogs_teams_apps_get_app_definitions(self, teamsApp_id: str, teamsAppDefinition_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get appDefinitions from appCatalogs
         Teams operation: GET /appCatalogs/teamsApps/{teamsApp-id}/appDefinitions/{teamsAppDefinition-id}
         Operation type: general
         Args:
@@ -7942,9 +7346,7 @@ class TeamsDataSource:
 
 
     async def app_catalogs_teams_apps_app_definitions_delete_bot(self, teamsApp_id: str, teamsAppDefinition_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property bot for appCatalogs
+        """Delete navigation property bot for appCatalogs
         Teams operation: DELETE /appCatalogs/teamsApps/{teamsApp-id}/appDefinitions/{teamsAppDefinition-id}/bot
         Operation type: general
         Args:
@@ -7961,10 +7363,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def app_catalogs_teams_apps_app_definitions_get_bot(self, teamsApp_id: str, teamsAppDefinition_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamworkBot
+    async def app_catalogs_teams_apps_app_definitions_get_bot(self, teamsApp_id: str, teamsAppDefinition_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamworkBot
         Teams operation: GET /appCatalogs/teamsApps/{teamsApp-id}/appDefinitions/{teamsAppDefinition-id}/bot
         Operation type: general
         Args:
@@ -8005,10 +7405,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def app_catalogs_teams_apps_app_definitions_update_bot(self, teamsApp_id: str, teamsAppDefinition_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property bot in appCatalogs
+    async def app_catalogs_teams_apps_app_definitions_update_bot(self, teamsApp_id: str, teamsAppDefinition_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property bot in appCatalogs
         Teams operation: PATCH /appCatalogs/teamsApps/{teamsApp-id}/appDefinitions/{teamsAppDefinition-id}/bot
         Operation type: general
         Args:
@@ -8026,10 +7424,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def contracts_contract_check_member_objects(self, contract_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action checkMemberObjects
+    async def contracts_contract_check_member_objects(self, contract_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action checkMemberObjects
         Teams operation: POST /contracts/{contract-id}/checkMemberObjects
         Operation type: general
         Args:
@@ -8046,10 +7442,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def directory_deleted_items_directory_object_check_member_objects(self, directoryObject_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action checkMemberObjects
+    async def directory_deleted_items_directory_object_check_member_objects(self, directoryObject_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action checkMemberObjects
         Teams operation: POST /directory/deletedItems/{directoryObject-id}/checkMemberObjects
         Operation type: general
         Args:
@@ -8066,10 +7460,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def directory_role_templates_directory_role_template_check_member_objects(self, directoryRoleTemplate_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action checkMemberObjects
+    async def directory_role_templates_directory_role_template_check_member_objects(self, directoryRoleTemplate_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action checkMemberObjects
         Teams operation: POST /directoryRoleTemplates/{directoryRoleTemplate-id}/checkMemberObjects
         Operation type: general
         Args:
@@ -8086,10 +7478,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def directory_roles_directory_role_check_member_objects(self, directoryRole_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action checkMemberObjects
+    async def directory_roles_directory_role_check_member_objects(self, directoryRole_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action checkMemberObjects
         Teams operation: POST /directoryRoles/{directoryRole-id}/checkMemberObjects
         Operation type: general
         Args:
@@ -8106,10 +7496,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def directory_roles_get_members_as_group(self, directoryRole_id: str, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get the item of type microsoft.graph.directoryObject as microsoft.graph.group
+    async def directory_roles_get_members_as_group(self, directoryRole_id: str, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get the item of type microsoft.graph.directoryObject as microsoft.graph.group
         Teams operation: GET /directoryRoles/{directoryRole-id}/members/{directoryObject-id}/graph.group
         Operation type: general
         Args:
@@ -8150,10 +7538,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def directory_roles_get_members_as_service_principal(self, directoryRole_id: str, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get the item of type microsoft.graph.directoryObject as microsoft.graph.servicePrincipal
+    async def directory_roles_get_members_as_service_principal(self, directoryRole_id: str, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get the item of type microsoft.graph.directoryObject as microsoft.graph.servicePrincipal
         Teams operation: GET /directoryRoles/{directoryRole-id}/members/{directoryObject-id}/graph.servicePrincipal
         Operation type: general
         Args:
@@ -8194,10 +7580,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def directory_roles_get_members_as_user(self, directoryRole_id: str, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get the item of type microsoft.graph.directoryObject as microsoft.graph.user
+    async def directory_roles_get_members_as_user(self, directoryRole_id: str, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get the item of type microsoft.graph.directoryObject as microsoft.graph.user
         Teams operation: GET /directoryRoles/{directoryRole-id}/members/{directoryObject-id}/graph.user
         Operation type: general
         Args:
@@ -8238,10 +7622,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def directory_roles_create_scoped_members(self, directoryRole_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to scopedMembers for directoryRoles
+    async def directory_roles_create_scoped_members(self, directoryRole_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to scopedMembers for directoryRoles
         Teams operation: POST /directoryRoles/{directoryRole-id}/scopedMembers
         Operation type: general
         Args:
@@ -8259,9 +7641,7 @@ class TeamsDataSource:
 
 
     async def directory_roles_delete_scoped_members(self, directoryRole_id: str, scopedRoleMembership_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property scopedMembers for directoryRoles
+        """Delete navigation property scopedMembers for directoryRoles
         Teams operation: DELETE /directoryRoles/{directoryRole-id}/scopedMembers/{scopedRoleMembership-id}
         Operation type: general
         Args:
@@ -8278,10 +7658,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def directory_roles_update_scoped_members(self, directoryRole_id: str, scopedRoleMembership_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property scopedMembers in directoryRoles
+    async def directory_roles_update_scoped_members(self, directoryRole_id: str, scopedRoleMembership_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property scopedMembers in directoryRoles
         Teams operation: PATCH /directoryRoles/{directoryRole-id}/scopedMembers/{scopedRoleMembership-id}
         Operation type: general
         Args:
@@ -8299,10 +7677,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def education_classes_create_ref_members(self, educationClass_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Add a student
+    async def education_classes_create_ref_members(self, educationClass_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Add a student
         Teams operation: POST /education/classes/{educationClass-id}/members/$ref
         Operation type: general
         Args:
@@ -8320,9 +7696,7 @@ class TeamsDataSource:
 
 
     async def education_classes_delete_ref_members(self, educationClass_id: str) -> TeamsResponse:
-
-        """
-        Remove member from educationClass
+        """Remove member from educationClass
         Teams operation: DELETE /education/classes/{educationClass-id}/members/$ref
         Operation type: general
         Args:
@@ -8339,9 +7713,7 @@ class TeamsDataSource:
 
 
     async def education_classes_members_delete_ref_education_user(self, educationClass_id: str, educationUser_id: str) -> TeamsResponse:
-
-        """
-        Remove member from educationClass
+        """Remove member from educationClass
         Teams operation: DELETE /education/classes/{educationClass-id}/members/{educationUser-id}/$ref
         Operation type: general
         Args:
@@ -8358,10 +7730,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def group_setting_templates_group_setting_template_check_member_objects(self, groupSettingTemplate_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action checkMemberObjects
+    async def group_setting_templates_group_setting_template_check_member_objects(self, groupSettingTemplate_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action checkMemberObjects
         Teams operation: POST /groupSettingTemplates/{groupSettingTemplate-id}/checkMemberObjects
         Operation type: general
         Args:
@@ -8378,10 +7748,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_check_member_objects(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action checkMemberObjects
+    async def groups_group_check_member_objects(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action checkMemberObjects
         Teams operation: POST /groups/{group-id}/checkMemberObjects
         Operation type: general
         Args:
@@ -8398,10 +7766,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_get_member_of(self, group_id: str, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get memberOf from groups
+    async def groups_get_member_of(self, group_id: str, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get memberOf from groups
         Teams operation: GET /groups/{group-id}/memberOf/{directoryObject-id}
         Operation type: general
         Args:
@@ -8443,9 +7809,7 @@ class TeamsDataSource:
 
 
     async def groups_delete_ref_members(self, group_id: str) -> TeamsResponse:
-
-        """
-        Remove member
+        """Remove member
         Teams operation: DELETE /groups/{group-id}/members/$ref
         Operation type: general
         Args:
@@ -8462,9 +7826,7 @@ class TeamsDataSource:
 
 
     async def groups_members_delete_ref_directory_object(self, group_id: str, directoryObject_id: str) -> TeamsResponse:
-
-        """
-        Remove member
+        """Remove member
         Teams operation: DELETE /groups/{group-id}/members/{directoryObject-id}/$ref
         Operation type: general
         Args:
@@ -8481,10 +7843,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_get_members_as_group(self, group_id: str, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get the item of type microsoft.graph.directoryObject as microsoft.graph.group
+    async def groups_get_members_as_group(self, group_id: str, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get the item of type microsoft.graph.directoryObject as microsoft.graph.group
         Teams operation: GET /groups/{group-id}/members/{directoryObject-id}/graph.group
         Operation type: general
         Args:
@@ -8525,10 +7885,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_get_members_as_service_principal(self, group_id: str, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get the item of type microsoft.graph.directoryObject as microsoft.graph.servicePrincipal
+    async def groups_get_members_as_service_principal(self, group_id: str, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get the item of type microsoft.graph.directoryObject as microsoft.graph.servicePrincipal
         Teams operation: GET /groups/{group-id}/members/{directoryObject-id}/graph.servicePrincipal
         Operation type: general
         Args:
@@ -8569,10 +7927,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_get_members_with_license_errors_as_group(self, group_id: str, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get the item of type microsoft.graph.directoryObject as microsoft.graph.group
+    async def groups_get_members_with_license_errors_as_group(self, group_id: str, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get the item of type microsoft.graph.directoryObject as microsoft.graph.group
         Teams operation: GET /groups/{group-id}/membersWithLicenseErrors/{directoryObject-id}/graph.group
         Operation type: general
         Args:
@@ -8613,10 +7969,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_get_members_with_license_errors_as_service_principal(self, group_id: str, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get the item of type microsoft.graph.directoryObject as microsoft.graph.servicePrincipal
+    async def groups_get_members_with_license_errors_as_service_principal(self, group_id: str, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get the item of type microsoft.graph.directoryObject as microsoft.graph.servicePrincipal
         Teams operation: GET /groups/{group-id}/membersWithLicenseErrors/{directoryObject-id}/graph.servicePrincipal
         Operation type: general
         Args:
@@ -8657,10 +8011,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_get_members_with_license_errors_as_user(self, group_id: str, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get the item of type microsoft.graph.directoryObject as microsoft.graph.user
+    async def groups_get_members_with_license_errors_as_user(self, group_id: str, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get the item of type microsoft.graph.directoryObject as microsoft.graph.user
         Teams operation: GET /groups/{group-id}/membersWithLicenseErrors/{directoryObject-id}/graph.user
         Operation type: general
         Args:
@@ -8702,9 +8054,7 @@ class TeamsDataSource:
 
 
     async def groups_delete_team(self, group_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property team for groups
+        """Delete navigation property team for groups
         Teams operation: DELETE /groups/{group-id}/team
         Operation type: general
         Args:
@@ -8720,10 +8070,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_get_team(self, group_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get team from groups
+    async def groups_get_team(self, group_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get team from groups
         Teams operation: GET /groups/{group-id}/team
         Operation type: general
         Args:
@@ -8763,10 +8111,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_set_team(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create team from group
+    async def groups_set_team(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create team from group
         Teams operation: PUT /groups/{group-id}/team
         Operation type: general
         Args:
@@ -8783,10 +8129,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_create_channels(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to channels for groups
+    async def groups_team_create_channels(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to channels for groups
         Teams operation: POST /groups/{group-id}/team/channels
         Operation type: general
         Args:
@@ -8804,9 +8148,7 @@ class TeamsDataSource:
 
 
     async def groups_team_delete_channels(self, group_id: str, channel_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property channels for groups
+        """Delete navigation property channels for groups
         Teams operation: DELETE /groups/{group-id}/team/channels/{channel-id}
         Operation type: general
         Args:
@@ -8823,10 +8165,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_update_channels(self, group_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property channels in groups
+    async def groups_team_update_channels(self, group_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property channels in groups
         Teams operation: PATCH /groups/{group-id}/team/channels/{channel-id}
         Operation type: general
         Args:
@@ -8844,10 +8184,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_channels_create_all_members(self, group_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to allMembers for groups
+    async def groups_team_channels_create_all_members(self, group_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to allMembers for groups
         Teams operation: POST /groups/{group-id}/team/channels/{channel-id}/allMembers
         Operation type: general
         Args:
@@ -8865,10 +8203,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_team_channels_channel_all_members_add(self, group_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def groups_group_team_channels_channel_all_members_add(self, group_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /groups/{group-id}/team/channels/{channel-id}/allMembers/add
         Operation type: general
         Args:
@@ -8886,10 +8222,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_team_channels_channel_all_members_remove(self, group_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def groups_group_team_channels_channel_all_members_remove(self, group_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /groups/{group-id}/team/channels/{channel-id}/allMembers/remove
         Operation type: general
         Args:
@@ -8908,9 +8242,7 @@ class TeamsDataSource:
 
 
     async def groups_team_channels_delete_all_members(self, group_id: str, channel_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property allMembers for groups
+        """Delete navigation property allMembers for groups
         Teams operation: DELETE /groups/{group-id}/team/channels/{channel-id}/allMembers/{conversationMember-id}
         Operation type: general
         Args:
@@ -8928,10 +8260,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_channels_update_all_members(self, group_id: str, channel_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property allMembers in groups
+    async def groups_team_channels_update_all_members(self, group_id: str, channel_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property allMembers in groups
         Teams operation: PATCH /groups/{group-id}/team/channels/{channel-id}/allMembers/{conversationMember-id}
         Operation type: general
         Args:
@@ -8950,10 +8280,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_channels_get_files_folder(self, group_id: str, channel_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get filesFolder from groups
+    async def groups_team_channels_get_files_folder(self, group_id: str, channel_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get filesFolder from groups
         Teams operation: GET /groups/{group-id}/team/channels/{channel-id}/filesFolder
         Operation type: general
         Args:
@@ -8994,10 +8322,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_channels_create_members(self, group_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to members for groups
+    async def groups_team_channels_create_members(self, group_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to members for groups
         Teams operation: POST /groups/{group-id}/team/channels/{channel-id}/members
         Operation type: general
         Args:
@@ -9015,10 +8341,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_team_channels_channel_members_add(self, group_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def groups_group_team_channels_channel_members_add(self, group_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /groups/{group-id}/team/channels/{channel-id}/members/add
         Operation type: general
         Args:
@@ -9036,10 +8360,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_team_channels_channel_members_remove(self, group_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def groups_group_team_channels_channel_members_remove(self, group_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /groups/{group-id}/team/channels/{channel-id}/members/remove
         Operation type: general
         Args:
@@ -9058,9 +8380,7 @@ class TeamsDataSource:
 
 
     async def groups_team_channels_delete_members(self, group_id: str, channel_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property members for groups
+        """Delete navigation property members for groups
         Teams operation: DELETE /groups/{group-id}/team/channels/{channel-id}/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -9078,10 +8398,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_channels_get_members(self, group_id: str, channel_id: str, conversationMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get members from groups
+    async def groups_team_channels_get_members(self, group_id: str, channel_id: str, conversationMember_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get members from groups
         Teams operation: GET /groups/{group-id}/team/channels/{channel-id}/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -9123,10 +8441,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_channels_update_members(self, group_id: str, channel_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property members in groups
+    async def groups_team_channels_update_members(self, group_id: str, channel_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property members in groups
         Teams operation: PATCH /groups/{group-id}/team/channels/{channel-id}/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -9145,10 +8461,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_team_channels_channel_provision_email(self, group_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action provisionEmail
+    async def groups_group_team_channels_channel_provision_email(self, group_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action provisionEmail
         Teams operation: POST /groups/{group-id}/team/channels/{channel-id}/provisionEmail
         Operation type: general
         Args:
@@ -9165,10 +8479,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_team_channels_channel_remove_email(self, group_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action removeEmail
+    async def groups_group_team_channels_channel_remove_email(self, group_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action removeEmail
         Teams operation: POST /groups/{group-id}/team/channels/{channel-id}/removeEmail
         Operation type: general
         Args:
@@ -9185,10 +8497,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_get_group(self, group_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get group from groups
+    async def groups_team_get_group(self, group_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get group from groups
         Teams operation: GET /groups/{group-id}/team/group
         Operation type: general
         Args:
@@ -9228,10 +8538,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_create_installed_apps(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to installedApps for groups
+    async def groups_team_create_installed_apps(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to installedApps for groups
         Teams operation: POST /groups/{group-id}/team/installedApps
         Operation type: general
         Args:
@@ -9249,9 +8557,7 @@ class TeamsDataSource:
 
 
     async def groups_team_delete_installed_apps(self, group_id: str, teamsAppInstallation_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property installedApps for groups
+        """Delete navigation property installedApps for groups
         Teams operation: DELETE /groups/{group-id}/team/installedApps/{teamsAppInstallation-id}
         Operation type: general
         Args:
@@ -9268,10 +8574,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_get_installed_apps(self, group_id: str, teamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get installedApps from groups
+    async def groups_team_get_installed_apps(self, group_id: str, teamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get installedApps from groups
         Teams operation: GET /groups/{group-id}/team/installedApps/{teamsAppInstallation-id}
         Operation type: general
         Args:
@@ -9312,10 +8616,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_update_installed_apps(self, group_id: str, teamsAppInstallation_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property installedApps in groups
+    async def groups_team_update_installed_apps(self, group_id: str, teamsAppInstallation_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property installedApps in groups
         Teams operation: PATCH /groups/{group-id}/team/installedApps/{teamsAppInstallation-id}
         Operation type: general
         Args:
@@ -9333,10 +8635,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_installed_apps_get_teams_app(self, group_id: str, teamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamsApp from groups
+    async def groups_team_installed_apps_get_teams_app(self, group_id: str, teamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamsApp from groups
         Teams operation: GET /groups/{group-id}/team/installedApps/{teamsAppInstallation-id}/teamsApp
         Operation type: general
         Args:
@@ -9377,10 +8677,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_installed_apps_get_teams_app_definition(self, group_id: str, teamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamsAppDefinition from groups
+    async def groups_team_installed_apps_get_teams_app_definition(self, group_id: str, teamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamsAppDefinition from groups
         Teams operation: GET /groups/{group-id}/team/installedApps/{teamsAppInstallation-id}/teamsAppDefinition
         Operation type: general
         Args:
@@ -9421,10 +8719,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_team_installed_apps_teams_app_installation_upgrade(self, group_id: str, teamsAppInstallation_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action upgrade
+    async def groups_group_team_installed_apps_teams_app_installation_upgrade(self, group_id: str, teamsAppInstallation_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action upgrade
         Teams operation: POST /groups/{group-id}/team/installedApps/{teamsAppInstallation-id}/upgrade
         Operation type: general
         Args:
@@ -9442,10 +8738,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_create_members(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to members for groups
+    async def groups_team_create_members(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to members for groups
         Teams operation: POST /groups/{group-id}/team/members
         Operation type: general
         Args:
@@ -9462,10 +8756,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_team_members_add(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def groups_group_team_members_add(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /groups/{group-id}/team/members/add
         Operation type: general
         Args:
@@ -9482,10 +8774,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_team_members_remove(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def groups_group_team_members_remove(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /groups/{group-id}/team/members/remove
         Operation type: general
         Args:
@@ -9503,9 +8793,7 @@ class TeamsDataSource:
 
 
     async def groups_team_delete_members(self, group_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property members for groups
+        """Delete navigation property members for groups
         Teams operation: DELETE /groups/{group-id}/team/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -9522,10 +8810,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_get_members(self, group_id: str, conversationMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get members from groups
+    async def groups_team_get_members(self, group_id: str, conversationMember_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get members from groups
         Teams operation: GET /groups/{group-id}/team/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -9566,10 +8852,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_update_members(self, group_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property members in groups
+    async def groups_team_update_members(self, group_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property members in groups
         Teams operation: PATCH /groups/{group-id}/team/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -9587,10 +8871,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_create_operations(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to operations for groups
+    async def groups_team_create_operations(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to operations for groups
         Teams operation: POST /groups/{group-id}/team/operations
         Operation type: general
         Args:
@@ -9608,9 +8890,7 @@ class TeamsDataSource:
 
 
     async def groups_team_delete_operations(self, group_id: str, teamsAsyncOperation_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property operations for groups
+        """Delete navigation property operations for groups
         Teams operation: DELETE /groups/{group-id}/team/operations/{teamsAsyncOperation-id}
         Operation type: general
         Args:
@@ -9627,10 +8907,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_get_operations(self, group_id: str, teamsAsyncOperation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get operations from groups
+    async def groups_team_get_operations(self, group_id: str, teamsAsyncOperation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get operations from groups
         Teams operation: GET /groups/{group-id}/team/operations/{teamsAsyncOperation-id}
         Operation type: general
         Args:
@@ -9671,10 +8949,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_update_operations(self, group_id: str, teamsAsyncOperation_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property operations in groups
+    async def groups_team_update_operations(self, group_id: str, teamsAsyncOperation_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property operations in groups
         Teams operation: PATCH /groups/{group-id}/team/operations/{teamsAsyncOperation-id}
         Operation type: general
         Args:
@@ -9692,10 +8968,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_get_photo(self, group_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get photo from groups
+    async def groups_team_get_photo(self, group_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get photo from groups
         Teams operation: GET /groups/{group-id}/team/photo
         Operation type: general
         Args:
@@ -9735,10 +9009,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_update_photo(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property photo in groups
+    async def groups_team_update_photo(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property photo in groups
         Teams operation: PATCH /groups/{group-id}/team/photo
         Operation type: general
         Args:
@@ -9756,9 +9028,7 @@ class TeamsDataSource:
 
 
     async def groups_team_delete_primary_channel(self, group_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property primaryChannel for groups
+        """Delete navigation property primaryChannel for groups
         Teams operation: DELETE /groups/{group-id}/team/primaryChannel
         Operation type: general
         Args:
@@ -9774,10 +9044,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_get_primary_channel(self, group_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get primaryChannel from groups
+    async def groups_team_get_primary_channel(self, group_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get primaryChannel from groups
         Teams operation: GET /groups/{group-id}/team/primaryChannel
         Operation type: general
         Args:
@@ -9817,10 +9085,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_update_primary_channel(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property primaryChannel in groups
+    async def groups_team_update_primary_channel(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property primaryChannel in groups
         Teams operation: PATCH /groups/{group-id}/team/primaryChannel
         Operation type: general
         Args:
@@ -9837,10 +9103,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_primary_channel_create_all_members(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to allMembers for groups
+    async def groups_team_primary_channel_create_all_members(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to allMembers for groups
         Teams operation: POST /groups/{group-id}/team/primaryChannel/allMembers
         Operation type: general
         Args:
@@ -9857,10 +9121,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_team_primary_channel_all_members_add(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def groups_group_team_primary_channel_all_members_add(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /groups/{group-id}/team/primaryChannel/allMembers/add
         Operation type: general
         Args:
@@ -9877,10 +9139,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_team_primary_channel_all_members_remove(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def groups_group_team_primary_channel_all_members_remove(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /groups/{group-id}/team/primaryChannel/allMembers/remove
         Operation type: general
         Args:
@@ -9898,9 +9158,7 @@ class TeamsDataSource:
 
 
     async def groups_team_primary_channel_delete_all_members(self, group_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property allMembers for groups
+        """Delete navigation property allMembers for groups
         Teams operation: DELETE /groups/{group-id}/team/primaryChannel/allMembers/{conversationMember-id}
         Operation type: general
         Args:
@@ -9917,10 +9175,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_primary_channel_update_all_members(self, group_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property allMembers in groups
+    async def groups_team_primary_channel_update_all_members(self, group_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property allMembers in groups
         Teams operation: PATCH /groups/{group-id}/team/primaryChannel/allMembers/{conversationMember-id}
         Operation type: general
         Args:
@@ -9938,10 +9194,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_primary_channel_get_files_folder(self, group_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get filesFolder from groups
+    async def groups_team_primary_channel_get_files_folder(self, group_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get filesFolder from groups
         Teams operation: GET /groups/{group-id}/team/primaryChannel/filesFolder
         Operation type: general
         Args:
@@ -9981,10 +9235,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_primary_channel_create_members(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to members for groups
+    async def groups_team_primary_channel_create_members(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to members for groups
         Teams operation: POST /groups/{group-id}/team/primaryChannel/members
         Operation type: general
         Args:
@@ -10001,10 +9253,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_team_primary_channel_members_add(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def groups_group_team_primary_channel_members_add(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /groups/{group-id}/team/primaryChannel/members/add
         Operation type: general
         Args:
@@ -10021,10 +9271,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_team_primary_channel_members_remove(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def groups_group_team_primary_channel_members_remove(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /groups/{group-id}/team/primaryChannel/members/remove
         Operation type: general
         Args:
@@ -10042,9 +9290,7 @@ class TeamsDataSource:
 
 
     async def groups_team_primary_channel_delete_members(self, group_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property members for groups
+        """Delete navigation property members for groups
         Teams operation: DELETE /groups/{group-id}/team/primaryChannel/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -10061,10 +9307,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_primary_channel_get_members(self, group_id: str, conversationMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get members from groups
+    async def groups_team_primary_channel_get_members(self, group_id: str, conversationMember_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get members from groups
         Teams operation: GET /groups/{group-id}/team/primaryChannel/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -10105,10 +9349,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_primary_channel_update_members(self, group_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property members in groups
+    async def groups_team_primary_channel_update_members(self, group_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property members in groups
         Teams operation: PATCH /groups/{group-id}/team/primaryChannel/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -10126,10 +9368,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_team_primary_channel_provision_email(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action provisionEmail
+    async def groups_group_team_primary_channel_provision_email(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action provisionEmail
         Teams operation: POST /groups/{group-id}/team/primaryChannel/provisionEmail
         Operation type: general
         Args:
@@ -10145,10 +9385,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_team_primary_channel_remove_email(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action removeEmail
+    async def groups_group_team_primary_channel_remove_email(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action removeEmail
         Teams operation: POST /groups/{group-id}/team/primaryChannel/removeEmail
         Operation type: general
         Args:
@@ -10165,9 +9403,7 @@ class TeamsDataSource:
 
 
     async def groups_team_delete_schedule(self, group_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property schedule for groups
+        """Delete navigation property schedule for groups
         Teams operation: DELETE /groups/{group-id}/team/schedule
         Operation type: general
         Args:
@@ -10183,10 +9419,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_get_schedule(self, group_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get schedule from groups
+    async def groups_team_get_schedule(self, group_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get schedule from groups
         Teams operation: GET /groups/{group-id}/team/schedule
         Operation type: general
         Args:
@@ -10226,10 +9460,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_set_schedule(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property schedule in groups
+    async def groups_team_set_schedule(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property schedule in groups
         Teams operation: PUT /groups/{group-id}/team/schedule
         Operation type: general
         Args:
@@ -10246,10 +9478,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_create_day_notes(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to dayNotes for groups
+    async def groups_team_schedule_create_day_notes(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to dayNotes for groups
         Teams operation: POST /groups/{group-id}/team/schedule/dayNotes
         Operation type: general
         Args:
@@ -10267,9 +9497,7 @@ class TeamsDataSource:
 
 
     async def groups_team_schedule_delete_day_notes(self, group_id: str, dayNote_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property dayNotes for groups
+        """Delete navigation property dayNotes for groups
         Teams operation: DELETE /groups/{group-id}/team/schedule/dayNotes/{dayNote-id}
         Operation type: general
         Args:
@@ -10286,10 +9514,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_get_day_notes(self, group_id: str, dayNote_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get dayNotes from groups
+    async def groups_team_schedule_get_day_notes(self, group_id: str, dayNote_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get dayNotes from groups
         Teams operation: GET /groups/{group-id}/team/schedule/dayNotes/{dayNote-id}
         Operation type: general
         Args:
@@ -10330,10 +9556,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_update_day_notes(self, group_id: str, dayNote_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property dayNotes in groups
+    async def groups_team_schedule_update_day_notes(self, group_id: str, dayNote_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property dayNotes in groups
         Teams operation: PATCH /groups/{group-id}/team/schedule/dayNotes/{dayNote-id}
         Operation type: general
         Args:
@@ -10351,10 +9575,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_create_offer_shift_requests(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to offerShiftRequests for groups
+    async def groups_team_schedule_create_offer_shift_requests(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to offerShiftRequests for groups
         Teams operation: POST /groups/{group-id}/team/schedule/offerShiftRequests
         Operation type: general
         Args:
@@ -10372,9 +9594,7 @@ class TeamsDataSource:
 
 
     async def groups_team_schedule_delete_offer_shift_requests(self, group_id: str, offerShiftRequest_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property offerShiftRequests for groups
+        """Delete navigation property offerShiftRequests for groups
         Teams operation: DELETE /groups/{group-id}/team/schedule/offerShiftRequests/{offerShiftRequest-id}
         Operation type: general
         Args:
@@ -10391,10 +9611,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_get_offer_shift_requests(self, group_id: str, offerShiftRequest_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get offerShiftRequests from groups
+    async def groups_team_schedule_get_offer_shift_requests(self, group_id: str, offerShiftRequest_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get offerShiftRequests from groups
         Teams operation: GET /groups/{group-id}/team/schedule/offerShiftRequests/{offerShiftRequest-id}
         Operation type: general
         Args:
@@ -10435,10 +9653,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_update_offer_shift_requests(self, group_id: str, offerShiftRequest_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property offerShiftRequests in groups
+    async def groups_team_schedule_update_offer_shift_requests(self, group_id: str, offerShiftRequest_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property offerShiftRequests in groups
         Teams operation: PATCH /groups/{group-id}/team/schedule/offerShiftRequests/{offerShiftRequest-id}
         Operation type: general
         Args:
@@ -10456,10 +9672,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_create_open_shift_change_requests(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to openShiftChangeRequests for groups
+    async def groups_team_schedule_create_open_shift_change_requests(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to openShiftChangeRequests for groups
         Teams operation: POST /groups/{group-id}/team/schedule/openShiftChangeRequests
         Operation type: general
         Args:
@@ -10477,9 +9691,7 @@ class TeamsDataSource:
 
 
     async def groups_team_schedule_delete_open_shift_change_requests(self, group_id: str, openShiftChangeRequest_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property openShiftChangeRequests for groups
+        """Delete navigation property openShiftChangeRequests for groups
         Teams operation: DELETE /groups/{group-id}/team/schedule/openShiftChangeRequests/{openShiftChangeRequest-id}
         Operation type: general
         Args:
@@ -10496,10 +9708,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_get_open_shift_change_requests(self, group_id: str, openShiftChangeRequest_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get openShiftChangeRequests from groups
+    async def groups_team_schedule_get_open_shift_change_requests(self, group_id: str, openShiftChangeRequest_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get openShiftChangeRequests from groups
         Teams operation: GET /groups/{group-id}/team/schedule/openShiftChangeRequests/{openShiftChangeRequest-id}
         Operation type: general
         Args:
@@ -10540,10 +9750,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_update_open_shift_change_requests(self, group_id: str, openShiftChangeRequest_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property openShiftChangeRequests in groups
+    async def groups_team_schedule_update_open_shift_change_requests(self, group_id: str, openShiftChangeRequest_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property openShiftChangeRequests in groups
         Teams operation: PATCH /groups/{group-id}/team/schedule/openShiftChangeRequests/{openShiftChangeRequest-id}
         Operation type: general
         Args:
@@ -10561,10 +9769,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_create_open_shifts(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to openShifts for groups
+    async def groups_team_schedule_create_open_shifts(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to openShifts for groups
         Teams operation: POST /groups/{group-id}/team/schedule/openShifts
         Operation type: general
         Args:
@@ -10582,9 +9788,7 @@ class TeamsDataSource:
 
 
     async def groups_team_schedule_delete_open_shifts(self, group_id: str, openShift_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property openShifts for groups
+        """Delete navigation property openShifts for groups
         Teams operation: DELETE /groups/{group-id}/team/schedule/openShifts/{openShift-id}
         Operation type: general
         Args:
@@ -10601,10 +9805,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_get_open_shifts(self, group_id: str, openShift_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get openShifts from groups
+    async def groups_team_schedule_get_open_shifts(self, group_id: str, openShift_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get openShifts from groups
         Teams operation: GET /groups/{group-id}/team/schedule/openShifts/{openShift-id}
         Operation type: general
         Args:
@@ -10645,10 +9847,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_update_open_shifts(self, group_id: str, openShift_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property openShifts in groups
+    async def groups_team_schedule_update_open_shifts(self, group_id: str, openShift_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property openShifts in groups
         Teams operation: PATCH /groups/{group-id}/team/schedule/openShifts/{openShift-id}
         Operation type: general
         Args:
@@ -10666,10 +9866,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_create_scheduling_groups(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to schedulingGroups for groups
+    async def groups_team_schedule_create_scheduling_groups(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to schedulingGroups for groups
         Teams operation: POST /groups/{group-id}/team/schedule/schedulingGroups
         Operation type: general
         Args:
@@ -10687,9 +9885,7 @@ class TeamsDataSource:
 
 
     async def groups_team_schedule_delete_scheduling_groups(self, group_id: str, schedulingGroup_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property schedulingGroups for groups
+        """Delete navigation property schedulingGroups for groups
         Teams operation: DELETE /groups/{group-id}/team/schedule/schedulingGroups/{schedulingGroup-id}
         Operation type: general
         Args:
@@ -10706,10 +9902,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_get_scheduling_groups(self, group_id: str, schedulingGroup_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get schedulingGroups from groups
+    async def groups_team_schedule_get_scheduling_groups(self, group_id: str, schedulingGroup_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get schedulingGroups from groups
         Teams operation: GET /groups/{group-id}/team/schedule/schedulingGroups/{schedulingGroup-id}
         Operation type: general
         Args:
@@ -10750,10 +9944,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_update_scheduling_groups(self, group_id: str, schedulingGroup_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property schedulingGroups in groups
+    async def groups_team_schedule_update_scheduling_groups(self, group_id: str, schedulingGroup_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property schedulingGroups in groups
         Teams operation: PATCH /groups/{group-id}/team/schedule/schedulingGroups/{schedulingGroup-id}
         Operation type: general
         Args:
@@ -10771,10 +9963,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_create_shifts(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to shifts for groups
+    async def groups_team_schedule_create_shifts(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to shifts for groups
         Teams operation: POST /groups/{group-id}/team/schedule/shifts
         Operation type: general
         Args:
@@ -10792,9 +9982,7 @@ class TeamsDataSource:
 
 
     async def groups_team_schedule_delete_shifts(self, group_id: str, shift_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property shifts for groups
+        """Delete navigation property shifts for groups
         Teams operation: DELETE /groups/{group-id}/team/schedule/shifts/{shift-id}
         Operation type: general
         Args:
@@ -10811,10 +9999,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_get_shifts(self, group_id: str, shift_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get shifts from groups
+    async def groups_team_schedule_get_shifts(self, group_id: str, shift_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get shifts from groups
         Teams operation: GET /groups/{group-id}/team/schedule/shifts/{shift-id}
         Operation type: general
         Args:
@@ -10855,10 +10041,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_update_shifts(self, group_id: str, shift_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property shifts in groups
+    async def groups_team_schedule_update_shifts(self, group_id: str, shift_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property shifts in groups
         Teams operation: PATCH /groups/{group-id}/team/schedule/shifts/{shift-id}
         Operation type: general
         Args:
@@ -10876,10 +10060,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_create_swap_shifts_change_requests(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to swapShiftsChangeRequests for groups
+    async def groups_team_schedule_create_swap_shifts_change_requests(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to swapShiftsChangeRequests for groups
         Teams operation: POST /groups/{group-id}/team/schedule/swapShiftsChangeRequests
         Operation type: general
         Args:
@@ -10897,9 +10079,7 @@ class TeamsDataSource:
 
 
     async def groups_team_schedule_delete_swap_shifts_change_requests(self, group_id: str, swapShiftsChangeRequest_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property swapShiftsChangeRequests for groups
+        """Delete navigation property swapShiftsChangeRequests for groups
         Teams operation: DELETE /groups/{group-id}/team/schedule/swapShiftsChangeRequests/{swapShiftsChangeRequest-id}
         Operation type: general
         Args:
@@ -10916,10 +10096,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_get_swap_shifts_change_requests(self, group_id: str, swapShiftsChangeRequest_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get swapShiftsChangeRequests from groups
+    async def groups_team_schedule_get_swap_shifts_change_requests(self, group_id: str, swapShiftsChangeRequest_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get swapShiftsChangeRequests from groups
         Teams operation: GET /groups/{group-id}/team/schedule/swapShiftsChangeRequests/{swapShiftsChangeRequest-id}
         Operation type: general
         Args:
@@ -10960,10 +10138,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_update_swap_shifts_change_requests(self, group_id: str, swapShiftsChangeRequest_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property swapShiftsChangeRequests in groups
+    async def groups_team_schedule_update_swap_shifts_change_requests(self, group_id: str, swapShiftsChangeRequest_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property swapShiftsChangeRequests in groups
         Teams operation: PATCH /groups/{group-id}/team/schedule/swapShiftsChangeRequests/{swapShiftsChangeRequest-id}
         Operation type: general
         Args:
@@ -10981,10 +10157,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_create_time_cards(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to timeCards for groups
+    async def groups_team_schedule_create_time_cards(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to timeCards for groups
         Teams operation: POST /groups/{group-id}/team/schedule/timeCards
         Operation type: general
         Args:
@@ -11001,10 +10175,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_team_schedule_time_cards_clock_in(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action clockIn
+    async def groups_group_team_schedule_time_cards_clock_in(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action clockIn
         Teams operation: POST /groups/{group-id}/team/schedule/timeCards/clockIn
         Operation type: general
         Args:
@@ -11022,9 +10194,7 @@ class TeamsDataSource:
 
 
     async def groups_team_schedule_delete_time_cards(self, group_id: str, timeCard_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property timeCards for groups
+        """Delete navigation property timeCards for groups
         Teams operation: DELETE /groups/{group-id}/team/schedule/timeCards/{timeCard-id}
         Operation type: general
         Args:
@@ -11041,10 +10211,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_get_time_cards(self, group_id: str, timeCard_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get timeCards from groups
+    async def groups_team_schedule_get_time_cards(self, group_id: str, timeCard_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get timeCards from groups
         Teams operation: GET /groups/{group-id}/team/schedule/timeCards/{timeCard-id}
         Operation type: general
         Args:
@@ -11085,10 +10253,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_update_time_cards(self, group_id: str, timeCard_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property timeCards in groups
+    async def groups_team_schedule_update_time_cards(self, group_id: str, timeCard_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property timeCards in groups
         Teams operation: PATCH /groups/{group-id}/team/schedule/timeCards/{timeCard-id}
         Operation type: general
         Args:
@@ -11106,10 +10272,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_team_schedule_time_cards_time_card_clock_out(self, group_id: str, timeCard_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action clockOut
+    async def groups_group_team_schedule_time_cards_time_card_clock_out(self, group_id: str, timeCard_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action clockOut
         Teams operation: POST /groups/{group-id}/team/schedule/timeCards/{timeCard-id}/clockOut
         Operation type: general
         Args:
@@ -11127,10 +10291,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_team_schedule_time_cards_time_card_confirm(self, group_id: str, timeCard_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action confirm
+    async def groups_group_team_schedule_time_cards_time_card_confirm(self, group_id: str, timeCard_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action confirm
         Teams operation: POST /groups/{group-id}/team/schedule/timeCards/{timeCard-id}/confirm
         Operation type: general
         Args:
@@ -11147,10 +10309,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_team_schedule_time_cards_time_card_end_break(self, group_id: str, timeCard_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action endBreak
+    async def groups_group_team_schedule_time_cards_time_card_end_break(self, group_id: str, timeCard_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action endBreak
         Teams operation: POST /groups/{group-id}/team/schedule/timeCards/{timeCard-id}/endBreak
         Operation type: general
         Args:
@@ -11168,10 +10328,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_team_schedule_time_cards_time_card_start_break(self, group_id: str, timeCard_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action startBreak
+    async def groups_group_team_schedule_time_cards_time_card_start_break(self, group_id: str, timeCard_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action startBreak
         Teams operation: POST /groups/{group-id}/team/schedule/timeCards/{timeCard-id}/startBreak
         Operation type: general
         Args:
@@ -11189,10 +10347,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_create_time_off_reasons(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to timeOffReasons for groups
+    async def groups_team_schedule_create_time_off_reasons(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to timeOffReasons for groups
         Teams operation: POST /groups/{group-id}/team/schedule/timeOffReasons
         Operation type: general
         Args:
@@ -11210,9 +10366,7 @@ class TeamsDataSource:
 
 
     async def groups_team_schedule_delete_time_off_reasons(self, group_id: str, timeOffReason_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property timeOffReasons for groups
+        """Delete navigation property timeOffReasons for groups
         Teams operation: DELETE /groups/{group-id}/team/schedule/timeOffReasons/{timeOffReason-id}
         Operation type: general
         Args:
@@ -11229,10 +10383,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_get_time_off_reasons(self, group_id: str, timeOffReason_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get timeOffReasons from groups
+    async def groups_team_schedule_get_time_off_reasons(self, group_id: str, timeOffReason_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get timeOffReasons from groups
         Teams operation: GET /groups/{group-id}/team/schedule/timeOffReasons/{timeOffReason-id}
         Operation type: general
         Args:
@@ -11273,10 +10425,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_update_time_off_reasons(self, group_id: str, timeOffReason_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property timeOffReasons in groups
+    async def groups_team_schedule_update_time_off_reasons(self, group_id: str, timeOffReason_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property timeOffReasons in groups
         Teams operation: PATCH /groups/{group-id}/team/schedule/timeOffReasons/{timeOffReason-id}
         Operation type: general
         Args:
@@ -11294,10 +10444,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_create_time_off_requests(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to timeOffRequests for groups
+    async def groups_team_schedule_create_time_off_requests(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to timeOffRequests for groups
         Teams operation: POST /groups/{group-id}/team/schedule/timeOffRequests
         Operation type: general
         Args:
@@ -11315,9 +10463,7 @@ class TeamsDataSource:
 
 
     async def groups_team_schedule_delete_time_off_requests(self, group_id: str, timeOffRequest_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property timeOffRequests for groups
+        """Delete navigation property timeOffRequests for groups
         Teams operation: DELETE /groups/{group-id}/team/schedule/timeOffRequests/{timeOffRequest-id}
         Operation type: general
         Args:
@@ -11334,10 +10480,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_get_time_off_requests(self, group_id: str, timeOffRequest_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get timeOffRequests from groups
+    async def groups_team_schedule_get_time_off_requests(self, group_id: str, timeOffRequest_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get timeOffRequests from groups
         Teams operation: GET /groups/{group-id}/team/schedule/timeOffRequests/{timeOffRequest-id}
         Operation type: general
         Args:
@@ -11378,10 +10522,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_update_time_off_requests(self, group_id: str, timeOffRequest_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property timeOffRequests in groups
+    async def groups_team_schedule_update_time_off_requests(self, group_id: str, timeOffRequest_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property timeOffRequests in groups
         Teams operation: PATCH /groups/{group-id}/team/schedule/timeOffRequests/{timeOffRequest-id}
         Operation type: general
         Args:
@@ -11399,10 +10541,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_create_times_off(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to timesOff for groups
+    async def groups_team_schedule_create_times_off(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to timesOff for groups
         Teams operation: POST /groups/{group-id}/team/schedule/timesOff
         Operation type: general
         Args:
@@ -11420,9 +10560,7 @@ class TeamsDataSource:
 
 
     async def groups_team_schedule_delete_times_off(self, group_id: str, timeOff_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property timesOff for groups
+        """Delete navigation property timesOff for groups
         Teams operation: DELETE /groups/{group-id}/team/schedule/timesOff/{timeOff-id}
         Operation type: general
         Args:
@@ -11439,10 +10577,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_get_times_off(self, group_id: str, timeOff_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get timesOff from groups
+    async def groups_team_schedule_get_times_off(self, group_id: str, timeOff_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get timesOff from groups
         Teams operation: GET /groups/{group-id}/team/schedule/timesOff/{timeOff-id}
         Operation type: general
         Args:
@@ -11483,10 +10619,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_schedule_update_times_off(self, group_id: str, timeOff_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property timesOff in groups
+    async def groups_team_schedule_update_times_off(self, group_id: str, timeOff_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property timesOff in groups
         Teams operation: PATCH /groups/{group-id}/team/schedule/timesOff/{timeOff-id}
         Operation type: general
         Args:
@@ -11504,10 +10638,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_group_team_send_activity_notification(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action sendActivityNotification
+    async def groups_group_team_send_activity_notification(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action sendActivityNotification
         Teams operation: POST /groups/{group-id}/team/sendActivityNotification
         Operation type: general
         Args:
@@ -11524,10 +10656,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_create_tags(self, group_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to tags for groups
+    async def groups_team_create_tags(self, group_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to tags for groups
         Teams operation: POST /groups/{group-id}/team/tags
         Operation type: general
         Args:
@@ -11545,9 +10675,7 @@ class TeamsDataSource:
 
 
     async def groups_team_delete_tags(self, group_id: str, teamworkTag_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property tags for groups
+        """Delete navigation property tags for groups
         Teams operation: DELETE /groups/{group-id}/team/tags/{teamworkTag-id}
         Operation type: general
         Args:
@@ -11564,10 +10692,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_get_tags(self, group_id: str, teamworkTag_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get tags from groups
+    async def groups_team_get_tags(self, group_id: str, teamworkTag_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get tags from groups
         Teams operation: GET /groups/{group-id}/team/tags/{teamworkTag-id}
         Operation type: general
         Args:
@@ -11608,10 +10734,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_update_tags(self, group_id: str, teamworkTag_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property tags in groups
+    async def groups_team_update_tags(self, group_id: str, teamworkTag_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property tags in groups
         Teams operation: PATCH /groups/{group-id}/team/tags/{teamworkTag-id}
         Operation type: general
         Args:
@@ -11629,10 +10753,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_tags_create_members(self, group_id: str, teamworkTag_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to members for groups
+    async def groups_team_tags_create_members(self, group_id: str, teamworkTag_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to members for groups
         Teams operation: POST /groups/{group-id}/team/tags/{teamworkTag-id}/members
         Operation type: general
         Args:
@@ -11651,9 +10773,7 @@ class TeamsDataSource:
 
 
     async def groups_team_tags_delete_members(self, group_id: str, teamworkTag_id: str, teamworkTagMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property members for groups
+        """Delete navigation property members for groups
         Teams operation: DELETE /groups/{group-id}/team/tags/{teamworkTag-id}/members/{teamworkTagMember-id}
         Operation type: general
         Args:
@@ -11671,10 +10791,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_tags_get_members(self, group_id: str, teamworkTag_id: str, teamworkTagMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get members from groups
+    async def groups_team_tags_get_members(self, group_id: str, teamworkTag_id: str, teamworkTagMember_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get members from groups
         Teams operation: GET /groups/{group-id}/team/tags/{teamworkTag-id}/members/{teamworkTagMember-id}
         Operation type: general
         Args:
@@ -11716,10 +10834,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_tags_update_members(self, group_id: str, teamworkTag_id: str, teamworkTagMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property members in groups
+    async def groups_team_tags_update_members(self, group_id: str, teamworkTag_id: str, teamworkTagMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property members in groups
         Teams operation: PATCH /groups/{group-id}/team/tags/{teamworkTag-id}/members/{teamworkTagMember-id}
         Operation type: general
         Args:
@@ -11738,10 +10854,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_team_get_template(self, group_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get template from groups
+    async def groups_team_get_template(self, group_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get template from groups
         Teams operation: GET /groups/{group-id}/team/template
         Operation type: general
         Args:
@@ -11781,10 +10895,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_get_transitive_member_of(self, group_id: str, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get transitiveMemberOf from groups
+    async def groups_get_transitive_member_of(self, group_id: str, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get transitiveMemberOf from groups
         Teams operation: GET /groups/{group-id}/transitiveMemberOf/{directoryObject-id}
         Operation type: general
         Args:
@@ -11825,10 +10937,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_get_transitive_member_of_as_group(self, group_id: str, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get the item of type microsoft.graph.directoryObject as microsoft.graph.group
+    async def groups_get_transitive_member_of_as_group(self, group_id: str, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get the item of type microsoft.graph.directoryObject as microsoft.graph.group
         Teams operation: GET /groups/{group-id}/transitiveMemberOf/{directoryObject-id}/graph.group
         Operation type: general
         Args:
@@ -11869,10 +10979,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_get_transitive_members(self, group_id: str, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get transitiveMembers from groups
+    async def groups_get_transitive_members(self, group_id: str, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get transitiveMembers from groups
         Teams operation: GET /groups/{group-id}/transitiveMembers/{directoryObject-id}
         Operation type: general
         Args:
@@ -11913,10 +11021,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def groups_get_transitive_members_as_service_principal(self, group_id: str, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get the item of type microsoft.graph.directoryObject as microsoft.graph.servicePrincipal
+    async def groups_get_transitive_members_as_service_principal(self, group_id: str, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get the item of type microsoft.graph.directoryObject as microsoft.graph.servicePrincipal
         Teams operation: GET /groups/{group-id}/transitiveMembers/{directoryObject-id}/graph.servicePrincipal
         Operation type: general
         Args:
@@ -11957,10 +11063,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_create_joined_teams(self, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to joinedTeams for me
+    async def me_create_joined_teams(self, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to joinedTeams for me
         Teams operation: POST /me/joinedTeams
         Operation type: general
         Args:
@@ -11977,9 +11081,7 @@ class TeamsDataSource:
 
 
     async def me_delete_joined_teams(self, team_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property joinedTeams for me
+        """Delete navigation property joinedTeams for me
         Teams operation: DELETE /me/joinedTeams/{team-id}
         Operation type: general
         Args:
@@ -11995,10 +11097,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_get_joined_teams(self, team_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get joinedTeams from me
+    async def me_get_joined_teams(self, team_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get joinedTeams from me
         Teams operation: GET /me/joinedTeams/{team-id}
         Operation type: general
         Args:
@@ -12038,10 +11138,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_update_joined_teams(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property joinedTeams in me
+    async def me_update_joined_teams(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property joinedTeams in me
         Teams operation: PATCH /me/joinedTeams/{team-id}
         Operation type: general
         Args:
@@ -12058,10 +11156,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_create_channels(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to channels for me
+    async def me_joined_teams_create_channels(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to channels for me
         Teams operation: POST /me/joinedTeams/{team-id}/channels
         Operation type: general
         Args:
@@ -12079,9 +11175,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_delete_channels(self, team_id: str, channel_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property channels for me
+        """Delete navigation property channels for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/channels/{channel-id}
         Operation type: general
         Args:
@@ -12098,10 +11192,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_update_channels(self, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property channels in me
+    async def me_joined_teams_update_channels(self, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property channels in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/channels/{channel-id}
         Operation type: general
         Args:
@@ -12119,10 +11211,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_channels_create_all_members(self, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to allMembers for me
+    async def me_joined_teams_channels_create_all_members(self, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to allMembers for me
         Teams operation: POST /me/joinedTeams/{team-id}/channels/{channel-id}/allMembers
         Operation type: general
         Args:
@@ -12140,10 +11230,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_team_channels_channel_all_members_add(self, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def me_joined_teams_team_channels_channel_all_members_add(self, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /me/joinedTeams/{team-id}/channels/{channel-id}/allMembers/add
         Operation type: general
         Args:
@@ -12161,10 +11249,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_team_channels_channel_all_members_remove(self, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def me_joined_teams_team_channels_channel_all_members_remove(self, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /me/joinedTeams/{team-id}/channels/{channel-id}/allMembers/remove
         Operation type: general
         Args:
@@ -12183,9 +11269,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_channels_delete_all_members(self, team_id: str, channel_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property allMembers for me
+        """Delete navigation property allMembers for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/channels/{channel-id}/allMembers/{conversationMember-id}
         Operation type: general
         Args:
@@ -12203,10 +11287,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_channels_update_all_members(self, team_id: str, channel_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property allMembers in me
+    async def me_joined_teams_channels_update_all_members(self, team_id: str, channel_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property allMembers in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/channels/{channel-id}/allMembers/{conversationMember-id}
         Operation type: general
         Args:
@@ -12225,10 +11307,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_channels_get_files_folder(self, team_id: str, channel_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get filesFolder from me
+    async def me_joined_teams_channels_get_files_folder(self, team_id: str, channel_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get filesFolder from me
         Teams operation: GET /me/joinedTeams/{team-id}/channels/{channel-id}/filesFolder
         Operation type: general
         Args:
@@ -12269,10 +11349,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_channels_create_members(self, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to members for me
+    async def me_joined_teams_channels_create_members(self, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to members for me
         Teams operation: POST /me/joinedTeams/{team-id}/channels/{channel-id}/members
         Operation type: general
         Args:
@@ -12290,10 +11368,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_team_channels_channel_members_add(self, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def me_joined_teams_team_channels_channel_members_add(self, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /me/joinedTeams/{team-id}/channels/{channel-id}/members/add
         Operation type: general
         Args:
@@ -12311,10 +11387,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_team_channels_channel_members_remove(self, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def me_joined_teams_team_channels_channel_members_remove(self, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /me/joinedTeams/{team-id}/channels/{channel-id}/members/remove
         Operation type: general
         Args:
@@ -12333,9 +11407,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_channels_delete_members(self, team_id: str, channel_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property members for me
+        """Delete navigation property members for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/channels/{channel-id}/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -12353,10 +11425,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_channels_get_members(self, team_id: str, channel_id: str, conversationMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get members from me
+    async def me_joined_teams_channels_get_members(self, team_id: str, channel_id: str, conversationMember_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get members from me
         Teams operation: GET /me/joinedTeams/{team-id}/channels/{channel-id}/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -12398,10 +11468,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_channels_update_members(self, team_id: str, channel_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property members in me
+    async def me_joined_teams_channels_update_members(self, team_id: str, channel_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property members in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/channels/{channel-id}/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -12420,10 +11488,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_team_channels_channel_provision_email(self, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action provisionEmail
+    async def me_joined_teams_team_channels_channel_provision_email(self, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action provisionEmail
         Teams operation: POST /me/joinedTeams/{team-id}/channels/{channel-id}/provisionEmail
         Operation type: general
         Args:
@@ -12440,10 +11506,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_team_channels_channel_remove_email(self, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action removeEmail
+    async def me_joined_teams_team_channels_channel_remove_email(self, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action removeEmail
         Teams operation: POST /me/joinedTeams/{team-id}/channels/{channel-id}/removeEmail
         Operation type: general
         Args:
@@ -12460,10 +11524,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_get_group(self, team_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get group from me
+    async def me_joined_teams_get_group(self, team_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get group from me
         Teams operation: GET /me/joinedTeams/{team-id}/group
         Operation type: general
         Args:
@@ -12503,10 +11565,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_create_installed_apps(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to installedApps for me
+    async def me_joined_teams_create_installed_apps(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to installedApps for me
         Teams operation: POST /me/joinedTeams/{team-id}/installedApps
         Operation type: general
         Args:
@@ -12524,9 +11584,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_delete_installed_apps(self, team_id: str, teamsAppInstallation_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property installedApps for me
+        """Delete navigation property installedApps for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/installedApps/{teamsAppInstallation-id}
         Operation type: general
         Args:
@@ -12543,10 +11601,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_get_installed_apps(self, team_id: str, teamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get installedApps from me
+    async def me_joined_teams_get_installed_apps(self, team_id: str, teamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get installedApps from me
         Teams operation: GET /me/joinedTeams/{team-id}/installedApps/{teamsAppInstallation-id}
         Operation type: general
         Args:
@@ -12587,10 +11643,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_update_installed_apps(self, team_id: str, teamsAppInstallation_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property installedApps in me
+    async def me_joined_teams_update_installed_apps(self, team_id: str, teamsAppInstallation_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property installedApps in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/installedApps/{teamsAppInstallation-id}
         Operation type: general
         Args:
@@ -12608,10 +11662,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_installed_apps_get_teams_app(self, team_id: str, teamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamsApp from me
+    async def me_joined_teams_installed_apps_get_teams_app(self, team_id: str, teamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamsApp from me
         Teams operation: GET /me/joinedTeams/{team-id}/installedApps/{teamsAppInstallation-id}/teamsApp
         Operation type: general
         Args:
@@ -12652,10 +11704,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_installed_apps_get_teams_app_definition(self, team_id: str, teamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamsAppDefinition from me
+    async def me_joined_teams_installed_apps_get_teams_app_definition(self, team_id: str, teamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamsAppDefinition from me
         Teams operation: GET /me/joinedTeams/{team-id}/installedApps/{teamsAppInstallation-id}/teamsAppDefinition
         Operation type: general
         Args:
@@ -12696,10 +11746,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_team_installed_apps_teams_app_installation_upgrade(self, team_id: str, teamsAppInstallation_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action upgrade
+    async def me_joined_teams_team_installed_apps_teams_app_installation_upgrade(self, team_id: str, teamsAppInstallation_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action upgrade
         Teams operation: POST /me/joinedTeams/{team-id}/installedApps/{teamsAppInstallation-id}/upgrade
         Operation type: general
         Args:
@@ -12717,10 +11765,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_create_members(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to members for me
+    async def me_joined_teams_create_members(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to members for me
         Teams operation: POST /me/joinedTeams/{team-id}/members
         Operation type: general
         Args:
@@ -12737,10 +11783,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_team_members_add(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def me_joined_teams_team_members_add(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /me/joinedTeams/{team-id}/members/add
         Operation type: general
         Args:
@@ -12757,10 +11801,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_team_members_remove(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def me_joined_teams_team_members_remove(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /me/joinedTeams/{team-id}/members/remove
         Operation type: general
         Args:
@@ -12778,9 +11820,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_delete_members(self, team_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property members for me
+        """Delete navigation property members for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -12797,10 +11837,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_get_members(self, team_id: str, conversationMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get members from me
+    async def me_joined_teams_get_members(self, team_id: str, conversationMember_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get members from me
         Teams operation: GET /me/joinedTeams/{team-id}/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -12841,10 +11879,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_update_members(self, team_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property members in me
+    async def me_joined_teams_update_members(self, team_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property members in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -12862,10 +11898,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_create_operations(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to operations for me
+    async def me_joined_teams_create_operations(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to operations for me
         Teams operation: POST /me/joinedTeams/{team-id}/operations
         Operation type: general
         Args:
@@ -12883,9 +11917,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_delete_operations(self, team_id: str, teamsAsyncOperation_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property operations for me
+        """Delete navigation property operations for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/operations/{teamsAsyncOperation-id}
         Operation type: general
         Args:
@@ -12902,10 +11934,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_get_operations(self, team_id: str, teamsAsyncOperation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get operations from me
+    async def me_joined_teams_get_operations(self, team_id: str, teamsAsyncOperation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get operations from me
         Teams operation: GET /me/joinedTeams/{team-id}/operations/{teamsAsyncOperation-id}
         Operation type: general
         Args:
@@ -12946,10 +11976,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_update_operations(self, team_id: str, teamsAsyncOperation_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property operations in me
+    async def me_joined_teams_update_operations(self, team_id: str, teamsAsyncOperation_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property operations in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/operations/{teamsAsyncOperation-id}
         Operation type: general
         Args:
@@ -12967,10 +11995,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_get_photo(self, team_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get photo from me
+    async def me_joined_teams_get_photo(self, team_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get photo from me
         Teams operation: GET /me/joinedTeams/{team-id}/photo
         Operation type: general
         Args:
@@ -13010,10 +12036,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_update_photo(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property photo in me
+    async def me_joined_teams_update_photo(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property photo in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/photo
         Operation type: general
         Args:
@@ -13031,9 +12055,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_delete_primary_channel(self, team_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property primaryChannel for me
+        """Delete navigation property primaryChannel for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/primaryChannel
         Operation type: general
         Args:
@@ -13049,10 +12071,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_get_primary_channel(self, team_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get primaryChannel from me
+    async def me_joined_teams_get_primary_channel(self, team_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get primaryChannel from me
         Teams operation: GET /me/joinedTeams/{team-id}/primaryChannel
         Operation type: general
         Args:
@@ -13092,10 +12112,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_update_primary_channel(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property primaryChannel in me
+    async def me_joined_teams_update_primary_channel(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property primaryChannel in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/primaryChannel
         Operation type: general
         Args:
@@ -13112,10 +12130,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_primary_channel_create_all_members(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to allMembers for me
+    async def me_joined_teams_primary_channel_create_all_members(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to allMembers for me
         Teams operation: POST /me/joinedTeams/{team-id}/primaryChannel/allMembers
         Operation type: general
         Args:
@@ -13132,10 +12148,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_team_primary_channel_all_members_add(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def me_joined_teams_team_primary_channel_all_members_add(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /me/joinedTeams/{team-id}/primaryChannel/allMembers/add
         Operation type: general
         Args:
@@ -13152,10 +12166,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_team_primary_channel_all_members_remove(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def me_joined_teams_team_primary_channel_all_members_remove(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /me/joinedTeams/{team-id}/primaryChannel/allMembers/remove
         Operation type: general
         Args:
@@ -13173,9 +12185,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_primary_channel_delete_all_members(self, team_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property allMembers for me
+        """Delete navigation property allMembers for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/primaryChannel/allMembers/{conversationMember-id}
         Operation type: general
         Args:
@@ -13192,10 +12202,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_primary_channel_update_all_members(self, team_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property allMembers in me
+    async def me_joined_teams_primary_channel_update_all_members(self, team_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property allMembers in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/primaryChannel/allMembers/{conversationMember-id}
         Operation type: general
         Args:
@@ -13213,10 +12221,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_primary_channel_get_files_folder(self, team_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get filesFolder from me
+    async def me_joined_teams_primary_channel_get_files_folder(self, team_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get filesFolder from me
         Teams operation: GET /me/joinedTeams/{team-id}/primaryChannel/filesFolder
         Operation type: general
         Args:
@@ -13256,10 +12262,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_primary_channel_create_members(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to members for me
+    async def me_joined_teams_primary_channel_create_members(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to members for me
         Teams operation: POST /me/joinedTeams/{team-id}/primaryChannel/members
         Operation type: general
         Args:
@@ -13276,10 +12280,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_team_primary_channel_members_add(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def me_joined_teams_team_primary_channel_members_add(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /me/joinedTeams/{team-id}/primaryChannel/members/add
         Operation type: general
         Args:
@@ -13296,10 +12298,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_team_primary_channel_members_remove(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def me_joined_teams_team_primary_channel_members_remove(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /me/joinedTeams/{team-id}/primaryChannel/members/remove
         Operation type: general
         Args:
@@ -13317,9 +12317,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_primary_channel_delete_members(self, team_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property members for me
+        """Delete navigation property members for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/primaryChannel/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -13336,10 +12334,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_primary_channel_get_members(self, team_id: str, conversationMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get members from me
+    async def me_joined_teams_primary_channel_get_members(self, team_id: str, conversationMember_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get members from me
         Teams operation: GET /me/joinedTeams/{team-id}/primaryChannel/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -13380,10 +12376,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_primary_channel_update_members(self, team_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property members in me
+    async def me_joined_teams_primary_channel_update_members(self, team_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property members in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/primaryChannel/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -13401,10 +12395,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_team_primary_channel_provision_email(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action provisionEmail
+    async def me_joined_teams_team_primary_channel_provision_email(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action provisionEmail
         Teams operation: POST /me/joinedTeams/{team-id}/primaryChannel/provisionEmail
         Operation type: general
         Args:
@@ -13420,10 +12412,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_team_primary_channel_remove_email(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action removeEmail
+    async def me_joined_teams_team_primary_channel_remove_email(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action removeEmail
         Teams operation: POST /me/joinedTeams/{team-id}/primaryChannel/removeEmail
         Operation type: general
         Args:
@@ -13440,9 +12430,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_delete_schedule(self, team_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property schedule for me
+        """Delete navigation property schedule for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/schedule
         Operation type: general
         Args:
@@ -13458,10 +12446,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_get_schedule(self, team_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get schedule from me
+    async def me_joined_teams_get_schedule(self, team_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get schedule from me
         Teams operation: GET /me/joinedTeams/{team-id}/schedule
         Operation type: general
         Args:
@@ -13501,10 +12487,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_set_schedule(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property schedule in me
+    async def me_joined_teams_set_schedule(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property schedule in me
         Teams operation: PUT /me/joinedTeams/{team-id}/schedule
         Operation type: general
         Args:
@@ -13521,10 +12505,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_create_day_notes(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to dayNotes for me
+    async def me_joined_teams_schedule_create_day_notes(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to dayNotes for me
         Teams operation: POST /me/joinedTeams/{team-id}/schedule/dayNotes
         Operation type: general
         Args:
@@ -13542,9 +12524,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_schedule_delete_day_notes(self, team_id: str, dayNote_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property dayNotes for me
+        """Delete navigation property dayNotes for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/schedule/dayNotes/{dayNote-id}
         Operation type: general
         Args:
@@ -13561,10 +12541,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_get_day_notes(self, team_id: str, dayNote_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get dayNotes from me
+    async def me_joined_teams_schedule_get_day_notes(self, team_id: str, dayNote_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get dayNotes from me
         Teams operation: GET /me/joinedTeams/{team-id}/schedule/dayNotes/{dayNote-id}
         Operation type: general
         Args:
@@ -13605,10 +12583,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_update_day_notes(self, team_id: str, dayNote_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property dayNotes in me
+    async def me_joined_teams_schedule_update_day_notes(self, team_id: str, dayNote_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property dayNotes in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/schedule/dayNotes/{dayNote-id}
         Operation type: general
         Args:
@@ -13626,10 +12602,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_create_offer_shift_requests(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to offerShiftRequests for me
+    async def me_joined_teams_schedule_create_offer_shift_requests(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to offerShiftRequests for me
         Teams operation: POST /me/joinedTeams/{team-id}/schedule/offerShiftRequests
         Operation type: general
         Args:
@@ -13647,9 +12621,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_schedule_delete_offer_shift_requests(self, team_id: str, offerShiftRequest_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property offerShiftRequests for me
+        """Delete navigation property offerShiftRequests for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/schedule/offerShiftRequests/{offerShiftRequest-id}
         Operation type: general
         Args:
@@ -13666,10 +12638,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_get_offer_shift_requests(self, team_id: str, offerShiftRequest_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get offerShiftRequests from me
+    async def me_joined_teams_schedule_get_offer_shift_requests(self, team_id: str, offerShiftRequest_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get offerShiftRequests from me
         Teams operation: GET /me/joinedTeams/{team-id}/schedule/offerShiftRequests/{offerShiftRequest-id}
         Operation type: general
         Args:
@@ -13710,10 +12680,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_update_offer_shift_requests(self, team_id: str, offerShiftRequest_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property offerShiftRequests in me
+    async def me_joined_teams_schedule_update_offer_shift_requests(self, team_id: str, offerShiftRequest_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property offerShiftRequests in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/schedule/offerShiftRequests/{offerShiftRequest-id}
         Operation type: general
         Args:
@@ -13731,10 +12699,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_create_open_shift_change_requests(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to openShiftChangeRequests for me
+    async def me_joined_teams_schedule_create_open_shift_change_requests(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to openShiftChangeRequests for me
         Teams operation: POST /me/joinedTeams/{team-id}/schedule/openShiftChangeRequests
         Operation type: general
         Args:
@@ -13752,9 +12718,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_schedule_delete_open_shift_change_requests(self, team_id: str, openShiftChangeRequest_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property openShiftChangeRequests for me
+        """Delete navigation property openShiftChangeRequests for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/schedule/openShiftChangeRequests/{openShiftChangeRequest-id}
         Operation type: general
         Args:
@@ -13771,10 +12735,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_get_open_shift_change_requests(self, team_id: str, openShiftChangeRequest_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get openShiftChangeRequests from me
+    async def me_joined_teams_schedule_get_open_shift_change_requests(self, team_id: str, openShiftChangeRequest_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get openShiftChangeRequests from me
         Teams operation: GET /me/joinedTeams/{team-id}/schedule/openShiftChangeRequests/{openShiftChangeRequest-id}
         Operation type: general
         Args:
@@ -13815,10 +12777,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_update_open_shift_change_requests(self, team_id: str, openShiftChangeRequest_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property openShiftChangeRequests in me
+    async def me_joined_teams_schedule_update_open_shift_change_requests(self, team_id: str, openShiftChangeRequest_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property openShiftChangeRequests in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/schedule/openShiftChangeRequests/{openShiftChangeRequest-id}
         Operation type: general
         Args:
@@ -13836,10 +12796,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_create_open_shifts(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to openShifts for me
+    async def me_joined_teams_schedule_create_open_shifts(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to openShifts for me
         Teams operation: POST /me/joinedTeams/{team-id}/schedule/openShifts
         Operation type: general
         Args:
@@ -13857,9 +12815,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_schedule_delete_open_shifts(self, team_id: str, openShift_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property openShifts for me
+        """Delete navigation property openShifts for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/schedule/openShifts/{openShift-id}
         Operation type: general
         Args:
@@ -13876,10 +12832,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_get_open_shifts(self, team_id: str, openShift_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get openShifts from me
+    async def me_joined_teams_schedule_get_open_shifts(self, team_id: str, openShift_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get openShifts from me
         Teams operation: GET /me/joinedTeams/{team-id}/schedule/openShifts/{openShift-id}
         Operation type: general
         Args:
@@ -13920,10 +12874,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_update_open_shifts(self, team_id: str, openShift_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property openShifts in me
+    async def me_joined_teams_schedule_update_open_shifts(self, team_id: str, openShift_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property openShifts in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/schedule/openShifts/{openShift-id}
         Operation type: general
         Args:
@@ -13941,10 +12893,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_create_scheduling_groups(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to schedulingGroups for me
+    async def me_joined_teams_schedule_create_scheduling_groups(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to schedulingGroups for me
         Teams operation: POST /me/joinedTeams/{team-id}/schedule/schedulingGroups
         Operation type: general
         Args:
@@ -13962,9 +12912,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_schedule_delete_scheduling_groups(self, team_id: str, schedulingGroup_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property schedulingGroups for me
+        """Delete navigation property schedulingGroups for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/schedule/schedulingGroups/{schedulingGroup-id}
         Operation type: general
         Args:
@@ -13981,10 +12929,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_get_scheduling_groups(self, team_id: str, schedulingGroup_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get schedulingGroups from me
+    async def me_joined_teams_schedule_get_scheduling_groups(self, team_id: str, schedulingGroup_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get schedulingGroups from me
         Teams operation: GET /me/joinedTeams/{team-id}/schedule/schedulingGroups/{schedulingGroup-id}
         Operation type: general
         Args:
@@ -14025,10 +12971,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_update_scheduling_groups(self, team_id: str, schedulingGroup_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property schedulingGroups in me
+    async def me_joined_teams_schedule_update_scheduling_groups(self, team_id: str, schedulingGroup_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property schedulingGroups in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/schedule/schedulingGroups/{schedulingGroup-id}
         Operation type: general
         Args:
@@ -14046,10 +12990,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_create_shifts(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to shifts for me
+    async def me_joined_teams_schedule_create_shifts(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to shifts for me
         Teams operation: POST /me/joinedTeams/{team-id}/schedule/shifts
         Operation type: general
         Args:
@@ -14067,9 +13009,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_schedule_delete_shifts(self, team_id: str, shift_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property shifts for me
+        """Delete navigation property shifts for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/schedule/shifts/{shift-id}
         Operation type: general
         Args:
@@ -14086,10 +13026,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_get_shifts(self, team_id: str, shift_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get shifts from me
+    async def me_joined_teams_schedule_get_shifts(self, team_id: str, shift_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get shifts from me
         Teams operation: GET /me/joinedTeams/{team-id}/schedule/shifts/{shift-id}
         Operation type: general
         Args:
@@ -14130,10 +13068,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_update_shifts(self, team_id: str, shift_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property shifts in me
+    async def me_joined_teams_schedule_update_shifts(self, team_id: str, shift_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property shifts in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/schedule/shifts/{shift-id}
         Operation type: general
         Args:
@@ -14151,10 +13087,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_create_swap_shifts_change_requests(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to swapShiftsChangeRequests for me
+    async def me_joined_teams_schedule_create_swap_shifts_change_requests(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to swapShiftsChangeRequests for me
         Teams operation: POST /me/joinedTeams/{team-id}/schedule/swapShiftsChangeRequests
         Operation type: general
         Args:
@@ -14172,9 +13106,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_schedule_delete_swap_shifts_change_requests(self, team_id: str, swapShiftsChangeRequest_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property swapShiftsChangeRequests for me
+        """Delete navigation property swapShiftsChangeRequests for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/schedule/swapShiftsChangeRequests/{swapShiftsChangeRequest-id}
         Operation type: general
         Args:
@@ -14191,10 +13123,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_get_swap_shifts_change_requests(self, team_id: str, swapShiftsChangeRequest_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get swapShiftsChangeRequests from me
+    async def me_joined_teams_schedule_get_swap_shifts_change_requests(self, team_id: str, swapShiftsChangeRequest_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get swapShiftsChangeRequests from me
         Teams operation: GET /me/joinedTeams/{team-id}/schedule/swapShiftsChangeRequests/{swapShiftsChangeRequest-id}
         Operation type: general
         Args:
@@ -14235,10 +13165,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_update_swap_shifts_change_requests(self, team_id: str, swapShiftsChangeRequest_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property swapShiftsChangeRequests in me
+    async def me_joined_teams_schedule_update_swap_shifts_change_requests(self, team_id: str, swapShiftsChangeRequest_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property swapShiftsChangeRequests in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/schedule/swapShiftsChangeRequests/{swapShiftsChangeRequest-id}
         Operation type: general
         Args:
@@ -14256,10 +13184,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_create_time_cards(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to timeCards for me
+    async def me_joined_teams_schedule_create_time_cards(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to timeCards for me
         Teams operation: POST /me/joinedTeams/{team-id}/schedule/timeCards
         Operation type: general
         Args:
@@ -14276,10 +13202,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_team_schedule_time_cards_clock_in(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action clockIn
+    async def me_joined_teams_team_schedule_time_cards_clock_in(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action clockIn
         Teams operation: POST /me/joinedTeams/{team-id}/schedule/timeCards/clockIn
         Operation type: general
         Args:
@@ -14297,9 +13221,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_schedule_delete_time_cards(self, team_id: str, timeCard_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property timeCards for me
+        """Delete navigation property timeCards for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/schedule/timeCards/{timeCard-id}
         Operation type: general
         Args:
@@ -14316,10 +13238,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_get_time_cards(self, team_id: str, timeCard_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get timeCards from me
+    async def me_joined_teams_schedule_get_time_cards(self, team_id: str, timeCard_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get timeCards from me
         Teams operation: GET /me/joinedTeams/{team-id}/schedule/timeCards/{timeCard-id}
         Operation type: general
         Args:
@@ -14360,10 +13280,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_update_time_cards(self, team_id: str, timeCard_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property timeCards in me
+    async def me_joined_teams_schedule_update_time_cards(self, team_id: str, timeCard_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property timeCards in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/schedule/timeCards/{timeCard-id}
         Operation type: general
         Args:
@@ -14381,10 +13299,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_team_schedule_time_cards_time_card_clock_out(self, team_id: str, timeCard_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action clockOut
+    async def me_joined_teams_team_schedule_time_cards_time_card_clock_out(self, team_id: str, timeCard_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action clockOut
         Teams operation: POST /me/joinedTeams/{team-id}/schedule/timeCards/{timeCard-id}/clockOut
         Operation type: general
         Args:
@@ -14402,10 +13318,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_team_schedule_time_cards_time_card_confirm(self, team_id: str, timeCard_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action confirm
+    async def me_joined_teams_team_schedule_time_cards_time_card_confirm(self, team_id: str, timeCard_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action confirm
         Teams operation: POST /me/joinedTeams/{team-id}/schedule/timeCards/{timeCard-id}/confirm
         Operation type: general
         Args:
@@ -14422,10 +13336,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_team_schedule_time_cards_time_card_end_break(self, team_id: str, timeCard_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action endBreak
+    async def me_joined_teams_team_schedule_time_cards_time_card_end_break(self, team_id: str, timeCard_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action endBreak
         Teams operation: POST /me/joinedTeams/{team-id}/schedule/timeCards/{timeCard-id}/endBreak
         Operation type: general
         Args:
@@ -14443,10 +13355,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_team_schedule_time_cards_time_card_start_break(self, team_id: str, timeCard_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action startBreak
+    async def me_joined_teams_team_schedule_time_cards_time_card_start_break(self, team_id: str, timeCard_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action startBreak
         Teams operation: POST /me/joinedTeams/{team-id}/schedule/timeCards/{timeCard-id}/startBreak
         Operation type: general
         Args:
@@ -14464,10 +13374,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_create_time_off_reasons(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to timeOffReasons for me
+    async def me_joined_teams_schedule_create_time_off_reasons(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to timeOffReasons for me
         Teams operation: POST /me/joinedTeams/{team-id}/schedule/timeOffReasons
         Operation type: general
         Args:
@@ -14485,9 +13393,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_schedule_delete_time_off_reasons(self, team_id: str, timeOffReason_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property timeOffReasons for me
+        """Delete navigation property timeOffReasons for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/schedule/timeOffReasons/{timeOffReason-id}
         Operation type: general
         Args:
@@ -14504,10 +13410,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_get_time_off_reasons(self, team_id: str, timeOffReason_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get timeOffReasons from me
+    async def me_joined_teams_schedule_get_time_off_reasons(self, team_id: str, timeOffReason_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get timeOffReasons from me
         Teams operation: GET /me/joinedTeams/{team-id}/schedule/timeOffReasons/{timeOffReason-id}
         Operation type: general
         Args:
@@ -14548,10 +13452,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_update_time_off_reasons(self, team_id: str, timeOffReason_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property timeOffReasons in me
+    async def me_joined_teams_schedule_update_time_off_reasons(self, team_id: str, timeOffReason_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property timeOffReasons in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/schedule/timeOffReasons/{timeOffReason-id}
         Operation type: general
         Args:
@@ -14569,10 +13471,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_create_time_off_requests(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to timeOffRequests for me
+    async def me_joined_teams_schedule_create_time_off_requests(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to timeOffRequests for me
         Teams operation: POST /me/joinedTeams/{team-id}/schedule/timeOffRequests
         Operation type: general
         Args:
@@ -14590,9 +13490,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_schedule_delete_time_off_requests(self, team_id: str, timeOffRequest_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property timeOffRequests for me
+        """Delete navigation property timeOffRequests for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/schedule/timeOffRequests/{timeOffRequest-id}
         Operation type: general
         Args:
@@ -14609,10 +13507,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_get_time_off_requests(self, team_id: str, timeOffRequest_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get timeOffRequests from me
+    async def me_joined_teams_schedule_get_time_off_requests(self, team_id: str, timeOffRequest_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get timeOffRequests from me
         Teams operation: GET /me/joinedTeams/{team-id}/schedule/timeOffRequests/{timeOffRequest-id}
         Operation type: general
         Args:
@@ -14653,10 +13549,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_update_time_off_requests(self, team_id: str, timeOffRequest_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property timeOffRequests in me
+    async def me_joined_teams_schedule_update_time_off_requests(self, team_id: str, timeOffRequest_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property timeOffRequests in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/schedule/timeOffRequests/{timeOffRequest-id}
         Operation type: general
         Args:
@@ -14674,10 +13568,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_create_times_off(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to timesOff for me
+    async def me_joined_teams_schedule_create_times_off(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to timesOff for me
         Teams operation: POST /me/joinedTeams/{team-id}/schedule/timesOff
         Operation type: general
         Args:
@@ -14695,9 +13587,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_schedule_delete_times_off(self, team_id: str, timeOff_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property timesOff for me
+        """Delete navigation property timesOff for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/schedule/timesOff/{timeOff-id}
         Operation type: general
         Args:
@@ -14714,10 +13604,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_get_times_off(self, team_id: str, timeOff_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get timesOff from me
+    async def me_joined_teams_schedule_get_times_off(self, team_id: str, timeOff_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get timesOff from me
         Teams operation: GET /me/joinedTeams/{team-id}/schedule/timesOff/{timeOff-id}
         Operation type: general
         Args:
@@ -14758,10 +13646,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_schedule_update_times_off(self, team_id: str, timeOff_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property timesOff in me
+    async def me_joined_teams_schedule_update_times_off(self, team_id: str, timeOff_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property timesOff in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/schedule/timesOff/{timeOff-id}
         Operation type: general
         Args:
@@ -14779,10 +13665,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_team_send_activity_notification(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action sendActivityNotification
+    async def me_joined_teams_team_send_activity_notification(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action sendActivityNotification
         Teams operation: POST /me/joinedTeams/{team-id}/sendActivityNotification
         Operation type: general
         Args:
@@ -14799,10 +13683,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_create_tags(self, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to tags for me
+    async def me_joined_teams_create_tags(self, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to tags for me
         Teams operation: POST /me/joinedTeams/{team-id}/tags
         Operation type: general
         Args:
@@ -14820,9 +13702,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_delete_tags(self, team_id: str, teamworkTag_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property tags for me
+        """Delete navigation property tags for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/tags/{teamworkTag-id}
         Operation type: general
         Args:
@@ -14839,10 +13719,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_get_tags(self, team_id: str, teamworkTag_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get tags from me
+    async def me_joined_teams_get_tags(self, team_id: str, teamworkTag_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get tags from me
         Teams operation: GET /me/joinedTeams/{team-id}/tags/{teamworkTag-id}
         Operation type: general
         Args:
@@ -14883,10 +13761,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_update_tags(self, team_id: str, teamworkTag_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property tags in me
+    async def me_joined_teams_update_tags(self, team_id: str, teamworkTag_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property tags in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/tags/{teamworkTag-id}
         Operation type: general
         Args:
@@ -14904,10 +13780,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_tags_create_members(self, team_id: str, teamworkTag_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to members for me
+    async def me_joined_teams_tags_create_members(self, team_id: str, teamworkTag_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to members for me
         Teams operation: POST /me/joinedTeams/{team-id}/tags/{teamworkTag-id}/members
         Operation type: general
         Args:
@@ -14926,9 +13800,7 @@ class TeamsDataSource:
 
 
     async def me_joined_teams_tags_delete_members(self, team_id: str, teamworkTag_id: str, teamworkTagMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property members for me
+        """Delete navigation property members for me
         Teams operation: DELETE /me/joinedTeams/{team-id}/tags/{teamworkTag-id}/members/{teamworkTagMember-id}
         Operation type: general
         Args:
@@ -14946,10 +13818,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_tags_get_members(self, team_id: str, teamworkTag_id: str, teamworkTagMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get members from me
+    async def me_joined_teams_tags_get_members(self, team_id: str, teamworkTag_id: str, teamworkTagMember_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get members from me
         Teams operation: GET /me/joinedTeams/{team-id}/tags/{teamworkTag-id}/members/{teamworkTagMember-id}
         Operation type: general
         Args:
@@ -14991,10 +13861,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_tags_update_members(self, team_id: str, teamworkTag_id: str, teamworkTagMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property members in me
+    async def me_joined_teams_tags_update_members(self, team_id: str, teamworkTag_id: str, teamworkTagMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property members in me
         Teams operation: PATCH /me/joinedTeams/{team-id}/tags/{teamworkTag-id}/members/{teamworkTagMember-id}
         Operation type: general
         Args:
@@ -15013,10 +13881,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_joined_teams_get_template(self, team_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get template from me
+    async def me_joined_teams_get_template(self, team_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get template from me
         Teams operation: GET /me/joinedTeams/{team-id}/template
         Operation type: general
         Args:
@@ -15056,10 +13922,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_license_details_get_teams_licensing_details(self, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Invoke function getTeamsLicensingDetails
+    async def me_license_details_get_teams_licensing_details(self, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Invoke function getTeamsLicensingDetails
         Teams operation: GET /me/licenseDetails/getTeamsLicensingDetails()
         Operation type: general
         Args:
@@ -15098,10 +13962,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_get_member_of(self, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get memberOf from me
+    async def me_get_member_of(self, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get memberOf from me
         Teams operation: GET /me/memberOf/{directoryObject-id}
         Operation type: general
         Args:
@@ -15141,10 +14003,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_get_member_of_as_directory_role(self, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get the item of type microsoft.graph.directoryObject as microsoft.graph.directoryRole
+    async def me_get_member_of_as_directory_role(self, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get the item of type microsoft.graph.directoryObject as microsoft.graph.directoryRole
         Teams operation: GET /me/memberOf/{directoryObject-id}/graph.directoryRole
         Operation type: general
         Args:
@@ -15184,10 +14044,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_get_member_of_as_group(self, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get the item of type microsoft.graph.directoryObject as microsoft.graph.group
+    async def me_get_member_of_as_group(self, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get the item of type microsoft.graph.directoryObject as microsoft.graph.group
         Teams operation: GET /me/memberOf/{directoryObject-id}/graph.group
         Operation type: general
         Args:
@@ -15227,10 +14085,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_create_scoped_role_member_of(self, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to scopedRoleMemberOf for me
+    async def me_create_scoped_role_member_of(self, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to scopedRoleMemberOf for me
         Teams operation: POST /me/scopedRoleMemberOf
         Operation type: general
         Args:
@@ -15247,9 +14103,7 @@ class TeamsDataSource:
 
 
     async def me_delete_scoped_role_member_of(self, scopedRoleMembership_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property scopedRoleMemberOf for me
+        """Delete navigation property scopedRoleMemberOf for me
         Teams operation: DELETE /me/scopedRoleMemberOf/{scopedRoleMembership-id}
         Operation type: general
         Args:
@@ -15265,10 +14119,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_get_scoped_role_member_of(self, scopedRoleMembership_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get scopedRoleMemberOf from me
+    async def me_get_scoped_role_member_of(self, scopedRoleMembership_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get scopedRoleMemberOf from me
         Teams operation: GET /me/scopedRoleMemberOf/{scopedRoleMembership-id}
         Operation type: general
         Args:
@@ -15308,10 +14160,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_update_scoped_role_member_of(self, scopedRoleMembership_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property scopedRoleMemberOf in me
+    async def me_update_scoped_role_member_of(self, scopedRoleMembership_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property scopedRoleMemberOf in me
         Teams operation: PATCH /me/scopedRoleMemberOf/{scopedRoleMembership-id}
         Operation type: general
         Args:
@@ -15328,10 +14178,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_get_transitive_member_of(self, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get transitiveMemberOf from me
+    async def me_get_transitive_member_of(self, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get transitiveMemberOf from me
         Teams operation: GET /me/transitiveMemberOf/{directoryObject-id}
         Operation type: general
         Args:
@@ -15371,10 +14219,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_get_transitive_member_of_as_directory_role(self, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get the item of type microsoft.graph.directoryObject as microsoft.graph.directoryRole
+    async def me_get_transitive_member_of_as_directory_role(self, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get the item of type microsoft.graph.directoryObject as microsoft.graph.directoryRole
         Teams operation: GET /me/transitiveMemberOf/{directoryObject-id}/graph.directoryRole
         Operation type: general
         Args:
@@ -15414,10 +14260,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def me_get_transitive_member_of_as_group(self, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get the item of type microsoft.graph.directoryObject as microsoft.graph.group
+    async def me_get_transitive_member_of_as_group(self, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get the item of type microsoft.graph.directoryObject as microsoft.graph.group
         Teams operation: GET /me/transitiveMemberOf/{directoryObject-id}/graph.group
         Operation type: general
         Args:
@@ -15457,10 +14301,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def organization_organization_check_member_objects(self, organization_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action checkMemberObjects
+    async def organization_organization_check_member_objects(self, organization_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action checkMemberObjects
         Teams operation: POST /organization/{organization-id}/checkMemberObjects
         Operation type: general
         Args:
@@ -15477,10 +14319,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def privacy_subject_rights_requests_get_team(self, subjectRightsRequest_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get team from privacy
+    async def privacy_subject_rights_requests_get_team(self, subjectRightsRequest_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get team from privacy
         Teams operation: GET /privacy/subjectRightsRequests/{subjectRightsRequest-id}/team
         Operation type: general
         Args:
@@ -15520,10 +14360,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def reports_get_teams_team_activity_detail_391d(self, date: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Invoke function getTeamsTeamActivityDetail
+    async def reports_get_teams_team_activity_detail_391d(self, date: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Invoke function getTeamsTeamActivityDetail
         Teams operation: GET /reports/getTeamsTeamActivityDetail(date={date})
         Operation type: general
         Args:
@@ -15563,10 +14401,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def reports_get_teams_team_activity_detail_ee18(self, period: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Invoke function getTeamsTeamActivityDetail
+    async def reports_get_teams_team_activity_detail_ee18(self, period: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Invoke function getTeamsTeamActivityDetail
         Teams operation: GET /reports/getTeamsTeamActivityDetail(period='{period}')
         Operation type: general
         Args:
@@ -15606,10 +14442,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def reports_get_teams_user_activity_user_detail_fba7(self, date: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Invoke function getTeamsUserActivityUserDetail
+    async def reports_get_teams_user_activity_user_detail_fba7(self, date: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Invoke function getTeamsUserActivityUserDetail
         Teams operation: GET /reports/getTeamsUserActivityUserDetail(date={date})
         Operation type: general
         Args:
@@ -15649,10 +14483,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def reports_get_teams_user_activity_user_detail_7554(self, period: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Invoke function getTeamsUserActivityUserDetail
+    async def reports_get_teams_user_activity_user_detail_7554(self, period: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Invoke function getTeamsUserActivityUserDetail
         Teams operation: GET /reports/getTeamsUserActivityUserDetail(period='{period}')
         Operation type: general
         Args:
@@ -15692,10 +14524,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def scoped_role_memberships_scoped_role_membership_create_scoped_role_membership(self, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Add new entity to scopedRoleMemberships
+    async def scoped_role_memberships_scoped_role_membership_create_scoped_role_membership(self, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Add new entity to scopedRoleMemberships
         Teams operation: POST /scopedRoleMemberships
         Operation type: general
         Args:
@@ -15712,9 +14542,7 @@ class TeamsDataSource:
 
 
     async def scoped_role_memberships_scoped_role_membership_delete_scoped_role_membership(self, scopedRoleMembership_id: str) -> TeamsResponse:
-
-        """
-        Delete entity from scopedRoleMemberships
+        """Delete entity from scopedRoleMemberships
         Teams operation: DELETE /scopedRoleMemberships/{scopedRoleMembership-id}
         Operation type: general
         Args:
@@ -15730,10 +14558,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def scoped_role_memberships_scoped_role_membership_get_scoped_role_membership(self, scopedRoleMembership_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get entity from scopedRoleMemberships by key
+    async def scoped_role_memberships_scoped_role_membership_get_scoped_role_membership(self, scopedRoleMembership_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get entity from scopedRoleMemberships by key
         Teams operation: GET /scopedRoleMemberships/{scopedRoleMembership-id}
         Operation type: general
         Args:
@@ -15773,10 +14599,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def scoped_role_memberships_scoped_role_membership_update_scoped_role_membership(self, scopedRoleMembership_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update entity in scopedRoleMemberships
+    async def scoped_role_memberships_scoped_role_membership_update_scoped_role_membership(self, scopedRoleMembership_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update entity in scopedRoleMemberships
         Teams operation: PATCH /scopedRoleMemberships/{scopedRoleMembership-id}
         Operation type: general
         Args:
@@ -15793,10 +14617,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_team_create_team(self, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create team
+    async def teams_team_create_team(self, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create team
         Teams operation: POST /teams
         Operation type: general
         Args:
@@ -15812,10 +14634,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_templates_teams_template_create_teams_template(self, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Add new entity to teamsTemplates
+    async def teams_templates_teams_template_create_teams_template(self, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Add new entity to teamsTemplates
         Teams operation: POST /teamsTemplates
         Operation type: general
         Args:
@@ -15832,9 +14652,7 @@ class TeamsDataSource:
 
 
     async def teams_templates_teams_template_delete_teams_template(self, teamsTemplate_id: str) -> TeamsResponse:
-
-        """
-        Delete entity from teamsTemplates
+        """Delete entity from teamsTemplates
         Teams operation: DELETE /teamsTemplates/{teamsTemplate-id}
         Operation type: general
         Args:
@@ -15850,10 +14668,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_templates_teams_template_get_teams_template(self, teamsTemplate_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get entity from teamsTemplates by key
+    async def teams_templates_teams_template_get_teams_template(self, teamsTemplate_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get entity from teamsTemplates by key
         Teams operation: GET /teamsTemplates/{teamsTemplate-id}
         Operation type: general
         Args:
@@ -15893,10 +14709,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def teams_templates_teams_template_update_teams_template(self, teamsTemplate_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update entity in teamsTemplates
+    async def teams_templates_teams_template_update_teams_template(self, teamsTemplate_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update entity in teamsTemplates
         Teams operation: PATCH /teamsTemplates/{teamsTemplate-id}
         Operation type: general
         Args:
@@ -15914,9 +14728,7 @@ class TeamsDataSource:
 
 
     async def tenant_relationships_multi_tenant_organization_delete_tenants(self, multiTenantOrganizationMember_id: str) -> TeamsResponse:
-
-        """
-        Remove multiTenantOrganizationMember
+        """Remove multiTenantOrganizationMember
         Teams operation: DELETE /tenantRelationships/multiTenantOrganization/tenants/{multiTenantOrganizationMember-id}
         Operation type: general
         Args:
@@ -15932,10 +14744,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def tenant_relationships_multi_tenant_organization_get_tenants(self, multiTenantOrganizationMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get multiTenantOrganizationMember
+    async def tenant_relationships_multi_tenant_organization_get_tenants(self, multiTenantOrganizationMember_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get multiTenantOrganizationMember
         Teams operation: GET /tenantRelationships/multiTenantOrganization/tenants/{multiTenantOrganizationMember-id}
         Operation type: general
         Args:
@@ -15975,10 +14785,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def tenant_relationships_multi_tenant_organization_update_tenants(self, multiTenantOrganizationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property tenants in tenantRelationships
+    async def tenant_relationships_multi_tenant_organization_update_tenants(self, multiTenantOrganizationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property tenants in tenantRelationships
         Teams operation: PATCH /tenantRelationships/multiTenantOrganization/tenants/{multiTenantOrganizationMember-id}
         Operation type: general
         Args:
@@ -15995,10 +14803,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_check_member_objects(self, user_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action checkMemberObjects
+    async def users_user_check_member_objects(self, user_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action checkMemberObjects
         Teams operation: POST /users/{user-id}/checkMemberObjects
         Operation type: general
         Args:
@@ -16015,10 +14821,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_create_joined_teams(self, user_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to joinedTeams for users
+    async def users_create_joined_teams(self, user_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to joinedTeams for users
         Teams operation: POST /users/{user-id}/joinedTeams
         Operation type: general
         Args:
@@ -16036,9 +14840,7 @@ class TeamsDataSource:
 
 
     async def users_delete_joined_teams(self, user_id: str, team_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property joinedTeams for users
+        """Delete navigation property joinedTeams for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}
         Operation type: general
         Args:
@@ -16055,10 +14857,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_get_joined_teams(self, user_id: str, team_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get joinedTeams from users
+    async def users_get_joined_teams(self, user_id: str, team_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get joinedTeams from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}
         Operation type: general
         Args:
@@ -16099,10 +14899,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_update_joined_teams(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property joinedTeams in users
+    async def users_update_joined_teams(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property joinedTeams in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}
         Operation type: general
         Args:
@@ -16120,10 +14918,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_create_channels(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to channels for users
+    async def users_joined_teams_create_channels(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to channels for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/channels
         Operation type: general
         Args:
@@ -16142,9 +14938,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_delete_channels(self, user_id: str, team_id: str, channel_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property channels for users
+        """Delete navigation property channels for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/channels/{channel-id}
         Operation type: general
         Args:
@@ -16162,10 +14956,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_update_channels(self, user_id: str, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property channels in users
+    async def users_joined_teams_update_channels(self, user_id: str, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property channels in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/channels/{channel-id}
         Operation type: general
         Args:
@@ -16184,10 +14976,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_channels_create_all_members(self, user_id: str, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to allMembers for users
+    async def users_joined_teams_channels_create_all_members(self, user_id: str, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to allMembers for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/channels/{channel-id}/allMembers
         Operation type: general
         Args:
@@ -16206,10 +14996,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_joined_teams_team_channels_channel_all_members_add(self, user_id: str, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def users_user_joined_teams_team_channels_channel_all_members_add(self, user_id: str, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/channels/{channel-id}/allMembers/add
         Operation type: general
         Args:
@@ -16228,10 +15016,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_joined_teams_team_channels_channel_all_members_remove(self, user_id: str, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def users_user_joined_teams_team_channels_channel_all_members_remove(self, user_id: str, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/channels/{channel-id}/allMembers/remove
         Operation type: general
         Args:
@@ -16251,9 +15037,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_channels_delete_all_members(self, user_id: str, team_id: str, channel_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property allMembers for users
+        """Delete navigation property allMembers for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/channels/{channel-id}/allMembers/{conversationMember-id}
         Operation type: general
         Args:
@@ -16272,10 +15056,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_channels_update_all_members(self, user_id: str, team_id: str, channel_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property allMembers in users
+    async def users_joined_teams_channels_update_all_members(self, user_id: str, team_id: str, channel_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property allMembers in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/channels/{channel-id}/allMembers/{conversationMember-id}
         Operation type: general
         Args:
@@ -16295,10 +15077,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_channels_get_files_folder(self, user_id: str, team_id: str, channel_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get filesFolder from users
+    async def users_joined_teams_channels_get_files_folder(self, user_id: str, team_id: str, channel_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get filesFolder from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/channels/{channel-id}/filesFolder
         Operation type: general
         Args:
@@ -16340,10 +15120,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_channels_create_members(self, user_id: str, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to members for users
+    async def users_joined_teams_channels_create_members(self, user_id: str, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to members for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/channels/{channel-id}/members
         Operation type: general
         Args:
@@ -16362,10 +15140,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_joined_teams_team_channels_channel_members_add(self, user_id: str, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def users_user_joined_teams_team_channels_channel_members_add(self, user_id: str, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/channels/{channel-id}/members/add
         Operation type: general
         Args:
@@ -16384,10 +15160,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_joined_teams_team_channels_channel_members_remove(self, user_id: str, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def users_user_joined_teams_team_channels_channel_members_remove(self, user_id: str, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/channels/{channel-id}/members/remove
         Operation type: general
         Args:
@@ -16407,9 +15181,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_channels_delete_members(self, user_id: str, team_id: str, channel_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property members for users
+        """Delete navigation property members for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/channels/{channel-id}/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -16428,10 +15200,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_channels_get_members(self, user_id: str, team_id: str, channel_id: str, conversationMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get members from users
+    async def users_joined_teams_channels_get_members(self, user_id: str, team_id: str, channel_id: str, conversationMember_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get members from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/channels/{channel-id}/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -16474,10 +15244,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_channels_update_members(self, user_id: str, team_id: str, channel_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property members in users
+    async def users_joined_teams_channels_update_members(self, user_id: str, team_id: str, channel_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property members in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/channels/{channel-id}/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -16497,10 +15265,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_joined_teams_team_channels_channel_provision_email(self, user_id: str, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action provisionEmail
+    async def users_user_joined_teams_team_channels_channel_provision_email(self, user_id: str, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action provisionEmail
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/channels/{channel-id}/provisionEmail
         Operation type: general
         Args:
@@ -16518,10 +15284,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_joined_teams_team_channels_channel_remove_email(self, user_id: str, team_id: str, channel_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action removeEmail
+    async def users_user_joined_teams_team_channels_channel_remove_email(self, user_id: str, team_id: str, channel_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action removeEmail
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/channels/{channel-id}/removeEmail
         Operation type: general
         Args:
@@ -16539,10 +15303,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_get_group(self, user_id: str, team_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get group from users
+    async def users_joined_teams_get_group(self, user_id: str, team_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get group from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/group
         Operation type: general
         Args:
@@ -16583,10 +15345,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_create_installed_apps(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to installedApps for users
+    async def users_joined_teams_create_installed_apps(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to installedApps for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/installedApps
         Operation type: general
         Args:
@@ -16605,9 +15365,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_delete_installed_apps(self, user_id: str, team_id: str, teamsAppInstallation_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property installedApps for users
+        """Delete navigation property installedApps for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/installedApps/{teamsAppInstallation-id}
         Operation type: general
         Args:
@@ -16625,10 +15383,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_get_installed_apps(self, user_id: str, team_id: str, teamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get installedApps from users
+    async def users_joined_teams_get_installed_apps(self, user_id: str, team_id: str, teamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get installedApps from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/installedApps/{teamsAppInstallation-id}
         Operation type: general
         Args:
@@ -16670,10 +15426,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_update_installed_apps(self, user_id: str, team_id: str, teamsAppInstallation_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property installedApps in users
+    async def users_joined_teams_update_installed_apps(self, user_id: str, team_id: str, teamsAppInstallation_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property installedApps in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/installedApps/{teamsAppInstallation-id}
         Operation type: general
         Args:
@@ -16692,10 +15446,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_installed_apps_get_teams_app(self, user_id: str, team_id: str, teamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamsApp from users
+    async def users_joined_teams_installed_apps_get_teams_app(self, user_id: str, team_id: str, teamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamsApp from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/installedApps/{teamsAppInstallation-id}/teamsApp
         Operation type: general
         Args:
@@ -16737,10 +15489,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_installed_apps_get_teams_app_definition(self, user_id: str, team_id: str, teamsAppInstallation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get teamsAppDefinition from users
+    async def users_joined_teams_installed_apps_get_teams_app_definition(self, user_id: str, team_id: str, teamsAppInstallation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get teamsAppDefinition from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/installedApps/{teamsAppInstallation-id}/teamsAppDefinition
         Operation type: general
         Args:
@@ -16782,10 +15532,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_joined_teams_team_installed_apps_teams_app_installation_upgrade(self, user_id: str, team_id: str, teamsAppInstallation_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action upgrade
+    async def users_user_joined_teams_team_installed_apps_teams_app_installation_upgrade(self, user_id: str, team_id: str, teamsAppInstallation_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action upgrade
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/installedApps/{teamsAppInstallation-id}/upgrade
         Operation type: general
         Args:
@@ -16804,10 +15552,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_create_members(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to members for users
+    async def users_joined_teams_create_members(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to members for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/members
         Operation type: general
         Args:
@@ -16825,10 +15571,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_joined_teams_team_members_add(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def users_user_joined_teams_team_members_add(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/members/add
         Operation type: general
         Args:
@@ -16846,10 +15590,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_joined_teams_team_members_remove(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def users_user_joined_teams_team_members_remove(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/members/remove
         Operation type: general
         Args:
@@ -16868,9 +15610,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_delete_members(self, user_id: str, team_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property members for users
+        """Delete navigation property members for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -16888,10 +15628,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_get_members(self, user_id: str, team_id: str, conversationMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get members from users
+    async def users_joined_teams_get_members(self, user_id: str, team_id: str, conversationMember_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get members from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -16933,10 +15671,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_update_members(self, user_id: str, team_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property members in users
+    async def users_joined_teams_update_members(self, user_id: str, team_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property members in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -16955,10 +15691,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_create_operations(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to operations for users
+    async def users_joined_teams_create_operations(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to operations for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/operations
         Operation type: general
         Args:
@@ -16977,9 +15711,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_delete_operations(self, user_id: str, team_id: str, teamsAsyncOperation_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property operations for users
+        """Delete navigation property operations for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/operations/{teamsAsyncOperation-id}
         Operation type: general
         Args:
@@ -16997,10 +15729,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_get_operations(self, user_id: str, team_id: str, teamsAsyncOperation_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get operations from users
+    async def users_joined_teams_get_operations(self, user_id: str, team_id: str, teamsAsyncOperation_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get operations from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/operations/{teamsAsyncOperation-id}
         Operation type: general
         Args:
@@ -17042,10 +15772,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_update_operations(self, user_id: str, team_id: str, teamsAsyncOperation_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property operations in users
+    async def users_joined_teams_update_operations(self, user_id: str, team_id: str, teamsAsyncOperation_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property operations in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/operations/{teamsAsyncOperation-id}
         Operation type: general
         Args:
@@ -17064,10 +15792,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_get_photo(self, user_id: str, team_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get photo from users
+    async def users_joined_teams_get_photo(self, user_id: str, team_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get photo from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/photo
         Operation type: general
         Args:
@@ -17108,10 +15834,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_update_photo(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property photo in users
+    async def users_joined_teams_update_photo(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property photo in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/photo
         Operation type: general
         Args:
@@ -17130,9 +15854,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_delete_primary_channel(self, user_id: str, team_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property primaryChannel for users
+        """Delete navigation property primaryChannel for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/primaryChannel
         Operation type: general
         Args:
@@ -17149,10 +15871,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_get_primary_channel(self, user_id: str, team_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get primaryChannel from users
+    async def users_joined_teams_get_primary_channel(self, user_id: str, team_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get primaryChannel from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/primaryChannel
         Operation type: general
         Args:
@@ -17193,10 +15913,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_update_primary_channel(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property primaryChannel in users
+    async def users_joined_teams_update_primary_channel(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property primaryChannel in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/primaryChannel
         Operation type: general
         Args:
@@ -17214,10 +15932,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_primary_channel_create_all_members(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to allMembers for users
+    async def users_joined_teams_primary_channel_create_all_members(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to allMembers for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/primaryChannel/allMembers
         Operation type: general
         Args:
@@ -17235,10 +15951,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_joined_teams_team_primary_channel_all_members_add(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def users_user_joined_teams_team_primary_channel_all_members_add(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/primaryChannel/allMembers/add
         Operation type: general
         Args:
@@ -17256,10 +15970,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_joined_teams_team_primary_channel_all_members_remove(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def users_user_joined_teams_team_primary_channel_all_members_remove(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/primaryChannel/allMembers/remove
         Operation type: general
         Args:
@@ -17278,9 +15990,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_primary_channel_delete_all_members(self, user_id: str, team_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property allMembers for users
+        """Delete navigation property allMembers for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/primaryChannel/allMembers/{conversationMember-id}
         Operation type: general
         Args:
@@ -17298,10 +16008,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_primary_channel_update_all_members(self, user_id: str, team_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property allMembers in users
+    async def users_joined_teams_primary_channel_update_all_members(self, user_id: str, team_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property allMembers in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/primaryChannel/allMembers/{conversationMember-id}
         Operation type: general
         Args:
@@ -17320,10 +16028,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_primary_channel_get_files_folder(self, user_id: str, team_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get filesFolder from users
+    async def users_joined_teams_primary_channel_get_files_folder(self, user_id: str, team_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get filesFolder from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/primaryChannel/filesFolder
         Operation type: general
         Args:
@@ -17364,10 +16070,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_primary_channel_create_members(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to members for users
+    async def users_joined_teams_primary_channel_create_members(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to members for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/primaryChannel/members
         Operation type: general
         Args:
@@ -17385,10 +16089,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_joined_teams_team_primary_channel_members_add(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action add
+    async def users_user_joined_teams_team_primary_channel_members_add(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action add
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/primaryChannel/members/add
         Operation type: general
         Args:
@@ -17406,10 +16108,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_joined_teams_team_primary_channel_members_remove(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action remove
+    async def users_user_joined_teams_team_primary_channel_members_remove(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action remove
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/primaryChannel/members/remove
         Operation type: general
         Args:
@@ -17428,9 +16128,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_primary_channel_delete_members(self, user_id: str, team_id: str, conversationMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property members for users
+        """Delete navigation property members for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/primaryChannel/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -17448,10 +16146,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_primary_channel_get_members(self, user_id: str, team_id: str, conversationMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get members from users
+    async def users_joined_teams_primary_channel_get_members(self, user_id: str, team_id: str, conversationMember_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get members from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/primaryChannel/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -17493,10 +16189,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_primary_channel_update_members(self, user_id: str, team_id: str, conversationMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property members in users
+    async def users_joined_teams_primary_channel_update_members(self, user_id: str, team_id: str, conversationMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property members in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/primaryChannel/members/{conversationMember-id}
         Operation type: general
         Args:
@@ -17515,10 +16209,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_joined_teams_team_primary_channel_provision_email(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action provisionEmail
+    async def users_user_joined_teams_team_primary_channel_provision_email(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action provisionEmail
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/primaryChannel/provisionEmail
         Operation type: general
         Args:
@@ -17535,10 +16227,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_joined_teams_team_primary_channel_remove_email(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action removeEmail
+    async def users_user_joined_teams_team_primary_channel_remove_email(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action removeEmail
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/primaryChannel/removeEmail
         Operation type: general
         Args:
@@ -17556,9 +16246,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_delete_schedule(self, user_id: str, team_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property schedule for users
+        """Delete navigation property schedule for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/schedule
         Operation type: general
         Args:
@@ -17575,10 +16263,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_get_schedule(self, user_id: str, team_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get schedule from users
+    async def users_joined_teams_get_schedule(self, user_id: str, team_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get schedule from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/schedule
         Operation type: general
         Args:
@@ -17619,10 +16305,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_set_schedule(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property schedule in users
+    async def users_joined_teams_set_schedule(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property schedule in users
         Teams operation: PUT /users/{user-id}/joinedTeams/{team-id}/schedule
         Operation type: general
         Args:
@@ -17640,10 +16324,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_create_day_notes(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to dayNotes for users
+    async def users_joined_teams_schedule_create_day_notes(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to dayNotes for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/schedule/dayNotes
         Operation type: general
         Args:
@@ -17662,9 +16344,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_schedule_delete_day_notes(self, user_id: str, team_id: str, dayNote_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property dayNotes for users
+        """Delete navigation property dayNotes for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/schedule/dayNotes/{dayNote-id}
         Operation type: general
         Args:
@@ -17682,10 +16362,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_get_day_notes(self, user_id: str, team_id: str, dayNote_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get dayNotes from users
+    async def users_joined_teams_schedule_get_day_notes(self, user_id: str, team_id: str, dayNote_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get dayNotes from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/schedule/dayNotes/{dayNote-id}
         Operation type: general
         Args:
@@ -17727,10 +16405,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_update_day_notes(self, user_id: str, team_id: str, dayNote_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property dayNotes in users
+    async def users_joined_teams_schedule_update_day_notes(self, user_id: str, team_id: str, dayNote_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property dayNotes in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/schedule/dayNotes/{dayNote-id}
         Operation type: general
         Args:
@@ -17749,10 +16425,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_create_offer_shift_requests(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to offerShiftRequests for users
+    async def users_joined_teams_schedule_create_offer_shift_requests(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to offerShiftRequests for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/schedule/offerShiftRequests
         Operation type: general
         Args:
@@ -17771,9 +16445,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_schedule_delete_offer_shift_requests(self, user_id: str, team_id: str, offerShiftRequest_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property offerShiftRequests for users
+        """Delete navigation property offerShiftRequests for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/schedule/offerShiftRequests/{offerShiftRequest-id}
         Operation type: general
         Args:
@@ -17791,10 +16463,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_get_offer_shift_requests(self, user_id: str, team_id: str, offerShiftRequest_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get offerShiftRequests from users
+    async def users_joined_teams_schedule_get_offer_shift_requests(self, user_id: str, team_id: str, offerShiftRequest_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get offerShiftRequests from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/schedule/offerShiftRequests/{offerShiftRequest-id}
         Operation type: general
         Args:
@@ -17836,10 +16506,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_update_offer_shift_requests(self, user_id: str, team_id: str, offerShiftRequest_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property offerShiftRequests in users
+    async def users_joined_teams_schedule_update_offer_shift_requests(self, user_id: str, team_id: str, offerShiftRequest_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property offerShiftRequests in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/schedule/offerShiftRequests/{offerShiftRequest-id}
         Operation type: general
         Args:
@@ -17858,10 +16526,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_create_open_shift_change_requests(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to openShiftChangeRequests for users
+    async def users_joined_teams_schedule_create_open_shift_change_requests(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to openShiftChangeRequests for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/schedule/openShiftChangeRequests
         Operation type: general
         Args:
@@ -17880,9 +16546,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_schedule_delete_open_shift_change_requests(self, user_id: str, team_id: str, openShiftChangeRequest_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property openShiftChangeRequests for users
+        """Delete navigation property openShiftChangeRequests for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/schedule/openShiftChangeRequests/{openShiftChangeRequest-id}
         Operation type: general
         Args:
@@ -17900,10 +16564,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_get_open_shift_change_requests(self, user_id: str, team_id: str, openShiftChangeRequest_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get openShiftChangeRequests from users
+    async def users_joined_teams_schedule_get_open_shift_change_requests(self, user_id: str, team_id: str, openShiftChangeRequest_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get openShiftChangeRequests from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/schedule/openShiftChangeRequests/{openShiftChangeRequest-id}
         Operation type: general
         Args:
@@ -17945,10 +16607,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_update_open_shift_change_requests(self, user_id: str, team_id: str, openShiftChangeRequest_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property openShiftChangeRequests in users
+    async def users_joined_teams_schedule_update_open_shift_change_requests(self, user_id: str, team_id: str, openShiftChangeRequest_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property openShiftChangeRequests in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/schedule/openShiftChangeRequests/{openShiftChangeRequest-id}
         Operation type: general
         Args:
@@ -17967,10 +16627,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_create_open_shifts(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to openShifts for users
+    async def users_joined_teams_schedule_create_open_shifts(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to openShifts for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/schedule/openShifts
         Operation type: general
         Args:
@@ -17989,9 +16647,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_schedule_delete_open_shifts(self, user_id: str, team_id: str, openShift_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property openShifts for users
+        """Delete navigation property openShifts for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/schedule/openShifts/{openShift-id}
         Operation type: general
         Args:
@@ -18009,10 +16665,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_get_open_shifts(self, user_id: str, team_id: str, openShift_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get openShifts from users
+    async def users_joined_teams_schedule_get_open_shifts(self, user_id: str, team_id: str, openShift_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get openShifts from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/schedule/openShifts/{openShift-id}
         Operation type: general
         Args:
@@ -18054,10 +16708,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_update_open_shifts(self, user_id: str, team_id: str, openShift_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property openShifts in users
+    async def users_joined_teams_schedule_update_open_shifts(self, user_id: str, team_id: str, openShift_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property openShifts in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/schedule/openShifts/{openShift-id}
         Operation type: general
         Args:
@@ -18076,10 +16728,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_create_scheduling_groups(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to schedulingGroups for users
+    async def users_joined_teams_schedule_create_scheduling_groups(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to schedulingGroups for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/schedule/schedulingGroups
         Operation type: general
         Args:
@@ -18098,9 +16748,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_schedule_delete_scheduling_groups(self, user_id: str, team_id: str, schedulingGroup_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property schedulingGroups for users
+        """Delete navigation property schedulingGroups for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/schedule/schedulingGroups/{schedulingGroup-id}
         Operation type: general
         Args:
@@ -18118,10 +16766,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_get_scheduling_groups(self, user_id: str, team_id: str, schedulingGroup_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get schedulingGroups from users
+    async def users_joined_teams_schedule_get_scheduling_groups(self, user_id: str, team_id: str, schedulingGroup_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get schedulingGroups from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/schedule/schedulingGroups/{schedulingGroup-id}
         Operation type: general
         Args:
@@ -18163,10 +16809,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_update_scheduling_groups(self, user_id: str, team_id: str, schedulingGroup_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property schedulingGroups in users
+    async def users_joined_teams_schedule_update_scheduling_groups(self, user_id: str, team_id: str, schedulingGroup_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property schedulingGroups in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/schedule/schedulingGroups/{schedulingGroup-id}
         Operation type: general
         Args:
@@ -18185,10 +16829,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_create_shifts(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to shifts for users
+    async def users_joined_teams_schedule_create_shifts(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to shifts for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/schedule/shifts
         Operation type: general
         Args:
@@ -18207,9 +16849,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_schedule_delete_shifts(self, user_id: str, team_id: str, shift_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property shifts for users
+        """Delete navigation property shifts for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/schedule/shifts/{shift-id}
         Operation type: general
         Args:
@@ -18227,10 +16867,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_get_shifts(self, user_id: str, team_id: str, shift_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get shifts from users
+    async def users_joined_teams_schedule_get_shifts(self, user_id: str, team_id: str, shift_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get shifts from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/schedule/shifts/{shift-id}
         Operation type: general
         Args:
@@ -18272,10 +16910,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_update_shifts(self, user_id: str, team_id: str, shift_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property shifts in users
+    async def users_joined_teams_schedule_update_shifts(self, user_id: str, team_id: str, shift_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property shifts in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/schedule/shifts/{shift-id}
         Operation type: general
         Args:
@@ -18294,10 +16930,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_create_swap_shifts_change_requests(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to swapShiftsChangeRequests for users
+    async def users_joined_teams_schedule_create_swap_shifts_change_requests(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to swapShiftsChangeRequests for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/schedule/swapShiftsChangeRequests
         Operation type: general
         Args:
@@ -18316,9 +16950,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_schedule_delete_swap_shifts_change_requests(self, user_id: str, team_id: str, swapShiftsChangeRequest_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property swapShiftsChangeRequests for users
+        """Delete navigation property swapShiftsChangeRequests for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/schedule/swapShiftsChangeRequests/{swapShiftsChangeRequest-id}
         Operation type: general
         Args:
@@ -18336,10 +16968,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_get_swap_shifts_change_requests(self, user_id: str, team_id: str, swapShiftsChangeRequest_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get swapShiftsChangeRequests from users
+    async def users_joined_teams_schedule_get_swap_shifts_change_requests(self, user_id: str, team_id: str, swapShiftsChangeRequest_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get swapShiftsChangeRequests from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/schedule/swapShiftsChangeRequests/{swapShiftsChangeRequest-id}
         Operation type: general
         Args:
@@ -18381,10 +17011,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_update_swap_shifts_change_requests(self, user_id: str, team_id: str, swapShiftsChangeRequest_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property swapShiftsChangeRequests in users
+    async def users_joined_teams_schedule_update_swap_shifts_change_requests(self, user_id: str, team_id: str, swapShiftsChangeRequest_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property swapShiftsChangeRequests in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/schedule/swapShiftsChangeRequests/{swapShiftsChangeRequest-id}
         Operation type: general
         Args:
@@ -18403,10 +17031,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_create_time_cards(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to timeCards for users
+    async def users_joined_teams_schedule_create_time_cards(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to timeCards for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/schedule/timeCards
         Operation type: general
         Args:
@@ -18424,10 +17050,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_joined_teams_team_schedule_time_cards_clock_in(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action clockIn
+    async def users_user_joined_teams_team_schedule_time_cards_clock_in(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action clockIn
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/schedule/timeCards/clockIn
         Operation type: general
         Args:
@@ -18446,9 +17070,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_schedule_delete_time_cards(self, user_id: str, team_id: str, timeCard_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property timeCards for users
+        """Delete navigation property timeCards for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/schedule/timeCards/{timeCard-id}
         Operation type: general
         Args:
@@ -18466,10 +17088,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_get_time_cards(self, user_id: str, team_id: str, timeCard_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get timeCards from users
+    async def users_joined_teams_schedule_get_time_cards(self, user_id: str, team_id: str, timeCard_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get timeCards from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/schedule/timeCards/{timeCard-id}
         Operation type: general
         Args:
@@ -18511,10 +17131,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_update_time_cards(self, user_id: str, team_id: str, timeCard_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property timeCards in users
+    async def users_joined_teams_schedule_update_time_cards(self, user_id: str, team_id: str, timeCard_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property timeCards in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/schedule/timeCards/{timeCard-id}
         Operation type: general
         Args:
@@ -18533,10 +17151,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_joined_teams_team_schedule_time_cards_time_card_clock_out(self, user_id: str, team_id: str, timeCard_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action clockOut
+    async def users_user_joined_teams_team_schedule_time_cards_time_card_clock_out(self, user_id: str, team_id: str, timeCard_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action clockOut
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/schedule/timeCards/{timeCard-id}/clockOut
         Operation type: general
         Args:
@@ -18555,10 +17171,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_joined_teams_team_schedule_time_cards_time_card_confirm(self, user_id: str, team_id: str, timeCard_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action confirm
+    async def users_user_joined_teams_team_schedule_time_cards_time_card_confirm(self, user_id: str, team_id: str, timeCard_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action confirm
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/schedule/timeCards/{timeCard-id}/confirm
         Operation type: general
         Args:
@@ -18576,10 +17190,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_joined_teams_team_schedule_time_cards_time_card_end_break(self, user_id: str, team_id: str, timeCard_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action endBreak
+    async def users_user_joined_teams_team_schedule_time_cards_time_card_end_break(self, user_id: str, team_id: str, timeCard_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action endBreak
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/schedule/timeCards/{timeCard-id}/endBreak
         Operation type: general
         Args:
@@ -18598,10 +17210,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_joined_teams_team_schedule_time_cards_time_card_start_break(self, user_id: str, team_id: str, timeCard_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action startBreak
+    async def users_user_joined_teams_team_schedule_time_cards_time_card_start_break(self, user_id: str, team_id: str, timeCard_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action startBreak
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/schedule/timeCards/{timeCard-id}/startBreak
         Operation type: general
         Args:
@@ -18620,10 +17230,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_create_time_off_reasons(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to timeOffReasons for users
+    async def users_joined_teams_schedule_create_time_off_reasons(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to timeOffReasons for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/schedule/timeOffReasons
         Operation type: general
         Args:
@@ -18642,9 +17250,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_schedule_delete_time_off_reasons(self, user_id: str, team_id: str, timeOffReason_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property timeOffReasons for users
+        """Delete navigation property timeOffReasons for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/schedule/timeOffReasons/{timeOffReason-id}
         Operation type: general
         Args:
@@ -18662,10 +17268,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_get_time_off_reasons(self, user_id: str, team_id: str, timeOffReason_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get timeOffReasons from users
+    async def users_joined_teams_schedule_get_time_off_reasons(self, user_id: str, team_id: str, timeOffReason_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get timeOffReasons from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/schedule/timeOffReasons/{timeOffReason-id}
         Operation type: general
         Args:
@@ -18707,10 +17311,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_update_time_off_reasons(self, user_id: str, team_id: str, timeOffReason_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property timeOffReasons in users
+    async def users_joined_teams_schedule_update_time_off_reasons(self, user_id: str, team_id: str, timeOffReason_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property timeOffReasons in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/schedule/timeOffReasons/{timeOffReason-id}
         Operation type: general
         Args:
@@ -18729,10 +17331,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_create_time_off_requests(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to timeOffRequests for users
+    async def users_joined_teams_schedule_create_time_off_requests(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to timeOffRequests for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/schedule/timeOffRequests
         Operation type: general
         Args:
@@ -18751,9 +17351,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_schedule_delete_time_off_requests(self, user_id: str, team_id: str, timeOffRequest_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property timeOffRequests for users
+        """Delete navigation property timeOffRequests for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/schedule/timeOffRequests/{timeOffRequest-id}
         Operation type: general
         Args:
@@ -18771,10 +17369,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_get_time_off_requests(self, user_id: str, team_id: str, timeOffRequest_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get timeOffRequests from users
+    async def users_joined_teams_schedule_get_time_off_requests(self, user_id: str, team_id: str, timeOffRequest_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get timeOffRequests from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/schedule/timeOffRequests/{timeOffRequest-id}
         Operation type: general
         Args:
@@ -18816,10 +17412,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_update_time_off_requests(self, user_id: str, team_id: str, timeOffRequest_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property timeOffRequests in users
+    async def users_joined_teams_schedule_update_time_off_requests(self, user_id: str, team_id: str, timeOffRequest_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property timeOffRequests in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/schedule/timeOffRequests/{timeOffRequest-id}
         Operation type: general
         Args:
@@ -18838,10 +17432,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_create_times_off(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to timesOff for users
+    async def users_joined_teams_schedule_create_times_off(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to timesOff for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/schedule/timesOff
         Operation type: general
         Args:
@@ -18860,9 +17452,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_schedule_delete_times_off(self, user_id: str, team_id: str, timeOff_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property timesOff for users
+        """Delete navigation property timesOff for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/schedule/timesOff/{timeOff-id}
         Operation type: general
         Args:
@@ -18880,10 +17470,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_get_times_off(self, user_id: str, team_id: str, timeOff_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get timesOff from users
+    async def users_joined_teams_schedule_get_times_off(self, user_id: str, team_id: str, timeOff_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get timesOff from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/schedule/timesOff/{timeOff-id}
         Operation type: general
         Args:
@@ -18925,10 +17513,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_schedule_update_times_off(self, user_id: str, team_id: str, timeOff_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property timesOff in users
+    async def users_joined_teams_schedule_update_times_off(self, user_id: str, team_id: str, timeOff_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property timesOff in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/schedule/timesOff/{timeOff-id}
         Operation type: general
         Args:
@@ -18947,10 +17533,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_joined_teams_team_send_activity_notification(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Invoke action sendActivityNotification
+    async def users_user_joined_teams_team_send_activity_notification(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Invoke action sendActivityNotification
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/sendActivityNotification
         Operation type: general
         Args:
@@ -18968,10 +17552,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_create_tags(self, user_id: str, team_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to tags for users
+    async def users_joined_teams_create_tags(self, user_id: str, team_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to tags for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/tags
         Operation type: general
         Args:
@@ -18990,9 +17572,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_delete_tags(self, user_id: str, team_id: str, teamworkTag_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property tags for users
+        """Delete navigation property tags for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/tags/{teamworkTag-id}
         Operation type: general
         Args:
@@ -19010,10 +17590,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_get_tags(self, user_id: str, team_id: str, teamworkTag_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get tags from users
+    async def users_joined_teams_get_tags(self, user_id: str, team_id: str, teamworkTag_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get tags from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/tags/{teamworkTag-id}
         Operation type: general
         Args:
@@ -19055,10 +17633,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_update_tags(self, user_id: str, team_id: str, teamworkTag_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property tags in users
+    async def users_joined_teams_update_tags(self, user_id: str, team_id: str, teamworkTag_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property tags in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/tags/{teamworkTag-id}
         Operation type: general
         Args:
@@ -19077,10 +17653,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_tags_create_members(self, user_id: str, team_id: str, teamworkTag_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to members for users
+    async def users_joined_teams_tags_create_members(self, user_id: str, team_id: str, teamworkTag_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to members for users
         Teams operation: POST /users/{user-id}/joinedTeams/{team-id}/tags/{teamworkTag-id}/members
         Operation type: general
         Args:
@@ -19100,9 +17674,7 @@ class TeamsDataSource:
 
 
     async def users_joined_teams_tags_delete_members(self, user_id: str, team_id: str, teamworkTag_id: str, teamworkTagMember_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property members for users
+        """Delete navigation property members for users
         Teams operation: DELETE /users/{user-id}/joinedTeams/{team-id}/tags/{teamworkTag-id}/members/{teamworkTagMember-id}
         Operation type: general
         Args:
@@ -19121,10 +17693,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_tags_get_members(self, user_id: str, team_id: str, teamworkTag_id: str, teamworkTagMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get members from users
+    async def users_joined_teams_tags_get_members(self, user_id: str, team_id: str, teamworkTag_id: str, teamworkTagMember_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get members from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/tags/{teamworkTag-id}/members/{teamworkTagMember-id}
         Operation type: general
         Args:
@@ -19167,10 +17737,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_tags_update_members(self, user_id: str, team_id: str, teamworkTag_id: str, teamworkTagMember_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property members in users
+    async def users_joined_teams_tags_update_members(self, user_id: str, team_id: str, teamworkTag_id: str, teamworkTagMember_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property members in users
         Teams operation: PATCH /users/{user-id}/joinedTeams/{team-id}/tags/{teamworkTag-id}/members/{teamworkTagMember-id}
         Operation type: general
         Args:
@@ -19190,10 +17758,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_joined_teams_get_template(self, user_id: str, team_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get template from users
+    async def users_joined_teams_get_template(self, user_id: str, team_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get template from users
         Teams operation: GET /users/{user-id}/joinedTeams/{team-id}/template
         Operation type: general
         Args:
@@ -19234,10 +17800,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_user_license_details_get_teams_licensing_details(self, user_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Invoke function getTeamsLicensingDetails
+    async def users_user_license_details_get_teams_licensing_details(self, user_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Invoke function getTeamsLicensingDetails
         Teams operation: GET /users/{user-id}/licenseDetails/getTeamsLicensingDetails()
         Operation type: general
         Args:
@@ -19277,10 +17841,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_get_member_of(self, user_id: str, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get memberOf from users
+    async def users_get_member_of(self, user_id: str, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get memberOf from users
         Teams operation: GET /users/{user-id}/memberOf/{directoryObject-id}
         Operation type: general
         Args:
@@ -19321,10 +17883,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_get_member_of_as_directory_role(self, user_id: str, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get the item of type microsoft.graph.directoryObject as microsoft.graph.directoryRole
+    async def users_get_member_of_as_directory_role(self, user_id: str, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get the item of type microsoft.graph.directoryObject as microsoft.graph.directoryRole
         Teams operation: GET /users/{user-id}/memberOf/{directoryObject-id}/graph.directoryRole
         Operation type: general
         Args:
@@ -19365,10 +17925,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_create_scoped_role_member_of(self, user_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Create new navigation property to scopedRoleMemberOf for users
+    async def users_create_scoped_role_member_of(self, user_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Create new navigation property to scopedRoleMemberOf for users
         Teams operation: POST /users/{user-id}/scopedRoleMemberOf
         Operation type: general
         Args:
@@ -19386,9 +17944,7 @@ class TeamsDataSource:
 
 
     async def users_delete_scoped_role_member_of(self, user_id: str, scopedRoleMembership_id: str) -> TeamsResponse:
-
-        """
-        Delete navigation property scopedRoleMemberOf for users
+        """Delete navigation property scopedRoleMemberOf for users
         Teams operation: DELETE /users/{user-id}/scopedRoleMemberOf/{scopedRoleMembership-id}
         Operation type: general
         Args:
@@ -19405,10 +17961,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_get_scoped_role_member_of(self, user_id: str, scopedRoleMembership_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get scopedRoleMemberOf from users
+    async def users_get_scoped_role_member_of(self, user_id: str, scopedRoleMembership_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get scopedRoleMemberOf from users
         Teams operation: GET /users/{user-id}/scopedRoleMemberOf/{scopedRoleMembership-id}
         Operation type: general
         Args:
@@ -19449,10 +18003,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_update_scoped_role_member_of(self, user_id: str, scopedRoleMembership_id: str, body: Optional[Dict[str, Any]] = None) -> TeamsResponse:
-
-        """
-        Update the navigation property scopedRoleMemberOf in users
+    async def users_update_scoped_role_member_of(self, user_id: str, scopedRoleMembership_id: str, body: dict[str, Any] | None = None) -> TeamsResponse:
+        """Update the navigation property scopedRoleMemberOf in users
         Teams operation: PATCH /users/{user-id}/scopedRoleMemberOf/{scopedRoleMembership-id}
         Operation type: general
         Args:
@@ -19470,10 +18022,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_get_transitive_member_of(self, user_id: str, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get transitiveMemberOf from users
+    async def users_get_transitive_member_of(self, user_id: str, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get transitiveMemberOf from users
         Teams operation: GET /users/{user-id}/transitiveMemberOf/{directoryObject-id}
         Operation type: general
         Args:
@@ -19514,10 +18064,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_get_transitive_member_of_as_directory_role(self, user_id: str, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get the item of type microsoft.graph.directoryObject as microsoft.graph.directoryRole
+    async def users_get_transitive_member_of_as_directory_role(self, user_id: str, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get the item of type microsoft.graph.directoryObject as microsoft.graph.directoryRole
         Teams operation: GET /users/{user-id}/transitiveMemberOf/{directoryObject-id}/graph.directoryRole
         Operation type: general
         Args:
@@ -19558,10 +18106,8 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def users_get_transitive_member_of_as_group(self, user_id: str, directoryObject_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
-
-        """
-        Get the item of type microsoft.graph.directoryObject as microsoft.graph.group
+    async def users_get_transitive_member_of_as_group(self, user_id: str, directoryObject_id: str, select: list[str] | None = None, expand: list[str] | None = None, filter: str | None = None, orderby: list[str] | None = None, search: str | None = None, top: int | None = None, skip: int | None = None) -> TeamsResponse:
+        """Get the item of type microsoft.graph.directoryObject as microsoft.graph.group
         Teams operation: GET /users/{user-id}/transitiveMemberOf/{directoryObject-id}/graph.group
         Operation type: general
         Args:

@@ -17,6 +17,7 @@ class ConnectorStatus(Enum):
 
 class ConnectorType(Enum):
     """Enumeration of connector types"""
+
     GOOGLE_DRIVE = "google_drive"
     GOOGLE_GMAIL = "google_gmail"
     GOOGLE_CALENDAR = "google_calendar"
@@ -53,6 +54,7 @@ class ConnectorType(Enum):
 
 class AuthenticationType(Enum):
     """Enumeration of authentication types"""
+
     OAUTH2 = "oauth2"
     API_KEY = "api_key"
     BEARER_TOKEN = "bearer_token"
@@ -64,6 +66,7 @@ class AuthenticationType(Enum):
 
 class SyncStatus(Enum):
     """Enumeration of sync statuses"""
+
     NOT_STARTED = "not_started"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"

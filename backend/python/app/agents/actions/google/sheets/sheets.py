@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-from typing import List, Optional
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -14,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 class GoogleSheets:
     """Google Sheets tool exposed to the agents using GoogleSheetsDataSource"""
+
     def __init__(self, client: GoogleClient) -> None:
         """Initialize the Google Sheets tool"""
         """
@@ -45,11 +45,11 @@ class GoogleSheets:
                 name="title",
                 type=ParameterType.STRING,
                 description="Title of the spreadsheet",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def create_spreadsheet(self, title: Optional[str] = None) -> tuple[bool, str]:
+    def create_spreadsheet(self, title: str | None = None) -> tuple[bool, str]:
         """Create a new Google Sheets spreadsheet"""
         """
         Args:
@@ -63,13 +63,13 @@ class GoogleSheets:
             if title:
                 spreadsheet_data = {
                     "properties": {
-                        "title": title
-                    }
+                        "title": title,
+                    },
                 }
 
             # Use GoogleSheetsDataSource method
             spreadsheet = self._run_async(self.client.spreadsheets_create(
-                body=spreadsheet_data
+                body=spreadsheet_data,
             ))
 
             return True, json.dumps({
@@ -77,7 +77,7 @@ class GoogleSheets:
                 "title": spreadsheet.get("properties", {}).get("title", ""),
                 "url": spreadsheet.get("spreadsheetUrl", ""),
                 "sheets": spreadsheet.get("sheets", []),
-                "message": "Spreadsheet created successfully"
+                "message": "Spreadsheet created successfully",
             })
         except Exception as e:
             logger.error(f"Failed to create spreadsheet: {e}")
@@ -91,27 +91,27 @@ class GoogleSheets:
                 name="spreadsheet_id",
                 type=ParameterType.STRING,
                 description="The ID of the spreadsheet to retrieve",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="ranges",
                 type=ParameterType.STRING,
                 description="Comma-separated list of ranges to retrieve",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="include_grid_data",
                 type=ParameterType.BOOLEAN,
                 description="Whether to include grid data",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_spreadsheet(
         self,
         spreadsheet_id: str,
-        ranges: Optional[str] = None,
-        include_grid_data: Optional[bool] = None
+        ranges: str | None = None,
+        include_grid_data: bool | None = None,
     ) -> tuple[bool, str]:
         """Get a Google Sheets spreadsheet"""
         """
@@ -127,7 +127,7 @@ class GoogleSheets:
             spreadsheet = self._run_async(self.client.spreadsheets_get(
                 spreadsheetId=spreadsheet_id,
                 ranges=ranges,
-                includeGridData=include_grid_data
+                includeGridData=include_grid_data,
             ))
 
             return True, json.dumps(spreadsheet)
@@ -143,34 +143,34 @@ class GoogleSheets:
                 name="spreadsheet_id",
                 type=ParameterType.STRING,
                 description="The ID of the spreadsheet",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="range",
                 type=ParameterType.STRING,
                 description="The range to retrieve (e.g., 'Sheet1!A1:C10')",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="major_dimension",
                 type=ParameterType.STRING,
                 description="Major dimension (ROWS or COLUMNS)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="value_render_option",
                 type=ParameterType.STRING,
                 description="How values should be rendered (FORMATTED_VALUE, UNFORMATTED_VALUE, FORMULA)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_values(
         self,
         spreadsheet_id: str,
         range: str,
-        major_dimension: Optional[str] = None,
-        value_render_option: Optional[str] = None
+        major_dimension: str | None = None,
+        value_render_option: str | None = None,
     ) -> tuple[bool, str]:
         """Get values from a spreadsheet range"""
         """
@@ -188,7 +188,7 @@ class GoogleSheets:
                 spreadsheetId=spreadsheet_id,
                 range=range,
                 majorDimension=major_dimension,
-                valueRenderOption=value_render_option
+                valueRenderOption=value_render_option,
             ))
 
             return True, json.dumps(values)
@@ -204,35 +204,35 @@ class GoogleSheets:
                 name="spreadsheet_id",
                 type=ParameterType.STRING,
                 description="The ID of the spreadsheet",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="range",
                 type=ParameterType.STRING,
                 description="The range to update (e.g., 'Sheet1!A1:C10')",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="values",
                 type=ParameterType.ARRAY,
                 description="2D array of values to write",
                 required=True,
-                items={"type": "array", "items": {"type": "string"}}
+                items={"type": "array", "items": {"type": "string"}},
             ),
             ToolParameter(
                 name="value_input_option",
                 type=ParameterType.STRING,
                 description="How input data should be interpreted (RAW, USER_ENTERED)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def update_values(
         self,
         spreadsheet_id: str,
         range: str,
-        values: List[List[str]],
-        value_input_option: Optional[str] = None
+        values: list[list[str]],
+        value_input_option: str | None = None,
     ) -> tuple[bool, str]:
         """Update values in a spreadsheet range"""
         """
@@ -247,7 +247,7 @@ class GoogleSheets:
         try:
             # Prepare update data
             update_data = {
-                "values": values
+                "values": values,
             }
 
             # Use GoogleSheetsDataSource method
@@ -255,7 +255,7 @@ class GoogleSheets:
                 spreadsheetId=spreadsheet_id,
                 range=range,
                 valueInputOption=value_input_option,
-                body=update_data
+                body=update_data,
             ))
 
             return True, json.dumps({
@@ -264,7 +264,7 @@ class GoogleSheets:
                 "updated_rows": result.get("updatedRows", 0),
                 "updated_columns": result.get("updatedColumns", 0),
                 "updated_cells": result.get("updatedCells", 0),
-                "message": "Values updated successfully"
+                "message": "Values updated successfully",
             })
         except Exception as e:
             logger.error(f"Failed to update values: {e}")
@@ -278,35 +278,35 @@ class GoogleSheets:
                 name="spreadsheet_id",
                 type=ParameterType.STRING,
                 description="The ID of the spreadsheet",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="range",
                 type=ParameterType.STRING,
                 description="The range to append to (e.g., 'Sheet1!A1:C10')",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="values",
                 type=ParameterType.ARRAY,
                 description="2D array of values to append",
                 required=True,
-                items={"type": "array", "items": {"type": "string"}}
+                items={"type": "array", "items": {"type": "string"}},
             ),
             ToolParameter(
                 name="value_input_option",
                 type=ParameterType.STRING,
                 description="How input data should be interpreted (RAW, USER_ENTERED)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def append_values(
         self,
         spreadsheet_id: str,
         range: str,
-        values: List[List[str]],
-        value_input_option: Optional[str] = None
+        values: list[list[str]],
+        value_input_option: str | None = None,
     ) -> tuple[bool, str]:
         """Append values to a spreadsheet range"""
         """
@@ -321,7 +321,7 @@ class GoogleSheets:
         try:
             # Prepare append data
             append_data = {
-                "values": values
+                "values": values,
             }
 
             # Use GoogleSheetsDataSource method
@@ -329,7 +329,7 @@ class GoogleSheets:
                 spreadsheetId=spreadsheet_id,
                 range=range,
                 valueInputOption=value_input_option,
-                body=append_data
+                body=append_data,
             ))
 
             return True, json.dumps({
@@ -338,7 +338,7 @@ class GoogleSheets:
                 "updated_rows": result.get("updatedRows", 0),
                 "updated_columns": result.get("updatedColumns", 0),
                 "updated_cells": result.get("updatedCells", 0),
-                "message": "Values appended successfully"
+                "message": "Values appended successfully",
             })
         except Exception as e:
             logger.error(f"Failed to append values: {e}")
@@ -352,15 +352,15 @@ class GoogleSheets:
                 name="spreadsheet_id",
                 type=ParameterType.STRING,
                 description="The ID of the spreadsheet",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="range",
                 type=ParameterType.STRING,
                 description="The range to clear (e.g., 'Sheet1!A1:C10')",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def clear_values(self, spreadsheet_id: str, range: str) -> tuple[bool, str]:
         """Clear values from a spreadsheet range"""
@@ -375,13 +375,13 @@ class GoogleSheets:
             # Use GoogleSheetsDataSource method
             result = self._run_async(self.client.spreadsheets_values_clear(
                 spreadsheetId=spreadsheet_id,
-                range=range
+                range=range,
             ))
 
             return True, json.dumps({
                 "spreadsheet_id": spreadsheet_id,
                 "cleared_range": result.get("clearedRange", ""),
-                "message": "Values cleared successfully"
+                "message": "Values cleared successfully",
             })
         except Exception as e:
             logger.error(f"Failed to clear values: {e}")
@@ -395,28 +395,28 @@ class GoogleSheets:
                 name="spreadsheet_id",
                 type=ParameterType.STRING,
                 description="The ID of the spreadsheet",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="ranges",
                 type=ParameterType.ARRAY,
                 description="List of ranges to retrieve",
                 required=True,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="major_dimension",
                 type=ParameterType.STRING,
                 description="Major dimension (ROWS or COLUMNS)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def batch_get_values(
         self,
         spreadsheet_id: str,
-        ranges: List[str],
-        major_dimension: Optional[str] = None
+        ranges: list[str],
+        major_dimension: str | None = None,
     ) -> tuple[bool, str]:
         """Get values from multiple ranges in a spreadsheet"""
         """
@@ -432,7 +432,7 @@ class GoogleSheets:
             values = self._run_async(self.client.spreadsheets_values_batch_get(
                 spreadsheetId=spreadsheet_id,
                 ranges=ranges,
-                majorDimension=major_dimension
+                majorDimension=major_dimension,
             ))
 
             return True, json.dumps(values)

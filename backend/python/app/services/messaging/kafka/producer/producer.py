@@ -1,6 +1,6 @@
 import json
 from logging import Logger
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from aiokafka import AIOKafkaProducer  # type: ignore
 
@@ -16,16 +16,16 @@ class KafkaMessagingProducer(IMessagingProducer):
                 logger: Logger,
                 kafka_config: KafkaProducerConfig) -> None:
         self.logger = logger
-        self.producer: Optional[AIOKafkaProducer] = None
+        self.producer: AIOKafkaProducer | None = None
         self.kafka_config = kafka_config
-        self.processed_messages: Dict[str, List[int]] = {}
+        self.processed_messages: dict[str, list[int]] = {}
 
     @staticmethod
-    def kafka_config_to_dict(kafka_config: KafkaProducerConfig) -> Dict[str, Any]:
+    def kafka_config_to_dict(kafka_config: KafkaProducerConfig) -> dict[str, Any]:
         """Convert KafkaProducerConfig dataclass to dictionary format for aiokafka consumer"""
         return {
-            'bootstrap_servers': ",".join(kafka_config.bootstrap_servers),
-            'client_id': kafka_config.client_id,
+            "bootstrap_servers": ",".join(kafka_config.bootstrap_servers),
+            "client_id": kafka_config.client_id,
         }
 
     # implementing abstract methods from IMessagingProducer
@@ -41,7 +41,7 @@ class KafkaMessagingProducer(IMessagingProducer):
             self.logger.info(f"✅ Kafka producer initialized and started with client_id: {producer_config.get('client_id')}")
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to initialize Kafka producer: {str(e)}")
+            self.logger.error(f"❌ Failed to initialize Kafka producer: {e!s}")
             raise
 
     # implementing abstract methods from IMessagingProducer
@@ -53,7 +53,7 @@ class KafkaMessagingProducer(IMessagingProducer):
                 self.producer = None
                 self.logger.info("✅ Kafka producer stopped successfully")
             except Exception as e:
-                self.logger.error(f"❌ Error stopping Kafka producer: {str(e)}")
+                self.logger.error(f"❌ Error stopping Kafka producer: {e!s}")
 
     # implementing abstract methods from IMessagingProducer
     async def start(self) -> None:
@@ -72,34 +72,34 @@ class KafkaMessagingProducer(IMessagingProducer):
     async def send_message(
         self,
         topic: str,
-        message: Dict[str, Any],
-        key: Optional[str] = None
+        message: dict[str, Any],
+        key: str | None = None,
     ) -> bool:
         """Send a message to a Kafka topic"""
         try:
             if self.producer is None:
                 await self.initialize()
 
-            message_value = json.dumps(message).encode('utf-8')
-            message_key = key.encode('utf-8') if key else None
+            message_value = json.dumps(message).encode("utf-8")
+            message_key = key.encode("utf-8") if key else None
 
             record_metadata = await self.producer.send_and_wait( # type: ignore
                 topic=topic,
                 key=message_key,
-                value=message_value
+                value=message_value,
             )
 
             self.logger.info(
                 "✅ Message successfully produced to %s [%s] at offset %s",
                 record_metadata.topic,
                 record_metadata.partition,
-                record_metadata.offset
+                record_metadata.offset,
             )
 
             return True
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to send message to Kafka: {str(e)}")
+            self.logger.error(f"❌ Failed to send message to Kafka: {e!s}")
             return False
 
     # implementing abstract methods from IMessagingProducer
@@ -107,28 +107,28 @@ class KafkaMessagingProducer(IMessagingProducer):
         self,
         topic: str,
         event_type: str,
-        payload: Dict[str, Any],
-        key: Optional[str] = None
+        payload: dict[str, Any],
+        key: str | None = None,
     ) -> bool:
         """Send an event message with standardized format"""
         try:
             # Prepare the message
             message = {
-                'eventType': event_type,
-                'payload': payload,
-                'timestamp': get_epoch_timestamp_in_ms()
+                "eventType": event_type,
+                "payload": payload,
+                "timestamp": get_epoch_timestamp_in_ms(),
             }
 
             # Send the message to sync-events topic using aiokafka
             await self.send_message(
                 topic=topic,
                 message=message,
-                key=key
+                key=key,
             )
 
             self.logger.info(f"Successfully sent event with type: {event_type} to topic: {topic}")
             return True
 
         except Exception as e:
-            self.logger.error(f"Error sending sync event: {str(e)}")
+            self.logger.error(f"Error sending sync event: {e!s}")
             return False

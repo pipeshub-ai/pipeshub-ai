@@ -3,7 +3,6 @@ import hashlib
 import uuid
 from io import BytesIO
 from logging import Logger
-from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlparse, urlunparse
 
 import aiohttp
@@ -35,25 +34,25 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # MIME type mapping for common file extensions
 FILE_MIME_TYPES = {
-    '.pdf': MimeTypes.PDF,
-    '.doc': MimeTypes.DOC,
-    '.docx': MimeTypes.DOCX,
-    '.xls': MimeTypes.XLS,
-    '.xlsx': MimeTypes.XLSX,
-    '.ppt': MimeTypes.PPT,
-    '.pptx': MimeTypes.PPTX,
-    '.txt': MimeTypes.TEXT,
-    '.csv': MimeTypes.CSV,
-    '.json': MimeTypes.JSON,
-    '.xml': MimeTypes.XML,
-    '.zip': MimeTypes.ZIP,
-    '.jpg': MimeTypes.JPEG,
-    '.jpeg': MimeTypes.JPEG,
-    '.png': MimeTypes.PNG,
-    '.gif': MimeTypes.GIF,
-    '.svg': MimeTypes.SVG,
-    '.html': MimeTypes.HTML,
-    '.htm': MimeTypes.HTML,
+    ".pdf": MimeTypes.PDF,
+    ".doc": MimeTypes.DOC,
+    ".docx": MimeTypes.DOCX,
+    ".xls": MimeTypes.XLS,
+    ".xlsx": MimeTypes.XLSX,
+    ".ppt": MimeTypes.PPT,
+    ".pptx": MimeTypes.PPTX,
+    ".txt": MimeTypes.TEXT,
+    ".csv": MimeTypes.CSV,
+    ".json": MimeTypes.JSON,
+    ".xml": MimeTypes.XML,
+    ".zip": MimeTypes.ZIP,
+    ".jpg": MimeTypes.JPEG,
+    ".jpeg": MimeTypes.JPEG,
+    ".png": MimeTypes.PNG,
+    ".gif": MimeTypes.GIF,
+    ".svg": MimeTypes.SVG,
+    ".html": MimeTypes.HTML,
+    ".htm": MimeTypes.HTML,
 }
 
 class WebApp(App):
@@ -71,7 +70,7 @@ class WebApp(App):
         .add_documentation_link(DocumentationLink(
             "Web Connector Guide",
             "https://docs.pipeshub.ai/connectors/web",
-            "setup"
+            "setup",
         ))
         .with_scheduled_config(True, 1440)  # Daily sync
         .add_sync_custom_field(CustomField(
@@ -79,7 +78,7 @@ class WebApp(App):
             display_name="Website URL",
             field_type="TEXT",
             required=True,
-            description="The URL of the website to crawl (e.g., https://example.com)"
+            description="The URL of the website to crawl (e.g., https://example.com)",
         ))
         .add_sync_custom_field(CustomField(
             name="type",
@@ -88,7 +87,7 @@ class WebApp(App):
             required=True,
             default_value="single",
             options=["single", "recursive"],
-            description="Choose whether to crawl a single page or recursively crawl linked pages"
+            description="Choose whether to crawl a single page or recursively crawl linked pages",
         ))
         .add_sync_custom_field(CustomField(
             name="depth",
@@ -96,7 +95,7 @@ class WebApp(App):
             field_type="NUMBER",
             required=False,
             default_value="3",
-            description="Maximum depth for recursive crawling (1-10, only applies to recursive type)"
+            description="Maximum depth for recursive crawling (1-10, only applies to recursive type)",
         ))
         .add_sync_custom_field(CustomField(
             name="max_pages",
@@ -104,7 +103,7 @@ class WebApp(App):
             field_type="NUMBER",
             required=False,
             default_value="100",
-            description="Maximum number of pages to crawl (1-1000)"
+            description="Maximum number of pages to crawl (1-1000)",
         ))
         .add_sync_custom_field(CustomField(
             name="follow_external",
@@ -112,13 +111,12 @@ class WebApp(App):
             field_type="BOOLEAN",
             required=False,
             default_value="false",
-            description="Follow links to external domains"
-        ))
+            description="Follow links to external domains",
+        )),
     )\
     .build_decorator()
 class WebConnector(BaseConnector):
-    """
-    Web connector for crawling and indexing web pages.
+    """Web connector for crawling and indexing web pages.
 
     Features:
     - Single page or recursive crawling
@@ -137,21 +135,21 @@ class WebConnector(BaseConnector):
         config_service: ConfigurationService,
     ) -> None:
         super().__init__(
-            WebApp(), logger, data_entities_processor, data_store_provider, config_service
+            WebApp(), logger, data_entities_processor, data_store_provider, config_service,
         )
         self.connector_name = Connectors.WEB
 
         # Configuration
-        self.url: Optional[str] = None
+        self.url: str | None = None
         self.crawl_type: str = "single"
         self.max_depth: int = 3
         self.max_pages: int = 100
         self.follow_external: bool = False
 
         # Crawling state
-        self.visited_urls: Set[str] = set()
-        self.base_domain: Optional[str] = None
-        self.session: Optional[aiohttp.ClientSession] = None
+        self.visited_urls: set[str] = set()
+        self.base_domain: str | None = None
+        self.session: aiohttp.ClientSession | None = None
 
         # Batch processing
         self.batch_size: int = 50
@@ -161,9 +159,9 @@ class WebConnector(BaseConnector):
         try:
             # Try to get config from different paths
             config = await self.config_service.get_config(
-                "/services/connectors/web/config"
+                "/services/connectors/web/config",
             ) or await self.config_service.get_config(
-                f"/services/connectors/web/config/{self.data_entities_processor.org_id}"
+                f"/services/connectors/web/config/{self.data_entities_processor.org_id}",
             )
 
             if not config:
@@ -218,12 +216,12 @@ class WebConnector(BaseConnector):
                     "sec-ch-ua": '"Google Chrome";v="119", "Chromium";v="119", "Not?A_Brand";v="24"',
                     "sec-ch-ua-mobile": "?0",
                     "sec-ch-ua-platform": '"macOS"',
-                }
+                },
             )
 
             self.logger.info(
                 f"✅ Web connector initialized: url={self.url}, type={self.crawl_type}, "
-                f"depth={self.max_depth}, max_pages={self.max_pages}"
+                f"depth={self.max_depth}, max_pages={self.max_pages}",
             )
             return True
 
@@ -241,9 +239,8 @@ class WebConnector(BaseConnector):
                 if response.status < HttpStatusCode.BAD_REQUEST.value:
                     self.logger.info(f"✅ Website accessible: {self.url} (status: {response.status})")
                     return True
-                else:
-                    self.logger.warning(f"⚠️ Website returned status {response.status}: {self.url}")
-                    return False
+                self.logger.warning(f"⚠️ Website returned status {response.status}: {self.url}")
+                return False
         except Exception as e:
             self.logger.error(f"❌ Failed to access website: {e}")
             return False
@@ -263,7 +260,7 @@ class WebConnector(BaseConnector):
                 await self._crawl_single_page(self.url)
 
             self.logger.info(
-                f"✅ Web crawl completed: {len(self.visited_urls)} pages processed"
+                f"✅ Web crawl completed: {len(self.visited_urls)} pages processed",
             )
 
         except Exception as e:
@@ -286,8 +283,8 @@ class WebConnector(BaseConnector):
         """Recursively crawl pages starting from start_url."""
         try:
             # Queue for BFS crawling: (url, depth, referer)
-            queue: List[Tuple[str, int, Optional[str]]] = [(start_url, depth, None)]
-            batch_records: List[Tuple[FileRecord, List[Permission]]] = []
+            queue: list[tuple[str, int, str | None]] = [(start_url, depth, None)]
+            batch_records: list[tuple[FileRecord, list[Permission]]] = []
 
             while queue and len(self.visited_urls) < self.max_pages:
                 current_url, current_depth, referer = queue.pop(0)
@@ -303,13 +300,13 @@ class WebConnector(BaseConnector):
 
                 self.logger.info(
                     f"📄 Crawling [{len(self.visited_urls) + 1}/{self.max_pages}] "
-                    f"(depth {current_depth}): {current_url}"
+                    f"(depth {current_depth}): {current_url}",
                 )
 
                 try:
                     # Fetch and process the page with referer
                     file_record, permissions = await self._fetch_and_process_url(
-                        current_url, current_depth, referer=referer
+                        current_url, current_depth, referer=referer,
                     )
 
                     if file_record:
@@ -319,7 +316,7 @@ class WebConnector(BaseConnector):
                         # Extract links if we haven't reached max depth
                         if current_depth < self.max_depth and file_record.mime_type == MimeTypes.HTML.value:
                             links = await self._extract_links_from_content(
-                                current_url, file_record, referer=referer
+                                current_url, file_record, referer=referer,
                             )
 
                             # Add new links to queue with current URL as referer
@@ -354,8 +351,8 @@ class WebConnector(BaseConnector):
             raise
 
     async def _fetch_and_process_url(
-        self, url: str, depth: int, referer: Optional[str] = None
-    ) -> Optional[Tuple[FileRecord, List[Permission]]]:
+        self, url: str, depth: int, referer: str | None = None,
+    ) -> tuple[FileRecord, list[Permission]] | None:
         """Fetch URL content and create a FileRecord."""
         try:
             # Add referer header if provided (mimics browser behavior)
@@ -389,7 +386,7 @@ class WebConnector(BaseConnector):
                 # For HTML pages, extract clean content
                 if mime_type == MimeTypes.HTML:
                     try:
-                        soup = BeautifulSoup(content_bytes, 'html.parser')
+                        soup = BeautifulSoup(content_bytes, "html.parser")
                         title = self._extract_title(soup, final_url)
 
                         # Remove script and style elements
@@ -397,10 +394,10 @@ class WebConnector(BaseConnector):
                             script.decompose()
 
                         # Get text content
-                        text_content = soup.get_text(separator='\n', strip=True)
+                        text_content = soup.get_text(separator="\n", strip=True)
 
                         # Store cleaned HTML for indexing
-                        content_bytes = text_content.encode('utf-8')
+                        content_bytes = text_content.encode("utf-8")
                         size_in_bytes = len(content_bytes)
 
                     except Exception as e:
@@ -442,11 +439,11 @@ class WebConnector(BaseConnector):
                         type=PermissionType.READ,
                         entity_type=EntityType.ORG,
 
-                    )
+                    ),
                 ]
 
                 self.logger.debug(
-                    f"✅ Processed: {title} ({mime_type.value}, {size_in_bytes} bytes)"
+                    f"✅ Processed: {title} ({mime_type.value}, {size_in_bytes} bytes)",
                 )
 
                 return file_record, permissions
@@ -459,8 +456,8 @@ class WebConnector(BaseConnector):
             return None
 
     async def _extract_links_from_content(
-        self, base_url: str, file_record: FileRecord, referer: Optional[str] = None
-    ) -> List[str]:
+        self, base_url: str, file_record: FileRecord, referer: str | None = None,
+    ) -> list[str]:
         """Extract valid links from HTML content."""
         links = []
 
@@ -476,11 +473,11 @@ class WebConnector(BaseConnector):
                     return links
 
                 html_content = await response.text()
-                soup = BeautifulSoup(html_content, 'html.parser')
+                soup = BeautifulSoup(html_content, "html.parser")
 
                 # Find all anchor tags
-                for anchor in soup.find_all('a', href=True):
-                    href = anchor['href']
+                for anchor in soup.find_all("a", href=True):
+                    href = anchor["href"]
 
                     # Convert relative URLs to absolute
                     absolute_url = urljoin(base_url, href)
@@ -501,7 +498,7 @@ class WebConnector(BaseConnector):
             base_parsed = urlparse(base_url)
 
             # Skip non-http(s) schemes
-            if parsed.scheme not in ['http', 'https']:
+            if parsed.scheme not in ["http", "https"]:
                 return False
 
             # Skip anchors and fragments
@@ -509,8 +506,8 @@ class WebConnector(BaseConnector):
                 return False
 
             # Skip common file types we don't want to index
-            skip_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.css', '.js', '.ico',
-                             '.svg', '.woff', '.woff2', '.ttf', '.eot']
+            skip_extensions = [".jpg", ".jpeg", ".png", ".gif", ".css", ".js", ".ico",
+                             ".svg", ".woff", ".woff2", ".ttf", ".eot"]
             if any(parsed.path.lower().endswith(ext) for ext in skip_extensions):
                 return False
 
@@ -531,29 +528,29 @@ class WebConnector(BaseConnector):
             normalized = urlunparse((
                 parsed.scheme,
                 parsed.netloc.lower(),
-                parsed.path.rstrip('/') or '/',
+                parsed.path.rstrip("/") or "/",
                 parsed.params,
                 parsed.query,
-                ''  # Remove fragment
+                "",  # Remove fragment
             ))
             return normalized
         except Exception:
             return url
 
-    def _determine_mime_type(self, url: str, content_type: str) -> Tuple[MimeTypes, Optional[str]]:
+    def _determine_mime_type(self, url: str, content_type: str) -> tuple[MimeTypes, str | None]:
         """Determine MIME type and extension from URL and content-type header."""
         # First, try to get from content-type header
         if content_type:
-            if 'html' in content_type:
-                return MimeTypes.HTML, 'html'
-            elif 'pdf' in content_type:
-                return MimeTypes.PDF, 'pdf'
-            elif 'json' in content_type:
-                return MimeTypes.JSON, 'json'
-            elif 'xml' in content_type:
-                return MimeTypes.XML, 'xml'
-            elif 'plain' in content_type:
-                return MimeTypes.TEXT, 'txt'
+            if "html" in content_type:
+                return MimeTypes.HTML, "html"
+            if "pdf" in content_type:
+                return MimeTypes.PDF, "pdf"
+            if "json" in content_type:
+                return MimeTypes.JSON, "json"
+            if "xml" in content_type:
+                return MimeTypes.XML, "xml"
+            if "plain" in content_type:
+                return MimeTypes.TEXT, "txt"
 
         # Try to get from URL extension
         parsed_url = urlparse(url)
@@ -561,10 +558,10 @@ class WebConnector(BaseConnector):
 
         for ext, mime_type in FILE_MIME_TYPES.items():
             if path.endswith(ext):
-                return mime_type, ext.lstrip('.')
+                return mime_type, ext.lstrip(".")
 
         # Default to HTML
-        return MimeTypes.HTML, 'html'
+        return MimeTypes.HTML, "html"
 
     def _extract_title(self, soup: BeautifulSoup, url: str) -> str:
         """Extract page title from BeautifulSoup object."""
@@ -573,14 +570,14 @@ class WebConnector(BaseConnector):
             return soup.title.string.strip()
 
         # Try <h1> tag
-        h1 = soup.find('h1')
+        h1 = soup.find("h1")
         if h1:
             return h1.get_text(strip=True)
 
         # Try og:title meta tag
-        og_title = soup.find('meta', property='og:title')
-        if og_title and og_title.get('content'):
-            return og_title['content'].strip()
+        og_title = soup.find("meta", property="og:title")
+        if og_title and og_title.get("content"):
+            return og_title["content"].strip()
 
         # Fallback to URL
         return self._extract_title_from_url(url)
@@ -588,19 +585,19 @@ class WebConnector(BaseConnector):
     def _extract_title_from_url(self, url: str) -> str:
         """Extract a title from the URL path."""
         parsed = urlparse(url)
-        path = parsed.path.strip('/')
+        path = parsed.path.strip("/")
 
         if path:
             # Get last segment and clean it up
-            segments = path.split('/')
+            segments = path.split("/")
             last_segment = segments[-1]
 
             # Remove file extension
-            if '.' in last_segment:
-                last_segment = last_segment.rsplit('.', 1)[0]
+            if "." in last_segment:
+                last_segment = last_segment.rsplit(".", 1)[0]
 
             # Replace hyphens and underscores with spaces and title case
-            title = last_segment.replace('-', ' ').replace('_', ' ').title()
+            title = last_segment.replace("-", " ").replace("_", " ").title()
             return title if title else url
 
         return parsed.netloc
@@ -608,15 +605,15 @@ class WebConnector(BaseConnector):
     @classmethod
     async def create_connector(
         cls, logger: Logger, data_store_provider: DataStoreProvider,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
     ) -> BaseConnector:
         """Factory method to create a WebConnector instance."""
         data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
+            logger, data_store_provider, config_service,
         )
         await data_entities_processor.initialize()
         return WebConnector(
-            logger, data_entities_processor, data_store_provider, config_service
+            logger, data_entities_processor, data_store_provider, config_service,
         )
 
     async def cleanup(self) -> None:
@@ -627,20 +624,18 @@ class WebConnector(BaseConnector):
         self.visited_urls.clear()
         self.logger.info("✅ Web connector cleanup completed")
 
-    async def reindex_records(self, record_results: List[Record]) -> None:
+    async def reindex_records(self, record_results: list[Record]) -> None:
         """Reindex records - not implemented for Web connector yet."""
         self.logger.warning("Reindex not implemented for Web connector")
-        pass
 
-    async def handle_webhook_notification(self, notification: Dict) -> None:
+    async def handle_webhook_notification(self, notification: dict) -> None:
         """Web connector doesn't support webhooks."""
-        pass
 
-    async def get_signed_url(self, record: Record) -> Optional[str]:
+    async def get_signed_url(self, record: Record) -> str | None:
         """Return the web URL as the signed URL."""
         return record.weburl if record.weburl else None
 
-    async def stream_record(self, record: Record) -> Optional[StreamingResponse]:
+    async def stream_record(self, record: Record) -> StreamingResponse | None:
         """Stream the web page content with proper content extraction."""
         if not record.weburl:
             return None
@@ -662,8 +657,8 @@ class WebConnector(BaseConnector):
                     BytesIO(content_bytes),
                     media_type=mime_type,
                     headers={
-                        "Content-Disposition": f"inline; filename={record.record_name}"
-                    }
+                        "Content-Disposition": f"inline; filename={record.record_name}",
+                    },
                 )
         except Exception as e:
             self.logger.error(f"❌ Error streaming record {record.id}: {e}")

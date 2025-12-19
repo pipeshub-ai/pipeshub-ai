@@ -78,8 +78,7 @@ async def test_run() -> None:
         if arango_service.db is None:
             print("❌ ERROR: Database connection is None after connect()")
             return
-        else:
-            print(f"✅ Database connection established: {arango_service.db}")
+        print(f"✅ Database connection established: {arango_service.db}")
     except Exception as e:
         print(f"❌ ERROR connecting to ArangoDB: {e}")
         return
@@ -121,7 +120,7 @@ async def get_outlook_record(org_id: str, record_id: str) -> Response:
         return await app.connector.stream_record(record)
 
     except Exception as e:
-        raise HTTPException(500, detail=f"Failed to stream record: {str(e)}")
+        raise HTTPException(500, detail=f"Failed to stream record: {e!s}")
 
 # Test endpoint to verify session-based access
 @router.get("/test/outlook/session/{org_id}/{record_id}")
@@ -131,22 +130,22 @@ async def test_session_access(org_id: str, record_id: str) -> dict:
         # Test the session-based endpoint
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                f"http://localhost:8089/api/v1/org/{org_id}/outlook/record/{record_id}"
+                f"http://localhost:8089/api/v1/org/{org_id}/outlook/record/{record_id}",
             )
 
             return {
                 "status": response.status_code,
-                "content_type": response.headers.get('content-type'),
+                "content_type": response.headers.get("content-type"),
                 "content_size": len(response.content),
                 "success": response.status_code == HttpStatusCode.SUCCESS.value,
-                "test_url": f"http://localhost:8089/api/v1/org/{org_id}/outlook/record/{record_id}"
+                "test_url": f"http://localhost:8089/api/v1/org/{org_id}/outlook/record/{record_id}",
             }
 
     except Exception as e:
-        print(f"Error in test_session_access: {str(e)}")
+        print(f"Error in test_session_access: {e!s}")
         return {
             "error": "Failed to test session access",
-            "success": False
+            "success": False,
         }
 
 app.include_router(router)

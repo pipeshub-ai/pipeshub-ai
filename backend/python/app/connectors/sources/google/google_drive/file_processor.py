@@ -1,5 +1,4 @@
 import uuid
-from typing import Tuple
 
 from app.builders.records_builder import FileRecordBuilder, RecordBuilder
 from app.config.constants.arangodb import (
@@ -14,7 +13,7 @@ from app.models.records import FileRecord, Record
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
 
-async def process_drive_file(metadata: dict, org_id: str) -> Tuple[FileRecord, Record, dict]:
+async def process_drive_file(metadata: dict, org_id: str) -> tuple[FileRecord, Record, dict]:
         file_id = metadata.get("id")
 
         # Prepare File, Record and File Metadata
@@ -22,22 +21,22 @@ async def process_drive_file(metadata: dict, org_id: str) -> Tuple[FileRecord, R
             FileRecordBuilder(
                 _key=str(uuid.uuid4()),
                 org_id=org_id,
-                name=str(metadata.get("name"))
+                name=str(metadata.get("name")),
             )
             .with_is_file(metadata.get("mimeType", "") != MimeTypes.GOOGLE_DRIVE_FOLDER.value)
-            .with_extension(metadata.get("fileExtension", None))
-            .with_mime_type(metadata.get("mimeType", None))
+            .with_extension(metadata.get("fileExtension"))
+            .with_mime_type(metadata.get("mimeType"))
             .with_size(int(metadata.get("size", 0)))
-            .with_url(metadata.get("webViewLink", None))
-            .with_path(metadata.get("path", None))
-            .with_etag(metadata.get("etag", None))
-            .with_ctag(metadata.get("ctag", None))
+            .with_url(metadata.get("webViewLink"))
+            .with_path(metadata.get("path"))
+            .with_etag(metadata.get("etag"))
+            .with_ctag(metadata.get("ctag"))
             .with_checksums(
-                quick_xor_hash=metadata.get("quickXorHash", None),
-                crc32_hash=metadata.get("crc32Hash", None),
-                md5=metadata.get("md5Checksum", None),
-                sha1=metadata.get("sha1Checksum", None),
-                sha256=metadata.get("sha256Checksum", None),
+                quick_xor_hash=metadata.get("quickXorHash"),
+                crc32_hash=metadata.get("crc32Hash"),
+                md5=metadata.get("md5Checksum"),
+                sha1=metadata.get("sha1Checksum"),
+                sha256=metadata.get("sha256Checksum"),
             )
             .build()
         )
@@ -54,16 +53,16 @@ async def process_drive_file(metadata: dict, org_id: str) -> Tuple[FileRecord, R
                 record_type=RecordTypes.FILE.value,
                 origin=OriginTypes.CONNECTOR.value,
             )
-            .with_external_revision_id(metadata.get("headRevisionId", None))
+            .with_external_revision_id(metadata.get("headRevisionId"))
             .with_connector(Connectors.GOOGLE_DRIVE.value)
             .with_source_timestamps(
                 created=int(parse_timestamp(metadata.get("createdTime"))),
-                modified=int(parse_timestamp(metadata.get("modifiedTime")))
+                modified=int(parse_timestamp(metadata.get("modifiedTime"))),
             )
             .with_indexing_status(status)
             .with_extraction_status(status)
-            .with_web_url(metadata.get("webViewLink", None))
-            .with_mime_type(metadata.get("mimeType", None))
+            .with_web_url(metadata.get("webViewLink"))
+            .with_mime_type(metadata.get("mimeType"))
             .build()
         )
 

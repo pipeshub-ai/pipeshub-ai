@@ -1,5 +1,6 @@
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, TypeVar
+from typing import Any, TypeVar
 
 from app.config.constants.store_type import StoreType
 from app.config.key_value_store import KeyValueStore
@@ -19,17 +20,16 @@ class StoreConfig:
     host: str
     port: int
     timeout: float = 5.0
-    username: Optional[str] = None
-    password: Optional[str] = None
-    ca_cert: Optional[str] = None
-    cert_key: Optional[str] = None
-    cert_cert: Optional[str] = None
-    additional_options: Dict[str, Any] = None
+    username: str | None = None
+    password: str | None = None
+    ca_cert: str | None = None
+    cert_key: str | None = None
+    cert_cert: str | None = None
+    additional_options: dict[str, Any] = None
 
 
 class KeyValueStoreFactory:
-    """
-    Factory class for creating different types of key-value stores.
+    """Factory class for creating different types of key-value stores.
 
     This factory handles the creation of different store implementations
     while managing their dependencies and configuration.
@@ -38,12 +38,11 @@ class KeyValueStoreFactory:
     @staticmethod
     def create_store(
         store_type: StoreType,
-        serializer: Optional[Callable[[T], bytes]] = None,
-        deserializer: Optional[Callable[[bytes], T]] = None,
-        config: Optional[StoreConfig] = None,
+        serializer: Callable[[T], bytes] | None = None,
+        deserializer: Callable[[bytes], T] | None = None,
+        config: StoreConfig | None = None,
     ) -> KeyValueStore[T]:
-        """
-        Create a new key-value store instance.
+        """Create a new key-value store instance.
 
         Args:
             store_type: Type of store to create
@@ -57,6 +56,7 @@ class KeyValueStoreFactory:
         Raises:
             ValueError: If required configuration is missing
             TypeError: If serializer/deserializer types are incorrect
+
         """
         logger.debug("🔧 Creating new key-value store")
         logger.debug("📋 Store type: %s", store_type)
@@ -75,18 +75,17 @@ class KeyValueStoreFactory:
             if store_type == StoreType.ETCD3:
                 logger.debug("🔄 Creating ETCD3 store")
                 store = KeyValueStoreFactory._create_etcd3_store(
-                    serializer, deserializer, config
+                    serializer, deserializer, config,
                 )
                 logger.debug("✅ ETCD3 store created successfully")
                 return store
-            elif store_type == StoreType.IN_MEMORY:
+            if store_type == StoreType.IN_MEMORY:
                 logger.debug("🔄 Creating in-memory store")
                 store = KeyValueStoreFactory._create_in_memory_store()
                 logger.debug("✅ In-memory store created successfully")
                 return store
-            else:
-                logger.error("❌ Unsupported store type: %s", store_type)
-                raise ValueError(f"Unsupported store type: {store_type}")
+            logger.error("❌ Unsupported store type: %s", store_type)
+            raise ValueError(f"Unsupported store type: {store_type}")
 
         except Exception as e:
             logger.error("❌ Failed to create store: %s", str(e))
@@ -94,12 +93,12 @@ class KeyValueStoreFactory:
             logger.error("   - Type: %s", type(e).__name__)
             logger.error("   - Message: %s", str(e))
             logger.exception("Detailed error stack:")
-            raise ValueError(f"Failed to create store: {str(e)}") from e
+            raise ValueError(f"Failed to create store: {e!s}") from e
 
     @staticmethod
     def _create_etcd3_store(
-        serializer: Optional[Callable[[T], bytes]],
-        deserializer: Optional[Callable[[bytes], T]],
+        serializer: Callable[[T], bytes] | None,
+        deserializer: Callable[[bytes], T] | None,
         config: StoreConfig,
     ) -> Etcd3DistributedKeyValueStore[T]:
         """Create an ETCD3 store instance with validation."""
@@ -111,7 +110,7 @@ class KeyValueStoreFactory:
             logger.debug("   - Serializer present: %s", serializer is not None)
             logger.debug("   - Deserializer present: %s", deserializer is not None)
             raise ValueError(
-                "Serializer and deserializer functions must be provided for ETCD3 store."
+                "Serializer and deserializer functions must be provided for ETCD3 store.",
             )
 
         # Validate serializer/deserializer types

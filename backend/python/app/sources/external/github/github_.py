@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import List
 
 from github import (
     Github,  # type: ignore
@@ -694,7 +693,7 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-    def list_pending_invitations(self, owner: str, repo: str) -> GitHubResponse[List[Invitation]]:
+    def list_pending_invitations(self, owner: str, repo: str) -> GitHubResponse[list[Invitation]]:
         """List pending repo invitations."""
         try:
             r = self._repo(owner, repo)
@@ -715,7 +714,7 @@ class GitHubDataSource:
 
 
     # DependabotAlert not available in older PyGithub versions
-    def list_dependabot_alerts(self, owner: str, repo: str) -> GitHubResponse[List[object]]:
+    def list_dependabot_alerts(self, owner: str, repo: str) -> GitHubResponse[list[object]]:
         """List Dependabot alerts for a repo."""
         try:
             r = self._repo(owner, repo)

@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-from typing import Optional
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -14,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 class GoogleDrive:
     """Google Drive tool exposed to the agents using GoogleDriveDataSource"""
+
     def __init__(self, client: GoogleClient) -> None:
         """Initialize the Google Drive tool"""
         """
@@ -45,55 +45,55 @@ class GoogleDrive:
                 name="corpora",
                 type=ParameterType.STRING,
                 description="Bodies of items to query (user, domain, drive, allDrives)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="drive_id",
                 type=ParameterType.STRING,
                 description="ID of the shared drive to search",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="order_by",
                 type=ParameterType.STRING,
                 description="Sort keys: createdTime, modifiedTime, name, etc.",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="page_size",
                 type=ParameterType.INTEGER,
                 description="Maximum number of files to return per page",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="page_token",
                 type=ParameterType.STRING,
                 description="Token for pagination to get next page of files",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="query",
                 type=ParameterType.STRING,
                 description="Search query for filtering files",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="spaces",
                 type=ParameterType.STRING,
                 description="Spaces to query (drive, appDataFolder)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_files_list(
         self,
-        corpora: Optional[str] = None,
-        drive_id: Optional[str] = None,
-        order_by: Optional[str] = None,
-        page_size: Optional[int] = None,
-        page_token: Optional[str] = None,
-        query: Optional[str] = None,
-        spaces: Optional[str] = None
+        corpora: str | None = None,
+        drive_id: str | None = None,
+        order_by: str | None = None,
+        page_size: int | None = None,
+        page_token: str | None = None,
+        query: str | None = None,
+        spaces: str | None = None,
     ) -> tuple[bool, str]:
         """Get the list of files in Google Drive"""
         """
@@ -113,7 +113,7 @@ class GoogleDrive:
             formatted_query = None
             if query:
                 # Check for invalid query operators that Google Drive doesn't support
-                invalid_operators = ['size=', 'size =', 'size>', 'size<', 'size>=', 'size<=']
+                invalid_operators = ["size=", "size =", "size>", "size<", "size>=", "size<="]
                 has_invalid_operator = any(op in query.lower() for op in invalid_operators)
 
                 if has_invalid_operator:
@@ -121,12 +121,12 @@ class GoogleDrive:
                     # and return all files (client-side filtering will be needed)
                     logger.warning(f"Query contains unsupported operator: {query}. Ignoring query parameter.")
                     formatted_query = None
-                elif not any(op in query.lower() for op in ['name contains', 'mimetype', 'modifiedtime', 'createdtime', '=', 'trashed']):
+                elif not any(op in query.lower() for op in ["name contains", "mimetype", "modifiedtime", "createdtime", "=", "trashed"]):
                     # If it's a simple text query, wrap it in name contains
                     formatted_query = f'name contains "{query}"'
                 else:
                     # Clean up the query - remove spaces around operators
-                    formatted_query = query.replace(' = ', '=').replace(' =', '=').replace('= ', '=')
+                    formatted_query = query.replace(" = ", "=").replace(" =", "=").replace("= ", "=")
 
             # Use GoogleDriveDataSource method
             files = self._run_async(self.client.files_list(
@@ -136,14 +136,14 @@ class GoogleDrive:
                 pageSize=page_size,
                 pageToken=page_token,
                 q=formatted_query,
-                spaces=spaces
+                spaces=spaces,
             ))
 
             # Get files list
             files_list = files.get("files", [])
 
             # Apply client-side filtering if size query was detected
-            if query and formatted_query is None and any(op in query.lower() for op in ['size=', 'size =', 'size>', 'size<', 'size>=', 'size<=']):
+            if query and formatted_query is None and any(op in query.lower() for op in ["size=", "size =", "size>", "size<", "size>=", "size<="]):
                 files_list = self._filter_files_by_size(files_list, query)
 
             # Prepare response data
@@ -152,7 +152,7 @@ class GoogleDrive:
                 "nextPageToken": files.get("nextPageToken", None),
                 "totalResults": len(files_list),
                 "original_query": query,
-                "formatted_query": formatted_query
+                "formatted_query": formatted_query,
             }
 
             # Add warning if query was ignored
@@ -171,7 +171,7 @@ class GoogleDrive:
             import re
 
             # Extract operator and value
-            match = re.match(r'size\s*([><=]+)\s*(\d+)', size_condition.lower())
+            match = re.match(r"size\s*([><=]+)\s*(\d+)", size_condition.lower())
             if not match:
                 return files
 
@@ -180,17 +180,9 @@ class GoogleDrive:
 
             filtered_files = []
             for file in files:
-                file_size = int(file.get('size', 0))
+                file_size = int(file.get("size", 0))
 
-                if operator == '=' and file_size == value:
-                    filtered_files.append(file)
-                elif operator == '>' and file_size > value:
-                    filtered_files.append(file)
-                elif operator == '>=' and file_size >= value:
-                    filtered_files.append(file)
-                elif operator == '<' and file_size < value:
-                    filtered_files.append(file)
-                elif operator == '<=' and file_size <= value:
+                if (operator == "=" and file_size == value) or (operator == ">" and file_size > value) or (operator == ">=" and file_size >= value) or (operator == "<" and file_size < value) or (operator == "<=" and file_size <= value):
                     filtered_files.append(file)
 
             return filtered_files
@@ -207,27 +199,27 @@ class GoogleDrive:
                 name="fileId",
                 type=ParameterType.STRING,
                 description="The ID of the file to get details for",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="acknowledge_abuse",
                 type=ParameterType.BOOLEAN,
                 description="Whether to acknowledge risk of downloading malware",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="supports_all_drives",
                 type=ParameterType.BOOLEAN,
                 description="Whether requesting app supports both My Drives and shared drives",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_file_details(
         self,
-        fileId: Optional[str] = None,
-        acknowledge_abuse: Optional[bool] = None,
-        supports_all_drives: Optional[bool] = None
+        fileId: str | None = None,
+        acknowledge_abuse: bool | None = None,
+        supports_all_drives: bool | None = None,
     ) -> tuple[bool, str]:
         """Get detailed information about a specific file"""
         """
@@ -242,14 +234,14 @@ class GoogleDrive:
             # Validate required parameters
             if not fileId:
                 return False, json.dumps({
-                    "error": "Missing required parameter: fileId is required for get_file_details"
+                    "error": "Missing required parameter: fileId is required for get_file_details",
                 })
 
             # Use GoogleDriveDataSource method
             file = self._run_async(self.client.files_get(
                 fileId=fileId,
                 acknowledgeAbuse=acknowledge_abuse,
-                supportsAllDrives=supports_all_drives
+                supportsAllDrives=supports_all_drives,
             ))
 
             return True, json.dumps(file)
@@ -265,20 +257,20 @@ class GoogleDrive:
                 name="folderName",
                 type=ParameterType.STRING,
                 description="The name of the folder to create",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="parent_folder_id",
                 type=ParameterType.STRING,
                 description="ID of parent folder (optional, defaults to root)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def create_folder(
         self,
-        folderName: Optional[str] = None,
-        parent_folder_id: Optional[str] = None
+        folderName: str | None = None,
+        parent_folder_id: str | None = None,
     ) -> tuple[bool, str]:
         """Create a new folder in Google Drive"""
         """
@@ -292,13 +284,13 @@ class GoogleDrive:
             # Validate required parameters
             if not folderName:
                 return False, json.dumps({
-                    "error": "Missing required parameter: folderName is required for create_folder"
+                    "error": "Missing required parameter: folderName is required for create_folder",
                 })
 
             # Create folder metadata
             folder_metadata = {
                 "name": folderName,
-                "mimeType": "application/vnd.google-apps.folder"
+                "mimeType": "application/vnd.google-apps.folder",
             }
             if parent_folder_id:
                 folder_metadata["parents"] = [parent_folder_id]
@@ -312,7 +304,7 @@ class GoogleDrive:
                 supportsAllDrives=False,
                 supportsTeamDrives=False,
                 useContentAsIndexableText=False,
-                **{"body": folder_metadata}  # Pass metadata as body in kwargs
+                body=folder_metadata,  # Pass metadata as body in kwargs
             ))
 
             return True, json.dumps({
@@ -321,7 +313,7 @@ class GoogleDrive:
                 "folder_parents": folder.get("parents", []),
                 "folder_mimeType": folder.get("mimeType", ""),
                 "folder_createdTime": folder.get("createdTime", ""),
-                "folder_webViewLink": folder.get("webViewLink", "")
+                "folder_webViewLink": folder.get("webViewLink", ""),
             })
         except Exception as e:
             logger.error(f"Failed to create folder {folderName}: {e}")
@@ -335,20 +327,20 @@ class GoogleDrive:
                 name="file_id",
                 type=ParameterType.STRING,
                 description="The ID of the file to delete",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="supports_all_drives",
                 type=ParameterType.BOOLEAN,
                 description="Whether requesting app supports both My Drives and shared drives",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def delete_file(
         self,
         file_id: str,
-        supports_all_drives: Optional[bool] = None
+        supports_all_drives: bool | None = None,
     ) -> tuple[bool, str]:
         """Delete a file from Google Drive"""
         """
@@ -362,11 +354,11 @@ class GoogleDrive:
             # Use GoogleDriveDataSource method
             self._run_async(self.client.files_delete(
                 fileId=file_id,
-                supportsAllDrives=supports_all_drives
+                supportsAllDrives=supports_all_drives,
             ))
 
             return True, json.dumps({
-                "message": f"File {file_id} deleted successfully"
+                "message": f"File {file_id} deleted successfully",
             })
         except Exception as e:
             logger.error(f"Failed to delete file {file_id}: {e}")
@@ -380,27 +372,27 @@ class GoogleDrive:
                 name="file_id",
                 type=ParameterType.STRING,
                 description="The ID of the file to copy",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="new_name",
                 type=ParameterType.STRING,
                 description="New name for the copied file",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="parent_folder_id",
                 type=ParameterType.STRING,
                 description="ID of parent folder for the copy",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def copy_file(
         self,
         file_id: str,
-        new_name: Optional[str] = None,
-        parent_folder_id: Optional[str] = None
+        new_name: str | None = None,
+        parent_folder_id: str | None = None,
     ) -> tuple[bool, str]:
         """Copy a file in Google Drive"""
         """
@@ -427,7 +419,7 @@ class GoogleDrive:
                 ocrLanguage=None,
                 supportsAllDrives=False,
                 supportsTeamDrives=False,
-                body=copy_metadata if copy_metadata else None
+                body=copy_metadata if copy_metadata else None,
             ))
 
             return True, json.dumps({
@@ -435,7 +427,7 @@ class GoogleDrive:
                 "copied_file_name": copied_file.get("name", ""),
                 "copied_file_parents": copied_file.get("parents", []),
                 "copied_file_mimeType": copied_file.get("mimeType", ""),
-                "copied_file_webViewLink": copied_file.get("webViewLink", "")
+                "copied_file_webViewLink": copied_file.get("webViewLink", ""),
             })
         except Exception as e:
             logger.error(f"Failed to copy file {file_id}: {e}")
@@ -449,27 +441,27 @@ class GoogleDrive:
                 name="query",
                 type=ParameterType.STRING,
                 description="Search query (e.g., 'name contains \"report\"', 'mimeType=\"application/pdf\"')",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="page_size",
                 type=ParameterType.INTEGER,
                 description="Maximum number of results to return",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="order_by",
                 type=ParameterType.STRING,
                 description="Sort order (createdTime, modifiedTime, name, etc.)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def search_files(
         self,
         query: str,
-        page_size: Optional[int] = None,
-        order_by: Optional[str] = None
+        page_size: int | None = None,
+        order_by: str | None = None,
     ) -> tuple[bool, str]:
         """Search for files in Google Drive using query syntax"""
         """
@@ -482,7 +474,7 @@ class GoogleDrive:
         """
         try:
             # Convert simple text queries to proper Google Drive query syntax
-            if not any(op in query.lower() for op in ['name contains', 'mimetype', 'modifiedtime', 'createdtime', '=']):
+            if not any(op in query.lower() for op in ["name contains", "mimetype", "modifiedtime", "createdtime", "="]):
                 # If it's a simple text query, wrap it in name contains
                 formatted_query = f'name contains "{query}"'
             else:
@@ -492,7 +484,7 @@ class GoogleDrive:
             files = self._run_async(self.client.files_list(
                 q=formatted_query,
                 pageSize=page_size,
-                orderBy=order_by
+                orderBy=order_by,
             ))
 
             return True, json.dumps({
@@ -500,7 +492,7 @@ class GoogleDrive:
                 "nextPageToken": files.get("nextPageToken", None),
                 "totalResults": len(files.get("files", [])),
                 "query": query,
-                "formatted_query": formatted_query
+                "formatted_query": formatted_query,
             })
         except Exception as e:
             logger.error(f"Failed to search files with query '{query}': {e}")
@@ -509,7 +501,7 @@ class GoogleDrive:
     @tool(
         app_name="drive",
         tool_name="get_drive_info",
-        parameters=[]
+        parameters=[],
     )
     def get_drive_info(self) -> tuple[bool, str]:
         """Get information about the user's Drive"""
@@ -527,7 +519,7 @@ class GoogleDrive:
                 "maxUploadSize": about.get("maxUploadSize", ""),
                 "appInstalled": about.get("appInstalled", False),
                 "exportFormats": about.get("exportFormats", {}),
-                "importFormats": about.get("importFormats", {})
+                "importFormats": about.get("importFormats", {}),
             })
         except Exception as e:
             logger.error(f"Failed to get drive info: {e}")
@@ -541,20 +533,20 @@ class GoogleDrive:
                 name="page_size",
                 type=ParameterType.INTEGER,
                 description="Maximum number of shared drives to return",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="query",
                 type=ParameterType.STRING,
                 description="Search query for shared drives",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_shared_drives(
         self,
-        page_size: Optional[int] = None,
-        query: Optional[str] = None
+        page_size: int | None = None,
+        query: str | None = None,
     ) -> tuple[bool, str]:
         """Get list of shared drives"""
         """
@@ -568,13 +560,13 @@ class GoogleDrive:
             # Use GoogleDriveDataSource method
             drives = self._run_async(self.client.drives_list(
                 pageSize=page_size,
-                q=query
+                q=query,
             ))
 
             return True, json.dumps({
                 "drives": drives.get("drives", []),
                 "nextPageToken": drives.get("nextPageToken", None),
-                "totalResults": len(drives.get("drives", []))
+                "totalResults": len(drives.get("drives", [])),
             })
         except Exception as e:
             logger.error(f"Failed to get shared drives: {e}")
@@ -588,20 +580,20 @@ class GoogleDrive:
                 name="fileId",
                 type=ParameterType.STRING,
                 description="The ID of the file to download",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="mimeType",
                 type=ParameterType.STRING,
                 description="MIME type for export (only used for Google Workspace documents like Docs, Sheets, Slides)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def download_file(
         self,
-        fileId: Optional[str] = None,
-        mimeType: Optional[str] = None
+        fileId: str | None = None,
+        mimeType: str | None = None,
     ) -> tuple[bool, str]:
         """Download file content from Google Drive"""
         """
@@ -615,7 +607,7 @@ class GoogleDrive:
             # Validate required parameters
             if not fileId:
                 return False, json.dumps({
-                    "error": "Missing required parameter: fileId is required for download_file"
+                    "error": "Missing required parameter: fileId is required for download_file",
                 })
 
             # First get file details to check if it's exportable
@@ -632,37 +624,37 @@ class GoogleDrive:
                         "application/vnd.google-apps.document": "text/plain",
                         "application/vnd.google-apps.spreadsheet": "text/csv",
                         "application/vnd.google-apps.presentation": "text/plain",
-                        "application/vnd.google-apps.drawing": "image/png"
+                        "application/vnd.google-apps.drawing": "image/png",
                     }
                     mimeType = export_formats.get(file_mime_type, "text/plain")
 
                 # Export the file using data source
                 content = self._run_async(self.client.files_export(
                     fileId=fileId,
-                    mimeType=mimeType
+                    mimeType=mimeType,
                 ))
             else:
                 # Regular file download using data source - don't pass mimeType for regular files
                 content = self._run_async(self.client.files_download(
-                    fileId=fileId
+                    fileId=fileId,
                 ))
 
             # Handle different content types
             if isinstance(content, bytes):
                 # Try to decode as text
                 try:
-                    text_content = content.decode('utf-8')
+                    text_content = content.decode("utf-8")
                 except UnicodeDecodeError:
                     # If it's binary, encode as base64
                     import base64
-                    text_content = base64.b64encode(content).decode('utf-8')
+                    text_content = base64.b64encode(content).decode("utf-8")
                     return True, json.dumps({
                         "file_id": fileId,
                         "file_name": file_name,
                         "content_type": "binary",
                         "content": text_content,
                         "size": len(content),
-                        "message": f"Downloaded binary file '{file_name}' (base64 encoded)"
+                        "message": f"Downloaded binary file '{file_name}' (base64 encoded)",
                     })
             else:
                 text_content = str(content)
@@ -674,7 +666,7 @@ class GoogleDrive:
                 "content": text_content,
                 "size": len(text_content),
                 "mime_type": mimeType or file_mime_type,
-                "message": f"Downloaded file '{file_name}' successfully"
+                "message": f"Downloaded file '{file_name}' successfully",
             })
 
         except Exception as e:
@@ -689,34 +681,34 @@ class GoogleDrive:
                 name="file_name",
                 type=ParameterType.STRING,
                 description="Name of the file to upload",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="content",
                 type=ParameterType.STRING,
                 description="Content of the file to upload",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="mime_type",
                 type=ParameterType.STRING,
                 description="MIME type of the file (e.g., 'text/plain', 'application/pdf')",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="parent_folder_id",
                 type=ParameterType.STRING,
                 description="ID of parent folder (optional, defaults to root)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def upload_file(
         self,
-        file_name: Optional[str] = None,
-        content: Optional[str] = None,
-        mime_type: Optional[str] = None,
-        parent_folder_id: Optional[str] = None
+        file_name: str | None = None,
+        content: str | None = None,
+        mime_type: str | None = None,
+        parent_folder_id: str | None = None,
     ) -> tuple[bool, str]:
         """Upload a file to Google Drive"""
         """
@@ -732,30 +724,30 @@ class GoogleDrive:
             # Validate required parameters
             if not file_name or not content:
                 return False, json.dumps({
-                    "error": "Missing required parameters: file_name and content are required for upload_file"
+                    "error": "Missing required parameters: file_name and content are required for upload_file",
                 })
 
             # Default MIME type
             if not mime_type:
-                if file_name.endswith('.txt'):
-                    mime_type = 'text/plain'
-                elif file_name.endswith('.md'):
-                    mime_type = 'text/markdown'
-                elif file_name.endswith('.json'):
-                    mime_type = 'application/json'
+                if file_name.endswith(".txt"):
+                    mime_type = "text/plain"
+                elif file_name.endswith(".md"):
+                    mime_type = "text/markdown"
+                elif file_name.endswith(".json"):
+                    mime_type = "application/json"
                 else:
-                    mime_type = 'text/plain'
+                    mime_type = "text/plain"
 
             # Convert content to bytes
-            content_bytes = content.encode('utf-8')
+            content_bytes = content.encode("utf-8")
 
             # Create file metadata
             file_metadata = {
-                'name': file_name,
-                'mimeType': mime_type
+                "name": file_name,
+                "mimeType": mime_type,
             }
             if parent_folder_id:
-                file_metadata['parents'] = [parent_folder_id]
+                file_metadata["parents"] = [parent_folder_id]
 
             # Use GoogleDriveDataSource method for file upload with media
             file = self._run_async(self.client.files_create_with_media(
@@ -768,7 +760,7 @@ class GoogleDrive:
                 ocrLanguage=None,
                 supportsAllDrives=False,
                 supportsTeamDrives=False,
-                useContentAsIndexableText=False
+                useContentAsIndexableText=False,
             ))
 
             return True, json.dumps({
@@ -778,7 +770,7 @@ class GoogleDrive:
                 "web_view_link": file.get("webViewLink", ""),
                 "parents": file.get("parents", []),
                 "size": len(content_bytes),
-                "message": f"File '{file_name}' uploaded successfully to Google Drive with content."
+                "message": f"File '{file_name}' uploaded successfully to Google Drive with content.",
             })
 
         except Exception as e:
@@ -793,20 +785,20 @@ class GoogleDrive:
                 name="file_id",
                 type=ParameterType.STRING,
                 description="The ID of the file to get permissions for",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="page_size",
                 type=ParameterType.INTEGER,
                 description="Maximum number of permissions to return",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_file_permissions(
         self,
         file_id: str,
-        page_size: Optional[int] = None
+        page_size: int | None = None,
     ) -> tuple[bool, str]:
         """Get permissions for a specific file"""
         """
@@ -820,13 +812,13 @@ class GoogleDrive:
             # Use GoogleDriveDataSource method
             permissions = self._run_async(self.client.permissions_list(
                 fileId=file_id,
-                pageSize=page_size
+                pageSize=page_size,
             ))
 
             return True, json.dumps({
                 "permissions": permissions.get("permissions", []),
                 "nextPageToken": permissions.get("nextPageToken", None),
-                "file_id": file_id
+                "file_id": file_id,
             })
         except Exception as e:
             logger.error(f"Failed to get permissions for file {file_id}: {e}")

@@ -4,7 +4,6 @@ import logging
 import re
 from datetime import datetime, timedelta
 from datetime import timezone as dt_timezone
-from typing import Optional
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -19,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 class GoogleMeet:
     """Google Meet tool exposed to the agents using GoogleMeetDataSource"""
+
     def __init__(self, client: GoogleClient) -> None:
         """Initialize the Google Meet tool"""
         """
@@ -51,17 +51,17 @@ class GoogleMeet:
                 name="title",
                 type=ParameterType.STRING,
                 description="Meeting title/display name",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="description",
                 type=ParameterType.STRING,
                 description="Meeting description",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def start_instant_meeting(self, title: Optional[str] = None, description: Optional[str] = None) -> tuple[bool, str]:
+    def start_instant_meeting(self, title: str | None = None, description: str | None = None) -> tuple[bool, str]:
         """Start an instant Google Meet meeting"""
         """
         Args:
@@ -82,7 +82,7 @@ class GoogleMeet:
                 "meeting_code": meeting_code,
                 "meeting_uri": meeting_uri,
                 "join_url": f"https://meet.google.com/{meeting_code}",
-                "message": "Instant meeting created successfully"
+                "message": "Instant meeting created successfully",
             }
 
             # Note: Google Meet Spaces API does not support setting displayName/description
@@ -104,9 +104,9 @@ class GoogleMeet:
                 name="meeting_code",
                 type=ParameterType.STRING,
                 description="Meeting code (e.g., 'abc-defg-hij')",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def join_meeting_by_code(self, meeting_code: str) -> tuple[bool, str]:
         """Join an existing Google Meet by meeting code"""
@@ -130,14 +130,14 @@ class GoogleMeet:
                     "meeting_code": clean_code,
                     "join_url": join_url,
                     "space_info": space,
-                    "message": f"Join link generated for meeting {clean_code}"
+                    "message": f"Join link generated for meeting {clean_code}",
                 }
             except Exception:
                 # If we can't get space info, just return the join URL
                 result = {
                     "meeting_code": clean_code,
                     "join_url": join_url,
-                    "message": f"Join link generated for meeting {clean_code}"
+                    "message": f"Join link generated for meeting {clean_code}",
                 }
 
             return True, json.dumps(result)
@@ -154,56 +154,56 @@ class GoogleMeet:
                 name="title",
                 type=ParameterType.STRING,
                 description="Meeting title",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="start_time",
                 type=ParameterType.STRING,
                 description="Meeting start time (ISO format or timestamp)",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="duration_minutes",
                 type=ParameterType.INTEGER,
                 description="Meeting duration in minutes",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="attendees",
                 type=ParameterType.ARRAY,
                 description="List of attendee email addresses",
                 required=False,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="description",
                 type=ParameterType.STRING,
                 description="Meeting description/agenda",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="timezone",
                 type=ParameterType.STRING,
                 description="Timezone for the meeting (default: UTC)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="recurrence",
                 type=ParameterType.OBJECT,
                 description="Recurrence pattern for recurring meetings",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def schedule_meeting_with_calendar(
         self,
         title: str,
         start_time: str,
         duration_minutes: int,
-        attendees: Optional[list] = None,
-        description: Optional[str] = None,
+        attendees: list | None = None,
+        description: str | None = None,
         timezone: str = "UTC",
-        recurrence: Optional[dict] = None
+        recurrence: dict | None = None,
     ) -> tuple[bool, str]:
         """Schedule a Google Meet with calendar integration"""
         """
@@ -237,21 +237,21 @@ class GoogleMeet:
                 "description": description or "",
                 "start": {
                     "dateTime": start_time_iso,
-                    "timeZone": timezone
+                    "timeZone": timezone,
                 },
                 "end": {
                     "dateTime": end_time_iso,
-                    "timeZone": timezone
+                    "timeZone": timezone,
                 },
                 "attendees": [{"email": email} for email in attendees] if attendees else [],
                 "conferenceData": {
                     "createRequest": {
                         "requestId": f"meet-{int(datetime.now().timestamp())}",
                         "conferenceSolutionKey": {
-                            "type": "hangoutsMeet"
-                        }
-                    }
-                }
+                            "type": "hangoutsMeet",
+                        },
+                    },
+                },
             }
 
             # Add recurrence if specified
@@ -261,7 +261,7 @@ class GoogleMeet:
             calendar_event = self._run_async(calendar_client.events_insert(
                 calendarId="primary",
                 conferenceDataVersion=1,
-                body=event_config
+                body=event_config,
             ))
 
             result = {
@@ -273,7 +273,7 @@ class GoogleMeet:
                 "end_time": end_time_iso,
                 "duration_minutes": duration_minutes,
                 "attendees": attendees or [],
-                "message": "Meeting scheduled successfully with calendar integration"
+                "message": "Meeting scheduled successfully with calendar integration",
             }
 
             return True, json.dumps(result)
@@ -291,45 +291,45 @@ class GoogleMeet:
                 type=ParameterType.ARRAY,
                 description="List of attendee email addresses",
                 required=True,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="duration_minutes",
                 type=ParameterType.INTEGER,
                 description="Meeting duration in minutes",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="date_range_start",
                 type=ParameterType.STRING,
                 description="Start of date range to search (ISO format)",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="date_range_end",
                 type=ParameterType.STRING,
                 description="End of date range to search (ISO format)",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="working_hours_start",
                 type=ParameterType.STRING,
                 description="Working hours start time (HH:MM format)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="working_hours_end",
                 type=ParameterType.STRING,
                 description="Working hours end time (HH:MM format)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="timezone",
                 type=ParameterType.STRING,
                 description="Timezone for the search (default: UTC)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def find_available_time(
         self,
@@ -337,9 +337,9 @@ class GoogleMeet:
         duration_minutes: int,
         date_range_start: str,
         date_range_end: str,
-        working_hours_start: Optional[str] = None,
-        working_hours_end: Optional[str] = None,
-        timezone: str = "UTC"
+        working_hours_start: str | None = None,
+        working_hours_end: str | None = None,
+        timezone: str = "UTC",
     ) -> tuple[bool, str]:
         """Find available time slots for a group of attendees"""
         """
@@ -365,7 +365,7 @@ class GoogleMeet:
             freebusy_query = {
                 "timeMin": start_iso,
                 "timeMax": end_iso,
-                "items": [{"id": email} for email in attendees]
+                "items": [{"id": email} for email in attendees],
             }
 
             freebusy_result = self._run_async(calendar_client.freebusy_query(body=freebusy_query))
@@ -379,26 +379,26 @@ class GoogleMeet:
                 for period in busy_periods:
                     busy_times.append({
                         "start": period.get("start"),
-                        "end": period.get("end")
+                        "end": period.get("end"),
                     })
 
             # Find available slots (simplified algorithm)
             available_slots = []
 
-            current_time = datetime.fromisoformat(start_iso.replace('Z', '+00:00'))
-            end_time = datetime.fromisoformat(end_iso.replace('Z', '+00:00'))
+            current_time = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+            end_time = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
 
             # Sort busy periods by start for consistent advancement
             busy_times_sorted = sorted(
                 (
                     {
-                        "start": datetime.fromisoformat(p["start"].replace('Z', '+00:00')),
-                        "end": datetime.fromisoformat(p["end"].replace('Z', '+00:00')),
+                        "start": datetime.fromisoformat(p["start"].replace("Z", "+00:00")),
+                        "end": datetime.fromisoformat(p["end"].replace("Z", "+00:00")),
                     }
                     for p in busy_times
                     if p.get("start") and p.get("end")
                 ),
-                key=lambda x: x["start"]
+                key=lambda x: x["start"],
             )
 
             while current_time + timedelta(minutes=duration_minutes) <= end_time:
@@ -418,9 +418,9 @@ class GoogleMeet:
 
                 if not conflicts:
                     available_slots.append({
-                        "start": current_time.isoformat().replace('+00:00', 'Z'),
-                        "end": slot_end.isoformat().replace('+00:00', 'Z'),
-                        "duration_minutes": duration_minutes
+                        "start": current_time.isoformat().replace("+00:00", "Z"),
+                        "end": slot_end.isoformat().replace("+00:00", "Z"),
+                        "duration_minutes": duration_minutes,
                     })
 
                 # Advance time
@@ -435,11 +435,11 @@ class GoogleMeet:
                 "duration_minutes": duration_minutes,
                 "search_range": {
                     "start": start_iso,
-                    "end": end_iso
+                    "end": end_iso,
                 },
                 "available_slots": available_slots[:10],  # Return first 10 slots
                 "total_slots_found": len(available_slots),
-                "message": f"Found {len(available_slots)} available time slots"
+                "message": f"Found {len(available_slots)} available time slots",
             }
 
             return True, json.dumps(result)
@@ -456,49 +456,49 @@ class GoogleMeet:
                 name="event_id",
                 type=ParameterType.STRING,
                 description="Calendar event ID to update",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="title",
                 type=ParameterType.STRING,
                 description="New meeting title",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="start_time",
                 type=ParameterType.STRING,
                 description="New start time (ISO format)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="duration_minutes",
                 type=ParameterType.INTEGER,
                 description="New duration in minutes",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="attendees",
                 type=ParameterType.ARRAY,
                 description="Updated list of attendee email addresses",
                 required=False,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="description",
                 type=ParameterType.STRING,
                 description="New meeting description",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def update_scheduled_meeting(
         self,
         event_id: str,
-        title: Optional[str] = None,
-        start_time: Optional[str] = None,
-        duration_minutes: Optional[int] = None,
-        attendees: Optional[list] = None,
-        description: Optional[str] = None
+        title: str | None = None,
+        start_time: str | None = None,
+        duration_minutes: int | None = None,
+        attendees: list | None = None,
+        description: str | None = None,
     ) -> tuple[bool, str]:
         """Update an existing scheduled meeting"""
         """
@@ -523,7 +523,7 @@ class GoogleMeet:
             # Get current event
             current_event = self._run_async(calendar_client.events_get(
                 calendarId="primary",
-                eventId=event_id
+                eventId=event_id,
             ))
 
             # Prepare update data
@@ -541,31 +541,31 @@ class GoogleMeet:
             if start_time and duration_minutes:
                 start_time_iso, _ = prepare_iso_timestamps(start_time, "")
                 from datetime import datetime, timedelta
-                start_dt = datetime.fromisoformat(start_time_iso.replace('Z', '+00:00'))
+                start_dt = datetime.fromisoformat(start_time_iso.replace("Z", "+00:00"))
                 end_dt = start_dt + timedelta(minutes=duration_minutes)
-                end_time_iso = end_dt.isoformat().replace('+00:00', 'Z')
+                end_time_iso = end_dt.isoformat().replace("+00:00", "Z")
 
                 update_data["start"] = {
                     "dateTime": start_time_iso,
-                    "timeZone": current_event.get("start", {}).get("timeZone", "UTC")
+                    "timeZone": current_event.get("start", {}).get("timeZone", "UTC"),
                 }
                 update_data["end"] = {
                     "dateTime": end_time_iso,
-                    "timeZone": current_event.get("end", {}).get("timeZone", "UTC")
+                    "timeZone": current_event.get("end", {}).get("timeZone", "UTC"),
                 }
 
             # Update the event
             updated_event = self._run_async(calendar_client.events_patch(
                 calendarId="primary",
                 eventId=event_id,
-                body=update_data
+                body=update_data,
             ))
 
             result = {
                 "event_id": event_id,
                 "updated_event": updated_event,
                 "meet_link": updated_event.get("hangoutLink"),
-                "message": "Meeting updated successfully"
+                "message": "Meeting updated successfully",
             }
 
             return True, json.dumps(result)
@@ -582,17 +582,17 @@ class GoogleMeet:
                 name="event_id",
                 type=ParameterType.STRING,
                 description="Calendar event ID to cancel",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="notify_attendees",
                 type=ParameterType.BOOLEAN,
                 description="Whether to notify attendees about cancellation",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def cancel_meeting(self, event_id: str, notify_attendees: Optional[bool] = None) -> tuple[bool, str]:
+    def cancel_meeting(self, event_id: str, notify_attendees: bool | None = None) -> tuple[bool, str]:
         """Cancel a scheduled meeting"""
         """
         Args:
@@ -612,14 +612,14 @@ class GoogleMeet:
             self._run_async(calendar_client.events_delete(
                 calendarId="primary",
                 eventId=event_id,
-                sendUpdates="all" if notify_attendees else "none"
+                sendUpdates="all" if notify_attendees else "none",
             ))
 
             result = {
                 "event_id": event_id,
                 "cancelled": True,
                 "attendees_notified": notify_attendees or False,
-                "message": "Meeting cancelled successfully"
+                "message": "Meeting cancelled successfully",
             }
 
             return True, json.dumps(result)
@@ -636,9 +636,9 @@ class GoogleMeet:
                 name="event_id",
                 type=ParameterType.STRING,
                 description="Calendar event ID to get details for",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def get_meeting_details(self, event_id: str) -> tuple[bool, str]:
         """Get details of a scheduled meeting"""
@@ -658,7 +658,7 @@ class GoogleMeet:
             # Get event details
             event = self._run_async(calendar_client.events_get(
                 calendarId="primary",
-                eventId=event_id
+                eventId=event_id,
             ))
 
             # Extract meeting information
@@ -674,7 +674,7 @@ class GoogleMeet:
                 "event_link": event.get("htmlLink"),
                 "status": event.get("status"),
                 "created": event.get("created"),
-                "updated": event.get("updated")
+                "updated": event.get("updated"),
             }
 
             return True, json.dumps(result)
@@ -691,27 +691,27 @@ class GoogleMeet:
                 name="max_results",
                 type=ParameterType.INTEGER,
                 description="Maximum number of meetings to return",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="time_min",
                 type=ParameterType.STRING,
                 description="Lower bound for meeting start time (ISO format)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="time_max",
                 type=ParameterType.STRING,
                 description="Upper bound for meeting start time (ISO format)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def list_upcoming_meetings(
         self,
-        max_results: Optional[int] = None,
-        time_min: Optional[str] = None,
-        time_max: Optional[str] = None
+        max_results: int | None = None,
+        time_min: str | None = None,
+        time_max: str | None = None,
     ) -> tuple[bool, str]:
         """List upcoming Google Meet meetings"""
         """
@@ -740,7 +740,7 @@ class GoogleMeet:
                 "calendarId": "primary",
                 "timeMin": time_min,
                 "singleEvents": True,
-                "orderBy": "startTime"
+                "orderBy": "startTime",
             }
 
             if time_max:
@@ -766,7 +766,7 @@ class GoogleMeet:
                         "attendees": [attendee.get("email") for attendee in event.get("attendees", [])],
                         "meet_link": event.get("hangoutLink"),
                         "event_link": event.get("htmlLink"),
-                        "status": event.get("status")
+                        "status": event.get("status"),
                     })
 
             result = {
@@ -774,9 +774,9 @@ class GoogleMeet:
                 "total_count": len(meet_events),
                 "time_range": {
                     "start": time_min,
-                    "end": time_max
+                    "end": time_max,
                 },
-                "message": f"Found {len(meet_events)} upcoming meetings"
+                "message": f"Found {len(meet_events)} upcoming meetings",
             }
 
             return True, json.dumps(result)
@@ -822,63 +822,63 @@ class GoogleMeet:
                 name="title",
                 type=ParameterType.STRING,
                 description="Meeting title/display name",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="description",
                 type=ParameterType.STRING,
                 description="Meeting description",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="start_time",
                 type=ParameterType.STRING,
                 description="Meeting start time (ISO format or timestamp)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="duration_minutes",
                 type=ParameterType.INTEGER,
                 description="Meeting duration in minutes",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="attendees",
                 type=ParameterType.ARRAY,
                 description="List of attendee email addresses",
                 required=False,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="timezone",
                 type=ParameterType.STRING,
                 description="Timezone for the meeting (default: UTC)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="create_calendar_event",
                 type=ParameterType.BOOLEAN,
                 description="Whether to create a corresponding calendar event (default: True)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="space_config",
                 type=ParameterType.OBJECT,
                 description="Additional space configuration for Meet API",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def create_meeting_space(
         self,
-        title: Optional[str] = None,
-        description: Optional[str] = None,
-        start_time: Optional[str] = None,
-        duration_minutes: Optional[int] = None,
-        attendees: Optional[list] = None,
+        title: str | None = None,
+        description: str | None = None,
+        start_time: str | None = None,
+        duration_minutes: int | None = None,
+        attendees: list | None = None,
         timezone: str = "UTC",
         create_calendar_event: bool = True,
-        space_config: Optional[dict] = None
+        space_config: dict | None = None,
     ) -> tuple[bool, str]:
         """Create a new Google Meet space with optional scheduling and calendar integration"""
         """
@@ -906,7 +906,7 @@ class GoogleMeet:
                 "meeting_code": meeting_code,
                 "meeting_uri": meeting_uri,
                 "space_config": space.get("spaceConfig", {}),
-                "message": "Meeting space created successfully"
+                "message": "Meeting space created successfully",
             }
 
             # Note: Google Meet Spaces API does not support setting displayName/description
@@ -926,9 +926,9 @@ class GoogleMeet:
                     # Calculate end time
                     start_time_iso, _ = prepare_iso_timestamps(start_time, "")
                     from datetime import datetime, timedelta
-                    start_dt = datetime.fromisoformat(start_time_iso.replace('Z', '+00:00'))
+                    start_dt = datetime.fromisoformat(start_time_iso.replace("Z", "+00:00"))
                     end_dt = start_dt + timedelta(minutes=duration_minutes)
-                    end_time_iso = end_dt.isoformat().replace('+00:00', 'Z')
+                    end_time_iso = end_dt.isoformat().replace("+00:00", "Z")
 
                     # Create calendar event with Meet integration
                     calendar_client = GoogleCalendarDataSource(self.google_client)
@@ -937,38 +937,38 @@ class GoogleMeet:
                         "description": description or f"Join the meeting: {meeting_uri}",
                         "start": {
                             "dateTime": start_time_iso,
-                            "timeZone": timezone
+                            "timeZone": timezone,
                         },
                         "end": {
                             "dateTime": end_time_iso,
-                            "timeZone": timezone
+                            "timeZone": timezone,
                         },
                         "attendees": [{"email": email} for email in attendees] if attendees else [],
                         "conferenceData": {
                             "createRequest": {
                                 "requestId": f"meet-{meeting_code}",
                                 "conferenceSolutionKey": {
-                                    "type": "hangoutsMeet"
-                                }
-                            }
-                        }
+                                    "type": "hangoutsMeet",
+                                },
+                            },
+                        },
                     }
 
                     calendar_event = self._run_async(calendar_client.events_insert(
                         calendarId="primary",
-                        body=event_config
+                        body=event_config,
                     ))
 
                     result["calendar_event"] = {
                         "event_id": calendar_event.get("id"),
                         "event_link": calendar_event.get("htmlLink"),
-                        "meet_link": calendar_event.get("hangoutLink")
+                        "meet_link": calendar_event.get("hangoutLink"),
                     }
                     result["message"] += " and calendar event created"
 
                 except Exception as e:
                     logger.warning(f"Failed to create calendar event: {e}")
-                    result["warning"] = f"Meet space created but calendar event failed: {str(e)}"
+                    result["warning"] = f"Meet space created but calendar event failed: {e!s}"
 
             return True, json.dumps(result)
 
@@ -984,34 +984,34 @@ class GoogleMeet:
                 name="space_name",
                 type=ParameterType.STRING,
                 description="Resource name of the space to update",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="title",
                 type=ParameterType.STRING,
                 description="New meeting title/display name",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="description",
                 type=ParameterType.STRING,
                 description="New meeting description",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="space_config",
                 type=ParameterType.OBJECT,
                 description="Additional space configuration updates",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def update_meeting_space(
         self,
         space_name: str,
-        title: Optional[str] = None,
-        description: Optional[str] = None,
-        space_config: Optional[dict] = None
+        title: str | None = None,
+        description: str | None = None,
+        space_config: dict | None = None,
     ) -> tuple[bool, str]:
         """Update an existing Google Meet space"""
         """
@@ -1028,7 +1028,7 @@ class GoogleMeet:
             if title or description:
                 return False, json.dumps({
                     "error": "Google Meet Spaces API does not support updating title/description. Use schedule_meeting_with_calendar to create meetings with custom titles.",
-                    "note": "Only spaceConfig updates are supported for Meet spaces"
+                    "note": "Only spaceConfig updates are supported for Meet spaces",
                 })
 
             if not space_config:
@@ -1038,13 +1038,13 @@ class GoogleMeet:
             updated_space = self._run_async(self.client.spaces_patch(
                 name=space_name,
                 updateMask="spaceConfig",
-                body={"spaceConfig": space_config}
+                body={"spaceConfig": space_config},
             ))
 
             return True, json.dumps({
                 "space_name": space_name,
                 "updated_space": updated_space,
-                "message": "Meeting space configuration updated successfully"
+                "message": "Meeting space configuration updated successfully",
             })
         except Exception as e:
             logger.error(f"Failed to update meeting space: {e}")
@@ -1058,9 +1058,9 @@ class GoogleMeet:
                 name="space_name",
                 type=ParameterType.STRING,
                 description="Resource name of the space (e.g., 'spaces/{space}' or 'spaces/{meetingCode}')",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def get_meeting_space(self, space_name: str) -> tuple[bool, str]:
         """Get details about a meeting space"""
@@ -1087,9 +1087,9 @@ class GoogleMeet:
                 name="space_name",
                 type=ParameterType.STRING,
                 description="Resource name of the space",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def end_active_conference(self, space_name: str) -> tuple[bool, str]:
         """End an active conference in a meeting space"""
@@ -1105,7 +1105,7 @@ class GoogleMeet:
 
             return True, json.dumps({
                 "message": f"Active conference ended for space {space_name}",
-                "result": result
+                "result": result,
             })
         except Exception as e:
             logger.error(f"Failed to end active conference: {e}")
@@ -1119,62 +1119,62 @@ class GoogleMeet:
                 name="page_size",
                 type=ParameterType.INTEGER,
                 description="Maximum number of conference records to return (default: 25, max: 100)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="page_token",
                 type=ParameterType.STRING,
                 description="Page token for pagination",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="filter",
                 type=ParameterType.STRING,
                 description="Raw filter in EBNF format. If provided, it will be normalized to API-expected snake_case fields and double quotes.",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="start_time_from",
                 type=ParameterType.STRING,
                 description="ISO8601 UTC start time lower bound for records, e.g., 2025-01-01T00:00:00Z",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="start_time_to",
                 type=ParameterType.STRING,
                 description="ISO8601 UTC start time upper bound for records, e.g., 2025-01-02T00:00:00Z",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="meeting_code",
                 type=ParameterType.STRING,
                 description="Filter by specific meeting code",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="space_name",
                 type=ParameterType.STRING,
                 description="Filter by specific space name",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="include_active_only",
                 type=ParameterType.BOOLEAN,
                 description="Include only conferences that are currently active (end_time IS NULL)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_conference_records(
         self,
-        page_size: Optional[int] = None,
-        page_token: Optional[str] = None,
-        filter: Optional[str] = None,
-        start_time_from: Optional[str] = None,
-        start_time_to: Optional[str] = None,
-        meeting_code: Optional[str] = None,
-        space_name: Optional[str] = None,
-        include_active_only: Optional[bool] = None
+        page_size: int | None = None,
+        page_token: str | None = None,
+        filter: str | None = None,
+        start_time_from: str | None = None,
+        start_time_to: str | None = None,
+        meeting_code: str | None = None,
+        space_name: str | None = None,
+        include_active_only: bool | None = None,
     ) -> tuple[bool, str]:
         """Get list of conference records with enhanced filtering options"""
         """
@@ -1207,7 +1207,7 @@ class GoogleMeet:
                 if space_name:
                     conditions.append(f'space.name="{space_name}"')
                 if include_active_only:
-                    conditions.append('end_time IS NULL')
+                    conditions.append("end_time IS NULL")
                 if conditions:
                     effective_filter = " AND ".join(conditions)
 
@@ -1215,7 +1215,7 @@ class GoogleMeet:
             records = self._run_async(self.client.conference_records_list(
                 pageSize=page_size,
                 pageToken=page_token,
-                filter=effective_filter
+                filter=effective_filter,
             ))
 
             # Enhance response with summary information
@@ -1226,8 +1226,8 @@ class GoogleMeet:
                 "filter_applied": effective_filter,
                 "summary": {
                     "active_conferences": len([r for r in records.get("conferenceRecords", []) if not r.get("endTime")]),
-                    "completed_conferences": len([r for r in records.get("conferenceRecords", []) if r.get("endTime")])
-                }
+                    "completed_conferences": len([r for r in records.get("conferenceRecords", []) if r.get("endTime")]),
+                },
             }
 
             return True, json.dumps(enhanced_response)
@@ -1243,9 +1243,9 @@ class GoogleMeet:
                 name="conference_record",
                 type=ParameterType.STRING,
                 description="Conference record name (e.g., 'conferenceRecords/{conference_record}')",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def get_conference_record_details(self, conference_record: str) -> tuple[bool, str]:
         """Get detailed information about a specific conference record"""
@@ -1272,41 +1272,41 @@ class GoogleMeet:
                 name="conference_record",
                 type=ParameterType.STRING,
                 description="Conference record name (e.g., 'conferenceRecords/{conference_record}')",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="page_size",
                 type=ParameterType.INTEGER,
                 description="Maximum number of participants to return (default: 100, max: 250)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="page_token",
                 type=ParameterType.STRING,
                 description="Page token for pagination",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="filter",
                 type=ParameterType.STRING,
                 description="Filter condition for participants (e.g., 'latest_end_time IS NULL' for active participants)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="include_active_only",
                 type=ParameterType.BOOLEAN,
                 description="Include only currently active participants",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_conference_participants(
         self,
         conference_record: str,
-        page_size: Optional[int] = None,
-        page_token: Optional[str] = None,
-        filter: Optional[str] = None,
-        include_active_only: Optional[bool] = None
+        page_size: int | None = None,
+        page_token: str | None = None,
+        filter: str | None = None,
+        include_active_only: bool | None = None,
     ) -> tuple[bool, str]:
         """Get participants in a conference record with enhanced filtering"""
         """
@@ -1330,7 +1330,7 @@ class GoogleMeet:
                 parent=conference_record,
                 pageSize=page_size,
                 pageToken=page_token,
-                filter=effective_filter
+                filter=effective_filter,
             ))
 
             # Enhance response with participant summary
@@ -1342,8 +1342,8 @@ class GoogleMeet:
                 "filter_applied": effective_filter,
                 "summary": {
                     "active_participants": len([p for p in participant_list if not p.get("latestEndTime")]),
-                    "completed_participants": len([p for p in participant_list if p.get("latestEndTime")])
-                }
+                    "completed_participants": len([p for p in participant_list if p.get("latestEndTime")]),
+                },
             }
 
             return True, json.dumps(enhanced_response)
@@ -1359,27 +1359,27 @@ class GoogleMeet:
                 name="conference_record",
                 type=ParameterType.STRING,
                 description="Conference record name (e.g., 'conferenceRecords/{conference_record}')",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="page_size",
                 type=ParameterType.INTEGER,
                 description="Maximum number of recordings to return",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="page_token",
                 type=ParameterType.STRING,
                 description="Page token for pagination",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_conference_recordings(
         self,
         conference_record: str,
-        page_size: Optional[int] = None,
-        page_token: Optional[str] = None
+        page_size: int | None = None,
+        page_token: str | None = None,
     ) -> tuple[bool, str]:
         """Get recordings from a conference record"""
         """
@@ -1395,7 +1395,7 @@ class GoogleMeet:
             recordings = self._run_async(self.client.conference_records_recordings_list(
                 parent=conference_record,
                 pageSize=page_size,
-                pageToken=page_token
+                pageToken=page_token,
             ))
 
             return True, json.dumps(recordings)
@@ -1411,34 +1411,34 @@ class GoogleMeet:
                 name="conference_record",
                 type=ParameterType.STRING,
                 description="Conference record name (e.g., 'conferenceRecords/{conference_record}')",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="page_size",
                 type=ParameterType.INTEGER,
                 description="Maximum number of transcripts to return (default: 10, max: 100)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="page_token",
                 type=ParameterType.STRING,
                 description="Page token for pagination",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="include_entries",
                 type=ParameterType.BOOLEAN,
                 description="Include transcript entries for each transcript",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_conference_transcripts(
         self,
         conference_record: str,
-        page_size: Optional[int] = None,
-        page_token: Optional[str] = None,
-        include_entries: Optional[bool] = None
+        page_size: int | None = None,
+        page_token: str | None = None,
+        include_entries: bool | None = None,
     ) -> tuple[bool, str]:
         """Get transcripts from a conference record with optional entries"""
         """
@@ -1455,13 +1455,13 @@ class GoogleMeet:
             transcripts = self._run_async(self.client.conference_records_transcripts_list(
                 parent=conference_record,
                 pageSize=page_size,
-                pageToken=page_token
+                pageToken=page_token,
             ))
 
             enhanced_response = {
                 "transcripts": transcripts.get("transcripts", []),
                 "next_page_token": transcripts.get("nextPageToken"),
-                "total_count": len(transcripts.get("transcripts", []))
+                "total_count": len(transcripts.get("transcripts", [])),
             }
 
             # Optionally include transcript entries
@@ -1473,7 +1473,7 @@ class GoogleMeet:
                         try:
                             entries = self._run_async(self.client.conference_records_transcripts_entries_list(
                                 parent=transcript_name,
-                                pageSize=100  # Get all entries for each transcript
+                                pageSize=100,  # Get all entries for each transcript
                             ))
                             transcript_entries[transcript_name] = entries.get("transcriptEntries", [])
                         except Exception as e:
@@ -1495,27 +1495,27 @@ class GoogleMeet:
                 name="transcript_name",
                 type=ParameterType.STRING,
                 description="Transcript name (e.g., 'conferenceRecords/{conference_record}/transcripts/{transcript}')",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="page_size",
                 type=ParameterType.INTEGER,
                 description="Maximum number of entries to return (default: 10, max: 100)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="page_token",
                 type=ParameterType.STRING,
                 description="Page token for pagination",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_transcript_entries(
         self,
         transcript_name: str,
-        page_size: Optional[int] = None,
-        page_token: Optional[str] = None
+        page_size: int | None = None,
+        page_token: str | None = None,
     ) -> tuple[bool, str]:
         """Get transcript entries from a specific transcript"""
         """
@@ -1531,7 +1531,7 @@ class GoogleMeet:
             entries = self._run_async(self.client.conference_records_transcripts_entries_list(
                 parent=transcript_name,
                 pageSize=page_size,
-                pageToken=page_token
+                pageToken=page_token,
             ))
 
             return True, json.dumps(entries)
@@ -1547,34 +1547,34 @@ class GoogleMeet:
                 name="conference_record",
                 type=ParameterType.STRING,
                 description="Conference record name (e.g., 'conferenceRecords/{conference_record}')",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="include_participants",
                 type=ParameterType.BOOLEAN,
                 description="Include participant information",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="include_recordings",
                 type=ParameterType.BOOLEAN,
                 description="Include recording information",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="include_transcripts",
                 type=ParameterType.BOOLEAN,
                 description="Include transcript information",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_meeting_summary(
         self,
         conference_record: str,
-        include_participants: Optional[bool] = None,
-        include_recordings: Optional[bool] = None,
-        include_transcripts: Optional[bool] = None
+        include_participants: bool | None = None,
+        include_recordings: bool | None = None,
+        include_transcripts: bool | None = None,
     ) -> tuple[bool, str]:
         """Get comprehensive meeting summary including participants, recordings, and transcripts"""
         """
@@ -1597,15 +1597,15 @@ class GoogleMeet:
                     "start_time": record.get("startTime"),
                     "end_time": record.get("endTime"),
                     "space": record.get("space", {}),
-                    "duration_minutes": None
-                }
+                    "duration_minutes": None,
+                },
             }
 
             # Calculate duration if both start and end times are available
             if record.get("startTime") and record.get("endTime"):
                 from datetime import datetime
-                start_time = datetime.fromisoformat(record["startTime"].replace('Z', '+00:00'))
-                end_time = datetime.fromisoformat(record["endTime"].replace('Z', '+00:00'))
+                start_time = datetime.fromisoformat(record["startTime"].replace("Z", "+00:00"))
+                end_time = datetime.fromisoformat(record["endTime"].replace("Z", "+00:00"))
                 duration = end_time - start_time
                 summary["meeting_info"]["duration_minutes"] = int(duration.total_seconds() / 60)
 
@@ -1614,7 +1614,7 @@ class GoogleMeet:
                 try:
                     participants = self._run_async(self.client.conference_records_participants_list(
                         parent=conference_record,
-                        pageSize=250
+                        pageSize=250,
                     ))
                     summary["participants"] = participants.get("participants", [])
                     summary["participant_count"] = len(participants.get("participants", []))
@@ -1627,7 +1627,7 @@ class GoogleMeet:
                 try:
                     recordings = self._run_async(self.client.conference_records_recordings_list(
                         parent=conference_record,
-                        pageSize=100
+                        pageSize=100,
                     ))
                     summary["recordings"] = recordings.get("recordings", [])
                     summary["recording_count"] = len(recordings.get("recordings", []))
@@ -1640,7 +1640,7 @@ class GoogleMeet:
                 try:
                     transcripts = self._run_async(self.client.conference_records_transcripts_list(
                         parent=conference_record,
-                        pageSize=100
+                        pageSize=100,
                     ))
                     summary["transcripts"] = transcripts.get("transcripts", [])
                     summary["transcript_count"] = len(transcripts.get("transcripts", []))

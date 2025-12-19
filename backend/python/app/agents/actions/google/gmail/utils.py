@@ -6,7 +6,6 @@ from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -19,11 +18,11 @@ class GmailUtils:
 
         email = email.strip()
         # RFC 5322 compliant email regex pattern
-        pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
         return bool(re.match(pattern, email))
 
     @staticmethod
-    def validate_email_list(email_list: List[str]) -> bool:
+    def validate_email_list(email_list: list[str]) -> bool:
         """Validate email list format using regex pattern"""
         for email in email_list:
             if not GmailUtils.validate_email(email):
@@ -36,7 +35,7 @@ class GmailUtils:
         return subject is not None and subject.strip() != ""
 
     @staticmethod
-    def encode_message(message: Optional[str]) -> str:
+    def encode_message(message: str | None) -> str:
         """Encode the message to base64"""
         if not message:
             return ""
@@ -44,14 +43,14 @@ class GmailUtils:
 
     @staticmethod
     def transform_message_body(
-        mail_to: List[str],
+        mail_to: list[str],
         mail_subject: str,
-        mail_cc: Optional[List[str]],
-        mail_bcc: Optional[List[str]],
-        mail_body: Optional[str],
-        mail_attachments: Optional[List[str]],
-        thread_id: Optional[str] = None,
-        message_id: Optional[str] = None) -> dict:
+        mail_cc: list[str] | None,
+        mail_bcc: list[str] | None,
+        mail_body: str | None,
+        mail_attachments: list[str] | None,
+        thread_id: str | None = None,
+        message_id: str | None = None) -> dict:
         """Build the message body using MIME format
         Args:
             mail_to: List of email addresses to send the email to
@@ -99,7 +98,7 @@ class GmailUtils:
                     attachment.add_header(
                         "Content-Disposition",
                         "attachment",
-                        filename=file_path_obj.name
+                        filename=file_path_obj.name,
                     )
                     message.attach(attachment)
                 except Exception as e:

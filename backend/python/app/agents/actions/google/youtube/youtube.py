@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-from typing import Optional
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -14,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 class YouTube:
     """YouTube tool exposed to the agents using YouTubeDataSource"""
+
     def __init__(self, client: GoogleClient) -> None:
         """Initialize the YouTube tool"""
         """
@@ -45,41 +45,41 @@ class YouTube:
                 name="query",
                 type=ParameterType.STRING,
                 description="Search query for videos",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="max_results",
                 type=ParameterType.INTEGER,
                 description="Maximum number of results to return",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="order",
                 type=ParameterType.STRING,
                 description="Sort order (relevance, date, rating, viewCount, title)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="video_duration",
                 type=ParameterType.STRING,
                 description="Video duration filter (short, medium, long)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="video_definition",
                 type=ParameterType.STRING,
                 description="Video definition filter (high, standard)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def search_videos(
         self,
         query: str,
-        max_results: Optional[int] = None,
-        order: Optional[str] = None,
-        video_duration: Optional[str] = None,
-        video_definition: Optional[str] = None
+        max_results: int | None = None,
+        order: str | None = None,
+        video_duration: str | None = None,
+        video_definition: str | None = None,
     ) -> tuple[bool, str]:
         """Search for YouTube videos"""
         """
@@ -101,7 +101,7 @@ class YouTube:
                 maxResults=max_results,
                 order=order,
                 videoDuration=video_duration,
-                videoDefinition=video_definition
+                videoDefinition=video_definition,
             ))
 
             return True, json.dumps(results)
@@ -117,20 +117,20 @@ class YouTube:
                 name="video_id",
                 type=ParameterType.STRING,
                 description="The ID of the video",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="part",
                 type=ParameterType.STRING,
                 description="Parts to retrieve (snippet, statistics, contentDetails, etc.)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_video_details(
         self,
         video_id: str,
-        part: Optional[str] = None
+        part: str | None = None,
     ) -> tuple[bool, str]:
         """Get details of a specific YouTube video"""
         """
@@ -147,7 +147,7 @@ class YouTube:
             # Use YouTubeDataSource method
             video = self._run_async(self.client.videos_list(
                 part=part,
-                id=video_id
+                id=video_id,
             ))
 
             return True, json.dumps(video)
@@ -163,27 +163,27 @@ class YouTube:
                 name="channel_id",
                 type=ParameterType.STRING,
                 description="The ID of the channel",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="for_username",
                 type=ParameterType.STRING,
                 description="Username of the channel",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="mine",
                 type=ParameterType.BOOLEAN,
                 description="Whether to get current user's channel",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_channel_info(
         self,
-        channel_id: Optional[str] = None,
-        for_username: Optional[str] = None,
-        mine: Optional[bool] = None
+        channel_id: str | None = None,
+        for_username: str | None = None,
+        mine: bool | None = None,
     ) -> tuple[bool, str]:
         """Get information about a YouTube channel"""
         """
@@ -200,7 +200,7 @@ class YouTube:
                 part="snippet,statistics,contentDetails",
                 id=channel_id,
                 forUsername=for_username,
-                mine=mine
+                mine=mine,
             ))
 
             return True, json.dumps(channel)
@@ -216,27 +216,27 @@ class YouTube:
                 name="playlist_id",
                 type=ParameterType.STRING,
                 description="The ID of the playlist",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="max_results",
                 type=ParameterType.INTEGER,
                 description="Maximum number of videos to return",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="page_token",
                 type=ParameterType.STRING,
                 description="Page token for pagination",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_playlist_videos(
         self,
         playlist_id: str,
-        max_results: Optional[int] = None,
-        page_token: Optional[str] = None
+        max_results: int | None = None,
+        page_token: str | None = None,
     ) -> tuple[bool, str]:
         """Get videos from a YouTube playlist"""
         """
@@ -253,7 +253,7 @@ class YouTube:
                 part="snippet,contentDetails",
                 playlistId=playlist_id,
                 maxResults=max_results,
-                pageToken=page_token
+                pageToken=page_token,
             ))
 
             return True, json.dumps(videos)
@@ -269,27 +269,27 @@ class YouTube:
                 name="channel_id",
                 type=ParameterType.STRING,
                 description="The ID of the channel",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="mine",
                 type=ParameterType.BOOLEAN,
                 description="Whether to get current user's playlists",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="max_results",
                 type=ParameterType.INTEGER,
                 description="Maximum number of playlists to return",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_user_playlists(
         self,
-        channel_id: Optional[str] = None,
-        mine: Optional[bool] = None,
-        max_results: Optional[int] = None
+        channel_id: str | None = None,
+        mine: bool | None = None,
+        max_results: int | None = None,
     ) -> tuple[bool, str]:
         """Get playlists from a YouTube channel"""
         """
@@ -306,7 +306,7 @@ class YouTube:
                 part="snippet,contentDetails",
                 channelId=channel_id,
                 mine=mine,
-                maxResults=max_results
+                maxResults=max_results,
             ))
 
             return True, json.dumps(playlists)
@@ -322,27 +322,27 @@ class YouTube:
                 name="video_id",
                 type=ParameterType.STRING,
                 description="The ID of the video",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="max_results",
                 type=ParameterType.INTEGER,
                 description="Maximum number of comments to return",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="order",
                 type=ParameterType.STRING,
                 description="Sort order (time, relevance)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_video_comments(
         self,
         video_id: str,
-        max_results: Optional[int] = None,
-        order: Optional[str] = None
+        max_results: int | None = None,
+        order: str | None = None,
     ) -> tuple[bool, str]:
         """Get comments for a YouTube video"""
         """
@@ -359,7 +359,7 @@ class YouTube:
                 part="snippet,replies",
                 videoId=video_id,
                 maxResults=max_results,
-                order=order
+                order=order,
             ))
 
             return True, json.dumps(comments)
@@ -375,27 +375,27 @@ class YouTube:
                 name="region_code",
                 type=ParameterType.STRING,
                 description="Region code for trending videos (e.g., 'US', 'GB')",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="category_id",
                 type=ParameterType.STRING,
                 description="Category ID for trending videos",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="max_results",
                 type=ParameterType.INTEGER,
                 description="Maximum number of videos to return",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_trending_videos(
         self,
-        region_code: Optional[str] = None,
-        category_id: Optional[str] = None,
-        max_results: Optional[int] = None
+        region_code: str | None = None,
+        category_id: str | None = None,
+        max_results: int | None = None,
     ) -> tuple[bool, str]:
         """Get trending YouTube videos"""
         """
@@ -413,7 +413,7 @@ class YouTube:
                 chart="mostPopular",
                 regionCode=region_code,
                 videoCategoryId=category_id,
-                maxResults=max_results
+                maxResults=max_results,
             ))
 
             return True, json.dumps(videos)

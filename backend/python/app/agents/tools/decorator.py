@@ -1,10 +1,10 @@
-"""
-Enhanced tool decorator with automatic parameter extraction and metadata support.
+"""Enhanced tool decorator with automatic parameter extraction and metadata support.
 """
 
 import functools
 import inspect
-from typing import Callable, Dict, List, Optional, get_origin
+from collections.abc import Callable
+from typing import get_origin
 
 try:
     from typing import get_type_hints
@@ -20,17 +20,16 @@ from app.agents.tools.registry import _global_tools_registry
 def tool(
     app_name: str,
     tool_name: str,
-    description: Optional[str] = None,
-    parameters: Optional[List[ToolParameter]] = None,
-    returns: Optional[str] = None,
-    examples: Optional[List[Dict]] = None,
-    tags: Optional[List[str]] = None,
+    description: str | None = None,
+    parameters: list[ToolParameter] | None = None,
+    returns: str | None = None,
+    examples: list[dict] | None = None,
+    tags: list[str] | None = None,
     category: ToolCategory = ToolCategory.UTILITY,
     is_essential: bool = False,
     requires_auth: bool = True,
 ) -> Callable:
-    """
-    Enhanced decorator to register a function as a tool.
+    """Enhanced decorator to register a function as a tool.
 
     Args:
         app_name: Tool app name (required)
@@ -60,6 +59,7 @@ def tool(
         def process_data(input_text: str, count: int = 1) -> str:
             return input_text * count
         ```
+
     """
     def decorator(func: Callable) -> Callable:
         # Validate required fields
@@ -83,7 +83,7 @@ def tool(
             parameters=tool_parameters,
             returns=returns,
             examples=examples or [],
-            tags=tags or []
+            tags=tags or [],
         )
 
         # Create metadata
@@ -94,34 +94,34 @@ def tool(
             category=category,
             is_essential=is_essential,
             requires_auth=requires_auth,
-            tags=tags or []
+            tags=tags or [],
         )
 
         # Register tool with metadata
         _global_tools_registry.register(tool_obj, metadata)
 
         # Add metadata to function
-        setattr(func, '_tool_metadata', tool_obj)
+        func._tool_metadata = tool_obj
 
         @functools.wraps(func)
         def wrapper(*args, **kwargs) -> object:
             return func(*args, **kwargs)
 
-        setattr(wrapper, '_tool_metadata', tool_obj)
+        wrapper._tool_metadata = tool_obj
         return wrapper
 
     return decorator
 
 
-def _extract_parameters(func: Callable) -> List[ToolParameter]:
-    """
-    Extract parameters from function signature with type hints.
+def _extract_parameters(func: Callable) -> list[ToolParameter]:
+    """Extract parameters from function signature with type hints.
 
     Args:
         func: Function to extract parameters from
 
     Returns:
         List of ToolParameter objects
+
     """
     sig = inspect.signature(func)
     type_hints = get_type_hints(func)
@@ -129,7 +129,7 @@ def _extract_parameters(func: Callable) -> List[ToolParameter]:
 
     for param_name, param in sig.parameters.items():
         # Skip self and cls
-        if param_name in ('self', 'cls'):
+        if param_name in ("self", "cls"):
             continue
 
         # Determine parameter type
@@ -146,33 +146,34 @@ def _extract_parameters(func: Callable) -> List[ToolParameter]:
             type=param_type,
             description=f"Parameter {param_name}",
             required=required,
-            default=param.default if not required else None
+            default=param.default if not required else None,
         ))
 
     return parameters
 
 
 def _infer_parameter_type(type_hint) -> ParameterType:
-    """
-    Infer ParameterType from Python type hint.
+    """Infer ParameterType from Python type hint.
+
     Args:
         type_hint: Python type hint
 
     Returns:
         Corresponding ParameterType
+
     """
     if isinstance(type_hint, type):
         if type_hint is int:
             return ParameterType.INTEGER
-        elif type_hint is float:
+        if type_hint is float:
             return ParameterType.NUMBER
-        elif type_hint is bool:
+        if type_hint is bool:
             return ParameterType.BOOLEAN
 
     origin = get_origin(type_hint)
     if origin is list:
         return ParameterType.ARRAY
-    elif origin is dict:
+    if origin is dict:
         return ParameterType.OBJECT
 
     return ParameterType.STRING

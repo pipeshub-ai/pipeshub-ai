@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-from typing import Optional, Tuple
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -15,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 class OneNote:
     """Microsoft OneNote tool exposed to the agents"""
+
     def __init__(self, client: MSGraphClient) -> None:
         """Initialize the OneNote tool"""
         """
@@ -50,11 +50,11 @@ class OneNote:
                 name="top",
                 type=ParameterType.INTEGER,
                 description="Number of notebooks to retrieve",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def get_notebooks(self, top: Optional[int] = None) -> Tuple[bool, str]:
+    def get_notebooks(self, top: int | None = None) -> tuple[bool, str]:
         """Get OneNote notebooks"""
         """
         Args:
@@ -68,13 +68,12 @@ class OneNote:
                 notebook_id="",  # Empty string for listing all notebooks
                 top=top,
                 select=["id", "displayName", "createdDateTime", "lastModifiedDateTime"],
-                expand=["sections"]
+                expand=["sections"],
             ))
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error in get_notebooks: {e}")
             return False, json.dumps({"error": str(e)})
@@ -88,11 +87,11 @@ class OneNote:
                 name="notebook_id",
                 type=ParameterType.STRING,
                 description="ID of the notebook",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def get_notebook(self, notebook_id: str) -> Tuple[bool, str]:
+    def get_notebook(self, notebook_id: str) -> tuple[bool, str]:
         """Get a specific OneNote notebook"""
         """
         Args:
@@ -103,12 +102,11 @@ class OneNote:
         try:
             # Map to data source method: me_onenote_get_notebooks requires notebook_id
             response = self._run_async(self.client.me_onenote_get_notebooks(
-                notebook_id=notebook_id
+                notebook_id=notebook_id,
             ))
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error in get_notebook: {e}")
             return False, json.dumps({"error": str(e)})
@@ -122,11 +120,11 @@ class OneNote:
                 name="notebook_id",
                 type=ParameterType.STRING,
                 description="ID of the notebook",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def get_sections(self, notebook_id: str) -> Tuple[bool, str]:
+    def get_sections(self, notebook_id: str) -> tuple[bool, str]:
         """Get sections from a OneNote notebook"""
         """
         Args:
@@ -141,13 +139,12 @@ class OneNote:
                 onenoteSection_id="",  # Empty string for listing all sections
                 top=100,
                 select=["id", "displayName", "createdDateTime", "lastModifiedDateTime"],
-                expand=["pages"]
+                expand=["pages"],
             ))
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error in get_sections: {e}")
             return False, json.dumps({"error": str(e)})
@@ -161,17 +158,17 @@ class OneNote:
                 name="notebook_id",
                 type=ParameterType.STRING,
                 description="ID of the notebook",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="section_id",
                 type=ParameterType.STRING,
                 description="ID of the section",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def get_pages(self, notebook_id: str, section_id: str) -> Tuple[bool, str]:
+    def get_pages(self, notebook_id: str, section_id: str) -> tuple[bool, str]:
         """Get pages from a OneNote section"""
         """
         Args:
@@ -188,13 +185,12 @@ class OneNote:
                 onenotePage_id="",  # Empty string for listing all pages
                 top=100,
                 select=["id", "title", "createdDateTime", "lastModifiedDateTime"],
-                expand=["content"]
+                expand=["content"],
             ))
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error in get_pages: {e}")
             return False, json.dumps({"error": str(e)})
@@ -208,11 +204,11 @@ class OneNote:
                 name="page_id",
                 type=ParameterType.STRING,
                 description="ID of the page",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def get_page(self, page_id: str) -> Tuple[bool, str]:
+    def get_page(self, page_id: str) -> tuple[bool, str]:
         """Get a specific OneNote page"""
         """
         Args:
@@ -241,35 +237,35 @@ class OneNote:
                 name="notebook_id",
                 type=ParameterType.STRING,
                 description="ID of the notebook",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="section_id",
                 type=ParameterType.STRING,
                 description="ID of the section",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="title",
                 type=ParameterType.STRING,
                 description="Title of the page",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="content",
                 type=ParameterType.STRING,
                 description="Content of the page (HTML format)",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def create_page(
         self,
         notebook_id: str,
         section_id: str,
         title: str,
-        content: str
-    ) -> Tuple[bool, str]:
+        content: str,
+    ) -> tuple[bool, str]:
         """Create a new OneNote page"""
         """
         Args:
@@ -284,19 +280,18 @@ class OneNote:
             # Use the existing me_onenote_notebooks_sections_create_pages method
             request_body = {
                 "title": title,
-                "content": content
+                "content": content,
             }
 
             response = self._run_async(self.client.me_onenote_notebooks_sections_create_pages(
                 notebook_id=notebook_id,
                 onenoteSection_id=section_id,
-                request_body=request_body
+                request_body=request_body,
             ))
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error in create_page: {e}")
             return False, json.dumps({"error": str(e)})
@@ -310,21 +305,21 @@ class OneNote:
                 name="page_id",
                 type=ParameterType.STRING,
                 description="ID of the page",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="content",
                 type=ParameterType.STRING,
                 description="New content for the page (HTML format)",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def update_page(
         self,
         page_id: str,
-        content: str
-    ) -> Tuple[bool, str]:
+        content: str,
+    ) -> tuple[bool, str]:
         """Update a OneNote page"""
         """
         Args:
@@ -353,23 +348,23 @@ class OneNote:
                 name="notebook_id",
                 type=ParameterType.STRING,
                 description="ID of the notebook",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="section_id",
                 type=ParameterType.STRING,
                 description="ID of the section",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="page_id",
                 type=ParameterType.STRING,
                 description="ID of the page",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def delete_page(self, notebook_id: str, section_id: str, page_id: str) -> Tuple[bool, str]:
+    def delete_page(self, notebook_id: str, section_id: str, page_id: str) -> tuple[bool, str]:
         """Delete a OneNote page"""
         """
         Args:
@@ -384,13 +379,12 @@ class OneNote:
             response = self._run_async(self.client.me_onenote_notebooks_sections_delete_pages(
                 notebook_id=notebook_id,
                 onenoteSection_id=section_id,
-                onenotePage_id=page_id
+                onenotePage_id=page_id,
             ))
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error in delete_page: {e}")
             return False, json.dumps({"error": str(e)})

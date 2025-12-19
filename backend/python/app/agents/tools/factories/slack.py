@@ -1,5 +1,4 @@
-"""
-Client factories for Slack.
+"""Client factories for Slack.
 """
 
 from app.agents.tools.factories.base import ClientFactory
@@ -14,9 +13,8 @@ class SlackClientFactory(ClientFactory):
 
     async def create_client(self, config_service, logger, state=None) -> SlackClient:
         """Create Slack client instance"""
-
         return await SlackClient.build_from_services(
             logger=logger,
-            config_service=config_service
+            config_service=config_service,
         )
 

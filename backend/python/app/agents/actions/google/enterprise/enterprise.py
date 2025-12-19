@@ -15,6 +15,7 @@ class GoogleDriveEnterprise:
     Returns:
         None
     """
+
     def __init__(self, client: GoogleClient) -> None:
         """Initialize the Google Drive Enterprise tool"""
         self.client = client
@@ -27,9 +28,9 @@ class GoogleDriveEnterprise:
                 name="customer",
                 type=ParameterType.STRING,
                 description="The customer ID to get the list of users for",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def get_users_list(self, customer: str = "my_customer") -> tuple[bool, str]:
         """Get the list of users in the domain
@@ -53,9 +54,9 @@ class GoogleDriveEnterprise:
                 name="customer",
                 type=ParameterType.STRING,
                 description="The customer ID to get the list of groups for",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def get_groups_list(self, customer: str = "my_customer") -> tuple[bool, str]:
         """Get the list of groups in the domain
@@ -78,9 +79,9 @@ class GoogleDriveEnterprise:
                 name="customer",
                 type=ParameterType.STRING,
                 description="The customer ID to get the list of domains for",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def get_domains_list(self, customer: str = "my_customer") -> tuple[bool, str]:
         """Get the list of domains in the domain
@@ -103,9 +104,9 @@ class GoogleDriveEnterprise:
                 name="group_email",
                 type=ParameterType.STRING,
                 description="The email of the group to get the list of members for",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def get_group_members_list(self, group_email: str) -> tuple[bool, str]:
         """Get the list of members in a group
@@ -129,9 +130,9 @@ class GoogleDriveEnterprise:
                 name="user_email",
                 type=ParameterType.STRING,
                 description="The email of the user to get the info for",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def get_user_info(self, user_email: str) -> tuple[bool, str]:
         """Get the info of a user
@@ -140,7 +141,6 @@ class GoogleDriveEnterprise:
         Returns:
             tuple[bool, str]: True if the user info is retrieved, False otherwise
         """
-
         try:
             user_info = self.client.users().get(userKey=user_email).execute() # type: ignore
             return True, json.dumps(user_info)
@@ -155,9 +155,9 @@ class GoogleDriveEnterprise:
                 name="group_email",
                 type=ParameterType.STRING,
                 description="The email of the group to get the info for",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def get_group_info(self, group_email: str) -> tuple[bool, str]:
         """Get the info of a group

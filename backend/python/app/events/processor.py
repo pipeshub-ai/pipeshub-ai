@@ -54,7 +54,7 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
     except ValueError:
         origin = OriginTypes.UPLOAD
 
-    mime_type = record_dict.get("mimeType", None)
+    mime_type = record_dict.get("mimeType")
 
     record = Record(
         id=record_dict.get("_key"),
@@ -110,7 +110,7 @@ class Processor:
                 raise Exception("No image data provided")
 
             record = await self.arango_service.get_document(
-                record_id, CollectionNames.RECORDS.value
+                record_id, CollectionNames.RECORDS.value,
             )
             if record is None:
                 self.logger.error(f"❌ Record {record_id} not found in database")
@@ -131,11 +131,11 @@ class Processor:
 
                     docs = [record]
                     success = await self.arango_service.batch_upsert_nodes(
-                        docs, CollectionNames.RECORDS.value
+                        docs, CollectionNames.RECORDS.value,
                     )
                     if not success:
                         raise DocumentProcessingError(
-                            "Failed to update indexing status", doc_id=record_id
+                            "Failed to update indexing status", doc_id=record_id,
                         )
 
                     return
@@ -168,7 +168,7 @@ class Processor:
             self.logger.info("✅ Image processing completed successfully")
             return
         except Exception as e:
-            self.logger.error(f"❌ Error processing image: {str(e)}")
+            self.logger.error(f"❌ Error processing image: {e!s}")
             raise
 
     async def process_google_slides(self, record_id, record_version, orgId, content, virtual_record_id) -> None:
@@ -178,9 +178,10 @@ class Processor:
             record_id (str): ID of the Google Slides presentation
             record_version (str): Version of the presentation
             orgId (str): Organization ID
+
         """
         self.logger.info(
-            f"🚀 Starting Google Slides processing for record: {record_id}"
+            f"🚀 Starting Google Slides processing for record: {record_id}",
         )
 
         try:
@@ -227,7 +228,7 @@ class Processor:
                         "layout": slide["layout"],
                         "masterObjectId": slide["masterObjectId"],
                         "hasNotesPage": slide.get("hasNotesPage", False),
-                    }
+                    },
                 )
 
             # Join all text content with newlines
@@ -238,17 +239,17 @@ class Processor:
             domain_metadata = None
             try:
                 metadata = await self.domain_extractor.extract_metadata(
-                    full_text_content, orgId
+                    full_text_content, orgId,
                 )
                 record = await self.domain_extractor.save_metadata_to_db(
-                    orgId, record_id, metadata, virtual_record_id
+                    orgId, record_id, metadata, virtual_record_id,
                 )
                 file = await self.arango_service.get_document(
-                    record_id, CollectionNames.FILES.value
+                    record_id, CollectionNames.FILES.value,
                 )
                 domain_metadata = {**record, **file}
             except Exception as e:
-                self.logger.error(f"❌ Error extracting metadata: {str(e)}")
+                self.logger.error(f"❌ Error extracting metadata: {e!s}")
 
             # Format content for output
             formatted_content = ""
@@ -310,7 +311,7 @@ class Processor:
                                             "elementType": "shape",
                                             "virtualRecordId": virtual_record_id,
                                         },
-                                    }
+                                    },
                                 )
 
                     elif element["type"] == "table":
@@ -332,7 +333,7 @@ class Processor:
                                             "columnIndex": cell["columnIndex"],
                                             "virtualRecordId": virtual_record_id,
                                         },
-                                    }
+                                    },
                                 )
 
             self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
@@ -349,7 +350,7 @@ class Processor:
 
         except Exception as e:
             self.logger.error(
-                f"❌ Error processing Google Slides presentation: {str(e)}"
+                f"❌ Error processing Google Slides presentation: {e!s}",
             )
             raise
 
@@ -359,6 +360,7 @@ class Processor:
         Args:
             record_id (str): ID of the Google Doc
             record_version (str): Version of the document
+
         """
         self.logger.info(f"🚀 Starting Google Docs processing for record: {record_id}")
 
@@ -391,17 +393,17 @@ class Processor:
             domain_metadata = None
             try:
                 metadata = await self.domain_extractor.extract_metadata(
-                    full_text_content, orgId
+                    full_text_content, orgId,
                 )
                 record = await self.domain_extractor.save_metadata_to_db(
-                    orgId, record_id, metadata, virtual_record_id
+                    orgId, record_id, metadata, virtual_record_id,
                 )
                 file = await self.arango_service.get_document(
-                    record_id, CollectionNames.FILES.value
+                    record_id, CollectionNames.FILES.value,
                 )
                 domain_metadata = {**record, **file}
             except Exception as e:
-                self.logger.error(f"❌ Error extracting metadata: {str(e)}")
+                self.logger.error(f"❌ Error extracting metadata: {e!s}")
 
             # Format content for output
             formatted_content = ""
@@ -462,13 +464,13 @@ class Processor:
                 "has_header": bool(headers),
                 "has_footer": bool(footers),
                 "image_count": len(
-                    [item for item in all_content if item["type"] == "image"]
+                    [item for item in all_content if item["type"] == "image"],
                 ),
                 "table_count": len(
-                    [item for item in all_content if item["type"] == "table"]
+                    [item for item in all_content if item["type"] == "table"],
                 ),
                 "paragraph_count": len(
-                    [item for item in all_content if item["type"] == "paragraph"]
+                    [item for item in all_content if item["type"] == "paragraph"],
                 ),
             }
 
@@ -490,7 +492,7 @@ class Processor:
                                 prev["content"]["text"].strip()
                                 for prev in context_window
                                 if prev["type"] == "paragraph"
-                            ]
+                            ],
                         )
 
                         # Current item's context
@@ -514,7 +516,7 @@ class Processor:
                                         "end_index": item["end_index"],
                                         "virtualRecordId": virtual_record_id,
                                     },
-                                }
+                                },
                             )
 
                         # Update context window
@@ -541,7 +543,7 @@ class Processor:
                                         "end_index": cell["end_index"],
                                         "virtualRecordId": virtual_record_id,
                                     },
-                                }
+                                },
                             )
 
             self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
@@ -556,7 +558,7 @@ class Processor:
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Error processing Google Docs document: {str(e)}")
+            self.logger.error(f"❌ Error processing Google Docs document: {e!s}")
             raise
 
     async def process_google_sheets(self, record_id, record_version, orgId, content, virtual_record_id) -> None:
@@ -577,7 +579,7 @@ class Processor:
                 for table in sheet_result["tables"]:
                     for row in table["rows"]:
                         combined_texts.append(
-                            f"{row_counter}. {row['natural_language_text']}"
+                            f"{row_counter}. {row['natural_language_text']}",
                         )
                         row_counter += 1
 
@@ -586,18 +588,18 @@ class Processor:
                 try:
                     self.logger.info("🎯 Extracting metadata from Excel content")
                     metadata = await self.domain_extractor.extract_metadata(
-                        combined_text, orgId
+                        combined_text, orgId,
                     )
                     record = await self.domain_extractor.save_metadata_to_db(
-                        orgId, record_id, metadata, virtual_record_id
+                        orgId, record_id, metadata, virtual_record_id,
                     )
                     file = await self.arango_service.get_document(
-                        record_id, CollectionNames.FILES.value
+                        record_id, CollectionNames.FILES.value,
                     )
 
                     domain_metadata = {**record, **file}
                 except Exception as e:
-                    self.logger.error(f"❌ Error extracting metadata: {str(e)}")
+                    self.logger.error(f"❌ Error extracting metadata: {e!s}")
                     domain_metadata = None
 
             for sheet_idx, sheet_result in enumerate(all_sheets_result, 1):
@@ -622,7 +624,7 @@ class Processor:
                                     "blockText": json.dumps(row_data),
                                     "virtualRecordId": virtual_record_id,
                                 },
-                            }
+                            },
                         )
 
             self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
@@ -636,11 +638,11 @@ class Processor:
                 "metadata": metadata,
             }
         except Exception as e:
-            self.logger.error(f"❌ Error processing Google Sheets document: {str(e)}")
+            self.logger.error(f"❌ Error processing Google Sheets document: {e!s}")
             raise
 
     async def process_gmail_message(
-        self, recordName, recordId, version, source, orgId, html_content, virtual_record_id
+        self, recordName, recordId, version, source, orgId, html_content, virtual_record_id,
     ) -> None:
 
         self.logger.info("🚀 Processing Gmail Message")
@@ -654,13 +656,13 @@ class Processor:
                 source=source,
                 orgId=orgId,
                 html_binary=html_content,
-                virtual_record_id=virtual_record_id
+                virtual_record_id=virtual_record_id,
             )
 
             self.logger.info("✅ Gmail Message processing completed successfully using markdown conversion.")
 
         except Exception as e:
-            self.logger.error(f"❌ Error processing Gmail Message document: {str(e)}")
+            self.logger.error(f"❌ Error processing Gmail Message document: {e!s}")
             raise
 
     async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id) -> None|bool:
@@ -677,12 +679,12 @@ class Processor:
                 return False
 
             record = await self.arango_service.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value,
             )
 
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
-                return
+                return None
 
             record = convert_record_dict_to_record(record)
             record.block_containers = block_containers
@@ -691,24 +693,24 @@ class Processor:
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
             self.logger.info(f"✅ PDF processing completed for record: {recordName}, using external Docling service")
-            return
+            return None
         except Exception as e:
-            self.logger.error(f"❌ Error processing PDF document with external Docling service: {str(e)}")
+            self.logger.error(f"❌ Error processing PDF document with external Docling service: {e!s}")
             raise
 
     async def process_pdf_document(
-        self, recordName, recordId, version, source, orgId, pdf_binary, virtual_record_id
+        self, recordName, recordId, version, source, orgId, pdf_binary, virtual_record_id,
     ) -> None:
         """Process PDF document with automatic OCR selection based on environment settings"""
         self.logger.info(
-            f"🚀 Starting PDF document processing for record: {recordName}"
+            f"🚀 Starting PDF document processing for record: {recordName}",
         )
 
         try:
             self.logger.debug("📄 Processing PDF binary content")
             # Get OCR configurations
             ai_models = await self.config_service.get_config(
-                config_node_constants.AI_MODELS.value
+                config_node_constants.AI_MODELS.value,
             )
             ocr_configs = ai_models["ocr"]
 
@@ -730,10 +732,10 @@ class Processor:
                         model_id=AzureDocIntelligenceModel.PREBUILT_DOCUMENT.value,
                     )
                     break
-                elif provider == OCRProvider.OCRMYPDF.value:
+                if provider == OCRProvider.OCRMYPDF.value:
                     self.logger.debug("📚 Setting up PyMuPDF OCR handler")
                     handler = OCRHandler(
-                        self.logger, OCRProvider.OCRMYPDF.value, config=self.config_service
+                        self.logger, OCRProvider.OCRMYPDF.value, config=self.config_service,
                     )
                     break
 
@@ -796,7 +798,7 @@ class Processor:
                                         page_number=paragraph.get("page_number"),
                                         bounding_boxes=bounding_boxes,
                                     ),
-                                )
+                                ),
                             )
                             index += 1
 
@@ -804,7 +806,7 @@ class Processor:
             for block_group in block_groups:
                 block_group.children = table_rows.get(block_group.index, [])
             record = await self.arango_service.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value,
             )
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
@@ -820,26 +822,26 @@ class Processor:
             return
 
         except Exception as e:
-            self.logger.error(f"❌ Error processing PDF document: {str(e)}")
+            self.logger.error(f"❌ Error processing PDF document: {e!s}")
             raise
 
     async def process_doc_document(
-        self, recordName, recordId, version, source, orgId, doc_binary, virtual_record_id
+        self, recordName, recordId, version, source, orgId, doc_binary, virtual_record_id,
     ) -> None:
         self.logger.info(
-            f"🚀 Starting DOC document processing for record: {recordName}"
+            f"🚀 Starting DOC document processing for record: {recordName}",
         )
         # Implement DOC processing logic here
         parser = self.parsers[ExtensionTypes.DOC.value]
         doc_result = parser.convert_doc_to_docx(doc_binary)
         await self.process_docx_document(
-            recordName, recordId, version, source, orgId, doc_result, virtual_record_id
+            recordName, recordId, version, source, orgId, doc_result, virtual_record_id,
         )
 
         return {"status": "success", "message": "DOC processed successfully"}
 
     async def process_docx_document(
-        self, recordName, recordId, version, source, orgId, docx_binary, virtual_record_id
+        self, recordName, recordId, version, source, orgId, docx_binary, virtual_record_id,
     ) -> None:
         """Process DOCX document and extract structured content
 
@@ -850,9 +852,10 @@ class Processor:
             source (str): Source of the document
             orgId (str): Organization ID
             docx_binary (bytes): Binary content of the DOCX file
+
         """
         self.logger.info(
-            f"🚀 Starting DOCX document processing for record: {recordName}"
+            f"🚀 Starting DOCX document processing for record: {recordName}",
         )
 
         try:
@@ -867,7 +870,7 @@ class Processor:
                 raise Exception("Failed to process DOCX document. It might contain scanned pages.")
 
             record = await self.arango_service.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value,
             )
 
             if record is None:
@@ -882,15 +885,15 @@ class Processor:
             self.logger.info("✅ Docx/Doc processing completed successfully using docling")
 
         except Exception as e:
-            self.logger.error(f"❌ Error processing DOCX document: {str(e)}")
+            self.logger.error(f"❌ Error processing DOCX document: {e!s}")
             raise
 
     async def process_excel_document(
-        self, recordName, recordId, version, source, orgId, excel_binary, virtual_record_id
+        self, recordName, recordId, version, source, orgId, excel_binary, virtual_record_id,
     ) -> None:
         """Process Excel document and extract structured content"""
         self.logger.info(
-            f"🚀 Starting Excel document processing for record: {recordName}"
+            f"🚀 Starting Excel document processing for record: {recordName}",
         )
 
         try:
@@ -903,7 +906,7 @@ class Processor:
                 return
             blocks_containers = await parser.parse(excel_binary, llm)
             record = await self.arango_service.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value,
             )
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
@@ -916,15 +919,15 @@ class Processor:
             await pipeline.apply(ctx)
             self.logger.info("✅ Excel processing completed successfully.")
         except Exception as e:
-            self.logger.error(f"❌ Error processing Excel document: {str(e)}")
+            self.logger.error(f"❌ Error processing Excel document: {e!s}")
             raise
 
     async def process_xls_document(
-        self, recordName, recordId, version, source, orgId, xls_binary, virtual_record_id
+        self, recordName, recordId, version, source, orgId, xls_binary, virtual_record_id,
     ) -> None:
         """Process XLS document and extract structured content"""
         self.logger.info(
-            f"🚀 Starting XLS document processing for record: {recordName}"
+            f"🚀 Starting XLS document processing for record: {recordName}",
         )
 
         try:
@@ -934,17 +937,17 @@ class Processor:
 
             # Process the converted XLSX using the Excel parser
             result = await self.process_excel_document(
-                recordName, recordId, version, source, orgId, xlsx_binary, virtual_record_id
+                recordName, recordId, version, source, orgId, xlsx_binary, virtual_record_id,
             )
             self.logger.debug("📑 XLS document processed successfully")
             return result
 
         except Exception as e:
-            self.logger.error(f"❌ Error processing XLS document: {str(e)}")
+            self.logger.error(f"❌ Error processing XLS document: {e!s}")
             raise
 
     async def process_csv_document(
-        self, recordName, recordId, version, source, orgId, csv_binary, virtual_record_id, origin
+        self, recordName, recordId, version, source, orgId, csv_binary, virtual_record_id, origin,
     ) -> None:
         """Process CSV document and extract structured content
 
@@ -955,9 +958,10 @@ class Processor:
             source (str): Source of the document
             orgId (str): Organization ID
             csv_binary (bytes): Binary content of the CSV file
+
         """
         self.logger.info(
-            f"🚀 Starting CSV document processing for record: {recordName}"
+            f"🚀 Starting CSV document processing for record: {recordName}",
         )
 
         try:
@@ -973,7 +977,7 @@ class Processor:
             for encoding in encodings:
                 try:
                     self.logger.debug(
-                        f"Attempting to decode CSV with {encoding} encoding"
+                        f"Attempting to decode CSV with {encoding} encoding",
                     )
                     # Decode binary data to string
                     csv_text = csv_binary.decode(encoding)
@@ -985,14 +989,14 @@ class Processor:
                     csv_result = parser.read_stream(csv_stream)
 
                     self.logger.info(
-                        f"✅ Successfully parsed CSV with {encoding} encoding. Rows: {len(csv_result):,}"
+                        f"✅ Successfully parsed CSV with {encoding} encoding. Rows: {len(csv_result):,}",
                     )
                     break
                 except UnicodeDecodeError:
                     self.logger.debug(f"Failed to decode with {encoding} encoding")
                     continue
                 except Exception as e:
-                    self.logger.debug(f"Failed to process CSV with {encoding} encoding: {str(e)}")
+                    self.logger.debug(f"Failed to process CSV with {encoding} encoding: {e!s}")
                     continue
 
 
@@ -1008,7 +1012,7 @@ class Processor:
             if csv_result:
 
                 record = await self.arango_service.get_document(
-                    recordId, CollectionNames.RECORDS.value
+                    recordId, CollectionNames.RECORDS.value,
                     )
                 if record is None:
                     self.logger.error(f"❌ Record {recordId} not found in database")
@@ -1029,14 +1033,14 @@ class Processor:
             self.logger.info("✅ CSV processing completed successfully")
 
         except Exception as e:
-            self.logger.error(f"❌ Error processing CSV document: {str(e)}")
+            self.logger.error(f"❌ Error processing CSV document: {e!s}")
             raise
 
 
 
     async def _mark_record(self, record_id, indexing_status: ProgressStatus) -> None:
         record = await self.arango_service.get_document(
-                        record_id, CollectionNames.RECORDS.value
+                        record_id, CollectionNames.RECORDS.value,
                     )
         if not record:
             raise DocumentProcessingError(
@@ -1052,32 +1056,31 @@ class Processor:
                 "lastIndexTimestamp": timestamp,
                 "extractionStatus": ProgressStatus.EMPTY.value,
                 "lastExtractionTimestamp": timestamp,
-            }
+            },
         )
 
         docs = [doc]
 
         success = await self.arango_service.batch_upsert_nodes(
-            docs, CollectionNames.RECORDS.value
+            docs, CollectionNames.RECORDS.value,
         )
         if not success:
             raise DocumentProcessingError(
-                "Failed to update indexing status", doc_id=record_id
+                "Failed to update indexing status", doc_id=record_id,
             )
-        return
 
     async def process_html_document(
-        self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id
+        self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id,
     ) -> None:
         """Process HTML document by converting to markdown and using markdown processing"""
         self.logger.info(
-            f"🚀 Starting HTML document processing for record: {recordName}"
+            f"🚀 Starting HTML document processing for record: {recordName}",
         )
 
         try:
             html_content = None
             try:
-                soup = BeautifulSoup(html_binary, 'html.parser')
+                soup = BeautifulSoup(html_binary, "html.parser")
 
                 # Remove script, style, and other non-content elements
                 for element in soup(["script", "style", "noscript", "iframe", "nav", "footer", "header"]):
@@ -1106,17 +1109,17 @@ class Processor:
                 source=source,
                 orgId=orgId,
                 md_binary=md_binary,
-                virtual_record_id=virtual_record_id
+                virtual_record_id=virtual_record_id,
             )
 
             self.logger.info("✅ HTML processing completed successfully using markdown conversion.")
 
         except Exception as e:
-            self.logger.error(f"❌ Error processing HTML document: {str(e)}")
+            self.logger.error(f"❌ Error processing HTML document: {e!s}")
             raise
 
     async def process_mdx_document(
-        self, recordName: str, recordId: str, version: str, source: str, orgId: str, mdx_content: str, virtual_record_id
+        self, recordName: str, recordId: str, version: str, source: str, orgId: str, mdx_content: str, virtual_record_id,
     ) -> None:
         """Process MDX document by converting it to MD and then processing it as markdown
 
@@ -1130,9 +1133,10 @@ class Processor:
 
         Returns:
             dict: Processing status and message
+
         """
         self.logger.info(
-            f"🚀 Starting MDX document processing for record: {recordName}"
+            f"🚀 Starting MDX document processing for record: {recordName}",
         )
 
         # Convert MDX to MD using our parser
@@ -1141,16 +1145,16 @@ class Processor:
 
         # Process the converted markdown content
         await self.process_md_document(
-            recordName, recordId, version, source, orgId, md_content, virtual_record_id
+            recordName, recordId, version, source, orgId, md_content, virtual_record_id,
         )
 
         return {"status": "success", "message": "MDX processed successfully"}
 
     async def process_md_document(
-        self, recordName, recordId, version, source, orgId, md_binary, virtual_record_id
+        self, recordName, recordId, version, source, orgId, md_binary, virtual_record_id,
     ) -> None:
         self.logger.info(
-            f"🚀 Starting Markdown document processing for record: {recordName}"
+            f"🚀 Starting Markdown document processing for record: {recordName}",
         )
 
         try:
@@ -1206,7 +1210,7 @@ class Processor:
                 raise Exception("Failed to process MD document. It might contain scanned pages.")
 
             record = await self.arango_service.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value,
             )
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
@@ -1219,7 +1223,7 @@ class Processor:
                     caption = block.image_metadata.captions
                     if caption:
                         caption = caption[0]
-                        if caption in caption_map and caption_map[caption]:
+                        if caption_map.get(caption):
                             if block.data is None:
                                 block.data = {}
                             if isinstance(block.data, dict):
@@ -1241,15 +1245,15 @@ class Processor:
             self.logger.info("✅ MD processing completed successfully using docling")
             return
         except Exception as e:
-            self.logger.error(f"❌ Error processing Markdown document: {str(e)}")
+            self.logger.error(f"❌ Error processing Markdown document: {e!s}")
             raise
 
     async def process_txt_document(
-        self, recordName, recordId, version, source, orgId, txt_binary, virtual_record_id, recordType, connectorName, origin
+        self, recordName, recordId, version, source, orgId, txt_binary, virtual_record_id, recordType, connectorName, origin,
     ) -> None:
         """Process TXT document and extract structured content"""
         self.logger.info(
-            f"🚀 Starting TXT document processing for record: {recordName}"
+            f"🚀 Starting TXT document processing for record: {recordName}",
         )
 
         try:
@@ -1261,7 +1265,7 @@ class Processor:
                 try:
                     text_content = txt_binary.decode(encoding)
                     self.logger.debug(
-                        f"Successfully decoded text with {encoding} encoding"
+                        f"Successfully decoded text with {encoding} encoding",
                     )
                     break
                 except UnicodeDecodeError:
@@ -1269,7 +1273,7 @@ class Processor:
 
             if text_content is None:
                 raise ValueError(
-                    "Unable to decode text file with any supported encoding"
+                    "Unable to decode text file with any supported encoding",
                 )
 
             await self.process_md_document(
@@ -1279,16 +1283,16 @@ class Processor:
                 source=source,
                 orgId=orgId,
                 md_binary=text_content,
-                virtual_record_id=virtual_record_id
+                virtual_record_id=virtual_record_id,
             )
             self.logger.info("✅ TXT processing completed successfully")
             return
         except Exception as e:
-            self.logger.error(f"❌ Error processing TXT document: {str(e)}")
+            self.logger.error(f"❌ Error processing TXT document: {e!s}")
             raise
 
     async def process_pptx_document(
-        self, recordName, recordId, version, source, orgId, pptx_binary, virtual_record_id
+        self, recordName, recordId, version, source, orgId, pptx_binary, virtual_record_id,
     ) -> None:
         """Process PPTX document and extract structured content
 
@@ -1299,9 +1303,10 @@ class Processor:
             source (str): Source of the document
             orgId (str): Organization ID
             pptx_binary (bytes): Binary content of the PPTX file
+
         """
         self.logger.info(
-            f"🚀 Starting PPTX document processing for record: {recordName}"
+            f"🚀 Starting PPTX document processing for record: {recordName}",
         )
 
         try:
@@ -1311,9 +1316,9 @@ class Processor:
             processor = DoclingProcessor(logger=self.logger, config=self.config_service)
             block_containers = await processor.load_document(recordName, pptx_binary)
             if block_containers is False:
-                raise Exception(("Failed to process PPTX document. It might contain scanned pages."))
+                raise Exception("Failed to process PPTX document. It might contain scanned pages.")
             record = await self.arango_service.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value,
             )
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
@@ -1327,11 +1332,11 @@ class Processor:
             self.logger.info("✅ PPTX processing completed successfully using docling")
             return
         except Exception as e:
-            self.logger.error(f"❌ Error processing PPTX document: {str(e)}")
+            self.logger.error(f"❌ Error processing PPTX document: {e!s}")
             raise
 
     async def process_ppt_document(
-        self, recordName, recordId, version, source, orgId, ppt_binary, virtual_record_id
+        self, recordName, recordId, version, source, orgId, ppt_binary, virtual_record_id,
     ) -> None:
         """Process PPT document and extract structured content
 
@@ -1342,14 +1347,15 @@ class Processor:
             source (str): Source of the document
             orgId (str): Organization ID
             ppt_binary (bytes): Binary content of the PPT file
+
         """
         self.logger.info(
-            f"🚀 Starting PPT document processing for record: {recordName}"
+            f"🚀 Starting PPT document processing for record: {recordName}",
         )
         parser = self.parsers[ExtensionTypes.PPT.value]
         ppt_result = parser.convert_ppt_to_pptx(ppt_binary)
         await self.process_pptx_document(
-            recordName, recordId, version, source, orgId, ppt_result, virtual_record_id
+            recordName, recordId, version, source, orgId, ppt_result, virtual_record_id,
         )
 
         return {"status": "success", "message": "PPT processed successfully"}

@@ -1,5 +1,6 @@
 import json
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from collections.abc import AsyncGenerator
+from typing import Any
 
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -36,16 +37,16 @@ router = APIRouter()
 # Pydantic models
 class ChatQuery(BaseModel):
     query: str
-    limit: Optional[int] = 50
-    previousConversations: List[Dict] = []
-    filters: Optional[Dict[str, Any]] = None
-    retrievalMode: Optional[str] = "HYBRID"
-    quickMode: Optional[bool] = False
+    limit: int | None = 50
+    previousConversations: list[dict] = []
+    filters: dict[str, Any] | None = None
+    retrievalMode: str | None = "HYBRID"
+    quickMode: bool | None = False
     # New fields for multi-model support
-    modelKey: Optional[str] = None  # e.g., "uuid-of-the-model"
-    modelName: Optional[str] = None  # e.g., "gpt-4o-mini", "claude-3-5-sonnet", "llama3.2"
-    chatMode: Optional[str] = "standard"  # "quick", "analysis", "deep_research", "creative", "precise"
-    mode: Optional[str] = "json"  # "json" for full metadata, "simple" for answer only
+    modelKey: str | None = None  # e.g., "uuid-of-the-model"
+    modelName: str | None = None  # e.g., "gpt-4o-mini", "claude-3-5-sonnet", "llama3.2"
+    chatMode: str | None = "standard"  # "quick", "analysis", "deep_research", "creative", "precise"
+    mode: str | None = "json"  # "json" for full metadata, "simple" for answer only
 
 
 # Dependency injection functions
@@ -73,51 +74,51 @@ async def get_reranker_service(request: Request) -> RerankerService:
     return reranker_service
 
 
-def get_model_config_for_mode(chat_mode: str) -> Dict[str, Any]:
+def get_model_config_for_mode(chat_mode: str) -> dict[str, Any]:
     """Get model configuration based on chat mode and user selection"""
     mode_configs = {
         "quick": {
             "temperature": 0.1,
             "max_tokens": 4096,
-            "system_prompt": "You are an assistant. Answer queries in a professional, enterprise-appropriate format."
+            "system_prompt": "You are an assistant. Answer queries in a professional, enterprise-appropriate format.",
         },
         "analysis": {
             "temperature": 0.3,
             "max_tokens": 8192,
-            "system_prompt": "You are an analytical assistant. Provide detailed analysis with insights and patterns."
+            "system_prompt": "You are an analytical assistant. Provide detailed analysis with insights and patterns.",
         },
         "deep_research": {
             "temperature": 0.2,
             "max_tokens": 16384,
-            "system_prompt": "You are a research assistant. Provide comprehensive, well-sourced answers with detailed explanations."
+            "system_prompt": "You are a research assistant. Provide comprehensive, well-sourced answers with detailed explanations.",
         },
         "creative": {
             "temperature": 0.7,
             "max_tokens": 16384,
-            "system_prompt": "You are a creative assistant. Provide innovative and imaginative responses while staying relevant."
+            "system_prompt": "You are a creative assistant. Provide innovative and imaginative responses while staying relevant.",
         },
         "precise": {
             "temperature": 0.05,
             "max_tokens": 16384,
-            "system_prompt": "You are a precise assistant. Provide accurate, factual answers with high attention to detail."
+            "system_prompt": "You are a precise assistant. Provide accurate, factual answers with high attention to detail.",
         },
         "standard": {
             "temperature": 0.2,
             "max_tokens": 16384,
-            "system_prompt": "You are an enterprise questions answering expert"
-        }
+            "system_prompt": "You are an enterprise questions answering expert",
+        },
     }
     return mode_configs.get(chat_mode, mode_configs["standard"])
 
 
-async def get_model_config(config_service: ConfigurationService, model_key: str | None = None, model_name: Optional[str] = None) -> Dict[str, Any]:
+async def get_model_config(config_service: ConfigurationService, model_key: str | None = None, model_name: str | None = None) -> dict[str, Any]:
     """Get model configuration based on user selection or fallback to default"""
 
-    def _find_config_by_default(configs: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    def _find_config_by_default(configs: list[dict[str, Any]]) -> dict[str, Any] | None:
         """Find config marked as default"""
         return next((config for config in configs if config.get("isDefault", False)), None)
 
-    def _find_config_by_model_name(configs: List[Dict[str, Any]], name: str) -> Dict[str, Any] | None:
+    def _find_config_by_model_name(configs: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
         """Find config by model name in configuration.model field"""
         for config in configs:
             model_string = config.get("configuration", {}).get("model", "")
@@ -126,7 +127,7 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
                 return config
         return None
 
-    def _find_config_by_key(configs: List[Dict[str, Any]], key: str) -> Dict[str, Any] | None:
+    def _find_config_by_key(configs: list[dict[str, Any]], key: str) -> dict[str, Any] | None:
         """Find config by modelKey"""
         return next((config for config in configs if config.get("modelKey") == key), None)
 
@@ -152,7 +153,7 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
     if model_key is not None:
         new_ai_models = await config_service.get_config(
             config_node_constants.AI_MODELS.value,
-            use_cache=False
+            use_cache=False,
         )
         llm_configs = new_ai_models["llm"]
         if key_config := _find_config_by_key(llm_configs, model_key):
@@ -164,7 +165,7 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
     return llm_configs
 
 
-async def get_llm_for_chat(config_service: ConfigurationService, model_key: str = None, model_name: str = None, chat_mode: str = "standard") -> Tuple[BaseChatModel, dict]:
+async def get_llm_for_chat(config_service: ConfigurationService, model_key: str = None, model_name: str = None, chat_mode: str = "standard") -> tuple[BaseChatModel, dict]:
     """Get LLM instance based on user selection or fallback to default"""
     try:
         llm_config = await get_model_config(config_service, model_key, model_name)
@@ -197,7 +198,7 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
         llm = get_generator_model(model_provider, llm_config, default_model_name)
         return llm, llm_config
     except Exception as e:
-        raise ValueError(f"Failed to initialize LLM: {str(e)}")
+        raise ValueError(f"Failed to initialize LLM: {e!s}")
 
 
 async def process_chat_query_with_status(
@@ -208,10 +209,9 @@ async def process_chat_query_with_status(
     reranker_service: RerankerService,
     config_service: ConfigurationService,
     logger,
-    yield_status=None
-) -> Tuple[BaseChatModel, List[dict], List[dict], dict, dict, List[dict], List[dict], BlobStorage, bool]:
-    """
-    Process chat query with optional status updates.
+    yield_status=None,
+) -> tuple[BaseChatModel, list[dict], list[dict], dict, dict, list[dict], list[dict], BlobStorage, bool]:
+    """Process chat query with optional status updates.
     If yield_status is provided, it should be an async function that accepts (event_type, data).
     """
     # Get LLM based on user selection or fallback to default
@@ -219,7 +219,7 @@ async def process_chat_query_with_status(
         config_service,
         query_info.modelKey,
         query_info.modelName,
-        query_info.chatMode
+        query_info.chatMode,
     )
     is_multimodal_llm = config.get("isMultimodal")
 
@@ -241,7 +241,7 @@ async def process_chat_query_with_status(
         )
         followup_query = await followup_query_transformation.ainvoke({
             "query": query_info.query,
-            "previous_conversations": formatted_history
+            "previous_conversations": formatted_history,
         })
         query_info.query = followup_query
 
@@ -257,8 +257,8 @@ async def process_chat_query_with_status(
     all_queries = [query_info.query] if not decomposed_queries else [query.get("query") for query in decomposed_queries]
 
     # Execute search
-    org_id = request.state.user.get('orgId')
-    user_id = request.state.user.get('userId')
+    org_id = request.state.user.get("orgId")
+    user_id = request.state.user.get("userId")
 
     if yield_status:
         await yield_status("status", {"status": "searching", "message": "Searching knowledge base..."})
@@ -285,7 +285,7 @@ async def process_chat_query_with_status(
 
     virtual_record_id_to_result = {}
     flattened_results = await get_flattened_results(
-        search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result
+        search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result,
     )
 
     # Re-rank results
@@ -300,10 +300,10 @@ async def process_chat_query_with_status(
     else:
         final_results = flattened_results
 
-    final_results = sorted(final_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
+    final_results = sorted(final_results, key=lambda x: (x["virtual_record_id"], x["block_index"]))
 
     # Prepare user context
-    send_user_info = request.query_params.get('sendUserInfo', True)
+    send_user_info = request.query_params.get("sendUserInfo", True)
     user_data = ""
 
     if send_user_info:
@@ -362,18 +362,17 @@ async def process_chat_query(
     arango_service: BaseArangoService,
     reranker_service: RerankerService,
     config_service: ConfigurationService,
-    logger
-) -> Tuple[BaseChatModel, List[dict], List[dict], dict, dict]:
+    logger,
+) -> tuple[BaseChatModel, list[dict], list[dict], dict, dict]:
     """Wrapper for non-streaming endpoint (without status updates)"""
     return await process_chat_query_with_status(
         query_info, request, retrieval_service, arango_service,
-        reranker_service, config_service, logger, yield_status=None
+        reranker_service, config_service, logger, yield_status=None,
     )
 
 
 async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, max_hops=4) -> AIMessage:
     """Handle tool calls for non-streaming responses with reflection for invalid tool calls"""
-
     llm_with_tools = bind_tools_for_llm(llm, tools)
 
     # Initial call with provider-level error handling
@@ -382,7 +381,7 @@ async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, m
     except Exception as e:
         error_str = str(e).lower()
         # Check if this is a tool-related error from the provider
-        if any(keyword in error_str for keyword in ['tool_use_failed', 'tool use failed', 'failed to call a function', 'invalid tool', 'function call failed']):
+        if any(keyword in error_str for keyword in ["tool_use_failed", "tool use failed", "failed to call a function", "invalid tool", "function call failed"]):
             valid_tool_names = [t.name for t in tools]
             reflection_content = (
                 f"Error: The AI provider rejected the function call. This usually means:\n"
@@ -399,8 +398,7 @@ async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, m
             # Retry without tools binding
             ai: AIMessage = await llm.ainvoke(messages)
             return ai
-        else:
-            raise
+        raise
 
     hops = 0
     while isinstance(ai, AIMessage) and getattr(ai, "tool_calls", None) and hops < max_hops:
@@ -427,7 +425,7 @@ async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, m
                     ToolMessage(
                         content=reflection_message,
                         tool_call_id=call_id,
-                    )
+                    ),
                 )
                 continue
 
@@ -447,7 +445,7 @@ async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, m
             ai = await llm_with_tools.ainvoke(messages)
         except Exception as e:
             error_str = str(e).lower()
-            if any(keyword in error_str for keyword in ['tool_use_failed', 'tool use failed', 'failed to call a function', 'invalid tool', 'function call failed']):
+            if any(keyword in error_str for keyword in ["tool_use_failed", "tool use failed", "failed to call a function", "invalid tool", "function call failed"]):
                 reflection_content = (
                     "Error: The AI provider rejected the function call. "
                     "Please provide your final answer directly as a JSON object without using any tools. "
@@ -457,8 +455,7 @@ async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, m
                 # Retry without tools binding
                 ai = await llm.ainvoke(messages)
                 return ai
-            else:
-                raise
+            raise
         hops += 1
 
     return ai
@@ -492,7 +489,7 @@ async def askAIStream(
                     config_service,
                     query_info.modelKey,
                     query_info.modelName,
-                    query_info.chatMode
+                    query_info.chatMode,
                 )
                 is_multimodal_llm = config.get("isMultimodal")
                 context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
@@ -517,7 +514,7 @@ async def askAIStream(
                     )
                     followup_query = await followup_query_transformation.ainvoke({
                         "query": query_info.query,
-                        "previous_conversations": formatted_history
+                        "previous_conversations": formatted_history,
                     })
                     query_info.query = followup_query
 
@@ -532,8 +529,8 @@ async def askAIStream(
                 all_queries = [query_info.query] if not decomposed_queries else [query.get("query") for query in decomposed_queries]
 
                 # Execute search
-                org_id = request.state.user.get('orgId')
-                user_id = request.state.user.get('userId')
+                org_id = request.state.user.get("orgId")
+                user_id = request.state.user.get("userId")
 
                 yield create_sse_event("status", {"status": "searching", "message": "Searching knowledge base..."})
 
@@ -558,7 +555,7 @@ async def askAIStream(
 
                 virtual_record_id_to_result = {}
                 flattened_results = await get_flattened_results(
-                    search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result
+                    search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result,
                 )
 
                 # Re-rank results
@@ -572,10 +569,10 @@ async def askAIStream(
                 else:
                     final_results = flattened_results
 
-                final_results = sorted(final_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
+                final_results = sorted(final_results, key=lambda x: (x["virtual_record_id"], x["block_index"]))
 
                 # Prepare user context
-                send_user_info = request.query_params.get('sendUserInfo', True)
+                send_user_info = request.query_params.get("sendUserInfo", True)
                 user_data = ""
 
                 if send_user_info:
@@ -632,7 +629,7 @@ async def askAIStream(
                 result = e.detail
                 yield create_sse_event("error", {
                     "status": result.get("status", "error"),
-                    "message": result.get("message", "No results found")
+                    "message": result.get("message", "No results found"),
                 })
                 return
             except Exception as e:
@@ -640,8 +637,8 @@ async def askAIStream(
                 return
 
             # Stream response with enhanced tool support using your existing implementation
-            org_id = request.state.user.get('orgId')
-            user_id = request.state.user.get('userId')
+            org_id = request.state.user.get("orgId")
+            user_id = request.state.user.get("userId")
 
             try:
                 async for stream_event in stream_llm_response_with_tools(
@@ -665,11 +662,11 @@ async def askAIStream(
                     event_data = stream_event["data"]
                     yield create_sse_event(event_type, event_data)
             except Exception as stream_error:
-                logger.error(f"Error during LLM streaming: {str(stream_error)}", exc_info=True)
-                yield create_sse_event("error", {"error": f"Stream error: {str(stream_error)}"})
+                logger.error(f"Error during LLM streaming: {stream_error!s}", exc_info=True)
+                yield create_sse_event("error", {"error": f"Stream error: {stream_error!s}"})
 
         except Exception as e:
-            logger.error(f"Error in streaming AI: {str(e)}", exc_info=True)
+            logger.error(f"Error in streaming AI: {e!s}", exc_info=True)
             yield create_sse_event("error", {"error": str(e)})
 
     return StreamingResponse(
@@ -679,8 +676,8 @@ async def askAIStream(
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "Cache-Control"
-        }
+            "Access-Control-Allow-Headers": "Cache-Control",
+        },
     )
 
 
@@ -701,7 +698,7 @@ async def askAI(
 
         # Process query using shared logic
         llm, messages, tools, tool_runtime_kwargs, final_results, all_queries, virtual_record_id_to_result, blob_store, is_multimodal_llm = await process_chat_query(
-            query_info, request, retrieval_service, arango_service, reranker_service, config_service, logger
+            query_info, request, retrieval_service, arango_service, reranker_service, config_service, logger,
         )
 
         # Make async LLM call with tools
@@ -717,5 +714,5 @@ async def askAI(
         # Re-raise HTTP exceptions with their original status codes
         raise he
     except Exception as e:
-        logger.error(f"Error in askAI: {str(e)}", exc_info=True)
+        logger.error(f"Error in askAI: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))

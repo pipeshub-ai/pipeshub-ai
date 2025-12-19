@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-from typing import Optional, Tuple
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -15,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 class Teams:
     """Microsoft Teams tool exposed to the agents"""
+
     def __init__(self, client: MSGraphClient) -> None:
         """Initialize the Teams tool"""
         """
@@ -50,28 +50,28 @@ class Teams:
                 name="team_id",
                 type=ParameterType.STRING,
                 description="ID of the team",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="channel_id",
                 type=ParameterType.STRING,
                 description="ID of the channel",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="message",
                 type=ParameterType.STRING,
                 description="Message content",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def send_message(
         self,
         team_id: str,
         channel_id: str,
-        message: str
-    ) -> Tuple[bool, str]:
+        message: str,
+    ) -> tuple[bool, str]:
         """Send a message to a Microsoft Teams channel"""
         """
         Args:
@@ -90,7 +90,7 @@ class Teams:
             return False, json.dumps({
                 "error": "Direct message sending not implemented",
                 "details": "Microsoft Teams API requires using specific endpoints like chats or channel messages",
-                "suggestion": "Use Microsoft Graph SDK's chat or channel message endpoints directly"
+                "suggestion": "Use Microsoft Graph SDK's chat or channel message endpoints directly",
             })
         except Exception as e:
             logger.error(f"Error in send_message: {e}")
@@ -105,11 +105,11 @@ class Teams:
                 name="top",
                 type=ParameterType.INTEGER,
                 description="Number of teams to retrieve",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def get_teams(self, top: Optional[int] = None) -> Tuple[bool, str]:
+    def get_teams(self, top: int | None = None) -> tuple[bool, str]:
         """Get Microsoft Teams"""
         """
         Args:
@@ -127,7 +127,7 @@ class Teams:
                 "error": "Listing all teams not implemented",
                 "details": "Microsoft Teams API requires specific team IDs or uses Microsoft Graph SDK directly",
                 "available_methods": ["me_get_joined_teams(team_id)", "me_create_joined_teams()"],
-                "suggestion": "Use Microsoft Graph SDK's /me/joinedTeams endpoint directly"
+                "suggestion": "Use Microsoft Graph SDK's /me/joinedTeams endpoint directly",
             })
         except Exception as e:
             logger.error(f"Error in get_teams: {e}")
@@ -142,11 +142,11 @@ class Teams:
                 name="team_id",
                 type=ParameterType.STRING,
                 description="ID of the team",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def get_team(self, team_id: str) -> Tuple[bool, str]:
+    def get_team(self, team_id: str) -> tuple[bool, str]:
         """Get a specific Microsoft Team"""
         """
         Args:
@@ -157,13 +157,12 @@ class Teams:
         try:
             # Use TeamsDataSource method
             response = self._run_async(self.client.teams_team_get_team(
-                team_id=team_id
+                team_id=team_id,
             ))
 
             if response.success:
                 return True, response.to_json()
-            else:
-                return False, response.to_json()
+            return False, response.to_json()
         except Exception as e:
             logger.error(f"Error in get_team: {e}")
             return False, json.dumps({"error": str(e)})
@@ -177,11 +176,11 @@ class Teams:
                 name="team_id",
                 type=ParameterType.STRING,
                 description="ID of the team",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def get_channels(self, team_id: str) -> Tuple[bool, str]:
+    def get_channels(self, team_id: str) -> tuple[bool, str]:
         """Get channels for a Microsoft Team"""
         """
         Args:
@@ -199,7 +198,7 @@ class Teams:
                 "error": "Listing all channels not implemented",
                 "details": "Microsoft Teams API requires specific channel IDs for channel operations",
                 "available_methods": ["teams_channels_get_files_folder(team_id, channel_id)", "teams_channels_get_members(team_id, channel_id)"],
-                "suggestion": "Use Microsoft Graph SDK's /teams/{team-id}/channels endpoint directly"
+                "suggestion": "Use Microsoft Graph SDK's /teams/{team-id}/channels endpoint directly",
             })
         except Exception as e:
             logger.error(f"Error in get_channels: {e}")
@@ -214,28 +213,28 @@ class Teams:
                 name="team_id",
                 type=ParameterType.STRING,
                 description="ID of the team",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="channel_id",
                 type=ParameterType.STRING,
                 description="ID of the channel",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="top",
                 type=ParameterType.INTEGER,
                 description="Number of messages to retrieve",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_channel_messages(
         self,
         team_id: str,
         channel_id: str,
-        top: Optional[int] = None
-    ) -> Tuple[bool, str]:
+        top: int | None = None,
+    ) -> tuple[bool, str]:
         """Get messages from a Microsoft Teams channel"""
         """
         Args:
@@ -253,7 +252,7 @@ class Teams:
             return False, json.dumps({
                 "error": "Getting channel messages not implemented",
                 "details": "Microsoft Teams API requires Graph SDK for channel message operations",
-                "suggestion": "Use Microsoft Graph SDK's /teams/{team-id}/channels/{channel-id}/messages endpoint directly"
+                "suggestion": "Use Microsoft Graph SDK's /teams/{team-id}/channels/{channel-id}/messages endpoint directly",
             })
         except Exception as e:
             logger.error(f"Error in get_channel_messages: {e}")
@@ -268,21 +267,21 @@ class Teams:
                 name="display_name",
                 type=ParameterType.STRING,
                 description="Display name of the team",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="description",
                 type=ParameterType.STRING,
                 description="Description of the team",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def create_team(
         self,
         display_name: str,
-        description: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        description: str | None = None,
+    ) -> tuple[bool, str]:
         """Create a new Microsoft Team"""
         """
         Args:
@@ -300,7 +299,7 @@ class Teams:
                 "error": "Creating teams not implemented",
                 "details": "Microsoft Teams creation requires group creation followed by team enablement",
                 "available_methods": ["me_create_joined_teams()"],
-                "suggestion": "Use Microsoft Graph SDK's groups endpoint to create group, then enable Teams"
+                "suggestion": "Use Microsoft Graph SDK's groups endpoint to create group, then enable Teams",
             })
         except Exception as e:
             logger.error(f"Error in create_team: {e}")
@@ -315,28 +314,28 @@ class Teams:
                 name="team_id",
                 type=ParameterType.STRING,
                 description="ID of the team",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="user_id",
                 type=ParameterType.STRING,
                 description="ID of the user to add",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="role",
                 type=ParameterType.STRING,
                 description="Role of the member (owner or member)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def add_member(
         self,
         team_id: str,
         user_id: str,
-        role: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        role: str | None = None,
+    ) -> tuple[bool, str]:
         """Add a member to a Microsoft Team"""
         """
         Args:
@@ -355,7 +354,7 @@ class Teams:
                 "error": "Adding team members not implemented",
                 "details": "Microsoft Teams API requires specific member management operations",
                 "available_methods": ["teams_channels_get_members(team_id, channel_id, member_id)"],
-                "suggestion": "Use Microsoft Graph SDK's /teams/{team-id}/members endpoint directly"
+                "suggestion": "Use Microsoft Graph SDK's /teams/{team-id}/members endpoint directly",
             })
         except Exception as e:
             logger.error(f"Error in add_member: {e}")

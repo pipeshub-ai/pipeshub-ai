@@ -2,7 +2,6 @@ import asyncio
 import base64
 import re
 from http import HTTPStatus
-from typing import Optional
 from urllib.parse import unquote, urlparse
 
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
@@ -15,7 +14,7 @@ import aiohttp
 
 from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
 
-VALID_IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp','.svg']
+VALID_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp",".svg"]
 VIEWBOX_NUM_COMPONENTS = 4
 class ImageParser:
     def __init__(self, logger) -> None:
@@ -35,8 +34,7 @@ class ImageParser:
         return BlocksContainer(blocks=[image_block], block_groups=[])
 
     def _is_valid_image_url(self, url: str) -> bool:
-        """
-        Validate if URL appears to be an image URL by checking:
+        """Validate if URL appears to be an image URL by checking:
         1. File extension in the URL path
         2. URL format (http/https)
         """
@@ -44,7 +42,7 @@ class ImageParser:
             return False
 
         # Must be HTTP or HTTPS URL
-        if not url.startswith('http://') and not url.startswith('https://'):
+        if not url.startswith("http://") and not url.startswith("https://"):
             return False
 
         try:
@@ -65,16 +63,15 @@ class ImageParser:
         return True
 
     def _is_valid_image_content_type(self, content_type: str) -> bool:
-        """
-        Validate content type and return True for valid image types.
+        """Validate content type and return True for valid image types.
         """
         if not content_type:
             return False
 
-        content_type = content_type.lower().split(';')[0].strip()
+        content_type = content_type.lower().split(";")[0].strip()
 
         # Must be an image content type
-        if not content_type.startswith('image/'):
+        if not content_type.startswith("image/"):
             return False
 
         return True
@@ -82,9 +79,9 @@ class ImageParser:
     async def _fetch_single_url(self, session: aiohttp.ClientSession, url: str) -> str | None:
         try:
             # Check if already a base64 data URL
-            if url.startswith('data:image/'):
+            if url.startswith("data:image/"):
                 # Skip SVG images - check the MIME type in the data URL
-                if url.startswith('data:image/svg+xml'):
+                if url.startswith("data:image/svg+xml"):
                     self.logger.debug("Data URL is SVG; converting SVG base64 to PNG base64")
                     return f"data:image/png;base64,{self.svg_base64_to_png_base64(url)}"
 
@@ -99,8 +96,8 @@ class ImageParser:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10), allow_redirects=True) as response:
                 response.raise_for_status()
 
-                get_content_type_header = response.headers.get('content-type', '').lower()
-                get_content_type = get_content_type_header.split(';')[0].strip()
+                get_content_type_header = response.headers.get("content-type", "").lower()
+                get_content_type = get_content_type_header.split(";")[0].strip()
                 is_valid = self._is_valid_image_content_type(get_content_type)
                 self.logger.debug(f"GET content-type for URL {url[:200]}... => {get_content_type}")
 
@@ -125,8 +122,8 @@ class ImageParser:
                     self.logger.info(f"⚠️ Empty content received from URL: {url}")
                     return None
 
-                base64_encoded = base64.b64encode(content).decode('utf-8')
-                if 'svg' in extension:
+                base64_encoded = base64.b64encode(content).decode("utf-8")
+                if "svg" in extension:
                     self.logger.debug("Detected SVG extension from GET; converting SVG base64 to PNG base64")
                     base64_image = f"data:image/png;base64,{self.svg_base64_to_png_base64(base64_encoded)}"
                     return base64_image
@@ -139,15 +136,15 @@ class ImageParser:
             # Handle HTTP errors specifically
             if e.status == HTTPStatus.FORBIDDEN:
                 # Check if this is a signed URL that might have expired
-                if 'X-Amz-Expires' in str(e):
+                if "X-Amz-Expires" in str(e):
                     self.logger.warning(
                         f"⚠️ Access denied (403) for signed URL - likely expired or invalid signature: {url[:150]}... "
-                        f"(Original error: {e.status}, {e.message})"
+                        f"(Original error: {e.status}, {e.message})",
                     )
                 else:
                     self.logger.warning(
                         f"⚠️ Access denied (403) for URL - insufficient permissions: {url[:150]}... "
-                        f"(Original error: {e.status}, {e.message})"
+                        f"(Original error: {e.status}, {e.message})",
                     )
             elif e.status == HTTPStatus.NOT_FOUND:
                 self.logger.warning(f"⚠️ Image not found (404) at URL: {url[:150]}...")
@@ -156,20 +153,19 @@ class ImageParser:
             else:
                 self.logger.warning(
                     f"⚠️ HTTP error ({e.status}) when fetching URL: {url[:150]}... "
-                    f"(Error: {e.message})"
+                    f"(Error: {e.message})",
                 )
             return None
         except aiohttp.ClientError as e:
             # Handle other aiohttp client errors (timeouts, connection errors, etc.)
-            self.logger.warning(f"⚠️ Network error when fetching URL: {url[:150]}... (Error: {str(e)})")
+            self.logger.warning(f"⚠️ Network error when fetching URL: {url[:150]}... (Error: {e!s})")
             return None
         except Exception as e:
-            self.logger.error(f"⚠️ Failed to convert URL to base64: {url[:150]}..., error: {str(e)}")
+            self.logger.error(f"⚠️ Failed to convert URL to base64: {url[:150]}..., error: {e!s}")
             return None
 
     async def urls_to_base64(self, urls: list[str]) -> list[str|None]:
-        """
-        Convert a list of image URLs to base64 encoded strings asynchronously.
+        """Convert a list of image URLs to base64 encoded strings asynchronously.
         If a URL is already a base64 data URL, it's returned as-is.
         SVG images are skipped and None is appended instead.
 
@@ -178,6 +174,7 @@ class ImageParser:
 
         Returns:
             List of base64 encoded image strings (None for SVG images or failed conversions)
+
         """
         async with aiohttp.ClientSession() as session:
             # Process all URLs concurrently
@@ -186,9 +183,8 @@ class ImageParser:
             return list(base64_images)
 
     @staticmethod
-    def _extract_svg_dimensions(svg_str: str) -> tuple[Optional[int], Optional[int]]:
-        """
-        Extract width and height from SVG content.
+    def _extract_svg_dimensions(svg_str: str) -> tuple[int | None, int | None]:
+        """Extract width and height from SVG content.
         Tries to get dimensions from width/height attributes, then from viewBox if not available.
 
         Args:
@@ -196,10 +192,11 @@ class ImageParser:
 
         Returns:
             Tuple of (width, height) in pixels, or (None, None) if not found
+
         """
         try:
             # Find the <svg> tag (case-insensitive)
-            svg_tag_pattern = r'<svg[^>]*?>'
+            svg_tag_pattern = r"<svg[^>]*?>"
             match = re.search(svg_tag_pattern, svg_str, re.IGNORECASE)
 
             if not match:
@@ -217,7 +214,7 @@ class ImageParser:
             if width_match:
                 width_str = width_match.group(1).strip()
                 # Remove units (px, pt, etc.) and convert to int
-                width_value = re.sub(r'[^\d.]', '', width_str)
+                width_value = re.sub(r"[^\d.]", "", width_str)
                 if width_value:
                     try:
                         width = int(float(width_value))
@@ -227,7 +224,7 @@ class ImageParser:
             if height_match:
                 height_str = height_match.group(1).strip()
                 # Remove units (px, pt, etc.) and convert to int
-                height_value = re.sub(r'[^\d.]', '', height_str)
+                height_value = re.sub(r"[^\d.]", "", height_str)
                 if height_value:
                     try:
                         height = int(float(height_value))
@@ -243,7 +240,7 @@ class ImageParser:
             if viewbox_match:
                 viewbox_str = viewbox_match.group(1).strip()
                 # Extract numbers from viewBox
-                viewbox_numbers = re.findall(r'[-+]?\d*\.?\d+', viewbox_str)
+                viewbox_numbers = re.findall(r"[-+]?\d*\.?\d+", viewbox_str)
                 if len(viewbox_numbers) >= VIEWBOX_NUM_COMPONENTS:
                     try:
                         vb_width = int(float(viewbox_numbers[2]))
@@ -263,8 +260,7 @@ class ImageParser:
 
     @staticmethod
     def _sanitize_svg_content(svg_str: str) -> bytes:
-        """
-        Sanitize SVG content to fix common XML parsing issues, including unbound namespace prefixes.
+        """Sanitize SVG content to fix common XML parsing issues, including unbound namespace prefixes.
         This function ensures that common SVG namespace declarations are present in the root <svg> element.
 
         Args:
@@ -272,54 +268,54 @@ class ImageParser:
 
         Returns:
             Sanitized SVG content as bytes
+
         """
         try:
             # Find the <svg> tag (case-insensitive)
-            svg_tag_pattern = r'(<svg[^>]*?)>'
+            svg_tag_pattern = r"(<svg[^>]*?)>"
             match = re.search(svg_tag_pattern, svg_str, re.IGNORECASE)
 
             if not match:
                 # If no <svg> tag found, return as-is
-                return svg_str.encode('utf-8')
+                return svg_str.encode("utf-8")
 
             svg_tag = match.group(1)
             fixed_tag = svg_tag
 
             # Add xmlns if completely missing
-            if 'xmlns=' not in fixed_tag.lower() and 'xmlns:' not in fixed_tag.lower():
+            if "xmlns=" not in fixed_tag.lower() and "xmlns:" not in fixed_tag.lower():
                 fixed_tag += ' xmlns="http://www.w3.org/2000/svg"'
             # Ensure default SVG namespace is present
-            elif 'xmlns="' not in fixed_tag and 'xmlns=\'' not in fixed_tag:
+            elif 'xmlns="' not in fixed_tag and "xmlns='" not in fixed_tag:
                 # Check if it has xmlns:something but not xmlns itself
                 if not re.search(r'xmlns\s*=\s*["\']', fixed_tag, re.IGNORECASE):
                     fixed_tag += ' xmlns="http://www.w3.org/2000/svg"'
 
             # Add xlink namespace if xlink: is used anywhere but namespace not declared
-            if re.search(r'\bxlink:', svg_str, re.IGNORECASE):
-                if 'xmlns:xlink=' not in fixed_tag.lower():
+            if re.search(r"\bxlink:", svg_str, re.IGNORECASE):
+                if "xmlns:xlink=" not in fixed_tag.lower():
                     fixed_tag += ' xmlns:xlink="http://www.w3.org/1999/xlink"'
 
             # If we made changes, replace the original tag
             if fixed_tag != svg_tag:
-                svg_str = svg_str[:match.start()] + fixed_tag + '>' + svg_str[match.end():]
+                svg_str = svg_str[:match.start()] + fixed_tag + ">" + svg_str[match.end():]
 
         except Exception:
             # If sanitization fails, return original content
             # cairosvg might still be able to handle it or will give a clearer error
             pass
 
-        return svg_str.encode('utf-8')
+        return svg_str.encode("utf-8")
 
     @staticmethod
     def svg_base64_to_png_base64(
         svg_base64: str,
-        output_width: Optional[int] = None,
-        output_height: Optional[int] = None,
+        output_width: int | None = None,
+        output_height: int | None = None,
         scale: float = 1.0,
-        background_color: Optional[str] = None
+        background_color: str | None = None,
     ) -> str:
-        """
-        Convert SVG base64 string to PNG base64 string.
+        """Convert SVG base64 string to PNG base64 string.
 
         Args:
             svg_base64: Base64 encoded SVG string (with or without data URI prefix)
@@ -334,18 +330,19 @@ class ImageParser:
         Raises:
             ValueError: If the input is not valid base64 or SVG
             Exception: If conversion fails
+
         """
         try:
             # Remove data URI prefix if present
-            if svg_base64.startswith('data:image/svg+xml;base64,'):
-                svg_base64 = svg_base64.replace('data:image/svg+xml;base64,', '')
+            if svg_base64.startswith("data:image/svg+xml;base64,"):
+                svg_base64 = svg_base64.replace("data:image/svg+xml;base64,", "")
 
             # Decode base64 to get SVG content
             svg_data = base64.b64decode(svg_base64)
 
             # Verify it's actually SVG content
-            svg_str = svg_data.decode('utf-8')
-            if not ('<svg' in svg_str.lower() or '<?xml' in svg_str.lower()):
+            svg_str = svg_data.decode("utf-8")
+            if not ("<svg" in svg_str.lower() or "<?xml" in svg_str.lower()):
                 raise ValueError("Decoded content does not appear to be valid SVG")
 
             # Extract dimensions from SVG if not provided
@@ -380,11 +377,11 @@ class ImageParser:
                 output_width=final_width,
                 output_height=final_height,
                 scale=scale,
-                background_color=background_color
+                background_color=background_color,
             )
 
             # Encode PNG to base64
-            png_base64 = base64.b64encode(png_data).decode('utf-8')
+            png_base64 = base64.b64encode(png_data).decode("utf-8")
 
             return png_base64
 

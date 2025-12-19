@@ -1,5 +1,4 @@
-"""
-Client factories for Notion.
+"""Client factories for Notion.
 """
 
 
@@ -15,8 +14,7 @@ class NotionClientFactory(ClientFactory):
 
     async def create_client(self, config_service, logger, state=None) -> NotionClient:
         """Create Notion client instance"""
-
         return await NotionClient.build_from_services(
             logger=logger,
-            config_service=config_service
+            config_service=config_service,
         )

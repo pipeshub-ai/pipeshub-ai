@@ -4,7 +4,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TextIO, Union
+from typing import Any, TextIO
 
 from langchain.chat_models.base import BaseChatModel
 from tenacity import (
@@ -31,15 +31,15 @@ from app.modules.parsers.excel.prompt_template import (
 
 class CSVParser:
     def __init__(
-        self, delimiter: str = ",", quotechar: str = '"', encoding: str = "utf-8"
+        self, delimiter: str = ",", quotechar: str = '"', encoding: str = "utf-8",
     ) -> None:
-        """
-        Initialize the CSV parser with configurable parameters.
+        """Initialize the CSV parser with configurable parameters.
 
         Args:
             delimiter: Character used to separate fields (default: comma)
             quotechar: Character used for quoting fields (default: double quote)
             encoding: File encoding (default: utf-8)
+
         """
         self.row_text_prompt = row_text_prompt
         self.delimiter = delimiter
@@ -54,10 +54,9 @@ class CSVParser:
         self.max_wait = 10  # seconds
 
     def read_file(
-        self, file_path: str | Path, encoding: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
-        """
-        Read a CSV file and return its contents as a list of dictionaries.
+        self, file_path: str | Path, encoding: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Read a CSV file and return its contents as a list of dictionaries.
 
         Args:
             file_path: Path to the CSV file
@@ -70,6 +69,7 @@ class CSVParser:
             FileNotFoundError: If the specified file doesn't exist
             ValueError: If the CSV file is empty or malformed
             UnicodeDecodeError: If the file cannot be decoded with the specified encoding
+
         """
         file_path = Path(file_path)
         if not file_path.exists():
@@ -78,21 +78,21 @@ class CSVParser:
         # Use provided encoding or fall back to default
         file_encoding = encoding or self.encoding
 
-        with open(file_path, "r", encoding=file_encoding) as file:
+        with open(file_path, encoding=file_encoding) as file:
             return self.read_stream(file)
 
-    def read_stream(self, file_stream: TextIO) -> List[Dict[str, Any]]:
-        """
-        Read a CSV from a file stream and return its contents as a list of dictionaries.
+    def read_stream(self, file_stream: TextIO) -> list[dict[str, Any]]:
+        """Read a CSV from a file stream and return its contents as a list of dictionaries.
 
         Args:
             file_stream: An opened file stream containing CSV data
 
         Returns:
             List of dictionaries where keys are column headers and values are row values
+
         """
         reader = csv.DictReader(
-            file_stream, delimiter=self.delimiter, quotechar=self.quotechar
+            file_stream, delimiter=self.delimiter, quotechar=self.quotechar,
         )
 
         # Convert all rows to dictionaries and store them
@@ -111,13 +111,14 @@ class CSVParser:
 
         return data
 
-    def to_markdown(self, data: List[Dict[str, Any]]) -> str:
-        """
-        Convert CSV data to markdown table format.
+    def to_markdown(self, data: list[dict[str, Any]]) -> str:
+        """Convert CSV data to markdown table format.
+
         Args:
             data: List of dictionaries from read_stream() method
         Returns:
             String containing markdown formatted table
+
         """
         if not data:
             return ""
@@ -153,9 +154,8 @@ class CSVParser:
 
         return "\n".join(markdown_lines)
 
-    def write_file(self, file_path: str | Path, data: List[Dict[str, Any]]) -> None:
-        """
-        Write data to a CSV file.
+    def write_file(self, file_path: str | Path, data: list[dict[str, Any]]) -> None:
+        """Write data to a CSV file.
 
         Args:
             file_path: Path where the CSV file should be written
@@ -163,6 +163,7 @@ class CSVParser:
 
         Raises:
             ValueError: If the data is empty or malformed
+
         """
         if not data:
             raise ValueError("No data provided to write to CSV")
@@ -183,14 +184,14 @@ class CSVParser:
             writer.writerows(data)
 
     def _parse_value(self, value: str) -> int | float | bool | str | None:
-        """
-        Parse a string value into its appropriate Python type.
+        """Parse a string value into its appropriate Python type.
 
         Args:
             value: String value to parse
 
         Returns:
             Parsed value as the appropriate type (int, float, bool, or string)
+
         """
         if value is None or value.strip() == "":
             return None
@@ -221,11 +222,11 @@ class CSVParser:
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
     )
-    async def _call_llm(self, llm, messages) -> Union[str, dict, list]:
+    async def _call_llm(self, llm, messages) -> str | dict | list:
         """Wrapper for LLM calls with retry logic"""
         return await llm.ainvoke(messages)
 
-    async def get_table_summary(self, llm, rows: List[Dict[str, Any]]) -> str:
+    async def get_table_summary(self, llm, rows: list[dict[str, Any]]) -> str:
         """Get table summary from LLM"""
         try:
             headers = list(rows[0].keys())
@@ -237,18 +238,18 @@ class CSVParser:
                 for row in rows[:3]
             ]
             messages = self.table_summary_prompt.format_messages(
-                sample_data=json.dumps(sample_data, indent=2),headers=headers
+                sample_data=json.dumps(sample_data, indent=2),headers=headers,
             )
             response = await self._call_llm(llm, messages)
-            if '</think>' in response.content:
-                response.content = response.content.split('</think>')[-1]
+            if "</think>" in response.content:
+                response.content = response.content.split("</think>")[-1]
             return response.content
         except Exception:
             raise
 
     async def get_rows_text(
-        self, llm, rows: List[Dict[str, Any]], batch_size: int = 10
-    ) -> List[str]:
+        self, llm, rows: list[dict[str, Any]], batch_size: int = 10,
+    ) -> list[str]:
         """Convert multiple rows into natural language text in batches."""
         processed_texts = []
 
@@ -271,8 +272,8 @@ class CSVParser:
             )
 
             response = await self._call_llm(llm, messages)
-            if '</think>' in response.content:
-                response.content = response.content.split('</think>')[-1]
+            if "</think>" in response.content:
+                response.content = response.content.split("</think>")[-1]
             # Try to extract JSON array from response
             try:
                 processed_texts.extend(json.loads(response.content))
@@ -293,7 +294,7 @@ class CSVParser:
 
         return processed_texts
     #  recordName, recordId, version, source, orgId, csv_binary, virtual_record_id
-    async def get_blocks_from_csv_result(self, csv_result: List[Dict[str, Any]], recordId: str, orgId: str, recordName: str, version: str, origin: str, llm: BaseChatModel) -> BlocksContainer:
+    async def get_blocks_from_csv_result(self, csv_result: list[dict[str, Any]], recordId: str, orgId: str, recordName: str, version: str, origin: str, llm: BaseChatModel) -> BlocksContainer:
 
         blocks = []
         children = []
@@ -334,7 +335,7 @@ class CSVParser:
         # Process results and create blocks
         for start_idx, batch, row_texts in batch_results:
             for idx, (row, row_text) in enumerate(
-                    zip(batch, row_texts), start=start_idx
+                    zip(batch, row_texts), start=start_idx,
                 ):
                 # row_entry = {"number": idx, "content": row, "type": "row"}
                 blocks.append(
@@ -345,10 +346,10 @@ class CSVParser:
                         data={
                             "row_natural_language_text": row_text,
                             "row_number": idx+1,
-                            "row":json.dumps(row)
+                            "row":json.dumps(row),
                         },
                         parent_index=0,
-                    )
+                    ),
                     )
                 children.append(BlockContainerIndex(block_index=idx))
 
@@ -416,11 +417,11 @@ def main() -> None:
         print(f"age (int): {first_row['age']} ({type(first_row['age'])})")
         print(
             f"""active (bool): {first_row['active']} ({
-              type(first_row['active'])})"""
+              type(first_row['active'])})""",
         )
         print(
             f"""salary (float): {
-              first_row['salary']} ({type(first_row['salary'])})"""
+              first_row['salary']} ({type(first_row['salary'])})""",
         )
 
     finally:

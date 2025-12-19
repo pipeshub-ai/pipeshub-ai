@@ -55,7 +55,7 @@ class Health:
             try:
                 logger.debug(
                     f"Checking connector service health at endpoint: {connector_url} "
-                    f"(attempt {attempt}/{max_retries})"
+                    f"(attempt {attempt}/{max_retries})",
                 )
 
                 # TODO: remove aiohttp dependency and use http client from sources module
@@ -64,21 +64,20 @@ class Health:
                         if response.status == HttpStatusCode.SUCCESS.value:
                             logger.info("✅ Connector service health check passed")
                             return
-                        else:
-                            error_body = await response.text()
-                            last_error_msg = (
-                                f"Connector service health check failed with status "
-                                f"{response.status}: {error_body}"
-                            )
-                            logger.warning(f"❌ {last_error_msg}")
+                        error_body = await response.text()
+                        last_error_msg = (
+                            f"Connector service health check failed with status "
+                            f"{response.status}: {error_body}"
+                        )
+                        logger.warning(f"❌ {last_error_msg}")
 
             except aiohttp.ClientError as e:
                 last_error_msg = (
-                    f"Connection error during connector service health check: {str(e)}"
+                    f"Connection error during connector service health check: {e!s}"
                 )
                 logger.warning(f"⚠️ {last_error_msg}")
             except Exception as e:
-                last_error_msg = f"Connector service health check failed: {str(e)}"
+                last_error_msg = f"Connector service health check failed: {e!s}"
                 logger.error(f"❌ {last_error_msg}")
 
             # If not the last attempt, wait before retrying
@@ -118,11 +117,11 @@ class Health:
                         logger.error(f"❌ {error_msg}")
                         raise Exception(error_msg)
         except aiohttp.ClientError as e:
-            error_msg = f"Connection error during etcd health check: {str(e)}"
+            error_msg = f"Connection error during etcd health check: {e!s}"
             logger.error(f"❌ {error_msg}")
             raise
         except Exception as e:
-            error_msg = f"etcd health check failed: {str(e)}"
+            error_msg = f"etcd health check failed: {e!s}"
             logger.error(f"❌ {error_msg}")
             raise
 
@@ -135,7 +134,7 @@ class Health:
             # Get the config_service instance first, then call get_config
             config_service = container.config_service()
             arangodb_config = await config_service.get_config(
-                config_node_constants.ARANGODB.value
+                config_node_constants.ARANGODB.value,
             )
             username = arangodb_config["username"]
             password = arangodb_config["password"]
@@ -154,7 +153,7 @@ class Health:
             logger.debug(f"ArangoDB server version: {server_version}")
 
         except Exception as e:
-            error_msg = f"ArangoDB health check failed: {str(e)}"
+            error_msg = f"ArangoDB health check failed: {e!s}"
             logger.error(f"❌ {error_msg}")
             raise Exception(error_msg)
 
@@ -166,7 +165,7 @@ class Health:
         consumer = None
         try:
             kafka_config = await container.config_service().get_config(
-                config_node_constants.KAFKA.value
+                config_node_constants.KAFKA.value,
             )
             brokers = kafka_config["brokers"]
             logger.debug(f"Checking Kafka connection at: {brokers}")
@@ -191,19 +190,19 @@ class Health:
                     available_topics = list(cluster_metadata.topics())
                     logger.debug(f"Available Kafka topics: {available_topics}")
                 except Exception as e:
-                    logger.warning(f"Error getting Kafka cluster metadata: {str(e)}")
+                    logger.warning(f"Error getting Kafka cluster metadata: {e!s}")
                     # If metadata fails, just try basic connection test
                     logger.debug("Basic Kafka connection test passed")
 
                 logger.info("✅ Kafka health check passed")
 
             except Exception as e:
-                error_msg = f"Failed to connect to Kafka: {str(e)}"
+                error_msg = f"Failed to connect to Kafka: {e!s}"
                 logger.error(f"❌ {error_msg}")
                 raise Exception(error_msg)
 
         except Exception as e:
-            error_msg = f"Kafka health check failed: {str(e)}"
+            error_msg = f"Kafka health check failed: {e!s}"
             logger.error(f"❌ {error_msg}")
             raise
         finally:
@@ -223,7 +222,7 @@ class Health:
         try:
             config_service : ConfigurationService = container.config_service()
             redis_config = await config_service.get_config(
-                config_node_constants.REDIS.value
+                config_node_constants.REDIS.value,
             )
             # Build Redis URL with password if provided
             redis_url = build_redis_url(redis_config)
@@ -234,14 +233,14 @@ class Health:
                 await redis_client.ping()
                 logger.info("✅ Redis health check passed")
             except RedisError as re:
-                error_msg = f"Failed to connect to Redis: {str(re)}"
+                error_msg = f"Failed to connect to Redis: {re!s}"
                 logger.error(f"❌ {error_msg}")
                 raise Exception(error_msg)
             finally:
                 await redis_client.close()
 
         except Exception as e:
-            error_msg = f"Redis health check failed: {str(e)}"
+            error_msg = f"Redis health check failed: {e!s}"
             logger.error(f"❌ {error_msg}")
             raise
 
@@ -252,7 +251,7 @@ class Health:
         logger.info("🔍 Starting vector db service health check...")
         try:
             # Check if vector_db_service is available in the container
-            if not hasattr(container, 'vector_db_service'):
+            if not hasattr(container, "vector_db_service"):
                 logger.info("⚠️ vector_db_service not available in this container, skipping health check")
                 return
 
@@ -262,10 +261,10 @@ class Health:
                 await vector_db_service.get_collections()
                 logger.info("✅ vector db service is healthy!")
             except Exception as e:
-                error_msg = f"vector db service health check failed: {str(e)}"
+                error_msg = f"vector db service health check failed: {e!s}"
                 logger.error(f"❌ {error_msg}")
                 raise
         except Exception as e:
-            error_msg = f"vector db service health check failed: {str(e)}"
+            error_msg = f"vector db service health check failed: {e!s}"
             logger.error(f"❌ {error_msg}")
             raise

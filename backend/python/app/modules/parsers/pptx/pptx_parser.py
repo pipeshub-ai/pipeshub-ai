@@ -10,8 +10,7 @@ class PPTXParser:
         self.converter = DocumentConverter()
 
     def parse_binary(self, pptx_binary: bytes) -> DoclingDocument:
-        """
-        Parse PPTX content from binary data.
+        """Parse PPTX content from binary data.
 
         Args:
             pptx_binary (bytes): PPTX content as bytes
@@ -21,6 +20,7 @@ class PPTXParser:
 
         Raises:
             ValueError: If parsing fails
+
         """
         # Create a BytesIO object from the bytes
         stream = BytesIO(pptx_binary)
@@ -37,8 +37,7 @@ class PPTXParser:
         return result.document
 
     def parse_file(self, file_path: str) -> DoclingDocument:
-        """
-        Parse PPTX content from a file.
+        """Parse PPTX content from a file.
 
         Args:
             file_path (str): Path to the PPTX file
@@ -48,6 +47,7 @@ class PPTXParser:
 
         Raises:
             ValueError: If parsing fails
+
         """
         result = self.converter.convert(file_path)
 

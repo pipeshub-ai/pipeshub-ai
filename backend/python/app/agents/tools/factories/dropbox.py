@@ -1,5 +1,4 @@
-"""
-Client factories for Dropbox.
+"""Client factories for Dropbox.
 """
 
 
@@ -15,8 +14,7 @@ class DropboxClientFactory(ClientFactory):
 
     async def create_client(self, config_service, logger, state=None) -> DropboxClient:
         """Create Dropbox client instance"""
-
         return await DropboxClient.build_from_services(
             logger=logger,
-            config_service=config_service
+            config_service=config_service,
         )

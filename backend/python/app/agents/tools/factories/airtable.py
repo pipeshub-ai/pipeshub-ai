@@ -1,5 +1,4 @@
-"""
-Client factories for Airtable.
+"""Client factories for Airtable.
 """
 
 
@@ -15,8 +14,7 @@ class AirtableClientFactory(ClientFactory):
 
     async def create_client(self, config_service, logger) -> AirtableClient:
         """Create Airtable client instance"""
-
         return await AirtableClient.build_from_services(
             logger=logger,
-            config_service=config_service
+            config_service=config_service,
         )

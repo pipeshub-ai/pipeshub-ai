@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.config.key_value_store import KeyValueStore
 from app.connectors.core.base.token_service.oauth_service import (
@@ -18,6 +18,7 @@ OAUTH_JIRA_CONFIG_PATH = "/services/connectors/jira/config"
 
 class AtlassianScope(Enum):
     """Common Atlassian OAuth Scopes"""
+
     # Jira Scopes
     JIRA_WORK_READ = "read:jira-work"
     JIRA_WORK_WRITE = "write:jira-work"
@@ -69,7 +70,7 @@ class AtlassianScope(Enum):
     OFFLINE_ACCESS = "offline_access"
 
     @classmethod
-    def get_jira_basic(cls) -> List[str]:
+    def get_jira_basic(cls) -> list[str]:
         """Get basic Jira scopes"""
         return [
             cls.JIRA_WORK_READ.value,
@@ -81,7 +82,7 @@ class AtlassianScope(Enum):
         ]
 
     @classmethod
-    def get_confluence_basic(cls) -> List[str]:
+    def get_confluence_basic(cls) -> list[str]:
         """Get basic Confluence scopes"""
         return [
             cls.CONFLUENCE_CONTENT_READ.value,
@@ -95,7 +96,7 @@ class AtlassianScope(Enum):
         ]
 
     @classmethod
-    def get_confluence_read_access(cls) -> List[str]:
+    def get_confluence_read_access(cls) -> list[str]:
         """Get read-only access scopes for Confluence connector"""
         return [
             cls.CONFLUENCE_USER_READ.value,
@@ -122,7 +123,7 @@ class AtlassianScope(Enum):
         ]
 
     @classmethod
-    def get_full_access(cls) -> List[str]:
+    def get_full_access(cls) -> list[str]:
         """Get all common scopes for full access"""
         return [
             # Jira
@@ -151,17 +152,18 @@ class AtlassianScope(Enum):
             # Common
             cls.ACCOUNT_READ.value,
             cls.ACCOUNT_EMAIL_READ.value,
-            cls.OFFLINE_ACCESS.value
+            cls.OFFLINE_ACCESS.value,
         ]
 
 @dataclass
 class AtlassianCloudResource:
     """Represents an Atlassian Cloud resource (site)"""
+
     id: str
     name: str
     url: str
-    scopes: List[str]
-    avatar_url: Optional[str] = None
+    scopes: list[str]
+    avatar_url: str | None = None
 
 class AtlassianOAuthProvider(OAuthProvider):
     """Atlassian OAuth Provider for Confluence and Jira"""
@@ -178,10 +180,9 @@ class AtlassianOAuthProvider(OAuthProvider):
         redirect_uri: str,
         key_value_store: KeyValueStore,
         credentials_path: str,
-        scopes: Optional[List[str]] = None,
+        scopes: list[str] | None = None,
     ) -> None:
-        """
-        Initialize Atlassian OAuth Provider
+        """Initialize Atlassian OAuth Provider
         Args:
             client_id: OAuth 2.0 client ID from Atlassian
             client_secret: OAuth 2.0 client secret
@@ -201,12 +202,12 @@ class AtlassianOAuthProvider(OAuthProvider):
             scope=" ".join(scopes),
             additional_params={
                 "audience": "api.atlassian.com",
-                "prompt": "consent"
-            }
+                "prompt": "consent",
+            },
         )
 
         super().__init__(config, key_value_store, credentials_path)
-        self._accessible_resources: Optional[List[AtlassianCloudResource]] = None
+        self._accessible_resources: list[AtlassianCloudResource] | None = None
 
     @staticmethod
     def get_name() -> str:
@@ -215,11 +216,11 @@ class AtlassianOAuthProvider(OAuthProvider):
     def get_provider_name(self) -> str:
         return "atlassian"
 
-    async def get_identity(self, token: OAuthToken) -> Dict[str, Any]:
+    async def get_identity(self, token: OAuthToken) -> dict[str, Any]:
         session = await self.session
         async with session.get(
             "https://api.atlassian.com/me",
-            headers={"Authorization": f"Bearer {token.access_token}"}
+            headers={"Authorization": f"Bearer {token.access_token}"},
         ) as resp:
             resp.raise_for_status()
             return await resp.json()

@@ -25,13 +25,13 @@ class IndexingAppContainer(BaseAppContainer):
 
     # Override arango_client and redis_client to use the service-specific config_service
     arango_client = providers.Resource(
-        BaseAppContainer._create_arango_client, config_service=config_service
+        BaseAppContainer._create_arango_client, config_service=config_service,
     )
     redis_client = providers.Resource(
-        BaseAppContainer._create_redis_client, config_service=config_service
+        BaseAppContainer._create_redis_client, config_service=config_service,
     )
     kafka_service = providers.Singleton(
-        KafkaService, logger=logger, config_service=config_service
+        KafkaService, logger=logger, config_service=config_service,
     )
     arango_service = providers.Resource(
         container_utils.create_arango_service,
@@ -125,7 +125,7 @@ class IndexingAppContainer(BaseAppContainer):
         modules=[
             "app.indexing_main",
             "app.modules.extraction.domain_extraction",
-        ]
+        ],
     )
 
 async def initialize_container(container: IndexingAppContainer) -> bool:
@@ -149,5 +149,5 @@ async def initialize_container(container: IndexingAppContainer) -> bool:
         return True
 
     except Exception as e:
-        logger.error(f"❌ Failed to initialize resources: {str(e)}")
+        logger.error(f"❌ Failed to initialize resources: {e!s}")
         raise

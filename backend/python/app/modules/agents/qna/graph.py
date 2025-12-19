@@ -1,5 +1,4 @@
-"""
-Planning-Based Agent Graph
+"""Planning-Based Agent Graph
 Supports complex multi-step workflows with planning, execution, and adaptation
 """
 
@@ -25,8 +24,7 @@ MAX_RETRIES_PER_TOOL = 2
 
 
 def should_continue_with_planning(state: ChatState) -> str:
-    """
-    Enhanced routing with planning awareness and loop detection
+    """Enhanced routing with planning awareness and loop detection
     """
     all_tool_results = state.get("all_tool_results", [])
     tool_call_count = len(all_tool_results)
@@ -70,7 +68,7 @@ def should_continue_with_planning(state: ChatState) -> str:
                     logger.info(f"🔄 Recent failures detected ({recent_failures}) - allowing agent to retry")
                 # Don't route anywhere yet - let normal logic continue
                 # This allows the agent to have generated tool calls in this iteration
-                pass  # Fall through to normal routing logic
+                # Fall through to normal routing logic
 
     # PRIORITY 2: Check for comprehensive data
     if force_final_response:
@@ -88,7 +86,7 @@ def should_continue_with_planning(state: ChatState) -> str:
             logger.warning("Forcing termination to prevent infinite loop")
             return "final"
 
-        elif len(unique_tools) == PING_PONG_PATTERN_THRESHOLD:
+        if len(unique_tools) == PING_PONG_PATTERN_THRESHOLD:
             # Check for actual A→B→A→B alternating pattern
             is_ping_pong = True
             for i in range(len(last_n_tools) - 2):
@@ -109,18 +107,16 @@ def should_continue_with_planning(state: ChatState) -> str:
     # PRIORITY 4: Normal routing logic
     if has_pending_calls and tool_call_count < max_iterations:
         return "execute_tools"
-    else:
-        # No pending calls - route to final response
-        if tool_call_count >= max_iterations and logger:
-            logger.warning(f"⚠️ Maximum iterations reached ({max_iterations})")
-            if is_complex:
-                logger.info("Complex workflow exceeded iteration limit - providing best-effort response")
-        return "final"
+    # No pending calls - route to final response
+    if tool_call_count >= max_iterations and logger:
+        logger.warning(f"⚠️ Maximum iterations reached ({max_iterations})")
+        if is_complex:
+            logger.info("Complex workflow exceeded iteration limit - providing best-effort response")
+    return "final"
 
 
 def create_agent_graph() -> StateGraph:
-    """
-    Create an advanced planning-based agent graph that supports:
+    """Create an advanced planning-based agent graph that supports:
     - Multi-step workflow planning
     - Dynamic adaptation based on results
     - Complex query decomposition
@@ -129,7 +125,6 @@ def create_agent_graph() -> StateGraph:
 
     The agent uses PLAN → EXECUTE → ADAPT framework for optimal results.
     """
-
     workflow = StateGraph(ChatState)
 
     # =========================================================================
@@ -173,8 +168,8 @@ def create_agent_graph() -> StateGraph:
         check_for_error,
         {
             "continue": "retrieve",
-            "error": "final"
-        }
+            "error": "final",
+        },
     )
 
     # Retrieval → Planning Preparation (with error handling)
@@ -183,8 +178,8 @@ def create_agent_graph() -> StateGraph:
         check_for_error,
         {
             "continue": "prepare",
-            "error": "final"
-        }
+            "error": "final",
+        },
     )
 
     # Preparation → Agent (with error handling)
@@ -193,8 +188,8 @@ def create_agent_graph() -> StateGraph:
         check_for_error,
         {
             "continue": "agent",
-            "error": "final"
-        }
+            "error": "final",
+        },
     )
 
     # Agent Decision Point
@@ -207,8 +202,8 @@ def create_agent_graph() -> StateGraph:
         should_continue_with_planning,
         {
             "execute_tools": "execute_tools",
-            "final": "final"
-        }
+            "final": "final",
+        },
     )
 
     # After tools execute, return to agent for:

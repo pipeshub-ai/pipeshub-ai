@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-from typing import Dict, Optional
 
 from redis import asyncio as aioredis  # type: ignore
 
@@ -22,14 +21,15 @@ class RedisService(IKeyValueService):
         self._state_lock = asyncio.Lock()
 
     @classmethod
-    async def create(cls, logger: logging.Logger, config_service: ConfigurationService) -> 'RedisService':
-        """
-        Factory method to create and initialize a RedisService instance.
+    async def create(cls, logger: logging.Logger, config_service: ConfigurationService) -> "RedisService":
+        """Factory method to create and initialize a RedisService instance.
+
         Args:
             logger: Logger instance
             config_service: ConfigurationService instance
         Returns:
             RedisService: Initialized RedisService instance
+
         """
         try:
             # Get Redis configuration
@@ -47,7 +47,7 @@ class RedisService(IKeyValueService):
             return service
 
         except Exception as e:
-            logger.error(f"Failed to create RedisService: {str(e)}")
+            logger.error(f"Failed to create RedisService: {e!s}")
             raise
 
     async def connect(self) -> bool:
@@ -60,7 +60,7 @@ class RedisService(IKeyValueService):
             self.logger.info("✅ Successfully connected to Redis")
             return True
         except Exception as e:
-            self.logger.error(f"Failed to connect to Redis: {str(e)}")
+            self.logger.error(f"Failed to connect to Redis: {e!s}")
             return False
 
     async def disconnect(self) -> bool:
@@ -83,21 +83,21 @@ class RedisService(IKeyValueService):
             await self.redis_client.set(full_key, value, ex=expire)
             return True
         except Exception as e:
-            self.logger.error(f"Failed to set Redis key {key}: {str(e)}")
+            self.logger.error(f"Failed to set Redis key {key}: {e!s}")
             return False
 
-    async def get(self, key: str) -> Optional[str]:
+    async def get(self, key: str) -> str | None:
         """Get a key's value"""
         try:
             if self.redis_client is None:
                 raise ValueError("Redis client is not connected")
             full_key = f"{self.prefix}{key}"
             value = await self.redis_client.get(full_key)
-            if value and value.startswith("{") or value.startswith("["):
+            if (value and value.startswith("{")) or value.startswith("["):
                 return json.loads(value)
             return value
         except Exception as e:
-            self.logger.error(f"Failed to get Redis key {key}: {str(e)}")
+            self.logger.error(f"Failed to get Redis key {key}: {e!s}")
             return None
 
     async def delete(self, key: str) -> bool:
@@ -109,14 +109,14 @@ class RedisService(IKeyValueService):
             await self.redis_client.delete(full_key)
             return True
         except Exception as e:
-            self.logger.error(f"Failed to delete Redis key {key}: {str(e)}")
+            self.logger.error(f"Failed to delete Redis key {key}: {e!s}")
             return False
 
-    async def store_progress(self, progress: Dict) -> bool:
+    async def store_progress(self, progress: dict) -> bool:
         """Store sync progress"""
         return await self.set("sync_progress", json.dumps(progress))
 
-    async def get_progress(self) -> Optional[Dict]:
+    async def get_progress(self) -> dict | None:
         """Get sync progress"""
         progress = await self.get("sync_progress")
         if progress:

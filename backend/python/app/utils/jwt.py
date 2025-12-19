@@ -9,8 +9,7 @@ from app.config.constants.service import config_node_constants
 
 
 def is_jwt_expired(token: str) -> bool:
-    """
-    Check if JWT token is expired
+    """Check if JWT token is expired
     Args:
         token: JWT token string
     Returns:
@@ -21,7 +20,7 @@ def is_jwt_expired(token: str) -> bool:
 
     # Split the JWT token into its parts
     TOKEN_PARTS = 3
-    parts = token.split('.')
+    parts = token.split(".")
     if len(parts) != TOKEN_PARTS:
         return True
 
@@ -31,36 +30,36 @@ def is_jwt_expired(token: str) -> bool:
     # Add padding if necessary
     padding = len(payload) % 4
     if padding:
-        payload += '=' * (4 - padding)
+        payload += "=" * (4 - padding)
 
     # Decode base64
     decoded_payload = base64.urlsafe_b64decode(payload)
     payload_data = json.loads(decoded_payload)
 
     # Check if 'exp' claim exists
-    if 'exp' not in payload_data:
+    if "exp" not in payload_data:
         return True
 
     # Get current timestamp
     current_time = datetime.utcnow().timestamp()
 
     # Check if token is expired
-    return payload_data['exp'] < current_time
+    return payload_data["exp"] < current_time
 
 
 async def generate_jwt(config_service: ConfigurationService, token_payload: dict) -> str:
-    """
-    Generate a JWT token using the jose library.
+    """Generate a JWT token using the jose library.
 
     Args:
         token_payload (dict): The payload to include in the JWT
 
     Returns:
         str: The generated JWT token
+
     """
     # Get the JWT secret from environment variable
     secret_keys = await config_service.get_config(
-        config_node_constants.SECRET_KEYS.value
+        config_node_constants.SECRET_KEYS.value,
     )
     if not secret_keys:
         raise ValueError("SECRET_KEYS environment variable is not set")

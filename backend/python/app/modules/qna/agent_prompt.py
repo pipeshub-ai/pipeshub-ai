@@ -1,10 +1,9 @@
-"""
-Professional Planning-Based Agent System
+"""Professional Planning-Based Agent System
 Enterprise-grade formatting with intelligent planning capabilities
 """
 
 from datetime import datetime
-from typing import Any, List, Tuple
+from typing import Any
 
 # Constants
 CONTENT_PREVIEW_LENGTH = 250
@@ -849,7 +848,7 @@ def build_internal_context_for_planning(final_results, include_full_content=Fals
 
     context_parts = [
         "## Internal Knowledge Sources Available",
-        "IMPORTANT: Since internal knowledge is available, if you use it, respond in Structured JSON format with citations.\n"
+        "IMPORTANT: Since internal knowledge is available, if you use it, respond in Structured JSON format with citations.\n",
     ]
 
     for idx, result in enumerate(final_results, 1):
@@ -963,7 +962,7 @@ def build_agent_prompt(state, max_iterations=30) -> str:
         user_context = "No user context available."
 
     conversation_history = build_conversation_history_context(
-        state.get("previous_conversations", [])
+        state.get("previous_conversations", []),
     )
 
     # Get custom system prompt
@@ -984,9 +983,8 @@ def build_agent_prompt(state, max_iterations=30) -> str:
     return complete_prompt
 
 
-def create_agent_messages(state) -> List[Any]:
-    """
-    Create messages for the agent with enhanced context
+def create_agent_messages(state) -> list[Any]:
+    """Create messages for the agent with enhanced context
     """
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
@@ -1012,22 +1010,22 @@ def create_agent_messages(state) -> List[Any]:
 
         # Extract any UUID/ID patterns (UUIDs, hex IDs, alphanumeric IDs)
         # Matches: 32-char hex, UUIDs with dashes, long alphanumeric IDs
-        id_patterns = re.findall(r'\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\b', content, re.IGNORECASE)  # UUID
+        id_patterns = re.findall(r"\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\b", content, re.IGNORECASE)  # UUID
         if not id_patterns:
-            id_patterns = re.findall(r'\b[a-f0-9]{20,}\b', content)  # Long hex IDs
+            id_patterns = re.findall(r"\b[a-f0-9]{20,}\b", content)  # Long hex IDs
         if not id_patterns:
-            id_patterns = re.findall(r'\b[A-Z0-9]{10,}\b', content)  # Alphanumeric IDs
+            id_patterns = re.findall(r"\b[A-Z0-9]{10,}\b", content)  # Alphanumeric IDs
 
         if id_patterns:
             extracted_context.append(f"ID/Key mentioned: {id_patterns[0][:20]}...")  # Generic ID reference
 
         # Extract ISO timestamps (YYYY-MM-DD, YYYY-MM-DDTHH:MM:SS, etc.)
-        timestamp_patterns = re.findall(r'\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?', content)
+        timestamp_patterns = re.findall(r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?", content)
         if timestamp_patterns:
             extracted_context.append(f"Timestamp: {timestamp_patterns[0]}")
 
         # Extract email addresses (generic pattern)
-        emails = re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', content)
+        emails = re.findall(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", content)
         if emails:
             extracted_context.append(f"Contact(s): {', '.join(emails[:2])}")
 
@@ -1037,12 +1035,12 @@ def create_agent_messages(state) -> List[Any]:
             extracted_context.append(f"Link: {urls[0][:50]}...")
 
         # Extract @mentions (works for Slack, email, any platform)
-        mentions = re.findall(r'@[\w\-\.]+', content)
+        mentions = re.findall(r"@[\w\-\.]+", content)
         if mentions:
             extracted_context.append(f"Mentions: {', '.join(mentions[:3])}")
 
         # Extract #channels or #tags (works for Slack, social media, etc.)
-        channels = re.findall(r'#[\w\-]+', content)
+        channels = re.findall(r"#[\w\-]+", content)
         if channels:
             extracted_context.append(f"Channels/Tags: {', '.join(channels[:3])}")
 
@@ -1085,7 +1083,7 @@ def create_agent_messages(state) -> List[Any]:
 # RESPONSE MODE DETECTION
 # ============================================================================
 
-def detect_response_mode(response_content) -> Tuple[str, Any]:
+def detect_response_mode(response_content) -> tuple[str, Any]:
     """Detect if response is structured JSON or conversational"""
     if isinstance(response_content, dict):
         if "answer" in response_content and ("chunkIndexes" in response_content or "citations" in response_content):
@@ -1097,7 +1095,7 @@ def detect_response_mode(response_content) -> Tuple[str, Any]:
 
     content = response_content.strip()
 
-    if content.startswith('{') and content.endswith('}'):
+    if content.startswith("{") and content.endswith("}"):
         try:
             import json
 

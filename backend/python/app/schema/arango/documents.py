@@ -201,7 +201,7 @@ record_schema = {
                     "AUTO_INDEX_OFF",
                     "EMPTY",
                     "ENABLE_MULTIMODAL_MODELS",
-                    "QUEUED"
+                    "QUEUED",
                 ],
             },
             "extractionStatus": {
@@ -214,7 +214,7 @@ record_schema = {
                     "COMPLETED",
                     "FILE_TYPE_NOT_SUPPORTED",
                     "AUTO_INDEX_OFF",
-                    "EMPTY"
+                    "EMPTY",
                 ],
             },
             "isLatestVersion": {"type": "boolean", "default": True},
@@ -232,7 +232,7 @@ record_schema = {
             "externalRecordId",
             "recordType",
             "origin",
-            "createdAtTimestamp"
+            "createdAtTimestamp",
         ],
         "additionalProperties": False,
     },

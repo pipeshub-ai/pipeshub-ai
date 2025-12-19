@@ -1,7 +1,7 @@
 GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/drive.readonly",
-    "https://www.googleapis.com/auth/calendar.readonly"
+    "https://www.googleapis.com/auth/calendar.readonly",
 ]
 
 GOOGLE_CONNECTOR_ENTERPRISE_SCOPES = [
@@ -73,7 +73,7 @@ GOOGLE_CONNECTOR_ENTERPRISE_SCOPES_FULL = [
     "https://www.googleapis.com/auth/admin.directory.orgunit.readonly",
     "https://www.googleapis.com/auth/admin.directory.orgunit",
     "https://www.googleapis.com/auth/admin.reports.audit.readonly",
-    "https://www.googleapis.com/auth/admin.reports.usage.readonly"
+    "https://www.googleapis.com/auth/admin.reports.usage.readonly",
 ]
 
 GOOGLE_PARSER_SCOPES = [

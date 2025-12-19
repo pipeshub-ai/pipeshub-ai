@@ -1,5 +1,4 @@
 import json
-from typing import List, Optional
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -9,6 +8,7 @@ from app.utils.time_conversion import prepare_iso_timestamps
 
 class GoogleCalendar:
     """Google Calendar tool exposed to the agents"""
+
     def __init__(self, client: object, calendar_id: str = "primary") -> None:
         """Initialize the Google Calendar tool"""
         """
@@ -23,7 +23,7 @@ class GoogleCalendar:
 
     @tool(
         app_name="google_calendar",
-        tool_name="get_calendar_events"
+        tool_name="get_calendar_events",
     )
     def get_calendar_events(
         self,
@@ -51,75 +51,75 @@ class GoogleCalendar:
                 name="event_start_time",
                 type=ParameterType.STRING,
                 description="The start time of the event (ISO format or timestamp)",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="event_end_time",
                 type=ParameterType.STRING,
                 description="The end time of the event (ISO format or timestamp)",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="event_title",
                 type=ParameterType.STRING,
                 description="The title/summary of the event",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_description",
                 type=ParameterType.STRING,
                 description="The description of the event",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_location",
                 type=ParameterType.STRING,
                 description="The location of the event",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_organizer",
                 type=ParameterType.STRING,
                 description="The email of the event organizer",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_attendees_emails",
                 type=ParameterType.ARRAY,
                 description="List of email addresses for event attendees",
                 required=False,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="event_meeting_link",
                 type=ParameterType.STRING,
                 description="The meeting link/URL for the event",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_timezone",
                 type=ParameterType.STRING,
                 description="The timezone for the event (default: UTC)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_all_day",
                 type=ParameterType.BOOLEAN,
                 description="Whether the event is an all-day event",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def create_calendar_event(
         self,
         event_start_time: str,
         event_end_time: str,
-        event_title: Optional[str] = None,
-        event_description: Optional[str] = None,
-        event_location: Optional[str] = None,
-        event_organizer: Optional[str] = None,
-        event_attendees_emails: Optional[List[str]] = None,
-        event_meeting_link: Optional[str] = None,
+        event_title: str | None = None,
+        event_description: str | None = None,
+        event_location: str | None = None,
+        event_organizer: str | None = None,
+        event_attendees_emails: list[str] | None = None,
+        event_meeting_link: str | None = None,
         event_timezone: str = "UTC",
         event_all_day: bool = False,
     ) -> tuple[bool, str]:
@@ -205,82 +205,82 @@ class GoogleCalendar:
                 name="event_id",
                 type=ParameterType.STRING,
                 description="The ID of the event to update",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="event_title",
                 type=ParameterType.STRING,
                 description="The new title/summary for the event",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_description",
                 type=ParameterType.STRING,
                 description="The new description for the event",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_start_time",
                 type=ParameterType.STRING,
                 description="The new start time for the event (ISO format or timestamp)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_end_time",
                 type=ParameterType.STRING,
                 description="The new end time for the event (ISO format or timestamp)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_location",
                 type=ParameterType.STRING,
                 description="The new location for the event",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_organizer",
                 type=ParameterType.STRING,
                 description="The new organizer email for the event",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_attendees_emails",
                 type=ParameterType.ARRAY,
                 description="The new list of attendee emails for the event",
                 required=False,
-                items={"type": "string"}
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="event_meeting_link",
                 type=ParameterType.STRING,
                 description="The new meeting link/URL for the event",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_timezone",
                 type=ParameterType.STRING,
                 description="The new timezone for the event",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="event_all_day",
                 type=ParameterType.BOOLEAN,
                 description="Whether the event should be an all-day event",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def update_calendar_event(
         self,
         event_id: str,
-        event_title: Optional[str] = None,
-        event_description: Optional[str] = None,
-        event_start_time: Optional[str] = None,
-        event_end_time: Optional[str] = None,
-        event_location: Optional[str] = None,
-        event_organizer: Optional[str] = None,
-        event_attendees_emails: Optional[List[str]] = None,
-        event_meeting_link: Optional[str] = None,
+        event_title: str | None = None,
+        event_description: str | None = None,
+        event_start_time: str | None = None,
+        event_end_time: str | None = None,
+        event_location: str | None = None,
+        event_organizer: str | None = None,
+        event_attendees_emails: list[str] | None = None,
+        event_meeting_link: str | None = None,
         event_timezone: str = "UTC",
         event_all_day: bool = False,
     ) -> tuple[bool, str]:
@@ -323,7 +323,7 @@ class GoogleCalendar:
                         {
                             "entryPointType": "video",
                             "uri": event_meeting_link,
-                        }
+                        },
                     ],
                 }
             if event_timezone:
@@ -367,9 +367,9 @@ class GoogleCalendar:
                 name="event_id",
                 type=ParameterType.STRING,
                 description="The ID of the event to delete",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def delete_calendar_event(
         self,
@@ -389,14 +389,14 @@ class GoogleCalendar:
             ).execute() # type: ignore
 
             return True, json.dumps({
-                "message": f"Event {event_id} deleted successfully"
+                "message": f"Event {event_id} deleted successfully",
             })
         except Exception as e:
             return False, json.dumps({"error": str(e)})
 
     @tool(
         app_name="google_calendar",
-        tool_name="get_calendar_list"
+        tool_name="get_calendar_list",
     )
     def get_calendar_list(self) -> tuple[bool, str]:
         """Get the list of available calendars"""
@@ -412,10 +412,10 @@ class GoogleCalendar:
 
     @tool(
         app_name="google_calendar",
-        tool_name="get_calendar_list_by_id"
+        tool_name="get_calendar_list_by_id",
     )
     def get_calendar_list_by_id(
-        self
+        self,
     ) -> tuple[bool, str]:
         """Get the current calendar by ID"""
         """

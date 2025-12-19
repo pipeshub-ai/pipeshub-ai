@@ -1,8 +1,7 @@
-"""
-Utility functions for tool management and querying.
+"""Utility functions for tool management and querying.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.loader import ToolLoader
@@ -14,9 +13,8 @@ from app.modules.agents.qna.chat_state import ChatState
 RESULT_PREVIEW_MAX_LENGTH = 150
 MAX_TOOLS_PER_CATEGORY_DISPLAY = 5
 
-def get_agent_tools(state: 'ChatState') -> List[RegistryToolWrapper]:
-    """
-    Get tools for the agent based on state configuration.
+def get_agent_tools(state: "ChatState") -> list[RegistryToolWrapper]:
+    """Get tools for the agent based on state configuration.
 
     This is the main entry point for loading tools in agents.
 
@@ -45,6 +43,7 @@ def get_agent_tools(state: 'ChatState') -> List[RegistryToolWrapper]:
         state = {"tools": ["slack.send_message", "jira.create_issue"]}
         tools = get_agent_tools(state)
         ```
+
     """
     user_filter = state.get("tools", None)
     loader = ToolLoader(state)
@@ -53,10 +52,9 @@ def get_agent_tools(state: 'ChatState') -> List[RegistryToolWrapper]:
 
 def get_tool_by_name(
     tool_name: str,
-    state: 'ChatState'
-) -> Optional[RegistryToolWrapper]:
-    """
-    Get a specific tool by name.
+    state: "ChatState",
+) -> RegistryToolWrapper | None:
+    """Get a specific tool by name.
 
     Args:
         tool_name: Name of the tool. Can be:
@@ -66,6 +64,7 @@ def get_tool_by_name(
 
     Returns:
         Tool wrapper if found, None otherwise
+
     """
     registry = _global_tools_registry
     all_tools = registry.get_all_tools()
@@ -80,12 +79,12 @@ def get_tool_by_name(
             app_name,
             actual_tool_name,
             all_tools[tool_name],
-            state
+            state,
         )
 
     # Try partial match
     for full_name, registry_tool in all_tools.items():
-        if (hasattr(registry_tool, 'tool_name') and
+        if (hasattr(registry_tool, "tool_name") and
             (registry_tool.tool_name == tool_name or
              full_name.endswith(f".{tool_name}"))):
             if "." in full_name:
@@ -96,18 +95,18 @@ def get_tool_by_name(
                 app_name,
                 actual_tool_name,
                 registry_tool,
-                state
+                state,
             )
 
     return None
 
 
-def get_all_available_tool_names() -> Dict[str, Any]:
-    """
-    Get list of all available tool names from registry.
+def get_all_available_tool_names() -> dict[str, Any]:
+    """Get list of all available tool names from registry.
 
     Returns:
         Dictionary with tool names and counts organized by category
+
     """
     registry = _global_tools_registry
     tool_names = registry.list_tools()
@@ -116,11 +115,11 @@ def get_all_available_tool_names() -> Dict[str, Any]:
         "registry_tools": tool_names,
         "total_count": len(tool_names),
         "by_category": _group_tools_by_category(),
-        "statistics": registry.get_statistics()
+        "statistics": registry.get_statistics(),
     }
 
 
-def _group_tools_by_category() -> Dict[str, List[str]]:
+def _group_tools_by_category() -> dict[str, list[str]]:
     """Group tools by category"""
     registry = _global_tools_registry
     by_category = {}
@@ -136,15 +135,15 @@ def _group_tools_by_category() -> Dict[str, List[str]]:
     return by_category
 
 
-def get_tool_results_summary(state: 'ChatState') -> str:
-    """
-    Get a summary of all tool execution results.
+def get_tool_results_summary(state: "ChatState") -> str:
+    """Get a summary of all tool execution results.
 
     Args:
         state: Chat state containing tool results
 
     Returns:
         Formatted summary string
+
     """
     all_results = state.get("all_tool_results", [])
 
@@ -163,7 +162,7 @@ def get_tool_results_summary(state: 'ChatState') -> str:
             tool_summary[tool_name] = {
                 "success": 0,
                 "error": 0,
-                "results": []
+                "results": [],
             }
 
         tool_summary[tool_name][status] = (
@@ -189,13 +188,12 @@ def get_tool_results_summary(state: 'ChatState') -> str:
 
 
 def search_tools(
-    query: Optional[str] = None,
-    category: Optional[ToolCategory] = None,
-    tags: Optional[List[str]] = None,
-    essential_only: bool = False
-) -> List[Tool]:
-    """
-    Search for tools based on criteria.
+    query: str | None = None,
+    category: ToolCategory | None = None,
+    tags: list[str] | None = None,
+    essential_only: bool = False,
+) -> list[Tool]:
+    """Search for tools based on criteria.
 
     Args:
         query: Search query for name/description
@@ -222,21 +220,22 @@ def search_tools(
             tags=["collaborative"]
         )
         ```
+
     """
     return _global_tools_registry.search_tools(
         query=query,
         category=category,
         tags=tags,
-        essential_only=essential_only
+        essential_only=essential_only,
     )
 
 
 def get_tool_usage_guidance() -> str:
-    """
-    Get comprehensive guidance for tool usage.
+    """Get comprehensive guidance for tool usage.
 
     Returns:
         Formatted guidance string with categories and examples
+
     """
     registry = _global_tools_registry
     all_tools = registry.list_tools()
@@ -288,15 +287,15 @@ You have complete freedom to select and use tools as needed.
     return guidance
 
 
-def get_tool_metadata(tool_name: str) -> Optional[Dict[str, Any]]:
-    """
-    Get metadata for a specific tool.
+def get_tool_metadata(tool_name: str) -> dict[str, Any] | None:
+    """Get metadata for a specific tool.
 
     Args:
         tool_name: Full name of the tool (app_name.tool_name)
 
     Returns:
         Dictionary with metadata or None if not found
+
     """
     registry = _global_tools_registry
     metadata = registry.get_metadata(tool_name)
@@ -312,34 +311,34 @@ def get_tool_metadata(tool_name: str) -> Optional[Dict[str, Any]]:
         "is_essential": metadata.is_essential,
         "requires_auth": metadata.requires_auth,
         "dependencies": metadata.dependencies,
-        "tags": metadata.tags
+        "tags": metadata.tags,
     }
 
 
-def list_tools_by_category(category: ToolCategory) -> List[str]:
-    """
-    List all tools in a specific category.
+def list_tools_by_category(category: ToolCategory) -> list[str]:
+    """List all tools in a specific category.
 
     Args:
         category: Category to filter by
 
     Returns:
         List of tool names in the category
+
     """
     registry = _global_tools_registry
     tools = registry.get_tools_by_category(category)
     return [f"{tool.app_name}.{tool.tool_name}" for tool in tools]
 
 
-def list_tools_by_app(app_name: str) -> List[str]:
-    """
-    List all tools for a specific app.
+def list_tools_by_app(app_name: str) -> list[str]:
+    """List all tools for a specific app.
 
     Args:
         app_name: Name of the application
 
     Returns:
         List of tool names for the app
+
     """
     registry = _global_tools_registry
     tools = registry.get_tools_by_app(app_name)

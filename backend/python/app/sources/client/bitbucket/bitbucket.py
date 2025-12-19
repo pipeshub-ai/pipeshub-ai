@@ -1,7 +1,7 @@
 import base64
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any, Dict
+from typing import Any
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.http_client import HTTPClient
@@ -18,6 +18,7 @@ class BitbucketRESTClientViaBasicAuth(HTTPClient):
         base_url: The base URL of the Bitbucket instance (usually https://api.bitbucket.org/2.0)
         username: The Bitbucket username (or email for API Tokens)
         password: The App Password or API Token value
+
     """
 
     def __init__(self, base_url: str, username: str, password: str) -> None:
@@ -28,7 +29,7 @@ class BitbucketRESTClientViaBasicAuth(HTTPClient):
 
         # Initialize HTTPClient with "Basic" type and the encoded string
         super().__init__(encoded_auth, "Basic")
-        self.base_url = base_url.rstrip('/')
+        self.base_url = base_url.rstrip("/")
 
     def get_base_url(self) -> str:
         """Get the base URL"""
@@ -43,11 +44,12 @@ class BitbucketRESTClientViaBearer(HTTPClient):
     Args:
         base_url: The base URL of the Bitbucket instance
         token: The Access Token (Workspace or OAuth)
+
     """
 
     def __init__(self, base_url: str, token: str) -> None:
         super().__init__(token, "Bearer")
-        self.base_url = base_url.rstrip('/')
+        self.base_url = base_url.rstrip("/")
 
     def get_base_url(self) -> str:
         """Get the base URL"""
@@ -62,7 +64,9 @@ class BitbucketBasicAuthConfig:
         username: The Bitbucket username or email address
         password: The API Token or App Password
         base_url: The base URL (default: https://api.bitbucket.org/2.0)
+
     """
+
     username: str
     password: str
     base_url: str = "https://api.bitbucket.org/2.0"
@@ -81,7 +85,9 @@ class BitbucketTokenConfig:
     Args:
         token: The Workspace Access Token or OAuth Access Token
         base_url: The base URL (default: https://api.bitbucket.org/2.0)
+
     """
+
     token: str
     base_url: str = "https://api.bitbucket.org/2.0"
 
@@ -129,6 +135,7 @@ class BitbucketClient(IClient):
             config_service: Configuration service instance
         Returns:
             BitbucketClient instance
+
         """
         try:
             # Get Bitbucket configuration from the configuration service
@@ -155,7 +162,7 @@ class BitbucketClient(IClient):
                 config = BitbucketBasicAuthConfig(
                     username=username,
                     password=password,
-                    base_url=base_url
+                    base_url=base_url,
                 )
 
             elif auth_type == "BEARER" or auth_type == "TOKEN":
@@ -167,7 +174,7 @@ class BitbucketClient(IClient):
 
                 config = BitbucketTokenConfig(
                     token=token,
-                    base_url=base_url
+                    base_url=base_url,
                 )
 
             else:
@@ -176,11 +183,11 @@ class BitbucketClient(IClient):
             return cls.build_with_config(config)
 
         except Exception as e:
-            logger.error(f"Failed to build Bitbucket client from services: {str(e)}")
+            logger.error(f"Failed to build Bitbucket client from services: {e!s}")
             raise
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> dict[str, Any]:
         """Fetch connector config from etcd for Bitbucket."""
         try:
             config = await config_service.get_config("/services/connectors/bitbucket/config")

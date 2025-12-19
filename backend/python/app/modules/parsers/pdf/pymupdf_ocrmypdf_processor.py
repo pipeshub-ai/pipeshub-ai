@@ -1,7 +1,7 @@
 
 import os
 import tempfile
-from typing import Any, Dict, List
+from typing import Any
 
 import fitz
 import ocrmypdf
@@ -52,9 +52,9 @@ class PyMuPDFOCRStrategy(OCRStrategy):
             try:
                 self.logger.debug("📝 Creating temporary files for OCR processing")
                 with tempfile.NamedTemporaryFile(
-                    suffix=".pdf", delete=False
+                    suffix=".pdf", delete=False,
                 ) as temp_in, tempfile.NamedTemporaryFile(
-                    suffix=".pdf", delete=False
+                    suffix=".pdf", delete=False,
                 ) as temp_out:
 
                     self.logger.debug("📤 Writing content to temporary input file")
@@ -102,7 +102,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                 self.doc = processed_doc
 
             except Exception as e:
-                self.logger.error(f"❌ OCR processing failed: {str(e)}")
+                self.logger.error(f"❌ OCR processing failed: {e!s}")
                 self.logger.info("⚠️ Falling back to direct PyMuPDF extraction")
                 self.doc = temp_doc
                 self._needs_ocr = False
@@ -116,11 +116,11 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                             os.remove(path)
                         except Exception as e:
                             self.logger.error(
-                                "❌ Error cleaning up temp file, %s: %s", path, str(e)
+                                "❌ Error cleaning up temp file, %s: %s", path, str(e),
                             )
         else:
             self.logger.info(
-                "📝 Document doesn't need OCR, using direct PyMuPDF extraction"
+                "📝 Document doesn't need OCR, using direct PyMuPDF extraction",
             )
             self.doc = temp_doc
             self.ocr_pdf_content = None
@@ -136,11 +136,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
             next_token = doc[token.i + 1]
 
             # If token is a number and followed by a period, don't treat it as a sentence boundary
-            if token.like_num and next_token.text == ".":
-                next_token.is_sent_start = False
-
-            # Handle common abbreviations
-            elif (
+            if (token.like_num and next_token.text == ".") or (
                 token.text.lower()
                 in [
                     "mr",
@@ -173,11 +169,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                     "corp",
                 ]
                 and next_token.text == "."
-            ):
-                next_token.is_sent_start = False
-
-            # Handle bullet points and list markers
-            elif (
+            ) or (
                 # Numeric bullets with period (1., 2., etc)
                 (
                     token.like_num and next_token.text == "." and len(token.text) <= LENGTH_THRESHOLD
@@ -212,8 +204,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
         return doc
 
     def _create_custom_tokenizer(self, nlp) -> Language:
-        """
-        Creates a custom tokenizer that handles special cases for sentence boundaries.
+        """Creates a custom tokenizer that handles special cases for sentence boundaries.
         """
         # Add the custom rule to the pipeline
         if "sentencizer" not in nlp.pipe_names:
@@ -236,8 +227,8 @@ class PyMuPDFOCRStrategy(OCRStrategy):
         return nlp
 
     def _merge_bounding_boxes(
-        self, bboxes: List[List[Dict[str, float]]]
-    ) -> List[Dict[str, float]]:
+        self, bboxes: list[list[dict[str, float]]],
+    ) -> list[dict[str, float]]:
         """Merge multiple bounding boxes into one encompassing box"""
         all_points = [point for box in bboxes for point in box]
         min_x = min(point["x"] for point in all_points)
@@ -253,8 +244,8 @@ class PyMuPDFOCRStrategy(OCRStrategy):
         ]
 
     def _merge_lines_to_sentences(
-        self, lines_data: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, lines_data: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """Merge lines into sentences using spaCy"""
         self.logger.debug("🚀 Merging lines to sentences")
 
@@ -270,7 +261,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
 
             full_text += content + "\n "
             line_map.append(
-                (char_index, char_index + len(content), line_data["bounding_box"])
+                (char_index, char_index + len(content), line_data["bounding_box"]),
             )
             char_index += len(content) + 1
 
@@ -297,8 +288,8 @@ class PyMuPDFOCRStrategy(OCRStrategy):
         return sentences
 
     def _process_block_text(
-        self, block: Dict[str, Any], page_width: float, page_height: float, block_number: int
-    ) -> Dict[str, Any]:
+        self, block: dict[str, Any], page_width: float, page_height: float, block_number: int,
+    ) -> dict[str, Any]:
         """Process a text block to extract lines, sentences, and metadata
 
         Handles both single-span and multi-span lines:
@@ -312,8 +303,8 @@ class PyMuPDFOCRStrategy(OCRStrategy):
 
         Returns:
             Dictionary containing processed text data including lines, spans, words and metadata
-        """
 
+        """
         block_lines = []
         block_text = ""
         block_spans = []
@@ -350,7 +341,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                 line_data = {
                     "content": line_text.strip(),
                     "bounding_box": _normalize_bbox(
-                        line["bbox"], page_width, page_height
+                        line["bbox"], page_width, page_height,
                     ),
                 }
                 block_lines.append(line_data)
@@ -364,7 +355,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                         span_data = {
                             "text": span.get("text", ""),
                             "bounding_box": _normalize_bbox(
-                                span["bbox"], page_width, page_height
+                                span["bbox"], page_width, page_height,
                             ),
                             "font": span.get("font"),
                             "size": span.get("size"),
@@ -379,7 +370,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                                 word = {
                                     "content": word_text,
                                     "bounding_box": _normalize_bbox(
-                                        char["bbox"], page_width, page_height
+                                        char["bbox"], page_width, page_height,
                                     ),
                                     "confidence": None,
                                 }
@@ -442,10 +433,9 @@ class PyMuPDFOCRStrategy(OCRStrategy):
         }
 
     def _should_merge_blocks(
-        self, block1: Dict[str, Any], block2: Dict[str, Any], word_threshold: int = 15
+        self, block1: dict[str, Any], block2: dict[str, Any], word_threshold: int = 15,
     ) -> bool:
-        """
-        Determine if blocks should be merged based on word count threshold.
+        """Determine if blocks should be merged based on word count threshold.
         Merges if block1 has fewer words than the threshold.
 
         Args:
@@ -455,6 +445,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
 
         Returns:
             bool: True if blocks should be merged
+
         """
         if block1.get("type") != 0 or block2.get("type") != 0:
             return False
@@ -473,10 +464,9 @@ class PyMuPDFOCRStrategy(OCRStrategy):
         return word_count < word_threshold
 
     def _merge_block_content(
-        self, block1: Dict[str, Any], block2: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        Merge two text blocks into one.
+        self, block1: dict[str, Any], block2: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Merge two text blocks into one.
         """
         merged_block = block1.copy()
 
@@ -495,7 +485,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
 
         return merged_block
 
-    async def _preprocess_document(self) -> Dict[str, Any]:
+    async def _preprocess_document(self) -> dict[str, Any]:
         """Pre-process document to match Azure's structure"""
         self.logger.debug("🔄 Starting document pre-processing")
         result = {
@@ -539,22 +529,22 @@ class PyMuPDFOCRStrategy(OCRStrategy):
 
                 # Keep merging blocks until we have enough words or run out of blocks
                 while next_index < len(blocks) and self._should_merge_blocks(
-                    current_block, blocks[next_index]
+                    current_block, blocks[next_index],
                 ):
                     self.logger.debug(f"Merging blocks {i} and {next_index}")
                     current_block = self._merge_block_content(
-                        current_block, blocks[next_index]
+                        current_block, blocks[next_index],
                     )
                     next_index += 1
 
                 merged_blocks.append(current_block)
-                i = next_index if next_index > i + 1 else i + 1
+                i = max(i + 1, next_index)
 
             # Process merged blocks
             for block in merged_blocks:
                 if block.get("type") == 0:  # Text block
                     processed_block = self._process_block_text(
-                        block, page_width, page_height, block_number
+                        block, page_width, page_height, block_number,
                     )
                     # Add to page-level collections
                     page_dict["lines"].extend(processed_block["lines"])
@@ -620,7 +610,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
 
 
 
-    async def process_page(self, page) -> Dict[str, Any]:
+    async def process_page(self, page) -> dict[str, Any]:
         """Process a single page"""
         self.logger.debug("📊 Processing page content")
         page_width = page.rect.width
@@ -638,9 +628,9 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                         "content": text.strip(),
                         "confidence": None,
                         "bounding_box": _normalize_bbox(
-                            (x0, y0, x1, y1), page_width, page_height
+                            (x0, y0, x1, y1), page_width, page_height,
                         ),
-                    }
+                    },
                 )
 
         # Extract lines
@@ -653,9 +643,9 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                         {
                             "content": text.strip(),
                             "bounding_box": _normalize_bbox(
-                                line["bbox"], page_width, page_height
+                                line["bbox"], page_width, page_height,
                             ),
-                        }
+                        },
                     )
 
         self.logger.debug("✅ Completed processing page")

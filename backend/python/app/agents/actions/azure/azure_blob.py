@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Coroutine, Optional, Tuple
+from collections.abc import Coroutine
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -42,7 +42,7 @@ class AzureBlob:
         except Exception as exc:
             logger.warning(f"AzureBlob shutdown encountered an issue: {exc}")
 
-    def _wrap(self, success: bool, data: object | None, error: Optional[str], message: str) -> Tuple[bool, str]:
+    def _wrap(self, success: bool, data: object | None, error: str | None, message: str) -> tuple[bool, str]:
         if success:
             return True, json.dumps({"message": message, "data": data}, default=str)
         return False, json.dumps({"error": error or "Unknown error"})
@@ -54,9 +54,9 @@ class AzureBlob:
         parameters=[
             ToolParameter(name="container_name", type=ParameterType.STRING, description="Container name"),
         ],
-        returns="JSON with operation result"
+        returns="JSON with operation result",
     )
-    def create_container(self, container_name: str) -> Tuple[bool, str]:
+    def create_container(self, container_name: str) -> tuple[bool, str]:
         try:
             resp = self._run_async(self.client.create_container(container_name=container_name))
             return self._wrap(getattr(resp, "success", False), getattr(resp, "data", None), getattr(resp, "error", None), "Container created successfully")
@@ -71,9 +71,9 @@ class AzureBlob:
         parameters=[
             ToolParameter(name="container_name", type=ParameterType.STRING, description="Container name"),
         ],
-        returns="JSON with container properties"
+        returns="JSON with container properties",
     )
-    def get_container(self, container_name: str) -> Tuple[bool, str]:
+    def get_container(self, container_name: str) -> tuple[bool, str]:
         try:
             resp = self._run_async(self.client.get_container_properties(container_name=container_name))
             return self._wrap(getattr(resp, "success", False), getattr(resp, "data", None), getattr(resp, "error", None), "Container fetched successfully")
@@ -88,9 +88,9 @@ class AzureBlob:
         parameters=[
             ToolParameter(name="container_name", type=ParameterType.STRING, description="Container name"),
         ],
-        returns="JSON confirming deletion"
+        returns="JSON confirming deletion",
     )
-    def delete_container(self, container_name: str) -> Tuple[bool, str]:
+    def delete_container(self, container_name: str) -> tuple[bool, str]:
         try:
             resp = self._run_async(self.client.delete_container(container_name=container_name))
             return self._wrap(getattr(resp, "success", False), getattr(resp, "data", None), getattr(resp, "error", None), "Container deleted successfully")
@@ -107,18 +107,18 @@ class AzureBlob:
             ToolParameter(name="blob_name", type=ParameterType.STRING, description="Blob name"),
             ToolParameter(name="content", type=ParameterType.STRING, description="Blob text content"),
         ],
-        returns="JSON with upload result"
+        returns="JSON with upload result",
     )
-    def upload_blob(self, container_name: str, blob_name: str, content: str) -> Tuple[bool, str]:
+    def upload_blob(self, container_name: str, blob_name: str, content: str) -> tuple[bool, str]:
         try:
-            body_bytes = content.encode('utf-8')
+            body_bytes = content.encode("utf-8")
             resp = self._run_async(
                 self.client.upload_blob(
                     container_name=container_name,
                     blob_name=blob_name,
                     body=body_bytes,
-                    Content_Length=len(body_bytes)
-                )
+                    Content_Length=len(body_bytes),
+                ),
             )
             return self._wrap(getattr(resp, "success", False), getattr(resp, "data", None), getattr(resp, "error", None), "Blob uploaded successfully")
         except Exception as e:
@@ -133,9 +133,9 @@ class AzureBlob:
             ToolParameter(name="container_name", type=ParameterType.STRING, description="Container name"),
             ToolParameter(name="blob_name", type=ParameterType.STRING, description="Blob name"),
         ],
-        returns="JSON with blob properties"
+        returns="JSON with blob properties",
     )
-    def get_blob(self, container_name: str, blob_name: str) -> Tuple[bool, str]:
+    def get_blob(self, container_name: str, blob_name: str) -> tuple[bool, str]:
         try:
             resp = self._run_async(self.client.get_blob_properties(container_name=container_name, blob_name=blob_name))
             return self._wrap(getattr(resp, "success", False), getattr(resp, "data", None), getattr(resp, "error", None), "Blob fetched successfully")
@@ -151,9 +151,9 @@ class AzureBlob:
             ToolParameter(name="container_name", type=ParameterType.STRING, description="Container name"),
             ToolParameter(name="blob_name", type=ParameterType.STRING, description="Blob name"),
         ],
-        returns="JSON confirming deletion"
+        returns="JSON confirming deletion",
     )
-    def delete_blob(self, container_name: str, blob_name: str) -> Tuple[bool, str]:
+    def delete_blob(self, container_name: str, blob_name: str) -> tuple[bool, str]:
         try:
             resp = self._run_async(self.client.delete_blob(container_name=container_name, blob_name=blob_name))
             return self._wrap(getattr(resp, "success", False), getattr(resp, "data", None), getattr(resp, "error", None), "Blob deleted successfully")
@@ -169,9 +169,9 @@ class AzureBlob:
             ToolParameter(name="where", type=ParameterType.STRING, description="Tag query, e.g. '@tag = \"value\"'"),
             ToolParameter(name="maxresults", type=ParameterType.NUMBER, description="Max results", required=False),
         ],
-        returns="JSON with search results"
+        returns="JSON with search results",
     )
-    def search_blobs_by_tags(self, where: str, maxresults: Optional[int] = None) -> Tuple[bool, str]:
+    def search_blobs_by_tags(self, where: str, maxresults: int | None = None) -> tuple[bool, str]:
         try:
             resp = self._run_async(self.client.find_blobs_by_tags(where=where, maxresults=maxresults))
             return self._wrap(getattr(resp, "success", False), getattr(resp, "data", None), getattr(resp, "error", None), "Search completed successfully")

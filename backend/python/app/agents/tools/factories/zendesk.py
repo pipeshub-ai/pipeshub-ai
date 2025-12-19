@@ -1,5 +1,4 @@
-"""
-Client factories for Zendesk.
+"""Client factories for Zendesk.
 """
 
 
@@ -15,8 +14,7 @@ class ZendeskClientFactory(ClientFactory):
 
     async def create_client(self, config_service, logger) -> ZendeskClient:
         """Create Zendesk client instance"""
-
         return await ZendeskClient.build_from_services(
             logger=logger,
-            config_service=config_service
+            config_service=config_service,
         )

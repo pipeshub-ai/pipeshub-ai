@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any
 
 import httpx  # type: ignore
 
@@ -8,6 +8,7 @@ class HTTPResponse:
     Args:
         response: The httpx response object
     """
+
     def __init__(self, response: httpx.Response) -> None:
         self.response = response
 
@@ -17,7 +18,7 @@ class HTTPResponse:
         return self.response.status_code
 
     @property
-    def headers(self) -> Dict[str, str]:
+    def headers(self) -> dict[str, str]:
         """Get the headers of the response"""
         return dict(self.response.headers)
 

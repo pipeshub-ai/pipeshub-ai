@@ -21,10 +21,10 @@ class QueryAppContainer(BaseAppContainer):
 
     # Override arango_client and redis_client to use the service-specific config_service
     arango_client = providers.Resource(
-        BaseAppContainer._create_arango_client, config_service=config_service
+        BaseAppContainer._create_arango_client, config_service=config_service,
     )
     redis_client = providers.Resource(
-        BaseAppContainer._create_redis_client, config_service=config_service
+        BaseAppContainer._create_redis_client, config_service=config_service,
     )
     kafka_service = providers.Singleton(lambda: None)  # Not used in query service
     arango_service = providers.Resource(
@@ -64,6 +64,6 @@ class QueryAppContainer(BaseAppContainer):
         modules=[
             "app.api.routes.search",
             "app.api.routes.chatbot",
-            "app.modules.retrieval.retrieval_service"
-        ]
+            "app.modules.retrieval.retrieval_service",
+        ],
     )

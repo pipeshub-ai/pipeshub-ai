@@ -6,12 +6,12 @@ class GoogleAPIRateLimiter:
     """Rate limiter for Google Drive API"""
 
     def __init__(self, max_rate: int = 6000) -> None:
-        """
-        Initialize rate limiter with Google's default quota
+        """Initialize rate limiter with Google's default quota
 
         Args:
             max_rate (int): Maximum requests per 100 seconds (default: 10000)
             Based on Google Drive API quotas
+
         """
         # Single limiter for all Drive API operations
         # Converting max_rate to per-second rate

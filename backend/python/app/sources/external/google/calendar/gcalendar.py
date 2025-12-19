@@ -1,31 +1,32 @@
-from typing import Any, Dict, Optional
+from typing import Any
 
 from app.sources.client.google.google import GoogleClient
 
 
 class GoogleCalendarDataSource:
-    """
-    Auto-generated Google Calendar API client wrapper.
+    """Auto-generated Google Calendar API client wrapper.
     Uses Google SDK client internally for all operations.
     This class wraps all Google Calendar API v3 methods and provides
     a consistent interface while using the official Google SDK.
     """
+
     def __init__(
         self,
-        client: GoogleClient
+        client: GoogleClient,
     ) -> None:
-        """
-        Initialize with Google Calendar API client.
+        """Initialize with Google Calendar API client.
+
         Args:
             client: Google Calendar API client from build('calendar', 'v3', credentials=credentials)
+
         """
         self.client = client
 
     async def acl_delete(
         self,
         calendarId: str,
-        ruleId: str
-    ) -> Dict[str, Any]:
+        ruleId: str,
+    ) -> dict[str, Any]:
         """Google Calendar API: Deletes an access control rule.
 
         HTTP DELETE calendars/{calendarId}/acl/{ruleId}
@@ -36,12 +37,13 @@ class GoogleCalendarDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
         if ruleId is not None:
-            kwargs['ruleId'] = ruleId
+            kwargs["ruleId"] = ruleId
 
         request = self.client.acl().delete(**kwargs) # type: ignore
         return request.execute()
@@ -49,8 +51,8 @@ class GoogleCalendarDataSource:
     async def acl_get(
         self,
         calendarId: str,
-        ruleId: str
-    ) -> Dict[str, Any]:
+        ruleId: str,
+    ) -> dict[str, Any]:
         """Google Calendar API: Returns an access control rule.
 
         HTTP GET calendars/{calendarId}/acl/{ruleId}
@@ -61,12 +63,13 @@ class GoogleCalendarDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
         if ruleId is not None:
-            kwargs['ruleId'] = ruleId
+            kwargs["ruleId"] = ruleId
 
         request = self.client.acl().get(**kwargs) # type: ignore
         return request.execute()
@@ -74,8 +77,8 @@ class GoogleCalendarDataSource:
     async def acl_insert(
         self,
         calendarId: str,
-        sendNotifications: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        sendNotifications: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Creates an access control rule.
 
         HTTP POST calendars/{calendarId}/acl
@@ -86,16 +89,17 @@ class GoogleCalendarDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
         if sendNotifications is not None:
-            kwargs['sendNotifications'] = sendNotifications
+            kwargs["sendNotifications"] = sendNotifications
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.acl().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.acl().insert(**kwargs) # type: ignore
@@ -104,11 +108,11 @@ class GoogleCalendarDataSource:
     async def acl_list(
         self,
         calendarId: str,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        showDeleted: Optional[bool] = None,
-        syncToken: Optional[str] = None
-    ) -> Dict[str, Any]:
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+        showDeleted: bool | None = None,
+        syncToken: str | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Returns the rules in the access control list for the calendar.
 
         HTTP GET calendars/{calendarId}/acl
@@ -122,18 +126,19 @@ class GoogleCalendarDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if showDeleted is not None:
-            kwargs['showDeleted'] = showDeleted
+            kwargs["showDeleted"] = showDeleted
         if syncToken is not None:
-            kwargs['syncToken'] = syncToken
+            kwargs["syncToken"] = syncToken
 
         request = self.client.acl().list(**kwargs) # type: ignore
         return request.execute()
@@ -142,8 +147,8 @@ class GoogleCalendarDataSource:
         self,
         calendarId: str,
         ruleId: str,
-        sendNotifications: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        sendNotifications: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Updates an access control rule. This method supports patch semantics.
 
         HTTP PATCH calendars/{calendarId}/acl/{ruleId}
@@ -155,18 +160,19 @@ class GoogleCalendarDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
         if ruleId is not None:
-            kwargs['ruleId'] = ruleId
+            kwargs["ruleId"] = ruleId
         if sendNotifications is not None:
-            kwargs['sendNotifications'] = sendNotifications
+            kwargs["sendNotifications"] = sendNotifications
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.acl().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.acl().patch(**kwargs) # type: ignore
@@ -176,8 +182,8 @@ class GoogleCalendarDataSource:
         self,
         calendarId: str,
         ruleId: str,
-        sendNotifications: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        sendNotifications: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Updates an access control rule.
 
         HTTP PUT calendars/{calendarId}/acl/{ruleId}
@@ -189,18 +195,19 @@ class GoogleCalendarDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
         if ruleId is not None:
-            kwargs['ruleId'] = ruleId
+            kwargs["ruleId"] = ruleId
         if sendNotifications is not None:
-            kwargs['sendNotifications'] = sendNotifications
+            kwargs["sendNotifications"] = sendNotifications
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.acl().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.acl().update(**kwargs) # type: ignore
@@ -209,11 +216,11 @@ class GoogleCalendarDataSource:
     async def acl_watch(
         self,
         calendarId: str,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        showDeleted: Optional[bool] = None,
-        syncToken: Optional[str] = None
-    ) -> Dict[str, Any]:
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+        showDeleted: bool | None = None,
+        syncToken: str | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Watch for changes to ACL resources.
 
         HTTP POST calendars/{calendarId}/acl/watch
@@ -227,22 +234,23 @@ class GoogleCalendarDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if showDeleted is not None:
-            kwargs['showDeleted'] = showDeleted
+            kwargs["showDeleted"] = showDeleted
         if syncToken is not None:
-            kwargs['syncToken'] = syncToken
+            kwargs["syncToken"] = syncToken
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.acl().watch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.acl().watch(**kwargs) # type: ignore
@@ -250,8 +258,8 @@ class GoogleCalendarDataSource:
 
     async def calendar_list_delete(
         self,
-        calendarId: str
-    ) -> Dict[str, Any]:
+        calendarId: str,
+    ) -> dict[str, Any]:
         """Google Calendar API: Removes a calendar from the user's calendar list.
 
         HTTP DELETE users/me/calendarList/{calendarId}
@@ -261,18 +269,19 @@ class GoogleCalendarDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
 
         request = self.client.calendarList().delete(**kwargs) # type: ignore
         return request.execute()
 
     async def calendar_list_get(
         self,
-        calendarId: str
-    ) -> Dict[str, Any]:
+        calendarId: str,
+    ) -> dict[str, Any]:
         """Google Calendar API: Returns a calendar from the user's calendar list.
 
         HTTP GET users/me/calendarList/{calendarId}
@@ -282,18 +291,19 @@ class GoogleCalendarDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
 
         request = self.client.calendarList().get(**kwargs) # type: ignore
         return request.execute()
 
     async def calendar_list_insert(
         self,
-        colorRgbFormat: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        colorRgbFormat: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Inserts an existing calendar into the user's calendar list.
 
         HTTP POST users/me/calendarList
@@ -303,14 +313,15 @@ class GoogleCalendarDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if colorRgbFormat is not None:
-            kwargs['colorRgbFormat'] = colorRgbFormat
+            kwargs["colorRgbFormat"] = colorRgbFormat
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.calendarList().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.calendarList().insert(**kwargs) # type: ignore
@@ -318,13 +329,13 @@ class GoogleCalendarDataSource:
 
     async def calendar_list_list(
         self,
-        maxResults: Optional[int] = None,
-        minAccessRole: Optional[str] = None,
-        pageToken: Optional[str] = None,
-        showDeleted: Optional[bool] = None,
-        showHidden: Optional[bool] = None,
-        syncToken: Optional[str] = None
-    ) -> Dict[str, Any]:
+        maxResults: int | None = None,
+        minAccessRole: str | None = None,
+        pageToken: str | None = None,
+        showDeleted: bool | None = None,
+        showHidden: bool | None = None,
+        syncToken: str | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Returns the calendars on the user's calendar list.
 
         HTTP GET users/me/calendarList
@@ -339,20 +350,21 @@ class GoogleCalendarDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if minAccessRole is not None:
-            kwargs['minAccessRole'] = minAccessRole
+            kwargs["minAccessRole"] = minAccessRole
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if showDeleted is not None:
-            kwargs['showDeleted'] = showDeleted
+            kwargs["showDeleted"] = showDeleted
         if showHidden is not None:
-            kwargs['showHidden'] = showHidden
+            kwargs["showHidden"] = showHidden
         if syncToken is not None:
-            kwargs['syncToken'] = syncToken
+            kwargs["syncToken"] = syncToken
 
         request = self.client.calendarList().list(**kwargs) # type: ignore
         return request.execute()
@@ -360,8 +372,8 @@ class GoogleCalendarDataSource:
     async def calendar_list_patch(
         self,
         calendarId: str,
-        colorRgbFormat: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        colorRgbFormat: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Updates an existing calendar on the user's calendar list. This method supports patch semantics.
 
         HTTP PATCH users/me/calendarList/{calendarId}
@@ -372,16 +384,17 @@ class GoogleCalendarDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
         if colorRgbFormat is not None:
-            kwargs['colorRgbFormat'] = colorRgbFormat
+            kwargs["colorRgbFormat"] = colorRgbFormat
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.calendarList().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.calendarList().patch(**kwargs) # type: ignore
@@ -390,8 +403,8 @@ class GoogleCalendarDataSource:
     async def calendar_list_update(
         self,
         calendarId: str,
-        colorRgbFormat: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        colorRgbFormat: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Updates an existing calendar on the user's calendar list.
 
         HTTP PUT users/me/calendarList/{calendarId}
@@ -402,16 +415,17 @@ class GoogleCalendarDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
         if colorRgbFormat is not None:
-            kwargs['colorRgbFormat'] = colorRgbFormat
+            kwargs["colorRgbFormat"] = colorRgbFormat
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.calendarList().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.calendarList().update(**kwargs) # type: ignore
@@ -419,13 +433,13 @@ class GoogleCalendarDataSource:
 
     async def calendar_list_watch(
         self,
-        maxResults: Optional[int] = None,
-        minAccessRole: Optional[str] = None,
-        pageToken: Optional[str] = None,
-        showDeleted: Optional[bool] = None,
-        showHidden: Optional[bool] = None,
-        syncToken: Optional[str] = None
-    ) -> Dict[str, Any]:
+        maxResults: int | None = None,
+        minAccessRole: str | None = None,
+        pageToken: str | None = None,
+        showDeleted: bool | None = None,
+        showHidden: bool | None = None,
+        syncToken: str | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Watch for changes to CalendarList resources.
 
         HTTP POST users/me/calendarList/watch
@@ -440,24 +454,25 @@ class GoogleCalendarDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if minAccessRole is not None:
-            kwargs['minAccessRole'] = minAccessRole
+            kwargs["minAccessRole"] = minAccessRole
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if showDeleted is not None:
-            kwargs['showDeleted'] = showDeleted
+            kwargs["showDeleted"] = showDeleted
         if showHidden is not None:
-            kwargs['showHidden'] = showHidden
+            kwargs["showHidden"] = showHidden
         if syncToken is not None:
-            kwargs['syncToken'] = syncToken
+            kwargs["syncToken"] = syncToken
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.calendarList().watch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.calendarList().watch(**kwargs) # type: ignore
@@ -465,8 +480,8 @@ class GoogleCalendarDataSource:
 
     async def calendars_clear(
         self,
-        calendarId: str
-    ) -> Dict[str, Any]:
+        calendarId: str,
+    ) -> dict[str, Any]:
         """Google Calendar API: Clears a primary calendar. This operation deletes all events associated with the primary calendar of an account.
 
         HTTP POST calendars/{calendarId}/clear
@@ -476,14 +491,15 @@ class GoogleCalendarDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.calendars().clear(**kwargs, body=body) # type: ignore
         else:
             request = self.client.calendars().clear(**kwargs) # type: ignore
@@ -491,8 +507,8 @@ class GoogleCalendarDataSource:
 
     async def calendars_delete(
         self,
-        calendarId: str
-    ) -> Dict[str, Any]:
+        calendarId: str,
+    ) -> dict[str, Any]:
         """Google Calendar API: Deletes a secondary calendar. Use calendars.clear for clearing all events on primary calendars.
 
         HTTP DELETE calendars/{calendarId}
@@ -502,18 +518,19 @@ class GoogleCalendarDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
 
         request = self.client.calendars().delete(**kwargs) # type: ignore
         return request.execute()
 
     async def calendars_get(
         self,
-        calendarId: str
-    ) -> Dict[str, Any]:
+        calendarId: str,
+    ) -> dict[str, Any]:
         """Google Calendar API: Returns metadata for a calendar.
 
         HTTP GET calendars/{calendarId}
@@ -523,28 +540,30 @@ class GoogleCalendarDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
 
         request = self.client.calendars().get(**kwargs) # type: ignore
         return request.execute()
 
-    async def calendars_insert(self) -> Dict[str, Any]:
+    async def calendars_insert(self) -> dict[str, Any]:
         """Google Calendar API: Creates a secondary calendar.
 
         HTTP POST calendars
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         # No parameters for this method
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.calendars().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.calendars().insert(**kwargs) # type: ignore
@@ -552,8 +571,8 @@ class GoogleCalendarDataSource:
 
     async def calendars_patch(
         self,
-        calendarId: str
-    ) -> Dict[str, Any]:
+        calendarId: str,
+    ) -> dict[str, Any]:
         """Google Calendar API: Updates metadata for a calendar. This method supports patch semantics.
 
         HTTP PATCH calendars/{calendarId}
@@ -563,14 +582,15 @@ class GoogleCalendarDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.calendars().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.calendars().patch(**kwargs) # type: ignore
@@ -578,8 +598,8 @@ class GoogleCalendarDataSource:
 
     async def calendars_update(
         self,
-        calendarId: str
-    ) -> Dict[str, Any]:
+        calendarId: str,
+    ) -> dict[str, Any]:
         """Google Calendar API: Updates metadata for a calendar.
 
         HTTP PUT calendars/{calendarId}
@@ -589,45 +609,48 @@ class GoogleCalendarDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.calendars().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.calendars().update(**kwargs) # type: ignore
         return request.execute()
 
-    async def channels_stop(self) -> Dict[str, Any]:
+    async def channels_stop(self) -> dict[str, Any]:
         """Google Calendar API: Stop watching resources through this channel
 
         HTTP POST channels/stop
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         # No parameters for this method
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.channels().stop(**kwargs, body=body) # type: ignore
         else:
             request = self.client.channels().stop(**kwargs) # type: ignore
         return request.execute()
 
-    async def colors_get(self) -> Dict[str, Any]:
+    async def colors_get(self) -> dict[str, Any]:
         """Google Calendar API: Returns the color definitions for calendars and events.
 
         HTTP GET colors
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         # No parameters for this method
@@ -639,9 +662,9 @@ class GoogleCalendarDataSource:
         self,
         calendarId: str,
         eventId: str,
-        sendNotifications: Optional[bool] = None,
-        sendUpdates: Optional[str] = None
-    ) -> Dict[str, Any]:
+        sendNotifications: bool | None = None,
+        sendUpdates: str | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Deletes an event.
 
         HTTP DELETE calendars/{calendarId}/events/{eventId}
@@ -654,16 +677,17 @@ class GoogleCalendarDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
         if eventId is not None:
-            kwargs['eventId'] = eventId
+            kwargs["eventId"] = eventId
         if sendNotifications is not None:
-            kwargs['sendNotifications'] = sendNotifications
+            kwargs["sendNotifications"] = sendNotifications
         if sendUpdates is not None:
-            kwargs['sendUpdates'] = sendUpdates
+            kwargs["sendUpdates"] = sendUpdates
 
         request = self.client.events().delete(**kwargs) # type: ignore
         return request.execute()
@@ -672,10 +696,10 @@ class GoogleCalendarDataSource:
         self,
         calendarId: str,
         eventId: str,
-        alwaysIncludeEmail: Optional[bool] = None,
-        maxAttendees: Optional[int] = None,
-        timeZone: Optional[str] = None
-    ) -> Dict[str, Any]:
+        alwaysIncludeEmail: bool | None = None,
+        maxAttendees: int | None = None,
+        timeZone: str | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Returns an event based on its Google Calendar ID. To retrieve an event using its iCalendar ID, call the events.list method using the iCalUID parameter.
 
         HTTP GET calendars/{calendarId}/events/{eventId}
@@ -689,18 +713,19 @@ class GoogleCalendarDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if alwaysIncludeEmail is not None:
-            kwargs['alwaysIncludeEmail'] = alwaysIncludeEmail
+            kwargs["alwaysIncludeEmail"] = alwaysIncludeEmail
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
         if eventId is not None:
-            kwargs['eventId'] = eventId
+            kwargs["eventId"] = eventId
         if maxAttendees is not None:
-            kwargs['maxAttendees'] = maxAttendees
+            kwargs["maxAttendees"] = maxAttendees
         if timeZone is not None:
-            kwargs['timeZone'] = timeZone
+            kwargs["timeZone"] = timeZone
 
         request = self.client.events().get(**kwargs) # type: ignore
         return request.execute()
@@ -708,11 +733,11 @@ class GoogleCalendarDataSource:
     async def events_import(
         self,
         calendarId: str,
-        conferenceDataVersion: Optional[int] = None,
-        supportsAttachments: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        conferenceDataVersion: int | None = None,
+        supportsAttachments: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Imports an event. This operation is used to add a private copy of an existing event to a calendar. Only events with an eventType of default may be imported.
-Deprecated behavior: If a non-default event is imported, its type will be changed to default and any event-type-specific properties it may have will be dropped.
+        Deprecated behavior: If a non-default event is imported, its type will be changed to default and any event-type-specific properties it may have will be dropped.
 
         HTTP POST calendars/{calendarId}/events/import
 
@@ -723,33 +748,34 @@ Deprecated behavior: If a non-default event is imported, its type will be change
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
         if conferenceDataVersion is not None:
-            kwargs['conferenceDataVersion'] = conferenceDataVersion
+            kwargs["conferenceDataVersion"] = conferenceDataVersion
         if supportsAttachments is not None:
-            kwargs['supportsAttachments'] = supportsAttachments
+            kwargs["supportsAttachments"] = supportsAttachments
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
-            request = getattr(self.client.events(), 'import')(**kwargs, body=body) # type: ignore
+        if "body" in kwargs:
+            body = kwargs.pop("body")
+            request = getattr(self.client.events(), "import")(**kwargs, body=body) # type: ignore
         else:
-            request = getattr(self.client.events(), 'import')(**kwargs) # type: ignore
+            request = getattr(self.client.events(), "import")(**kwargs) # type: ignore
         return request.execute()
 
     async def events_insert(
         self,
         calendarId: str,
-        conferenceDataVersion: Optional[int] = None,
-        maxAttendees: Optional[int] = None,
-        sendNotifications: Optional[bool] = None,
-        sendUpdates: Optional[str] = None,
-        supportsAttachments: Optional[bool] = None,
-        body: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        conferenceDataVersion: int | None = None,
+        maxAttendees: int | None = None,
+        sendNotifications: bool | None = None,
+        sendUpdates: str | None = None,
+        supportsAttachments: bool | None = None,
+        body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Creates an event.
 
         HTTP POST calendars/{calendarId}/events
@@ -764,20 +790,21 @@ Deprecated behavior: If a non-default event is imported, its type will be change
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
         if conferenceDataVersion is not None:
-            kwargs['conferenceDataVersion'] = conferenceDataVersion
+            kwargs["conferenceDataVersion"] = conferenceDataVersion
         if maxAttendees is not None:
-            kwargs['maxAttendees'] = maxAttendees
+            kwargs["maxAttendees"] = maxAttendees
         if sendNotifications is not None:
-            kwargs['sendNotifications'] = sendNotifications
+            kwargs["sendNotifications"] = sendNotifications
         if sendUpdates is not None:
-            kwargs['sendUpdates'] = sendUpdates
+            kwargs["sendUpdates"] = sendUpdates
         if supportsAttachments is not None:
-            kwargs['supportsAttachments'] = supportsAttachments
+            kwargs["supportsAttachments"] = supportsAttachments
 
         # Handle request body if needed
         if body is not None:
@@ -790,16 +817,16 @@ Deprecated behavior: If a non-default event is imported, its type will be change
         self,
         calendarId: str,
         eventId: str,
-        alwaysIncludeEmail: Optional[bool] = None,
-        maxAttendees: Optional[int] = None,
-        maxResults: Optional[int] = None,
-        originalStart: Optional[str] = None,
-        pageToken: Optional[str] = None,
-        showDeleted: Optional[bool] = None,
-        timeMax: Optional[str] = None,
-        timeMin: Optional[str] = None,
-        timeZone: Optional[str] = None
-    ) -> Dict[str, Any]:
+        alwaysIncludeEmail: bool | None = None,
+        maxAttendees: int | None = None,
+        maxResults: int | None = None,
+        originalStart: str | None = None,
+        pageToken: str | None = None,
+        showDeleted: bool | None = None,
+        timeMax: str | None = None,
+        timeMin: str | None = None,
+        timeZone: str | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Returns instances of the specified recurring event.
 
         HTTP GET calendars/{calendarId}/events/{eventId}/instances
@@ -819,30 +846,31 @@ Deprecated behavior: If a non-default event is imported, its type will be change
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if alwaysIncludeEmail is not None:
-            kwargs['alwaysIncludeEmail'] = alwaysIncludeEmail
+            kwargs["alwaysIncludeEmail"] = alwaysIncludeEmail
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
         if eventId is not None:
-            kwargs['eventId'] = eventId
+            kwargs["eventId"] = eventId
         if maxAttendees is not None:
-            kwargs['maxAttendees'] = maxAttendees
+            kwargs["maxAttendees"] = maxAttendees
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if originalStart is not None:
-            kwargs['originalStart'] = originalStart
+            kwargs["originalStart"] = originalStart
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if showDeleted is not None:
-            kwargs['showDeleted'] = showDeleted
+            kwargs["showDeleted"] = showDeleted
         if timeMax is not None:
-            kwargs['timeMax'] = timeMax
+            kwargs["timeMax"] = timeMax
         if timeMin is not None:
-            kwargs['timeMin'] = timeMin
+            kwargs["timeMin"] = timeMin
         if timeZone is not None:
-            kwargs['timeZone'] = timeZone
+            kwargs["timeZone"] = timeZone
 
         request = self.client.events().instances(**kwargs) # type: ignore
         return request.execute()
@@ -850,25 +878,25 @@ Deprecated behavior: If a non-default event is imported, its type will be change
     async def events_list(
         self,
         calendarId: str,
-        alwaysIncludeEmail: Optional[bool] = None,
-        eventTypes: Optional[str] = None,
-        iCalUID: Optional[str] = None,
-        maxAttendees: Optional[int] = None,
-        maxResults: Optional[int] = None,
-        orderBy: Optional[str] = None,
-        pageToken: Optional[str] = None,
-        privateExtendedProperty: Optional[str] = None,
-        q: Optional[str] = None,
-        sharedExtendedProperty: Optional[str] = None,
-        showDeleted: Optional[bool] = None,
-        showHiddenInvitations: Optional[bool] = None,
-        singleEvents: Optional[bool] = None,
-        syncToken: Optional[str] = None,
-        timeMax: Optional[str] = None,
-        timeMin: Optional[str] = None,
-        timeZone: Optional[str] = None,
-        updatedMin: Optional[str] = None
-    ) -> Dict[str, Any]:
+        alwaysIncludeEmail: bool | None = None,
+        eventTypes: str | None = None,
+        iCalUID: str | None = None,
+        maxAttendees: int | None = None,
+        maxResults: int | None = None,
+        orderBy: str | None = None,
+        pageToken: str | None = None,
+        privateExtendedProperty: str | None = None,
+        q: str | None = None,
+        sharedExtendedProperty: str | None = None,
+        showDeleted: bool | None = None,
+        showHiddenInvitations: bool | None = None,
+        singleEvents: bool | None = None,
+        syncToken: str | None = None,
+        timeMax: str | None = None,
+        timeMin: str | None = None,
+        timeZone: str | None = None,
+        updatedMin: str | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Returns events on the specified calendar.
 
         HTTP GET calendars/{calendarId}/events
@@ -896,46 +924,47 @@ Deprecated behavior: If a non-default event is imported, its type will be change
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if alwaysIncludeEmail is not None:
-            kwargs['alwaysIncludeEmail'] = alwaysIncludeEmail
+            kwargs["alwaysIncludeEmail"] = alwaysIncludeEmail
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
         if eventTypes is not None:
-            kwargs['eventTypes'] = eventTypes
+            kwargs["eventTypes"] = eventTypes
         if iCalUID is not None:
-            kwargs['iCalUID'] = iCalUID
+            kwargs["iCalUID"] = iCalUID
         if maxAttendees is not None:
-            kwargs['maxAttendees'] = maxAttendees
+            kwargs["maxAttendees"] = maxAttendees
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if orderBy is not None:
-            kwargs['orderBy'] = orderBy
+            kwargs["orderBy"] = orderBy
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if privateExtendedProperty is not None:
-            kwargs['privateExtendedProperty'] = privateExtendedProperty
+            kwargs["privateExtendedProperty"] = privateExtendedProperty
         if q is not None:
-            kwargs['q'] = q
+            kwargs["q"] = q
         if sharedExtendedProperty is not None:
-            kwargs['sharedExtendedProperty'] = sharedExtendedProperty
+            kwargs["sharedExtendedProperty"] = sharedExtendedProperty
         if showDeleted is not None:
-            kwargs['showDeleted'] = showDeleted
+            kwargs["showDeleted"] = showDeleted
         if showHiddenInvitations is not None:
-            kwargs['showHiddenInvitations'] = showHiddenInvitations
+            kwargs["showHiddenInvitations"] = showHiddenInvitations
         if singleEvents is not None:
-            kwargs['singleEvents'] = singleEvents
+            kwargs["singleEvents"] = singleEvents
         if syncToken is not None:
-            kwargs['syncToken'] = syncToken
+            kwargs["syncToken"] = syncToken
         if timeMax is not None:
-            kwargs['timeMax'] = timeMax
+            kwargs["timeMax"] = timeMax
         if timeMin is not None:
-            kwargs['timeMin'] = timeMin
+            kwargs["timeMin"] = timeMin
         if timeZone is not None:
-            kwargs['timeZone'] = timeZone
+            kwargs["timeZone"] = timeZone
         if updatedMin is not None:
-            kwargs['updatedMin'] = updatedMin
+            kwargs["updatedMin"] = updatedMin
 
         request = self.client.events().list(**kwargs) # type: ignore
         return request.execute()
@@ -945,9 +974,9 @@ Deprecated behavior: If a non-default event is imported, its type will be change
         calendarId: str,
         destination: str,
         eventId: str,
-        sendNotifications: Optional[bool] = None,
-        sendUpdates: Optional[str] = None
-    ) -> Dict[str, Any]:
+        sendNotifications: bool | None = None,
+        sendUpdates: str | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Moves an event to another calendar, i.e. changes an event's organizer. Note that only default events can be moved; birthday, focusTime, fromGmail, outOfOffice and workingLocation events cannot be moved.
 
         HTTP POST calendars/{calendarId}/events/{eventId}/move
@@ -961,22 +990,23 @@ Deprecated behavior: If a non-default event is imported, its type will be change
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
         if destination is not None:
-            kwargs['destination'] = destination
+            kwargs["destination"] = destination
         if eventId is not None:
-            kwargs['eventId'] = eventId
+            kwargs["eventId"] = eventId
         if sendNotifications is not None:
-            kwargs['sendNotifications'] = sendNotifications
+            kwargs["sendNotifications"] = sendNotifications
         if sendUpdates is not None:
-            kwargs['sendUpdates'] = sendUpdates
+            kwargs["sendUpdates"] = sendUpdates
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.events().move(**kwargs, body=body) # type: ignore
         else:
             request = self.client.events().move(**kwargs) # type: ignore
@@ -986,13 +1016,13 @@ Deprecated behavior: If a non-default event is imported, its type will be change
         self,
         calendarId: str,
         eventId: str,
-        alwaysIncludeEmail: Optional[bool] = None,
-        conferenceDataVersion: Optional[int] = None,
-        maxAttendees: Optional[int] = None,
-        sendNotifications: Optional[bool] = None,
-        sendUpdates: Optional[str] = None,
-        supportsAttachments: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        alwaysIncludeEmail: bool | None = None,
+        conferenceDataVersion: int | None = None,
+        maxAttendees: int | None = None,
+        sendNotifications: bool | None = None,
+        sendUpdates: str | None = None,
+        supportsAttachments: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Updates an event. This method supports patch semantics.
 
         HTTP PATCH calendars/{calendarId}/events/{eventId}
@@ -1009,28 +1039,29 @@ Deprecated behavior: If a non-default event is imported, its type will be change
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if alwaysIncludeEmail is not None:
-            kwargs['alwaysIncludeEmail'] = alwaysIncludeEmail
+            kwargs["alwaysIncludeEmail"] = alwaysIncludeEmail
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
         if conferenceDataVersion is not None:
-            kwargs['conferenceDataVersion'] = conferenceDataVersion
+            kwargs["conferenceDataVersion"] = conferenceDataVersion
         if eventId is not None:
-            kwargs['eventId'] = eventId
+            kwargs["eventId"] = eventId
         if maxAttendees is not None:
-            kwargs['maxAttendees'] = maxAttendees
+            kwargs["maxAttendees"] = maxAttendees
         if sendNotifications is not None:
-            kwargs['sendNotifications'] = sendNotifications
+            kwargs["sendNotifications"] = sendNotifications
         if sendUpdates is not None:
-            kwargs['sendUpdates'] = sendUpdates
+            kwargs["sendUpdates"] = sendUpdates
         if supportsAttachments is not None:
-            kwargs['supportsAttachments'] = supportsAttachments
+            kwargs["supportsAttachments"] = supportsAttachments
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.events().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.events().patch(**kwargs) # type: ignore
@@ -1040,9 +1071,9 @@ Deprecated behavior: If a non-default event is imported, its type will be change
         self,
         calendarId: str,
         text: str,
-        sendNotifications: Optional[bool] = None,
-        sendUpdates: Optional[str] = None
-    ) -> Dict[str, Any]:
+        sendNotifications: bool | None = None,
+        sendUpdates: str | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Creates an event based on a simple text string.
 
         HTTP POST calendars/{calendarId}/events/quickAdd
@@ -1055,20 +1086,21 @@ Deprecated behavior: If a non-default event is imported, its type will be change
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
         if sendNotifications is not None:
-            kwargs['sendNotifications'] = sendNotifications
+            kwargs["sendNotifications"] = sendNotifications
         if sendUpdates is not None:
-            kwargs['sendUpdates'] = sendUpdates
+            kwargs["sendUpdates"] = sendUpdates
         if text is not None:
-            kwargs['text'] = text
+            kwargs["text"] = text
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.events().quickAdd(**kwargs, body=body) # type: ignore
         else:
             request = self.client.events().quickAdd(**kwargs) # type: ignore
@@ -1078,14 +1110,14 @@ Deprecated behavior: If a non-default event is imported, its type will be change
         self,
         calendarId: str,
         eventId: str,
-        alwaysIncludeEmail: Optional[bool] = None,
-        conferenceDataVersion: Optional[int] = None,
-        maxAttendees: Optional[int] = None,
-        sendNotifications: Optional[bool] = None,
-        sendUpdates: Optional[str] = None,
-        supportsAttachments: Optional[bool] = None,
-        body: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        alwaysIncludeEmail: bool | None = None,
+        conferenceDataVersion: int | None = None,
+        maxAttendees: int | None = None,
+        sendNotifications: bool | None = None,
+        sendUpdates: str | None = None,
+        supportsAttachments: bool | None = None,
+        body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Updates an event.
 
         HTTP PUT calendars/{calendarId}/events/{eventId}
@@ -1102,24 +1134,25 @@ Deprecated behavior: If a non-default event is imported, its type will be change
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if alwaysIncludeEmail is not None:
-            kwargs['alwaysIncludeEmail'] = alwaysIncludeEmail
+            kwargs["alwaysIncludeEmail"] = alwaysIncludeEmail
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
         if conferenceDataVersion is not None:
-            kwargs['conferenceDataVersion'] = conferenceDataVersion
+            kwargs["conferenceDataVersion"] = conferenceDataVersion
         if eventId is not None:
-            kwargs['eventId'] = eventId
+            kwargs["eventId"] = eventId
         if maxAttendees is not None:
-            kwargs['maxAttendees'] = maxAttendees
+            kwargs["maxAttendees"] = maxAttendees
         if sendNotifications is not None:
-            kwargs['sendNotifications'] = sendNotifications
+            kwargs["sendNotifications"] = sendNotifications
         if sendUpdates is not None:
-            kwargs['sendUpdates'] = sendUpdates
+            kwargs["sendUpdates"] = sendUpdates
         if supportsAttachments is not None:
-            kwargs['supportsAttachments'] = supportsAttachments
+            kwargs["supportsAttachments"] = supportsAttachments
 
         # Handle request body if needed
         if body is not None:
@@ -1131,25 +1164,25 @@ Deprecated behavior: If a non-default event is imported, its type will be change
     async def events_watch(
         self,
         calendarId: str,
-        alwaysIncludeEmail: Optional[bool] = None,
-        eventTypes: Optional[str] = None,
-        iCalUID: Optional[str] = None,
-        maxAttendees: Optional[int] = None,
-        maxResults: Optional[int] = None,
-        orderBy: Optional[str] = None,
-        pageToken: Optional[str] = None,
-        privateExtendedProperty: Optional[str] = None,
-        q: Optional[str] = None,
-        sharedExtendedProperty: Optional[str] = None,
-        showDeleted: Optional[bool] = None,
-        showHiddenInvitations: Optional[bool] = None,
-        singleEvents: Optional[bool] = None,
-        syncToken: Optional[str] = None,
-        timeMax: Optional[str] = None,
-        timeMin: Optional[str] = None,
-        timeZone: Optional[str] = None,
-        updatedMin: Optional[str] = None
-    ) -> Dict[str, Any]:
+        alwaysIncludeEmail: bool | None = None,
+        eventTypes: str | None = None,
+        iCalUID: str | None = None,
+        maxAttendees: int | None = None,
+        maxResults: int | None = None,
+        orderBy: str | None = None,
+        pageToken: str | None = None,
+        privateExtendedProperty: str | None = None,
+        q: str | None = None,
+        sharedExtendedProperty: str | None = None,
+        showDeleted: bool | None = None,
+        showHiddenInvitations: bool | None = None,
+        singleEvents: bool | None = None,
+        syncToken: str | None = None,
+        timeMax: str | None = None,
+        timeMin: str | None = None,
+        timeZone: str | None = None,
+        updatedMin: str | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Watch for changes to Events resources.
 
         HTTP POST calendars/{calendarId}/events/watch
@@ -1177,56 +1210,57 @@ Deprecated behavior: If a non-default event is imported, its type will be change
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if alwaysIncludeEmail is not None:
-            kwargs['alwaysIncludeEmail'] = alwaysIncludeEmail
+            kwargs["alwaysIncludeEmail"] = alwaysIncludeEmail
         if calendarId is not None:
-            kwargs['calendarId'] = calendarId
+            kwargs["calendarId"] = calendarId
         if eventTypes is not None:
-            kwargs['eventTypes'] = eventTypes
+            kwargs["eventTypes"] = eventTypes
         if iCalUID is not None:
-            kwargs['iCalUID'] = iCalUID
+            kwargs["iCalUID"] = iCalUID
         if maxAttendees is not None:
-            kwargs['maxAttendees'] = maxAttendees
+            kwargs["maxAttendees"] = maxAttendees
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if orderBy is not None:
-            kwargs['orderBy'] = orderBy
+            kwargs["orderBy"] = orderBy
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if privateExtendedProperty is not None:
-            kwargs['privateExtendedProperty'] = privateExtendedProperty
+            kwargs["privateExtendedProperty"] = privateExtendedProperty
         if q is not None:
-            kwargs['q'] = q
+            kwargs["q"] = q
         if sharedExtendedProperty is not None:
-            kwargs['sharedExtendedProperty'] = sharedExtendedProperty
+            kwargs["sharedExtendedProperty"] = sharedExtendedProperty
         if showDeleted is not None:
-            kwargs['showDeleted'] = showDeleted
+            kwargs["showDeleted"] = showDeleted
         if showHiddenInvitations is not None:
-            kwargs['showHiddenInvitations'] = showHiddenInvitations
+            kwargs["showHiddenInvitations"] = showHiddenInvitations
         if singleEvents is not None:
-            kwargs['singleEvents'] = singleEvents
+            kwargs["singleEvents"] = singleEvents
         if syncToken is not None:
-            kwargs['syncToken'] = syncToken
+            kwargs["syncToken"] = syncToken
         if timeMax is not None:
-            kwargs['timeMax'] = timeMax
+            kwargs["timeMax"] = timeMax
         if timeMin is not None:
-            kwargs['timeMin'] = timeMin
+            kwargs["timeMin"] = timeMin
         if timeZone is not None:
-            kwargs['timeZone'] = timeZone
+            kwargs["timeZone"] = timeZone
         if updatedMin is not None:
-            kwargs['updatedMin'] = updatedMin
+            kwargs["updatedMin"] = updatedMin
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.events().watch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.events().watch(**kwargs) # type: ignore
         return request.execute()
 
-    async def freebusy_query(self, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def freebusy_query(self, body: dict[str, Any] | None = None) -> dict[str, Any]:
         """Google Calendar API: Returns free/busy information for a set of calendars.
 
         HTTP POST freeBusy
@@ -1236,6 +1270,7 @@ Deprecated behavior: If a non-default event is imported, its type will be change
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         # No parameters for this method
@@ -1249,8 +1284,8 @@ Deprecated behavior: If a non-default event is imported, its type will be change
 
     async def settings_get(
         self,
-        setting: str
-    ) -> Dict[str, Any]:
+        setting: str,
+    ) -> dict[str, Any]:
         """Google Calendar API: Returns a single user setting.
 
         HTTP GET users/me/settings/{setting}
@@ -1260,20 +1295,21 @@ Deprecated behavior: If a non-default event is imported, its type will be change
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if setting is not None:
-            kwargs['setting'] = setting
+            kwargs["setting"] = setting
 
         request = self.client.settings().get(**kwargs) # type: ignore
         return request.execute()
 
     async def settings_list(
         self,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        syncToken: Optional[str] = None
-    ) -> Dict[str, Any]:
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+        syncToken: str | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Returns all user settings for the authenticated user.
 
         HTTP GET users/me/settings
@@ -1285,24 +1321,25 @@ Deprecated behavior: If a non-default event is imported, its type will be change
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if syncToken is not None:
-            kwargs['syncToken'] = syncToken
+            kwargs["syncToken"] = syncToken
 
         request = self.client.settings().list(**kwargs) # type: ignore
         return request.execute()
 
     async def settings_watch(
         self,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        syncToken: Optional[str] = None
-    ) -> Dict[str, Any]:
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+        syncToken: str | None = None,
+    ) -> dict[str, Any]:
         """Google Calendar API: Watch for changes to Settings resources.
 
         HTTP POST users/me/settings/watch
@@ -1314,18 +1351,19 @@ Deprecated behavior: If a non-default event is imported, its type will be change
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if syncToken is not None:
-            kwargs['syncToken'] = syncToken
+            kwargs["syncToken"] = syncToken
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.settings().watch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.settings().watch(**kwargs) # type: ignore

@@ -1,6 +1,6 @@
 import json
 from http import HTTPStatus
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Literal
 from urllib.parse import urlencode
 
 from app.sources.client.airtable.airtable import AirtableClient, AirtableResponse
@@ -27,13 +27,13 @@ class AirtableDataSource:
         self._client = client
         self.http = client.get_client()
         if self.http is None:
-            raise ValueError('HTTP client is not initialized')
+            raise ValueError("HTTP client is not initialized")
         try:
-            self.base_url = self.http.get_base_url().rstrip('/')
+            self.base_url = self.http.get_base_url().rstrip("/")
         except AttributeError as exc:
-            raise ValueError('HTTP client does not have get_base_url method') from exc
+            raise ValueError("HTTP client does not have get_base_url method") from exc
 
-    def get_data_source(self) -> 'AirtableDataSource':
+    def get_data_source(self) -> "AirtableDataSource":
         """Return the data source instance."""
         return self
 
@@ -41,9 +41,9 @@ class AirtableDataSource:
         self,
         workspace_id: str,
         permission_level: Literal["none", "read", "comment", "edit", "create", "owner"],
-        email: Optional[str] = None,
-        user_id: Optional[str] = None,
-        group_id: Optional[str] = None
+        email: str | None = None,
+        user_id: str | None = None,
+        group_id: str | None = None,
     ) -> AirtableResponse:
         """Add collaborator to workspace
 
@@ -56,17 +56,18 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/workspaces/{workspace_id}/collaborators".format(workspace_id=workspace_id)
+        url = self.base_url + f"/meta/workspaces/{workspace_id}/collaborators"
 
         body = {}
         if email is not None:
-            body['email'] = email
+            body["email"] = email
         if user_id is not None:
-            body['user_id'] = user_id
+            body["user_id"] = user_id
         if group_id is not None:
-            body['group_id'] = group_id
-        body['permission_level'] = permission_level
+            body["group_id"] = group_id
+        body["permission_level"] = permission_level
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -75,7 +76,7 @@ class AirtableDataSource:
             method="POST",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -88,7 +89,7 @@ class AirtableDataSource:
         self,
         workspace_id: str,
         collaborator_id: str,
-        permission_level: Literal["none", "read", "comment", "edit", "create", "owner"]
+        permission_level: Literal["none", "read", "comment", "edit", "create", "owner"],
     ) -> AirtableResponse:
         """Update workspace collaborator permissions
 
@@ -99,11 +100,12 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/workspaces/{workspace_id}/collaborators/{collaborator_id}".format(workspace_id=workspace_id, collaborator_id=collaborator_id)
+        url = self.base_url + f"/meta/workspaces/{workspace_id}/collaborators/{collaborator_id}"
 
         body = {}
-        body['permission_level'] = permission_level
+        body["permission_level"] = permission_level
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -112,7 +114,7 @@ class AirtableDataSource:
             method="PATCH",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -124,7 +126,7 @@ class AirtableDataSource:
     async def remove_workspace_collaborator(
         self,
         workspace_id: str,
-        collaborator_id: str
+        collaborator_id: str,
     ) -> AirtableResponse:
         """Remove collaborator from workspace
 
@@ -134,15 +136,16 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/workspaces/{workspace_id}/collaborators/{collaborator_id}".format(workspace_id=workspace_id, collaborator_id=collaborator_id)
+        url = self.base_url + f"/meta/workspaces/{workspace_id}/collaborators/{collaborator_id}"
 
         headers = self.http.headers.copy()
 
         request = HTTPRequest(
             method="DELETE",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -155,7 +158,7 @@ class AirtableDataSource:
         self,
         base_id: str,
         table_id: str,
-        field_id: str
+        field_id: str,
     ) -> AirtableResponse:
         """Delete a field from a table
 
@@ -166,15 +169,16 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/bases/{base_id}/tables/{table_id}/fields/{field_id}".format(base_id=base_id, table_id=table_id, field_id=field_id)
+        url = self.base_url + f"/meta/bases/{base_id}/tables/{table_id}/fields/{field_id}"
 
         headers = self.http.headers.copy()
 
         request = HTTPRequest(
             method="DELETE",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -187,7 +191,7 @@ class AirtableDataSource:
 
     async def list_interfaces(
         self,
-        base_id: str
+        base_id: str,
     ) -> AirtableResponse:
         """List interfaces (pages) in a base
 
@@ -196,15 +200,16 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/bases/{base_id}/interfaces".format(base_id=base_id)
+        url = self.base_url + f"/meta/bases/{base_id}/interfaces"
 
         headers = self.http.headers.copy()
 
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -216,7 +221,7 @@ class AirtableDataSource:
     async def get_interface(
         self,
         base_id: str,
-        interface_id: str
+        interface_id: str,
     ) -> AirtableResponse:
         """Get interface details
 
@@ -226,15 +231,16 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/bases/{base_id}/interfaces/{interface_id}".format(base_id=base_id, interface_id=interface_id)
+        url = self.base_url + f"/meta/bases/{base_id}/interfaces/{interface_id}"
 
         headers = self.http.headers.copy()
 
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -245,7 +251,7 @@ class AirtableDataSource:
 
     async def list_base_shares(
         self,
-        base_id: str
+        base_id: str,
     ) -> AirtableResponse:
         """List share links for a base
 
@@ -254,15 +260,16 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/bases/{base_id}/shares".format(base_id=base_id)
+        url = self.base_url + f"/meta/bases/{base_id}/shares"
 
         headers = self.http.headers.copy()
 
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -275,7 +282,7 @@ class AirtableDataSource:
         self,
         base_id: str,
         share_type: Literal["read", "edit"],
-        restriction: Optional[Dict[str, Any]] = None
+        restriction: dict[str, Any] | None = None,
     ) -> AirtableResponse:
         """Create share link for a base
 
@@ -286,13 +293,14 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/bases/{base_id}/shares".format(base_id=base_id)
+        url = self.base_url + f"/meta/bases/{base_id}/shares"
 
         body = {}
-        body['share_type'] = share_type
+        body["share_type"] = share_type
         if restriction is not None:
-            body['restriction'] = restriction
+            body["restriction"] = restriction
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -301,7 +309,7 @@ class AirtableDataSource:
             method="POST",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -313,7 +321,7 @@ class AirtableDataSource:
     async def delete_base_share(
         self,
         base_id: str,
-        share_id: str
+        share_id: str,
     ) -> AirtableResponse:
         """Delete a base share link
 
@@ -323,15 +331,16 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/bases/{base_id}/shares/{share_id}".format(base_id=base_id, share_id=share_id)
+        url = self.base_url + f"/meta/bases/{base_id}/shares/{share_id}"
 
         headers = self.http.headers.copy()
 
         request = HTTPRequest(
             method="DELETE",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -347,7 +356,7 @@ class AirtableDataSource:
         base_id: str,
         table_id_or_name: str,
         csv_data: str,
-        import_options: Optional[Dict[str, Any]] = None
+        import_options: dict[str, Any] | None = None,
     ) -> AirtableResponse:
         """Sync CSV data with table (up to 10,000 rows)
 
@@ -359,13 +368,14 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/{base_id}/{table_id_or_name}/sync".format(base_id=base_id, table_id_or_name=table_id_or_name)
+        url = self.base_url + f"/{base_id}/{table_id_or_name}/sync"
 
         body = {}
-        body['csv_data'] = csv_data
+        body["csv_data"] = csv_data
         if import_options is not None:
-            body['import_options'] = import_options
+            body["import_options"] = import_options
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -374,7 +384,7 @@ class AirtableDataSource:
             method="POST",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -386,14 +396,14 @@ class AirtableDataSource:
     async def get_audit_log_events(
         self,
         enterprise_account_id: str,
-        sort_order: Optional[Literal["asc", "desc"]] = None,
-        limit: Optional[int] = None,
-        next_page: Optional[str] = None,
-        origin_ip: Optional[str] = None,
-        actor_email: Optional[str] = None,
-        event_type: Optional[str] = None,
-        occurred_at_gte: Optional[str] = None,
-        occurred_at_lte: Optional[str] = None
+        sort_order: Literal["asc", "desc"] | None = None,
+        limit: int | None = None,
+        next_page: str | None = None,
+        origin_ip: str | None = None,
+        actor_email: str | None = None,
+        event_type: str | None = None,
+        occurred_at_gte: str | None = None,
+        occurred_at_lte: str | None = None,
     ) -> AirtableResponse:
         """Get audit log events for enterprise
 
@@ -410,26 +420,27 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
         query_params = []
         if sort_order is not None:
-            query_params.append(('sort_order', str(sort_order)))
+            query_params.append(("sort_order", str(sort_order)))
         if limit is not None:
-            query_params.append(('limit', str(limit)))
+            query_params.append(("limit", str(limit)))
         if next_page is not None:
-            query_params.append(('next_page', str(next_page)))
+            query_params.append(("next_page", str(next_page)))
         if origin_ip is not None:
-            query_params.append(('origin_ip', str(origin_ip)))
+            query_params.append(("origin_ip", str(origin_ip)))
         if actor_email is not None:
-            query_params.append(('actor_email', str(actor_email)))
+            query_params.append(("actor_email", str(actor_email)))
         if event_type is not None:
-            query_params.append(('event_type', str(event_type)))
+            query_params.append(("event_type", str(event_type)))
         if occurred_at_gte is not None:
-            query_params.append(('occurred_at_gte', str(occurred_at_gte)))
+            query_params.append(("occurred_at_gte", str(occurred_at_gte)))
         if occurred_at_lte is not None:
-            query_params.append(('occurred_at_lte', str(occurred_at_lte)))
+            query_params.append(("occurred_at_lte", str(occurred_at_lte)))
 
-        url = self.base_url + "/meta/enterpriseAccounts/{enterprise_account_id}/auditLogEvents".format(enterprise_account_id=enterprise_account_id)
+        url = self.base_url + f"/meta/enterpriseAccounts/{enterprise_account_id}/auditLogEvents"
         if query_params:
             query_string = urlencode(query_params)
             url += f"?{query_string}"
@@ -439,7 +450,7 @@ class AirtableDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -450,7 +461,7 @@ class AirtableDataSource:
 
     async def list_bases(
         self,
-        offset: Optional[str] = None
+        offset: str | None = None,
     ) -> AirtableResponse:
         """List all bases accessible to the user
 
@@ -459,10 +470,11 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
         query_params = []
         if offset is not None:
-            query_params.append(('offset', str(offset)))
+            query_params.append(("offset", str(offset)))
 
         url = self.base_url + "/meta/bases"
         if query_params:
@@ -474,7 +486,7 @@ class AirtableDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -486,7 +498,7 @@ class AirtableDataSource:
     async def get_base_schema(
         self,
         base_id: str,
-        include: Optional[List[str]] = None
+        include: list[str] | None = None,
     ) -> AirtableResponse:
         """Get base schema including tables, fields, and views
 
@@ -496,12 +508,13 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
         query_params = []
         if include is not None:
-            query_params.append(('include', ','.join(include)))
+            query_params.append(("include", ",".join(include)))
 
-        url = self.base_url + "/meta/bases/{base_id}/tables".format(base_id=base_id)
+        url = self.base_url + f"/meta/bases/{base_id}/tables"
         if query_params:
             query_string = urlencode(query_params)
             url += f"?{query_string}"
@@ -511,7 +524,7 @@ class AirtableDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -522,7 +535,7 @@ class AirtableDataSource:
 
     async def get_base_collaborators(
         self,
-        base_id: str
+        base_id: str,
     ) -> AirtableResponse:
         """Get base collaborators
 
@@ -531,15 +544,16 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/bases/{base_id}/collaborators".format(base_id=base_id)
+        url = self.base_url + f"/meta/bases/{base_id}/collaborators"
 
         headers = self.http.headers.copy()
 
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -552,17 +566,17 @@ class AirtableDataSource:
         self,
         base_id: str,
         table_id_or_name: str,
-        fields: Optional[List[str]] = None,
-        filter_by_formula: Optional[str] = None,
-        max_records: Optional[int] = None,
-        page_size: Optional[int] = None,
-        sort: Optional[List[Dict[str, str]]] = None,
-        view: Optional[str] = None,
-        cell_format: Optional[Literal["json", "string"]] = None,
-        time_zone: Optional[str] = None,
-        user_locale: Optional[str] = None,
-        offset: Optional[str] = None,
-        return_fields_by_field_id: Optional[bool] = None
+        fields: list[str] | None = None,
+        filter_by_formula: str | None = None,
+        max_records: int | None = None,
+        page_size: int | None = None,
+        sort: list[dict[str, str]] | None = None,
+        view: str | None = None,
+        cell_format: Literal["json", "string"] | None = None,
+        time_zone: str | None = None,
+        user_locale: str | None = None,
+        offset: str | None = None,
+        return_fields_by_field_id: bool | None = None,
     ) -> AirtableResponse:
         """List records from a table with optional filtering and sorting
 
@@ -583,35 +597,36 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
         query_params = []
         if fields is not None:
             for field in fields:
-                query_params.append(('fields[]', field))
+                query_params.append(("fields[]", field))
         if filter_by_formula is not None:
-            query_params.append(('filterByFormula', str(filter_by_formula)))
+            query_params.append(("filterByFormula", str(filter_by_formula)))
         if max_records is not None:
-            query_params.append(('maxRecords', str(max_records)))
+            query_params.append(("maxRecords", str(max_records)))
         if page_size is not None:
-            query_params.append(('pageSize', str(page_size)))
+            query_params.append(("pageSize", str(page_size)))
         if sort is not None:
             for i, sort_obj in enumerate(sort):
-                query_params.append((f'sort[{i}][field]', sort_obj.get('field', '')))
-                query_params.append((f'sort[{i}][direction]', sort_obj.get('direction', 'asc')))
+                query_params.append((f"sort[{i}][field]", sort_obj.get("field", "")))
+                query_params.append((f"sort[{i}][direction]", sort_obj.get("direction", "asc")))
         if view is not None:
-            query_params.append(('view', str(view)))
+            query_params.append(("view", str(view)))
         if cell_format is not None:
-            query_params.append(('cellFormat', str(cell_format)))
+            query_params.append(("cellFormat", str(cell_format)))
         if time_zone is not None:
-            query_params.append(('timeZone', str(time_zone)))
+            query_params.append(("timeZone", str(time_zone)))
         if user_locale is not None:
-            query_params.append(('userLocale', str(user_locale)))
+            query_params.append(("userLocale", str(user_locale)))
         if offset is not None:
-            query_params.append(('offset', str(offset)))
+            query_params.append(("offset", str(offset)))
         if return_fields_by_field_id is not None:
-            query_params.append(('returnFieldsByFieldId', 'true' if return_fields_by_field_id else 'false'))
+            query_params.append(("returnFieldsByFieldId", "true" if return_fields_by_field_id else "false"))
 
-        url = self.base_url + "/{base_id}/{table_id_or_name}".format(base_id=base_id, table_id_or_name=table_id_or_name)
+        url = self.base_url + f"/{base_id}/{table_id_or_name}"
         if query_params:
             query_string = urlencode(query_params)
             url += f"?{query_string}"
@@ -621,7 +636,7 @@ class AirtableDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -635,7 +650,7 @@ class AirtableDataSource:
         base_id: str,
         table_id_or_name: str,
         record_id: str,
-        return_fields_by_field_id: Optional[bool] = None
+        return_fields_by_field_id: bool | None = None,
     ) -> AirtableResponse:
         """Retrieve a single record
 
@@ -647,12 +662,13 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
         query_params = []
         if return_fields_by_field_id is not None:
-            query_params.append(('returnFieldsByFieldId', 'true' if return_fields_by_field_id else 'false'))
+            query_params.append(("returnFieldsByFieldId", "true" if return_fields_by_field_id else "false"))
 
-        url = self.base_url + "/{base_id}/{table_id_or_name}/{record_id}".format(base_id=base_id, table_id_or_name=table_id_or_name, record_id=record_id)
+        url = self.base_url + f"/{base_id}/{table_id_or_name}/{record_id}"
         if query_params:
             query_string = urlencode(query_params)
             url += f"?{query_string}"
@@ -662,7 +678,7 @@ class AirtableDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -675,9 +691,9 @@ class AirtableDataSource:
         self,
         base_id: str,
         table_id_or_name: str,
-        records: List[Dict[str, Any]],
-        typecast: Optional[bool] = None,
-        return_fields_by_field_id: Optional[bool] = None
+        records: list[dict[str, Any]],
+        typecast: bool | None = None,
+        return_fields_by_field_id: bool | None = None,
     ) -> AirtableResponse:
         """Create one or more records
 
@@ -690,15 +706,16 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/{base_id}/{table_id_or_name}".format(base_id=base_id, table_id_or_name=table_id_or_name)
+        url = self.base_url + f"/{base_id}/{table_id_or_name}"
 
         body = {}
-        body['records'] = records
+        body["records"] = records
         if typecast is not None:
-            body['typecast'] = typecast
+            body["typecast"] = typecast
         if return_fields_by_field_id is not None:
-            body['returnFieldsByFieldId'] = return_fields_by_field_id
+            body["returnFieldsByFieldId"] = return_fields_by_field_id
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -707,7 +724,7 @@ class AirtableDataSource:
             method="POST",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -720,10 +737,10 @@ class AirtableDataSource:
         self,
         base_id: str,
         table_id_or_name: str,
-        records: List[Dict[str, Any]],
-        typecast: Optional[bool] = None,
-        return_fields_by_field_id: Optional[bool] = None,
-        destructive_update: Optional[bool] = None
+        records: list[dict[str, Any]],
+        typecast: bool | None = None,
+        return_fields_by_field_id: bool | None = None,
+        destructive_update: bool | None = None,
     ) -> AirtableResponse:
         """Update one or more records
 
@@ -737,17 +754,18 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/{base_id}/{table_id_or_name}".format(base_id=base_id, table_id_or_name=table_id_or_name)
+        url = self.base_url + f"/{base_id}/{table_id_or_name}"
 
         body = {}
-        body['records'] = records
+        body["records"] = records
         if typecast is not None:
-            body['typecast'] = typecast
+            body["typecast"] = typecast
         if return_fields_by_field_id is not None:
-            body['returnFieldsByFieldId'] = return_fields_by_field_id
+            body["returnFieldsByFieldId"] = return_fields_by_field_id
         if destructive_update is not None:
-            body['destructiveUpdate'] = destructive_update
+            body["destructiveUpdate"] = destructive_update
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -756,7 +774,7 @@ class AirtableDataSource:
             method="PATCH",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -770,10 +788,10 @@ class AirtableDataSource:
         base_id: str,
         table_id_or_name: str,
         perform_upsert: bool,
-        records: List[Dict[str, Any]],
-        fields_to_merge_on: List[str],
-        typecast: Optional[bool] = None,
-        return_fields_by_field_id: Optional[bool] = None
+        records: list[dict[str, Any]],
+        fields_to_merge_on: list[str],
+        typecast: bool | None = None,
+        return_fields_by_field_id: bool | None = None,
     ) -> AirtableResponse:
         """Update or create records using performUpsert
 
@@ -788,16 +806,17 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/{base_id}/{table_id_or_name}".format(base_id=base_id, table_id_or_name=table_id_or_name)
+        url = self.base_url + f"/{base_id}/{table_id_or_name}"
 
         body = {}
-        body['performUpsert'] = {'fieldsToMergeOn': fields_to_merge_on}
-        body['records'] = records
+        body["performUpsert"] = {"fieldsToMergeOn": fields_to_merge_on}
+        body["records"] = records
         if typecast is not None:
-            body['typecast'] = typecast
+            body["typecast"] = typecast
         if return_fields_by_field_id is not None:
-            body['returnFieldsByFieldId'] = return_fields_by_field_id
+            body["returnFieldsByFieldId"] = return_fields_by_field_id
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -806,7 +825,7 @@ class AirtableDataSource:
             method="PATCH",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -819,7 +838,7 @@ class AirtableDataSource:
         self,
         base_id: str,
         table_id_or_name: str,
-        records: List[str]
+        records: list[str],
     ) -> AirtableResponse:
         """Delete one or more records
 
@@ -830,12 +849,13 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
         query_params = []
         for record_id in records:
-                query_params.append(('records[]', record_id))
+                query_params.append(("records[]", record_id))
 
-        url = self.base_url + "/{base_id}/{table_id_or_name}".format(base_id=base_id, table_id_or_name=table_id_or_name)
+        url = self.base_url + f"/{base_id}/{table_id_or_name}"
         if query_params:
             query_string = urlencode(query_params)
             url += f"?{query_string}"
@@ -845,7 +865,7 @@ class AirtableDataSource:
         request = HTTPRequest(
             method="DELETE",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -856,7 +876,7 @@ class AirtableDataSource:
 
     async def list_tables(
         self,
-        base_id: str
+        base_id: str,
     ) -> AirtableResponse:
         """List all tables in a base
 
@@ -865,15 +885,16 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/bases/{base_id}/tables".format(base_id=base_id)
+        url = self.base_url + f"/meta/bases/{base_id}/tables"
 
         headers = self.http.headers.copy()
 
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -886,8 +907,8 @@ class AirtableDataSource:
         self,
         base_id: str,
         name: str,
-        fields: List[Dict[str, Any]],
-        description: Optional[str] = None
+        fields: list[dict[str, Any]],
+        description: str | None = None,
     ) -> AirtableResponse:
         """Create a new table in a base
 
@@ -899,14 +920,15 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/bases/{base_id}/tables".format(base_id=base_id)
+        url = self.base_url + f"/meta/bases/{base_id}/tables"
 
         body = {}
-        body['name'] = name
+        body["name"] = name
         if description is not None:
-            body['description'] = description
-        body['fields'] = fields
+            body["description"] = description
+        body["fields"] = fields
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -915,7 +937,7 @@ class AirtableDataSource:
             method="POST",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -928,8 +950,8 @@ class AirtableDataSource:
         self,
         base_id: str,
         table_id: str,
-        name: Optional[str] = None,
-        description: Optional[str] = None
+        name: str | None = None,
+        description: str | None = None,
     ) -> AirtableResponse:
         """Update table properties
 
@@ -941,14 +963,15 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/bases/{base_id}/tables/{table_id}".format(base_id=base_id, table_id=table_id)
+        url = self.base_url + f"/meta/bases/{base_id}/tables/{table_id}"
 
         body = {}
         if name is not None:
-            body['name'] = name
+            body["name"] = name
         if description is not None:
-            body['description'] = description
+            body["description"] = description
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -957,7 +980,7 @@ class AirtableDataSource:
             method="PATCH",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -972,8 +995,8 @@ class AirtableDataSource:
         table_id: str,
         name: str,
         type: str,
-        description: Optional[str] = None,
-        options: Optional[Dict[str, Any]] = None
+        description: str | None = None,
+        options: dict[str, Any] | None = None,
     ) -> AirtableResponse:
         """Create a new field in a table
 
@@ -987,16 +1010,17 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/bases/{base_id}/tables/{table_id}/fields".format(base_id=base_id, table_id=table_id)
+        url = self.base_url + f"/meta/bases/{base_id}/tables/{table_id}/fields"
 
         body = {}
-        body['name'] = name
-        body['type'] = type
+        body["name"] = name
+        body["type"] = type
         if description is not None:
-            body['description'] = description
+            body["description"] = description
         if options is not None:
-            body['options'] = options
+            body["options"] = options
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -1005,7 +1029,7 @@ class AirtableDataSource:
             method="POST",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -1019,9 +1043,9 @@ class AirtableDataSource:
         base_id: str,
         table_id: str,
         field_id: str,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-        options: Optional[Dict[str, Any]] = None
+        name: str | None = None,
+        description: str | None = None,
+        options: dict[str, Any] | None = None,
     ) -> AirtableResponse:
         """Update field properties
 
@@ -1035,16 +1059,17 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/bases/{base_id}/tables/{table_id}/fields/{field_id}".format(base_id=base_id, table_id=table_id, field_id=field_id)
+        url = self.base_url + f"/meta/bases/{base_id}/tables/{table_id}/fields/{field_id}"
 
         body = {}
         if name is not None:
-            body['name'] = name
+            body["name"] = name
         if description is not None:
-            body['description'] = description
+            body["description"] = description
         if options is not None:
-            body['options'] = options
+            body["options"] = options
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -1053,7 +1078,7 @@ class AirtableDataSource:
             method="PATCH",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -1065,7 +1090,7 @@ class AirtableDataSource:
     async def list_views(
         self,
         base_id: str,
-        table_id: str
+        table_id: str,
     ) -> AirtableResponse:
         """List all views in a table
 
@@ -1075,15 +1100,16 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/bases/{base_id}/tables/{table_id}/views".format(base_id=base_id, table_id=table_id)
+        url = self.base_url + f"/meta/bases/{base_id}/tables/{table_id}/views"
 
         headers = self.http.headers.copy()
 
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -1094,7 +1120,7 @@ class AirtableDataSource:
 
     async def list_webhooks(
         self,
-        base_id: str
+        base_id: str,
     ) -> AirtableResponse:
         """List all webhooks for a base
 
@@ -1103,15 +1129,16 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/bases/{base_id}/webhooks".format(base_id=base_id)
+        url = self.base_url + f"/bases/{base_id}/webhooks"
 
         headers = self.http.headers.copy()
 
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -1124,7 +1151,7 @@ class AirtableDataSource:
         self,
         base_id: str,
         notification_url: str,
-        specification: Dict[str, Any]
+        specification: dict[str, Any],
     ) -> AirtableResponse:
         """Create a new webhook
 
@@ -1135,12 +1162,13 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/bases/{base_id}/webhooks".format(base_id=base_id)
+        url = self.base_url + f"/bases/{base_id}/webhooks"
 
         body = {}
-        body['notification_url'] = notification_url
-        body['specification'] = specification
+        body["notification_url"] = notification_url
+        body["specification"] = specification
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -1149,7 +1177,7 @@ class AirtableDataSource:
             method="POST",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -1161,7 +1189,7 @@ class AirtableDataSource:
     async def get_webhook(
         self,
         base_id: str,
-        webhook_id: str
+        webhook_id: str,
     ) -> AirtableResponse:
         """Get webhook details
 
@@ -1171,15 +1199,16 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/bases/{base_id}/webhooks/{webhook_id}".format(base_id=base_id, webhook_id=webhook_id)
+        url = self.base_url + f"/bases/{base_id}/webhooks/{webhook_id}"
 
         headers = self.http.headers.copy()
 
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -1192,8 +1221,8 @@ class AirtableDataSource:
         self,
         base_id: str,
         webhook_id: str,
-        notification_url: Optional[str] = None,
-        specification: Optional[Dict[str, Any]] = None
+        notification_url: str | None = None,
+        specification: dict[str, Any] | None = None,
     ) -> AirtableResponse:
         """Update webhook configuration
 
@@ -1205,14 +1234,15 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/bases/{base_id}/webhooks/{webhook_id}".format(base_id=base_id, webhook_id=webhook_id)
+        url = self.base_url + f"/bases/{base_id}/webhooks/{webhook_id}"
 
         body = {}
         if notification_url is not None:
-            body['notification_url'] = notification_url
+            body["notification_url"] = notification_url
         if specification is not None:
-            body['specification'] = specification
+            body["specification"] = specification
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -1221,7 +1251,7 @@ class AirtableDataSource:
             method="PATCH",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -1233,7 +1263,7 @@ class AirtableDataSource:
     async def delete_webhook(
         self,
         base_id: str,
-        webhook_id: str
+        webhook_id: str,
     ) -> AirtableResponse:
         """Delete a webhook
 
@@ -1243,15 +1273,16 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/bases/{base_id}/webhooks/{webhook_id}".format(base_id=base_id, webhook_id=webhook_id)
+        url = self.base_url + f"/bases/{base_id}/webhooks/{webhook_id}"
 
         headers = self.http.headers.copy()
 
         request = HTTPRequest(
             method="DELETE",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -1265,7 +1296,7 @@ class AirtableDataSource:
     async def refresh_webhook(
         self,
         base_id: str,
-        webhook_id: str
+        webhook_id: str,
     ) -> AirtableResponse:
         """Refresh webhook to extend expiration
 
@@ -1275,8 +1306,9 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/bases/{base_id}/webhooks/{webhook_id}/refresh".format(base_id=base_id, webhook_id=webhook_id)
+        url = self.base_url + f"/bases/{base_id}/webhooks/{webhook_id}/refresh"
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -1284,7 +1316,7 @@ class AirtableDataSource:
         request = HTTPRequest(
             method="POST",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -1296,7 +1328,7 @@ class AirtableDataSource:
     async def enable_webhook_notifications(
         self,
         base_id: str,
-        webhook_id: str
+        webhook_id: str,
     ) -> AirtableResponse:
         """Enable webhook notifications
 
@@ -1306,8 +1338,9 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/bases/{base_id}/webhooks/{webhook_id}/enableNotifications".format(base_id=base_id, webhook_id=webhook_id)
+        url = self.base_url + f"/bases/{base_id}/webhooks/{webhook_id}/enableNotifications"
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -1315,7 +1348,7 @@ class AirtableDataSource:
         request = HTTPRequest(
             method="POST",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -1327,7 +1360,7 @@ class AirtableDataSource:
     async def disable_webhook_notifications(
         self,
         base_id: str,
-        webhook_id: str
+        webhook_id: str,
     ) -> AirtableResponse:
         """Disable webhook notifications
 
@@ -1337,8 +1370,9 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/bases/{base_id}/webhooks/{webhook_id}/disableNotifications".format(base_id=base_id, webhook_id=webhook_id)
+        url = self.base_url + f"/bases/{base_id}/webhooks/{webhook_id}/disableNotifications"
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -1346,7 +1380,7 @@ class AirtableDataSource:
         request = HTTPRequest(
             method="POST",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -1358,9 +1392,9 @@ class AirtableDataSource:
     async def list_enterprise_users(
         self,
         enterprise_account_id: str,
-        include: Optional[List[str]] = None,
-        collaborations: Optional[bool] = None,
-        aggregated: Optional[bool] = None
+        include: list[str] | None = None,
+        collaborations: bool | None = None,
+        aggregated: bool | None = None,
     ) -> AirtableResponse:
         """List users in enterprise account
 
@@ -1372,16 +1406,17 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
         query_params = []
         if include is not None:
-            query_params.append(('include', ','.join(include)))
+            query_params.append(("include", ",".join(include)))
         if collaborations is not None:
-            query_params.append(('collaborations', 'true' if collaborations else 'false'))
+            query_params.append(("collaborations", "true" if collaborations else "false"))
         if aggregated is not None:
-            query_params.append(('aggregated', 'true' if aggregated else 'false'))
+            query_params.append(("aggregated", "true" if aggregated else "false"))
 
-        url = self.base_url + "/meta/enterpriseAccounts/{enterprise_account_id}/users".format(enterprise_account_id=enterprise_account_id)
+        url = self.base_url + f"/meta/enterpriseAccounts/{enterprise_account_id}/users"
         if query_params:
             query_string = urlencode(query_params)
             url += f"?{query_string}"
@@ -1391,7 +1426,7 @@ class AirtableDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -1404,8 +1439,8 @@ class AirtableDataSource:
         self,
         enterprise_account_id: str,
         user_id: str,
-        collaborations: Optional[bool] = None,
-        aggregated: Optional[bool] = None
+        collaborations: bool | None = None,
+        aggregated: bool | None = None,
     ) -> AirtableResponse:
         """Get enterprise user details
 
@@ -1417,14 +1452,15 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
         query_params = []
         if collaborations is not None:
-            query_params.append(('collaborations', 'true' if collaborations else 'false'))
+            query_params.append(("collaborations", "true" if collaborations else "false"))
         if aggregated is not None:
-            query_params.append(('aggregated', 'true' if aggregated else 'false'))
+            query_params.append(("aggregated", "true" if aggregated else "false"))
 
-        url = self.base_url + "/meta/enterpriseAccounts/{enterprise_account_id}/users/{user_id}".format(enterprise_account_id=enterprise_account_id, user_id=user_id)
+        url = self.base_url + f"/meta/enterpriseAccounts/{enterprise_account_id}/users/{user_id}"
         if query_params:
             query_string = urlencode(query_params)
             url += f"?{query_string}"
@@ -1434,7 +1470,7 @@ class AirtableDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -1446,8 +1482,8 @@ class AirtableDataSource:
     async def invite_users_by_email(
         self,
         enterprise_account_id: str,
-        invites: List[Dict[str, Any]],
-        is_dry_run: Optional[bool] = None
+        invites: list[dict[str, Any]],
+        is_dry_run: bool | None = None,
     ) -> AirtableResponse:
         """Invite users by email to enterprise
 
@@ -1458,13 +1494,14 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/enterpriseAccounts/{enterprise_account_id}/inviteUsersByEmail".format(enterprise_account_id=enterprise_account_id)
+        url = self.base_url + f"/meta/enterpriseAccounts/{enterprise_account_id}/inviteUsersByEmail"
 
         body = {}
-        body['invites'] = invites
+        body["invites"] = invites
         if is_dry_run is not None:
-            body['isDryRun'] = is_dry_run
+            body["isDryRun"] = is_dry_run
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -1473,7 +1510,7 @@ class AirtableDataSource:
             method="POST",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -1485,7 +1522,7 @@ class AirtableDataSource:
     async def delete_users_by_email(
         self,
         enterprise_account_id: str,
-        emails: List[str]
+        emails: list[str],
     ) -> AirtableResponse:
         """Delete users by email from enterprise
 
@@ -1495,11 +1532,12 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/enterpriseAccounts/{enterprise_account_id}/deleteUsersByEmail".format(enterprise_account_id=enterprise_account_id)
+        url = self.base_url + f"/meta/enterpriseAccounts/{enterprise_account_id}/deleteUsersByEmail"
 
         body = {}
-        body['emails'] = emails
+        body["emails"] = emails
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -1508,7 +1546,7 @@ class AirtableDataSource:
             method="POST",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -1520,7 +1558,7 @@ class AirtableDataSource:
     async def manage_user_membership(
         self,
         enterprise_account_id: str,
-        users: Dict[str, Literal["managed", "unmanaged"]]
+        users: dict[str, Literal["managed", "unmanaged"]],
     ) -> AirtableResponse:
         """Manage user membership (managed/unmanaged)
 
@@ -1530,11 +1568,12 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/enterpriseAccounts/{enterprise_account_id}/claimUsers".format(enterprise_account_id=enterprise_account_id)
+        url = self.base_url + f"/meta/enterpriseAccounts/{enterprise_account_id}/claimUsers"
 
         body = {}
-        body['users'] = users
+        body["users"] = users
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -1543,7 +1582,7 @@ class AirtableDataSource:
             method="POST",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -1555,7 +1594,7 @@ class AirtableDataSource:
     async def grant_admin_access(
         self,
         enterprise_account_id: str,
-        users: List[Union[str, Dict[str, str]]]
+        users: list[str | dict[str, str]],
     ) -> AirtableResponse:
         """Grant admin access to users
 
@@ -1565,11 +1604,12 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/enterpriseAccounts/{enterprise_account_id}/grantAdminAccess".format(enterprise_account_id=enterprise_account_id)
+        url = self.base_url + f"/meta/enterpriseAccounts/{enterprise_account_id}/grantAdminAccess"
 
         body = {}
-        body['users'] = users
+        body["users"] = users
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -1578,7 +1618,7 @@ class AirtableDataSource:
             method="POST",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -1590,7 +1630,7 @@ class AirtableDataSource:
     async def revoke_admin_access(
         self,
         enterprise_account_id: str,
-        users: List[Union[str, Dict[str, str]]]
+        users: list[str | dict[str, str]],
     ) -> AirtableResponse:
         """Revoke admin access from users
 
@@ -1600,11 +1640,12 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/enterpriseAccounts/{enterprise_account_id}/revokeAdminAccess".format(enterprise_account_id=enterprise_account_id)
+        url = self.base_url + f"/meta/enterpriseAccounts/{enterprise_account_id}/revokeAdminAccess"
 
         body = {}
-        body['users'] = users
+        body["users"] = users
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -1613,7 +1654,7 @@ class AirtableDataSource:
             method="POST",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -1626,8 +1667,8 @@ class AirtableDataSource:
         self,
         enterprise_account_id: str,
         user_id: str,
-        replacement_owner_id: Optional[str] = None,
-        remove_from_descendants: Optional[bool] = None
+        replacement_owner_id: str | None = None,
+        remove_from_descendants: bool | None = None,
     ) -> AirtableResponse:
         """Remove user from enterprise account
 
@@ -1639,14 +1680,15 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/enterpriseAccounts/{enterprise_account_id}/users/{user_id}/remove".format(enterprise_account_id=enterprise_account_id, user_id=user_id)
+        url = self.base_url + f"/meta/enterpriseAccounts/{enterprise_account_id}/users/{user_id}/remove"
 
         body = {}
         if replacement_owner_id is not None:
-            body['replacementOwnerId'] = replacement_owner_id
+            body["replacementOwnerId"] = replacement_owner_id
         if remove_from_descendants is not None:
-            body['removeFromDescendants'] = remove_from_descendants
+            body["removeFromDescendants"] = remove_from_descendants
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -1655,7 +1697,7 @@ class AirtableDataSource:
             method="POST",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -1667,7 +1709,7 @@ class AirtableDataSource:
     async def list_user_groups(
         self,
         enterprise_account_id: str,
-        collaborations: Optional[bool] = None
+        collaborations: bool | None = None,
     ) -> AirtableResponse:
         """List user groups in enterprise account
 
@@ -1677,12 +1719,13 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
         query_params = []
         if collaborations is not None:
-            query_params.append(('collaborations', 'true' if collaborations else 'false'))
+            query_params.append(("collaborations", "true" if collaborations else "false"))
 
-        url = self.base_url + "/meta/enterpriseAccounts/{enterprise_account_id}/groups".format(enterprise_account_id=enterprise_account_id)
+        url = self.base_url + f"/meta/enterpriseAccounts/{enterprise_account_id}/groups"
         if query_params:
             query_string = urlencode(query_params)
             url += f"?{query_string}"
@@ -1692,7 +1735,7 @@ class AirtableDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -1705,7 +1748,7 @@ class AirtableDataSource:
         self,
         enterprise_account_id: str,
         group_id: str,
-        collaborations: Optional[bool] = None
+        collaborations: bool | None = None,
     ) -> AirtableResponse:
         """Get user group details
 
@@ -1716,12 +1759,13 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
         query_params = []
         if collaborations is not None:
-            query_params.append(('collaborations', 'true' if collaborations else 'false'))
+            query_params.append(("collaborations", "true" if collaborations else "false"))
 
-        url = self.base_url + "/meta/enterpriseAccounts/{enterprise_account_id}/groups/{group_id}".format(enterprise_account_id=enterprise_account_id, group_id=group_id)
+        url = self.base_url + f"/meta/enterpriseAccounts/{enterprise_account_id}/groups/{group_id}"
         if query_params:
             query_string = urlencode(query_params)
             url += f"?{query_string}"
@@ -1731,7 +1775,7 @@ class AirtableDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -1744,8 +1788,8 @@ class AirtableDataSource:
         self,
         enterprise_account_id: str,
         name: str,
-        description: Optional[str] = None,
-        members: Optional[List[str]] = None
+        description: str | None = None,
+        members: list[str] | None = None,
     ) -> AirtableResponse:
         """Create a new user group
 
@@ -1757,15 +1801,16 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/enterpriseAccounts/{enterprise_account_id}/groups".format(enterprise_account_id=enterprise_account_id)
+        url = self.base_url + f"/meta/enterpriseAccounts/{enterprise_account_id}/groups"
 
         body = {}
-        body['name'] = name
+        body["name"] = name
         if description is not None:
-            body['description'] = description
+            body["description"] = description
         if members is not None:
-            body['members'] = members
+            body["members"] = members
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -1774,7 +1819,7 @@ class AirtableDataSource:
             method="POST",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -1787,8 +1832,8 @@ class AirtableDataSource:
         self,
         enterprise_account_id: str,
         group_id: str,
-        name: Optional[str] = None,
-        description: Optional[str] = None
+        name: str | None = None,
+        description: str | None = None,
     ) -> AirtableResponse:
         """Update user group properties
 
@@ -1800,14 +1845,15 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/enterpriseAccounts/{enterprise_account_id}/groups/{group_id}".format(enterprise_account_id=enterprise_account_id, group_id=group_id)
+        url = self.base_url + f"/meta/enterpriseAccounts/{enterprise_account_id}/groups/{group_id}"
 
         body = {}
         if name is not None:
-            body['name'] = name
+            body["name"] = name
         if description is not None:
-            body['description'] = description
+            body["description"] = description
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -1816,7 +1862,7 @@ class AirtableDataSource:
             method="PATCH",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -1828,7 +1874,7 @@ class AirtableDataSource:
     async def delete_user_group(
         self,
         enterprise_account_id: str,
-        group_id: str
+        group_id: str,
     ) -> AirtableResponse:
         """Delete a user group
 
@@ -1838,15 +1884,16 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/enterpriseAccounts/{enterprise_account_id}/groups/{group_id}".format(enterprise_account_id=enterprise_account_id, group_id=group_id)
+        url = self.base_url + f"/meta/enterpriseAccounts/{enterprise_account_id}/groups/{group_id}"
 
         headers = self.http.headers.copy()
 
         request = HTTPRequest(
             method="DELETE",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -1859,9 +1906,9 @@ class AirtableDataSource:
         self,
         base_id: str,
         permission_level: Literal["none", "read", "comment", "edit", "create"],
-        email: Optional[str] = None,
-        user_id: Optional[str] = None,
-        group_id: Optional[str] = None
+        email: str | None = None,
+        user_id: str | None = None,
+        group_id: str | None = None,
     ) -> AirtableResponse:
         """Add collaborator to base
 
@@ -1874,17 +1921,18 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/bases/{base_id}/collaborators".format(base_id=base_id)
+        url = self.base_url + f"/meta/bases/{base_id}/collaborators"
 
         body = {}
         if email is not None:
-            body['email'] = email
+            body["email"] = email
         if user_id is not None:
-            body['user_id'] = user_id
+            body["user_id"] = user_id
         if group_id is not None:
-            body['group_id'] = group_id
-        body['permission_level'] = permission_level
+            body["group_id"] = group_id
+        body["permission_level"] = permission_level
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -1893,7 +1941,7 @@ class AirtableDataSource:
             method="POST",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -1906,7 +1954,7 @@ class AirtableDataSource:
         self,
         base_id: str,
         collaborator_id: str,
-        permission_level: Literal["none", "read", "comment", "edit", "create"]
+        permission_level: Literal["none", "read", "comment", "edit", "create"],
     ) -> AirtableResponse:
         """Update base collaborator permissions
 
@@ -1917,11 +1965,12 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/bases/{base_id}/collaborators/{collaborator_id}".format(base_id=base_id, collaborator_id=collaborator_id)
+        url = self.base_url + f"/meta/bases/{base_id}/collaborators/{collaborator_id}"
 
         body = {}
-        body['permission_level'] = permission_level
+        body["permission_level"] = permission_level
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -1930,7 +1979,7 @@ class AirtableDataSource:
             method="PATCH",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -1942,7 +1991,7 @@ class AirtableDataSource:
     async def remove_base_collaborator(
         self,
         base_id: str,
-        collaborator_id: str
+        collaborator_id: str,
     ) -> AirtableResponse:
         """Remove collaborator from base
 
@@ -1952,15 +2001,16 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/bases/{base_id}/collaborators/{collaborator_id}".format(base_id=base_id, collaborator_id=collaborator_id)
+        url = self.base_url + f"/meta/bases/{base_id}/collaborators/{collaborator_id}"
 
         headers = self.http.headers.copy()
 
         request = HTTPRequest(
             method="DELETE",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -1971,7 +2021,7 @@ class AirtableDataSource:
 
     async def list_workspaces(
         self,
-        enterprise_account_id: str
+        enterprise_account_id: str,
     ) -> AirtableResponse:
         """List workspaces in enterprise account
 
@@ -1980,15 +2030,16 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/enterpriseAccounts/{enterprise_account_id}/workspaces".format(enterprise_account_id=enterprise_account_id)
+        url = self.base_url + f"/meta/enterpriseAccounts/{enterprise_account_id}/workspaces"
 
         headers = self.http.headers.copy()
 
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -1999,7 +2050,7 @@ class AirtableDataSource:
 
     async def get_workspace(
         self,
-        workspace_id: str
+        workspace_id: str,
     ) -> AirtableResponse:
         """Get workspace details
 
@@ -2008,15 +2059,16 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/workspaces/{workspace_id}".format(workspace_id=workspace_id)
+        url = self.base_url + f"/meta/workspaces/{workspace_id}"
 
         headers = self.http.headers.copy()
 
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -2028,7 +2080,7 @@ class AirtableDataSource:
     async def get_enterprise_info(
         self,
         enterprise_account_id: str,
-        include: Optional[List[str]] = None
+        include: list[str] | None = None,
     ) -> AirtableResponse:
         """Get enterprise account information
 
@@ -2038,12 +2090,13 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
         query_params = []
         if include is not None:
-            query_params.append(('include', ','.join(include)))
+            query_params.append(("include", ",".join(include)))
 
-        url = self.base_url + "/meta/enterpriseAccounts/{enterprise_account_id}".format(enterprise_account_id=enterprise_account_id)
+        url = self.base_url + f"/meta/enterpriseAccounts/{enterprise_account_id}"
         if query_params:
             query_string = urlencode(query_params)
             url += f"?{query_string}"
@@ -2053,7 +2106,7 @@ class AirtableDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -2065,7 +2118,7 @@ class AirtableDataSource:
     async def create_descendant_enterprise(
         self,
         enterprise_account_id: str,
-        name: str
+        name: str,
     ) -> AirtableResponse:
         """Create descendant enterprise account
 
@@ -2075,11 +2128,12 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/meta/enterpriseAccounts/{enterprise_account_id}/descendants".format(enterprise_account_id=enterprise_account_id)
+        url = self.base_url + f"/meta/enterpriseAccounts/{enterprise_account_id}/descendants"
 
         body = {}
-        body['name'] = name
+        body["name"] = name
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -2088,7 +2142,7 @@ class AirtableDataSource:
             method="POST",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -2105,7 +2159,7 @@ class AirtableDataSource:
         field_id: str,
         content_type: str,
         filename: str,
-        file: Union[bytes, str]
+        file: bytes | str,
     ) -> AirtableResponse:
         """Upload attachment to a record field
 
@@ -2120,13 +2174,14 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
-        url = self.base_url + "/{base_id}/{table_id_or_name}/{record_id}/{field_id}/uploadAttachment".format(base_id=base_id, table_id_or_name=table_id_or_name, record_id=record_id, field_id=field_id)
+        url = self.base_url + f"/{base_id}/{table_id_or_name}/{record_id}/{field_id}/uploadAttachment"
 
         body = {}
-        body['contentType'] = content_type
-        body['filename'] = filename
-        body['file'] = file
+        body["contentType"] = content_type
+        body["filename"] = filename
+        body["file"] = file
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -2135,7 +2190,7 @@ class AirtableDataSource:
             method="POST",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -2145,12 +2200,13 @@ class AirtableDataSource:
             return AirtableResponse(success=False, error=str(e))
 
     async def get_current_user(
-        self
+        self,
     ) -> AirtableResponse:
         """Get current user information and scopes
 
         Returns:
             AirtableResponse with operation result
+
         """
         url = self.base_url + "/meta/whoami"
 
@@ -2159,7 +2215,7 @@ class AirtableDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -2174,7 +2230,7 @@ class AirtableDataSource:
         redirect_uri: str,
         response_type: str,
         scope: str,
-        state: Optional[str] = None
+        state: str | None = None,
     ) -> AirtableResponse:
         """OAuth authorization endpoint
 
@@ -2187,18 +2243,19 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
         query_params = []
         if client_id is not None:
-            query_params.append(('client_id', str(client_id)))
+            query_params.append(("client_id", str(client_id)))
         if redirect_uri is not None:
-            query_params.append(('redirect_uri', str(redirect_uri)))
+            query_params.append(("redirect_uri", str(redirect_uri)))
         if response_type is not None:
-            query_params.append(('response_type', str(response_type)))
+            query_params.append(("response_type", str(response_type)))
         if scope is not None:
-            query_params.append(('scope', str(scope)))
+            query_params.append(("scope", str(scope)))
         if state is not None:
-            query_params.append(('state', str(state)))
+            query_params.append(("state", str(state)))
 
         url = self.base_url + "/oauth2/v1/authorize"
         if query_params:
@@ -2210,7 +2267,7 @@ class AirtableDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=headers
+            headers=headers,
         )
 
         try:
@@ -2222,9 +2279,9 @@ class AirtableDataSource:
     async def oauth_token(
         self,
         grant_type: str,
-        code: Optional[str] = None,
-        redirect_uri: Optional[str] = None,
-        refresh_token: Optional[str] = None
+        code: str | None = None,
+        redirect_uri: str | None = None,
+        refresh_token: str | None = None,
     ) -> AirtableResponse:
         """OAuth token exchange endpoint
 
@@ -2236,17 +2293,18 @@ class AirtableDataSource:
 
         Returns:
             AirtableResponse with operation result
+
         """
         url = self.base_url + "/oauth2/v1/token"
 
         body = {}
-        body['grant_type'] = grant_type
+        body["grant_type"] = grant_type
         if code is not None:
-            body['code'] = code
+            body["code"] = code
         if redirect_uri is not None:
-            body['redirect_uri'] = redirect_uri
+            body["redirect_uri"] = redirect_uri
         if refresh_token is not None:
-            body['refresh_token'] = refresh_token
+            body["refresh_token"] = refresh_token
 
         headers = self.http.headers.copy()
         headers["Content-Type"] = "application/json"
@@ -2255,7 +2313,7 @@ class AirtableDataSource:
             method="POST",
             url=url,
             headers=headers,
-            body=json.dumps(body)
+            body=json.dumps(body),
         )
 
         try:
@@ -2267,15 +2325,15 @@ class AirtableDataSource:
     def get_client_info(self) -> AirtableResponse:
         """Get information about the Airtable client."""
         info = {
-            'total_methods': 58,
-            'base_url': self.base_url,
-            'api_categories': [
-                'Web API (Records, Bases, Tables, Fields, Views)',
-                'Metadata API (Schema information)',
-                'Webhooks API (Real-time notifications)',
-                'Enterprise API (Users, Groups, Collaborators, Admin)',
-                'Attachments API (File handling)',
-                'OAuth API (Authentication)'
-            ]
+            "total_methods": 58,
+            "base_url": self.base_url,
+            "api_categories": [
+                "Web API (Records, Bases, Tables, Fields, Views)",
+                "Metadata API (Schema information)",
+                "Webhooks API (Real-time notifications)",
+                "Enterprise API (Users, Groups, Collaborators, Admin)",
+                "Attachments API (File handling)",
+                "OAuth API (Authentication)",
+            ],
         }
         return AirtableResponse(success=True, data=info)

@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any
 
 import aiohttp  # type: ignore
 
@@ -11,8 +11,8 @@ class GraphQLClient:
     def __init__(
         self,
         endpoint: str,
-        headers: Optional[Dict[str, str]] = None,
-        timeout: int = 30
+        headers: dict[str, str] | None = None,
+        timeout: int = 30,
     ) -> None:
         self.endpoint = endpoint
         self.headers = headers or {}
@@ -27,8 +27,8 @@ class GraphQLClient:
     async def execute(
         self,
         query: str,
-        variables: Optional[Dict[str, Any]] = None,
-        operation_name: Optional[str] = None
+        variables: dict[str, Any] | None = None,
+        operation_name: str | None = None,
     ) -> GraphQLResponse:
         """Execute a GraphQL query."""
         payload = {
@@ -44,19 +44,19 @@ class GraphQLClient:
                 async with session.post(
                     self.endpoint,
                     json=payload,
-                    headers=self.headers
+                    headers=self.headers,
                 ) as response:
                     response_data = await response.json()
                     return GraphQLResponse.from_response(response_data)
         except aiohttp.ClientError as e:
             return GraphQLResponse(
                 success=False,
-                message=f"Request failed: {str(e)}"
+                message=f"Request failed: {e!s}",
             )
 
     async def close(self) -> None:
         """No-op close: sessions are short-lived per request and auto-closed."""
-        return None
+        return
 
     async def __aenter__(self) -> "GraphQLClient":
         return self

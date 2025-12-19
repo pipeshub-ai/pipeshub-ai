@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-from typing import Optional
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -14,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 class GoogleSlides:
     """Google Slides tool exposed to the agents using GoogleSlidesDataSource"""
+
     def __init__(self, client: GoogleClient) -> None:
         """Initialize the Google Slides tool"""
         """
@@ -45,9 +45,9 @@ class GoogleSlides:
                 name="presentation_id",
                 type=ParameterType.STRING,
                 description="The ID of the presentation to retrieve",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def get_presentation(self, presentation_id: str) -> tuple[bool, str]:
         """Get a Google Slides presentation"""
@@ -60,7 +60,7 @@ class GoogleSlides:
         try:
             # Use GoogleSlidesDataSource method
             presentation = self._run_async(self.client.presentations_get(
-                presentationId=presentation_id
+                presentationId=presentation_id,
             ))
 
             return True, json.dumps(presentation)
@@ -76,11 +76,11 @@ class GoogleSlides:
                 name="title",
                 type=ParameterType.STRING,
                 description="Title of the presentation",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
-    def create_presentation(self, title: Optional[str] = None) -> tuple[bool, str]:
+    def create_presentation(self, title: str | None = None) -> tuple[bool, str]:
         """Create a new Google Slides presentation"""
         """
         Args:
@@ -93,19 +93,19 @@ class GoogleSlides:
             presentation_data = {}
             if title:
                 presentation_data = {
-                    "title": title
+                    "title": title,
                 }
 
             # Use GoogleSlidesDataSource method
             presentation = self._run_async(self.client.presentations_create(
-                body=presentation_data
+                body=presentation_data,
             ))
 
             return True, json.dumps({
                 "presentation_id": presentation.get("presentationId", ""),
                 "title": presentation.get("title", ""),
                 "revision_id": presentation.get("revisionId", ""),
-                "message": "Presentation created successfully"
+                "message": "Presentation created successfully",
             })
         except Exception as e:
             logger.error(f"Failed to create presentation: {e}")
@@ -119,21 +119,21 @@ class GoogleSlides:
                 name="presentation_id",
                 type=ParameterType.STRING,
                 description="The ID of the presentation to update",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="requests",
                 type=ParameterType.ARRAY,
                 description="List of update requests to apply",
                 required=False,
-                items={"type": "object"}
-            )
-        ]
+                items={"type": "object"},
+            ),
+        ],
     )
     def batch_update_presentation(
         self,
         presentation_id: str,
-        requests: Optional[list] = None
+        requests: list | None = None,
     ) -> tuple[bool, str]:
         """Apply batch updates to a Google Slides presentation"""
         """
@@ -152,14 +152,14 @@ class GoogleSlides:
             # Use GoogleSlidesDataSource method
             result = self._run_async(self.client.presentations_batch_update(
                 presentationId=presentation_id,
-                body=batch_update_data
+                body=batch_update_data,
             ))
 
             return True, json.dumps({
                 "presentation_id": presentation_id,
                 "revision_id": result.get("revisionId", ""),
                 "replies": result.get("replies", []),
-                "message": "Presentation updated successfully"
+                "message": "Presentation updated successfully",
             })
         except Exception as e:
             logger.error(f"Failed to batch update presentation: {e}")
@@ -173,15 +173,15 @@ class GoogleSlides:
                 name="presentation_id",
                 type=ParameterType.STRING,
                 description="The ID of the presentation",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="page_object_id",
                 type=ParameterType.STRING,
                 description="The object ID of the slide page",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
     def get_slide_page(self, presentation_id: str, page_object_id: str) -> tuple[bool, str]:
         """Get a specific slide page from a presentation"""
@@ -196,7 +196,7 @@ class GoogleSlides:
             # Use GoogleSlidesDataSource method
             page = self._run_async(self.client.presentations_pages_get(
                 presentationId=presentation_id,
-                pageObjectId=page_object_id
+                pageObjectId=page_object_id,
             ))
 
             return True, json.dumps(page)
@@ -212,34 +212,34 @@ class GoogleSlides:
                 name="presentation_id",
                 type=ParameterType.STRING,
                 description="The ID of the presentation",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="page_object_id",
                 type=ParameterType.STRING,
                 description="The object ID of the slide page",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="mime_type",
                 type=ParameterType.STRING,
                 description="MIME type of the thumbnail (e.g., 'image/png')",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="thumbnail_size",
                 type=ParameterType.STRING,
                 description="Size of the thumbnail (e.g., 'LARGE', 'MEDIUM', 'SMALL')",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_slide_thumbnail(
         self,
         presentation_id: str,
         page_object_id: str,
-        mime_type: Optional[str] = None,
-        thumbnail_size: Optional[str] = None
+        mime_type: str | None = None,
+        thumbnail_size: str | None = None,
     ) -> tuple[bool, str]:
         """Get a thumbnail of a slide page"""
         """
@@ -257,7 +257,7 @@ class GoogleSlides:
                 presentationId=presentation_id,
                 pageObjectId=page_object_id,
                 thumbnailProperties_mimeType=mime_type,
-                thumbnailProperties_thumbnailSize=thumbnail_size
+                thumbnailProperties_thumbnailSize=thumbnail_size,
             ))
 
             return True, json.dumps(thumbnail)

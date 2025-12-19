@@ -1,5 +1,4 @@
 from logging import Logger
-from typing import Optional, Union
 
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.interface.producer import IMessagingProducer
@@ -18,7 +17,7 @@ class MessagingFactory:
     @staticmethod
     def create_producer(
         logger: Logger,
-        config: Union[KafkaProducerConfig, None] = None,
+        config: KafkaProducerConfig | None = None,
         broker_type: str = "kafka",
     ) -> IMessagingProducer:
         """Create a messaging producer"""
@@ -26,14 +25,13 @@ class MessagingFactory:
             if config is None:
                 raise ValueError("Kafka producer config is required")
             return KafkaMessagingProducer(logger, config)
-        else:
-            raise ValueError(f"Unsupported broker type: {broker_type}")
+        raise ValueError(f"Unsupported broker type: {broker_type}")
 
     @staticmethod
     def create_consumer(
         logger: Logger,
-        rate_limiter: Optional[RateLimiter] = None,
-        config: Union[KafkaConsumerConfig, None] = None,
+        rate_limiter: RateLimiter | None = None,
+        config: KafkaConsumerConfig | None = None,
         broker_type: str = "kafka",
     ) -> IMessagingConsumer:
         """Create a messaging consumer"""
@@ -41,5 +39,4 @@ class MessagingFactory:
             if config is None:
                 raise ValueError("Kafka consumer config is required")
             return KafkaMessagingConsumer(logger, config, rate_limiter)
-        else:
-            raise ValueError(f"Unsupported broker type: {broker_type}")
+        raise ValueError(f"Unsupported broker type: {broker_type}")

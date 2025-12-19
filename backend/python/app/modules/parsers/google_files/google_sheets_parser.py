@@ -1,7 +1,7 @@
 """Google Sheets Parser module for parsing Google Sheets content"""
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -21,8 +21,8 @@ class GoogleSheetsParser:
     def __init__(
         self,
         logger,
-        admin_service: Optional[GoogleAdminService] = None,
-        user_service: Optional[ParserUserService] = None,
+        admin_service: GoogleAdminService | None = None,
+        user_service: ParserUserService | None = None,
     ) -> None:
         """Initialize with either admin or user service"""
         self.logger = logger
@@ -39,23 +39,23 @@ class GoogleSheetsParser:
         self.max_wait = 10  # seconds
 
     async def connect_service(
-        self, user_email: str = None, org_id: str = None, user_id: str = None, app_name: str = "drive"
+        self, user_email: str = None, org_id: str = None, user_id: str = None, app_name: str = "drive",
     ) -> None:
         if self.user_service:
             if not await self.user_service.connect_individual_user(org_id, user_id,app_name=app_name):
                 self.logger.error("❌ Failed to connect to Google Sheets service")
-                return None
+                return
 
             self.service = self.user_service.sheets_service
             self.logger.info("🚀 Connected to Google Sheets service: %s", self.service)
         elif self.admin_service:
             user_service = await self.admin_service.create_parser_user_service(
-                user_email
+                user_email,
             )
             self.service = user_service.sheets_service
             self.logger.info("🚀 Connected to Google Sheets service: %s", self.service)
 
-    async def list_spreadsheets(self) -> List[Dict]:
+    async def list_spreadsheets(self) -> list[dict]:
         """List all Google Sheets in the user's Drive"""
         try:
             # Get both file metadata and content in a single call
@@ -79,7 +79,7 @@ class GoogleSheetsParser:
             return []
 
     @exponential_backoff()
-    async def parse_spreadsheet(self, spreadsheet_id: str) -> Dict[str, Any]:
+    async def parse_spreadsheet(self, spreadsheet_id: str) -> dict[str, Any]:
         """Parse Google Sheets file and extract content similar to Excel parser"""
         try:
             # Get spreadsheet metadata
@@ -148,7 +148,7 @@ class GoogleSheetsParser:
                         "headers": headers,
                         "row_count": sheet_props["gridProperties"]["rowCount"],
                         "column_count": sheet_props["gridProperties"]["columnCount"],
-                    }
+                    },
                 )
 
             # Prepare metadata
@@ -190,18 +190,18 @@ class GoogleSheetsParser:
         """Determine the data type of a value"""
         if value is None:
             return "n"  # null
-        elif isinstance(value, bool):
+        if isinstance(value, bool):
             return "b"  # boolean
-        elif isinstance(value, (int, float)):
+        if isinstance(value, (int, float)):
             return "n"  # numeric
-        elif isinstance(value, str):
+        if isinstance(value, str):
             return "s"  # string
         return "s"  # default to string
 
     @exponential_backoff()
     async def find_tables(
-        self, sheet_name: str, spreadsheet_id: str
-    ) -> List[Dict[str, Any]]:
+        self, sheet_name: str, spreadsheet_id: str,
+    ) -> list[dict[str, Any]]:
         """Find and process all tables in a sheet"""
         try:
             tables = []
@@ -220,7 +220,7 @@ class GoogleSheetsParser:
             if not values:
                 return tables
 
-            def get_table(start_row, start_col) -> Optional[Dict[str, Any]]:
+            def get_table(start_row, start_col) -> dict[str, Any] | None:
                 """Extract a table starting from (start_row, start_col)."""
                 if start_row >= len(values):
                     return None
@@ -228,7 +228,7 @@ class GoogleSheetsParser:
                 # Find the last column of the table
                 max_col = start_col
                 for col in range(
-                    start_col, len(values[start_row]) if start_row < len(values) else 0
+                    start_col, len(values[start_row]) if start_row < len(values) else 0,
                 ):
                     has_data = False
                     for row in range(start_row, len(values)):
@@ -278,7 +278,7 @@ class GoogleSheetsParser:
                 for col in range(len(denormalized_values[0])):
                     value = denormalized_values[0][col]
                     header_cell = self._process_cell(
-                        value, None, start_row + 1, start_col + col + 1
+                        value, None, start_row + 1, start_col + col + 1,
                     )
                     header_cells.append(header_cell)
                     if value:
@@ -306,7 +306,7 @@ class GoogleSheetsParser:
                         row_data.append(cell_data)
                         if value:
                             visited_cells.add(
-                                (start_row + row_idx, start_col + col_idx)
+                                (start_row + row_idx, start_col + col_idx),
                             )
                     table_data.append(row_data)
 
@@ -334,10 +334,10 @@ class GoogleSheetsParser:
             return tables
 
         except Exception as e:
-            self.logger.error(f"❌ Error finding tables: {str(e)}")
+            self.logger.error(f"❌ Error finding tables: {e!s}")
             raise
 
-    def denormalize_sheet(self, values: List[List[str]]) -> List[List[str]]:
+    def denormalize_sheet(self, values: list[list[str]]) -> list[list[str]]:
         """Fill merged/empty cells by propagating values down and right."""
         if not values:
             return values
@@ -370,8 +370,8 @@ class GoogleSheetsParser:
         return values
 
     def _process_cell(
-        self, value, header: str, row: int, col: int
-    ) -> Dict[str, Any]:
+        self, value, header: str, row: int, col: int,
+    ) -> dict[str, Any]:
         """Process a single cell and return its data"""
         return {
             "value": value,
@@ -388,7 +388,7 @@ class GoogleSheetsParser:
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         before_sleep=lambda retry_state: retry_state.args[0].logger.warning(
-            f"Retrying LLM call after error. Attempt {retry_state.attempt_number}"
+            f"Retrying LLM call after error. Attempt {retry_state.attempt_number}",
         ),
     )
     async def _call_llm(self, messages) -> dict:
@@ -397,8 +397,8 @@ class GoogleSheetsParser:
 
     @exponential_backoff()
     async def get_tables_in_sheet(
-        self, sheet_name: str, spreadsheet_id: str
-    ) -> List[Dict[str, Any]]:
+        self, sheet_name: str, spreadsheet_id: str,
+    ) -> list[dict[str, Any]]:
         """Get all tables in a specific sheet"""
         try:
             tables = await self.find_tables(sheet_name, spreadsheet_id)
@@ -432,8 +432,8 @@ class GoogleSheetsParser:
                     {"role": "user", "content": formatted_prompt},
                 ]
                 response = await self._call_llm(messages)
-                if '</think>' in response.content:
-                    response.content = response.content.split('</think>')[-1]
+                if "</think>" in response.content:
+                    response.content = response.content.split("</think>")[-1]
                 try:
                     new_headers = [
                         h.strip() for h in response.content.strip().split(",")
@@ -449,7 +449,7 @@ class GoogleSheetsParser:
                             "start_col": table["start_col"],
                             "end_row": table["end_row"],
                             "end_col": table["end_col"],
-                        }
+                        },
                     )
 
                 except Exception:
@@ -462,8 +462,8 @@ class GoogleSheetsParser:
 
     @exponential_backoff()
     async def process_sheet_with_summaries(
-        self, llm, sheet_name: str, spreadsheet_id: str
-    ) -> Dict[str, Any]:
+        self, llm, sheet_name: str, spreadsheet_id: str,
+    ) -> dict[str, Any]:
         """Process a sheet and generate all summaries and row texts"""
         try:
             self.llm = llm
@@ -489,7 +489,7 @@ class GoogleSheetsParser:
                                 },
                                 "natural_language_text": row_text,
                                 "row_num": row[0]["row"],
-                            }
+                            },
                         )
                 processed_tables.append(
                     {
@@ -502,16 +502,16 @@ class GoogleSheetsParser:
                             "end_row": table["end_row"],
                             "end_col": table["end_col"],
                         },
-                    }
+                    },
                 )
             return {"sheet_name": sheet_name, "tables": processed_tables}
 
         except Exception as e:
-            self.logger.error(f"❌ Error processing sheet with summaries: {str(e)}")
+            self.logger.error(f"❌ Error processing sheet with summaries: {e!s}")
             raise
 
     @exponential_backoff()
-    async def get_table_summary(self, table: Dict[str, Any]) -> str:
+    async def get_table_summary(self, table: dict[str, Any]) -> str:
         """Get a natural language summary of a specific table"""
         try:
             # Prepare sample data
@@ -522,21 +522,21 @@ class GoogleSheetsParser:
 
             # Get summary from LLM with retry
             messages = self.table_summary_prompt.format_messages(
-                headers=table["headers"], sample_data=json.dumps(sample_data, indent=2)
+                headers=table["headers"], sample_data=json.dumps(sample_data, indent=2),
             )
             response = await self._call_llm(messages)
-            if '</think>' in response.content:
-                response.content = response.content.split('</think>')[-1]
+            if "</think>" in response.content:
+                response.content = response.content.split("</think>")[-1]
             return response.content
 
         except Exception as e:
-            self.logger.error(f"❌ Error getting table summary: {str(e)}")
+            self.logger.error(f"❌ Error getting table summary: {e!s}")
             raise
 
     @exponential_backoff()
     async def get_rows_text(
-        self, rows: List[List[Dict[str, Any]]], table_summary: str
-    ) -> List[str]:
+        self, rows: list[list[dict[str, Any]]], table_summary: str,
+    ) -> list[str]:
         """Convert multiple rows into natural language text using context from summaries"""
         try:
             # Prepare rows data
@@ -546,12 +546,12 @@ class GoogleSheetsParser:
 
             # Get natural language text from LLM with retry
             messages = self.row_text_prompt.format_messages(
-                table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2)
+                table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2),
             )
 
             response = await self._call_llm(messages)
-            if '</think>' in response.content:
-                response.content = response.content.split('</think>')[-1]
+            if "</think>" in response.content:
+                response.content = response.content.split("</think>")[-1]
             # Parse JSON array from response
             try:
                 return json.loads(response.content)
@@ -569,5 +569,5 @@ class GoogleSheetsParser:
                     return [content]
 
         except Exception as e:
-            self.logger.error(f"❌ Error getting rows text: {str(e)}")
+            self.logger.error(f"❌ Error getting rows text: {e!s}")
             raise

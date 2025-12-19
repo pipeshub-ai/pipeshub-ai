@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any
 
 from pydantic import BaseModel  # type: ignore
 
@@ -10,12 +10,13 @@ from app.sources.client.iclient import IClient
 
 class BookStackResponse(BaseModel):
     """Standardized BookStack API response wrapper"""
-    success: bool
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    message: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    success: bool
+    data: dict[str, Any] | None = None
+    error: str | None = None
+    message: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
         return self.model_dump()
 
@@ -38,14 +39,14 @@ class BookStackRESTClientViaToken(HTTPClient):
         token = f"{token_id}:{token_secret}"
         # Initialize with the combined token and "Token" as the auth type
         super().__init__(token, "Token")
-        self.base_url = base_url.rstrip('/')
+        self.base_url = base_url.rstrip("/")
         self.token_id = token_id
         self.token_secret = token_secret
 
         # Add BookStack-specific headers
         self.headers.update({
             "Content-Type": "application/json",
-            "Accept": "application/json"
+            "Accept": "application/json",
         })
 
     def get_base_url(self) -> str:
@@ -61,6 +62,7 @@ class BookStackTokenConfig(BaseModel):
         token_secret: The token secret from BookStack
         ssl: Whether to use SSL (default: True)
     """
+
     base_url: str
     token_id: str
     token_secret: str
@@ -102,10 +104,11 @@ class BookStackClient(IClient):
 
     @classmethod
     async def build_and_validate(cls, config: BookStackTokenConfig) -> "BookStackClient":
-        """
-        Builds the BookStackClient and validates credentials by making a test API call.
+        """Builds the BookStackClient and validates credentials by making a test API call.
+
         Raises:
             ValueError: If the API token is invalid or the connection fails.
+
         """
         # 1. Build the client (synchronously)
         client_instance = cls.build_with_config(config)
@@ -124,7 +127,7 @@ class BookStackClient(IClient):
             url=validation_url,
             headers=headers,
             query=params,
-            body=None
+            body=None,
         )
 
         try:
@@ -132,12 +135,12 @@ class BookStackClient(IClient):
             data = response.json() # Get the response data
 
             # Check for BookStack's error format in the JSON response
-            if isinstance(data, dict) and 'error' in data:
+            if isinstance(data, dict) and "error" in data:
                 # Validation failed, parse the error
-                error_data = data['error']
+                error_data = data["error"]
                 error_msg = str(error_data)
                 if isinstance(error_data, dict):
-                    error_msg = error_data.get('message', "Invalid token")
+                    error_msg = error_data.get("message", "Invalid token")
                 raise ValueError(f"BookStack token validation failed: {error_msg}")
 
             # If no 'error' key, assume success
@@ -148,7 +151,7 @@ class BookStackClient(IClient):
             raise
         except Exception as e:
             # This will catch network errors or if response.json() fails
-            raise ValueError(f"Failed to connect to BookStack for validation: {str(e)}") from e
+            raise ValueError(f"Failed to connect to BookStack for validation: {e!s}") from e
 
     @classmethod
     async def build_from_services(
@@ -174,18 +177,17 @@ class BookStackClient(IClient):
             config = BookStackTokenConfig(
                 base_url=base_url,
                 token_id=token_id,
-                token_secret=token_secret
+                token_secret=token_secret,
             )
             return cls.build_with_config(config)
-        else:
-            raise ValueError(f"Unsupported auth type: {auth_type}")
+        raise ValueError(f"Unsupported auth type: {auth_type}")
 
     @staticmethod
-    async def _get_connector_config(config_service: ConfigurationService, connector_name: str) -> Dict[str, Any]:
+    async def _get_connector_config(config_service: ConfigurationService, connector_name: str) -> dict[str, Any]:
         """Get connector configuration from config service"""
         try:
             config_path = f"/services/connectors/{connector_name}/config"
             config_data = await config_service.get_config(config_path)
             return config_data
         except Exception as e:
-            raise ValueError(f"Failed to get {connector_name} configuration: {str(e)}")
+            raise ValueError(f"Failed to get {connector_name} configuration: {e!s}")

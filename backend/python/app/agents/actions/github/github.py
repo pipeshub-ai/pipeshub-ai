@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import threading
-from typing import List, Optional, Tuple
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -18,13 +17,15 @@ class GitHub:
 
     def __init__(self, client: GitHubClient) -> None:
         """Initialize the GitHub tool with a data source wrapper.
+
         Args:
             client: An initialized `GitHubClient` instance
+
         """
         self.client = GitHubDataSource(client)
         self._bg_loop = asyncio.new_event_loop()
         self._bg_loop_thread = threading.Thread(
-            target=self._start_background_loop, daemon=True
+            target=self._start_background_loop, daemon=True,
         )
         self._bg_loop_thread.start()
 
@@ -51,12 +52,12 @@ class GitHub:
             logger.warning(f"GitHub shutdown encountered an issue: {exc}")
 
     def _handle_response(
-        self, response: GitHubResponse, success_message: str
-    ) -> Tuple[bool, str]:
+        self, response: GitHubResponse, success_message: str,
+    ) -> tuple[bool, str]:
         """Handle GitHubResponse and return standardized tuple."""
         if response.success:
             return True, json.dumps(
-                {"message": success_message, "data": response.data or {}}
+                {"message": success_message, "data": response.data or {}},
             )
         return False, json.dumps({"error": response.error or "Unknown error"})
 
@@ -97,9 +98,9 @@ class GitHub:
         self,
         name: str,
         private: bool = True,
-        description: Optional[str] = None,
+        description: str | None = None,
         auto_init: bool = True,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Create a new repository on GitHub."""
         try:
             response = self._run_async(
@@ -108,7 +109,7 @@ class GitHub:
                     private=private,
                     description=description,
                     auto_init=auto_init,
-                )
+                ),
             )
             return self._handle_response(response, "Repository created successfully")
         except Exception as e:
@@ -133,7 +134,7 @@ class GitHub:
         ],
         returns="JSON with repository details",
     )
-    def get_repository(self, owner: str, repo: str) -> Tuple[bool, str]:
+    def get_repository(self, owner: str, repo: str) -> tuple[bool, str]:
         """Get details of a specific repository from GitHub."""
         try:
             response = self._run_async(self.client.get_repo(owner=owner, repo=repo))
@@ -160,7 +161,7 @@ class GitHub:
         ],
         returns="JSON with repository details",
     )
-    def update_repository(self, owner: str, repo: str) -> Tuple[bool, str]:
+    def update_repository(self, owner: str, repo: str) -> tuple[bool, str]:
         """Get repository details (GitHub API doesn't support direct repository updates)."""
         try:
             response = self._run_async(self.client.get_repo(owner=owner, repo=repo))
@@ -217,10 +218,10 @@ class GitHub:
         owner: str,
         repo: str,
         title: str,
-        body: Optional[str] = None,
-        assignees: Optional[List[str]] = None,
-        labels: Optional[List[str]] = None,
-    ) -> Tuple[bool, str]:
+        body: str | None = None,
+        assignees: list[str] | None = None,
+        labels: list[str] | None = None,
+    ) -> tuple[bool, str]:
         """Create a new issue in a GitHub repository."""
         try:
             response = self._run_async(
@@ -231,7 +232,7 @@ class GitHub:
                     body=body,
                     assignees=assignees,
                     labels=labels,
-                )
+                ),
             )
             return self._handle_response(response, "Issue created successfully")
         except Exception as e:
@@ -261,11 +262,11 @@ class GitHub:
         ],
         returns="JSON with issue details",
     )
-    def get_issue(self, owner: str, repo: str, number: int) -> Tuple[bool, str]:
+    def get_issue(self, owner: str, repo: str, number: int) -> tuple[bool, str]:
         """Get details of a specific issue from a GitHub repository."""
         try:
             response = self._run_async(
-                self.client.get_issue(owner=owner, repo=repo, number=number)
+                self.client.get_issue(owner=owner, repo=repo, number=number),
             )
             return self._handle_response(response, "Issue fetched successfully")
         except Exception as e:
@@ -295,11 +296,11 @@ class GitHub:
         ],
         returns="JSON with updated issue details",
     )
-    def close_issue(self, owner: str, repo: str, number: int) -> Tuple[bool, str]:
+    def close_issue(self, owner: str, repo: str, number: int) -> tuple[bool, str]:
         """Close an issue in a GitHub repository."""
         try:
             response = self._run_async(
-                self.client.close_issue(owner=owner, repo=repo, number=number)
+                self.client.close_issue(owner=owner, repo=repo, number=number),
             )
             return self._handle_response(response, "Issue closed successfully")
         except Exception as e:
@@ -359,9 +360,9 @@ class GitHub:
         title: str,
         head: str,
         base: str,
-        body: Optional[str] = None,
+        body: str | None = None,
         draft: bool = False,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Create a new pull request in a GitHub repository."""
         try:
             response = self._run_async(
@@ -373,7 +374,7 @@ class GitHub:
                     base=base,
                     body=body,
                     draft=draft,
-                )
+                ),
             )
             return self._handle_response(response, "Pull request created successfully")
         except Exception as e:
@@ -403,11 +404,11 @@ class GitHub:
         ],
         returns="JSON with pull request details",
     )
-    def get_pull_request(self, owner: str, repo: str, number: int) -> Tuple[bool, str]:
+    def get_pull_request(self, owner: str, repo: str, number: int) -> tuple[bool, str]:
         """Get details of a specific pull request from a GitHub repository."""
         try:
             response = self._run_async(
-                self.client.get_pull(owner=owner, repo=repo, number=number)
+                self.client.get_pull(owner=owner, repo=repo, number=number),
             )
             return self._handle_response(response, "Pull request fetched successfully")
         except Exception as e:
@@ -455,9 +456,9 @@ class GitHub:
         owner: str,
         repo: str,
         number: int,
-        commit_message: Optional[str] = None,
+        commit_message: str | None = None,
         merge_method: str = "merge",
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Merge a pull request in a GitHub repository."""
         try:
             response = self._run_async(
@@ -467,7 +468,7 @@ class GitHub:
                     number=number,
                     commit_message=commit_message,
                     merge_method=merge_method,
-                )
+                ),
             )
             return self._handle_response(response, "Pull request merged successfully")
         except Exception as e:
@@ -487,7 +488,7 @@ class GitHub:
         ],
         returns="JSON with search results",
     )
-    def search_repositories(self, query: str) -> Tuple[bool, str]:
+    def search_repositories(self, query: str) -> tuple[bool, str]:
         """Search for repositories on GitHub."""
         try:
             response = self._run_async(self.client.search_repositories(query=query))

@@ -1,6 +1,5 @@
 import asyncio
 import os
-from typing import Optional, Tuple
 
 from arango import ArangoClient
 
@@ -16,7 +15,7 @@ from app.services.kafka_consumer import KafkaConsumerManager
 from app.utils.logger import create_logger
 
 
-def _get_env(logger, primary: str, *fallbacks: str, allow_fallback: bool = True) -> Optional[str]:
+def _get_env(logger, primary: str, *fallbacks: str, allow_fallback: bool = True) -> str | None:
     """Fetch env var from primary name, otherwise try fallbacks."""
     possible_names = (primary, *(fallbacks if allow_fallback else []))
     for name in possible_names:
@@ -28,22 +27,20 @@ def _get_env(logger, primary: str, *fallbacks: str, allow_fallback: bool = True)
                 logger.warning(
                     "Using fallback env var %s for %s. "
                     "Consider defining %s to keep environments explicit.",
-                    name, primary, primary
+                    name, primary, primary,
                 )
             return value
     return None
 
 
 async def test_run() -> None:
-    """
-    Initializes and runs the Dropbox Individual connector sync process for testing.
+    """Initializes and runs the Dropbox Individual connector sync process for testing.
     This is for individual/personal Dropbox accounts, not team accounts.
     """
     org_id = "68d28814cdabcc98a3e02605"
 
     async def create_test_users(arango_service: BaseArangoService) -> None:
-        """
-        Set up test organization and user in ArangoDB.
+        """Set up test organization and user in ArangoDB.
         For individual accounts, we create a single user record.
         """
         org = {
@@ -75,11 +72,12 @@ async def test_run() -> None:
 
         arango_service.logger.info(f"Test data initialized: Org {org_id} and User {user_email} created.")
 
-    async def setup_services() -> Tuple:
-        """
-        Initialize all required services (logger, config, database, etc.).
+    async def setup_services() -> tuple:
+        """Initialize all required services (logger, config, database, etc.).
+
         Returns:
             Tuple of (logger, config_service, data_store_provider, arango_service)
+
         """
         logger = create_logger("dropbox_individual_connector")
         base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -99,10 +97,11 @@ async def test_run() -> None:
         return logger, config_service, data_store_provider, arango_service
 
     async def configure_dropbox_credentials(key_value_store: InMemoryKeyValueStore, logger) -> bool:
-        """
-        Set up Dropbox credentials for individual account in the config store.
+        """Set up Dropbox credentials for individual account in the config store.
+
         Returns:
             bool: True if credentials are configured successfully
+
         """
         access_token = _get_env(logger, "DROPBOX_PERSONAL_TOKEN", "DROPBOX_TOKEN")
         app_key = _get_env(logger, "DROPBOX_PERSONAL_APP_KEY", "DROPBOX_APP_KEY")
@@ -110,7 +109,7 @@ async def test_run() -> None:
         refresh_token = _get_env(
             logger,
             "DROPBOX_PERSONAL_REFRESH_TOKEN",
-            allow_fallback=False
+            allow_fallback=False,
         )
 
         missing_values = []
@@ -152,8 +151,7 @@ async def test_run() -> None:
         return True
 
     async def run_connector(logger, data_store_provider, config_service) -> None:
-        """
-        Create and run the Dropbox Individual connector.
+        """Create and run the Dropbox Individual connector.
         Handles initialization and sync execution.
         """
         dropbox_connector = await DropboxIndividualConnector.create_connector(

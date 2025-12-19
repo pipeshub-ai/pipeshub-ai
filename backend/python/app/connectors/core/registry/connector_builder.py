@@ -1,6 +1,7 @@
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Type, Union
+from typing import Any
 
 from app.connectors.core.registry.filters import FilterCategory, FilterField, FilterType
 
@@ -8,6 +9,7 @@ from app.connectors.core.registry.filters import FilterCategory, FilterField, Fi
 @dataclass
 class AuthField:
     """Represents an authentication field"""
+
     name: str
     display_name: str
     field_type: str = "TEXT"
@@ -23,21 +25,23 @@ class AuthField:
 @dataclass
 class CustomField:
     """Represents a custom field for sync configuration"""
+
     name: str
     display_name: str
     field_type: str
     description: str = ""
     required: bool = False
     default_value: Any = ""
-    options: List[str] = field(default_factory=list)
-    min_length: Optional[int] = None
-    max_length: Optional[int] = None
+    options: list[str] = field(default_factory=list)
+    min_length: int | None = None
+    max_length: int | None = None
     is_secret: bool = False
 
 
 @dataclass
 class DocumentationLink:
     """Represents a documentation link"""
+
     title: str
     url: str
     doc_type: str
@@ -49,7 +53,7 @@ class ConnectorConfigBuilder:
     def __init__(self) -> None:
         self._reset()
 
-    def _reset(self) -> 'ConnectorConfigBuilder':
+    def _reset(self) -> "ConnectorConfigBuilder":
         """Reset the builder to default state"""
         self.config = {
             "iconPath": "/assets/icons/connectors/default.svg",
@@ -64,7 +68,7 @@ class ConnectorConfigBuilder:
                 "values": {},
                 "customFields": [],
                 "customValues": {},
-                "conditionalDisplay": {}
+                "conditionalDisplay": {},
             },
             "sync": {
                 "supportedStrategies": ["MANUAL"],
@@ -74,7 +78,7 @@ class ConnectorConfigBuilder:
                     "webhookUrl": "",
                     "events": [],
                     "verificationToken": "",
-                    "secretKey": ""
+                    "secretKey": "",
                 },
                 "scheduledConfig": {
                     "intervalMinutes": 60,
@@ -84,69 +88,68 @@ class ConnectorConfigBuilder:
                     "nextTime": 0,
                     "endTime": 0,
                     "maxRepetitions": 0,
-                    "repetitionCount": 0
+                    "repetitionCount": 0,
                 },
                 "realtimeConfig": {
                     "supported": False,
-                    "connectionType": "WEBSOCKET"
+                    "connectionType": "WEBSOCKET",
                 },
                 "customFields": [],
                 "customValues": {},
-                "values": {}
+                "values": {},
             },
             "filters": {
                 "sync": {
                     "schema": {"fields": []},
-                    "values": {}
+                    "values": {},
                 },
                 "indexing": {
                     "schema": {"fields": []},
-                    "values": {}
-                }
-            }
+                    "values": {},
+                },
+            },
         }
         return self
 
-    def with_icon(self, icon_path: str) -> 'ConnectorConfigBuilder':
+    def with_icon(self, icon_path: str) -> "ConnectorConfigBuilder":
         """Set the icon path"""
         self.config["iconPath"] = icon_path
         return self
 
-    def with_realtime_support(self, supported: bool = True, connection_type: str = "WEBSOCKET") -> 'ConnectorConfigBuilder':
+    def with_realtime_support(self, supported: bool = True, connection_type: str = "WEBSOCKET") -> "ConnectorConfigBuilder":
         """Enable or disable realtime support"""
         self.config["supportsRealtime"] = supported
         self.config["sync"]["realtimeConfig"]["supported"] = supported
         self.config["sync"]["realtimeConfig"]["connectionType"] = connection_type
         return self
 
-    def with_sync_support(self, supported: bool = True) -> 'ConnectorConfigBuilder':
+    def with_sync_support(self, supported: bool = True) -> "ConnectorConfigBuilder":
         """Enable or disable sync support"""
         self.config["supportsSync"] = supported
         return self
 
-    def add_documentation_link(self, link: DocumentationLink) -> 'ConnectorConfigBuilder':
+    def add_documentation_link(self, link: DocumentationLink) -> "ConnectorConfigBuilder":
         """Add documentation link"""
         self.config["documentationLinks"].append({
             "title": link.title,
             "url": link.url,
-            "type": link.doc_type
+            "type": link.doc_type,
         })
         return self
 
-    def with_auth_type(self, auth_type: str) -> 'ConnectorConfigBuilder':
+    def with_auth_type(self, auth_type: str) -> "ConnectorConfigBuilder":
         """Set authentication type"""
         self.config["auth"]["type"] = auth_type
         return self
 
-    def with_redirect_uri(self, redirect_uri: str, display: bool = True) -> 'ConnectorConfigBuilder':
+    def with_redirect_uri(self, redirect_uri: str, display: bool = True) -> "ConnectorConfigBuilder":
         """Set redirect URI configuration"""
         self.config["auth"]["redirectUri"] = redirect_uri
         self.config["auth"]["displayRedirectUri"] = display
         return self
 
-    def add_auth_field(self, field: AuthField) -> 'ConnectorConfigBuilder':
+    def add_auth_field(self, field: AuthField) -> "ConnectorConfigBuilder":
         """Add an authentication field"""
-
         if field.field_type == "CHECKBOX":
             field.min_length = 0
 
@@ -162,12 +165,12 @@ class ConnectorConfigBuilder:
                 "minLength": field.min_length,
                 "maxLength": field.max_length,
             },
-            "isSecret": field.is_secret
+            "isSecret": field.is_secret,
         }
         self.config["auth"]["schema"]["fields"].append(field_config)
         return self
 
-    def with_oauth_urls(self, authorize_url: str, token_url: str, scopes: Optional[List[str]] = None) -> 'ConnectorConfigBuilder':
+    def with_oauth_urls(self, authorize_url: str, token_url: str, scopes: list[str] | None = None) -> "ConnectorConfigBuilder":
         """Set OAuth URLs and scopes for OAuth connectors"""
         self.config["auth"]["authorizeUrl"] = authorize_url
         self.config["auth"]["tokenUrl"] = token_url
@@ -175,13 +178,13 @@ class ConnectorConfigBuilder:
             self.config["auth"]["scopes"] = scopes
         return self
 
-    def with_sync_strategies(self, strategies: List[str], selected: str = "MANUAL") -> 'ConnectorConfigBuilder':
+    def with_sync_strategies(self, strategies: list[str], selected: str = "MANUAL") -> "ConnectorConfigBuilder":
         """Configure sync strategies"""
         self.config["sync"]["supportedStrategies"] = strategies
         self.config["sync"]["selectedStrategy"] = selected
         return self
 
-    def with_webhook_config(self, supported: bool = True, events: Optional[List[str]] = None) -> 'ConnectorConfigBuilder':
+    def with_webhook_config(self, supported: bool = True, events: list[str] | None = None) -> "ConnectorConfigBuilder":
         """Configure webhook support"""
         self.config["sync"]["webhookConfig"]["supported"] = supported
         if events:
@@ -190,7 +193,7 @@ class ConnectorConfigBuilder:
             self.config["sync"]["supportedStrategies"].append("WEBHOOK")
         return self
 
-    def with_scheduled_config(self, supported: bool = True, interval_minutes: int = 60) -> 'ConnectorConfigBuilder':
+    def with_scheduled_config(self, supported: bool = True, interval_minutes: int = 60) -> "ConnectorConfigBuilder":
         """Configure scheduled sync"""
         if supported:
             self.config["sync"]["scheduledConfig"]["intervalMinutes"] = interval_minutes
@@ -198,7 +201,7 @@ class ConnectorConfigBuilder:
                 self.config["sync"]["supportedStrategies"].append("SCHEDULED")
         return self
 
-    def add_sync_custom_field(self, field: CustomField) -> 'ConnectorConfigBuilder':
+    def add_sync_custom_field(self, field: CustomField) -> "ConnectorConfigBuilder":
         """Add a custom field to sync configuration"""
         field_config = {
             "name": field.name,
@@ -208,7 +211,7 @@ class ConnectorConfigBuilder:
             "required": field.required,
             "defaultValue": field.default_value,
             "validation": {},
-            "isSecret": field.is_secret
+            "isSecret": field.is_secret,
         }
 
         if field.options:
@@ -222,15 +225,15 @@ class ConnectorConfigBuilder:
         self.config["sync"]["customFields"].append(field_config)
         return self
 
-    def add_filter_field(self, field: FilterField) -> 'ConnectorConfigBuilder':
-        """
-        Add a filter field to the connector schema.
+    def add_filter_field(self, field: FilterField) -> "ConnectorConfigBuilder":
+        """Add a filter field to the connector schema.
 
         The field will be added to either sync or indexing category
         based on field.category.
 
         Args:
             field: FilterField definition with type, operators, category
+
         """
         schema_dict = field.to_schema_dict()
         category = field.category.value  # "sync" or "indexing"
@@ -240,18 +243,18 @@ class ConnectorConfigBuilder:
 
         return self
 
-    def add_conditional_display(self, field_name: str, show_when_field: str, operator: str, value: Union[str, bool, int, float]) -> 'ConnectorConfigBuilder':
+    def add_conditional_display(self, field_name: str, show_when_field: str, operator: str, value: str | bool | float) -> "ConnectorConfigBuilder":
         """Add conditional display logic for auth fields"""
         self.config["auth"]["conditionalDisplay"][field_name] = {
             "showWhen": {
                 "field": show_when_field,
                 "operator": operator,
-                "value": value
-            }
+                "value": value,
+            },
         }
         return self
 
-    def build(self) -> Dict[str, Any]:
+    def build(self) -> dict[str, Any]:
         """Build and return the final configuration"""
         result = deepcopy(self.config)
         self._reset()
@@ -269,32 +272,32 @@ class ConnectorBuilder:
         self.app_categories = []
         self.config_builder = ConnectorConfigBuilder()
 
-    def in_group(self, app_group: str) -> 'ConnectorBuilder':
+    def in_group(self, app_group: str) -> "ConnectorBuilder":
         """Set the app group"""
         self.app_group = app_group
         return self
 
-    def with_auth_type(self, auth_type: str) -> 'ConnectorBuilder':
+    def with_auth_type(self, auth_type: str) -> "ConnectorBuilder":
         """Set the authentication type"""
         self.auth_type = auth_type
         return self
 
-    def with_description(self, description: str) -> 'ConnectorBuilder':
+    def with_description(self, description: str) -> "ConnectorBuilder":
         """Set the app description"""
         self.app_description = description
         return self
 
-    def with_categories(self, categories: List[str]) -> 'ConnectorBuilder':
+    def with_categories(self, categories: list[str]) -> "ConnectorBuilder":
         """Set the app categories"""
         self.app_categories = categories
         return self
 
-    def configure(self, config_func: Callable[[ConnectorConfigBuilder], ConnectorConfigBuilder]) -> 'ConnectorBuilder':
+    def configure(self, config_func: Callable[[ConnectorConfigBuilder], ConnectorConfigBuilder]) -> "ConnectorBuilder":
         """Configure the connector using a configuration function"""
         self.config_builder = config_func(self.config_builder)
         return self
 
-    def build_decorator(self) -> Callable[[Type], Type]:
+    def build_decorator(self) -> Callable[[type], type]:
         """Build the final connector decorator"""
         from app.connectors.core.registry.connector_registry import Connector
 
@@ -310,10 +313,10 @@ class ConnectorBuilder:
             auth_type=self.auth_type,
             app_description=self.app_description,
             app_categories=self.app_categories,
-            config=config
+            config=config,
         )
 
-    def _validate_oauth_requirements(self, config: Dict[str, Any]) -> None:
+    def _validate_oauth_requirements(self, config: dict[str, Any]) -> None:
         """Ensure required OAuth fields are provided for OAuth connectors.
 
         Required:
@@ -347,7 +350,7 @@ class ConnectorBuilder:
         if missing_items:
             details = ", ".join(missing_items)
             raise ValueError(
-                f"OAuth configuration incomplete for connector '{self.name}': missing {details}"
+                f"OAuth configuration incomplete for connector '{self.name}': missing {details}",
             )
 
 
@@ -362,7 +365,7 @@ class CommonFields:
             name="clientId",
             display_name="Client ID",
             placeholder="Enter your Client ID",
-            description=f"The OAuth2 client ID from {provider}"
+            description=f"The OAuth2 client ID from {provider}",
         )
 
     @staticmethod
@@ -374,7 +377,7 @@ class CommonFields:
             placeholder="Enter your Client Secret",
             description=f"The OAuth2 client secret from {provider}",
             field_type="PASSWORD",
-            is_secret=True
+            is_secret=True,
         )
 
     @staticmethod
@@ -387,7 +390,7 @@ class CommonFields:
             description=f"The {token_name} from your application settings",
             field_type="PASSWORD",
             max_length=2000,
-            is_secret=True
+            is_secret=True,
         )
 
     @staticmethod
@@ -400,7 +403,7 @@ class CommonFields:
             description=f"The {token_name} from your application settings",
             field_type="PASSWORD",
             max_length=8000,
-            is_secret=True
+            is_secret=True,
         )
 
     @staticmethod
@@ -411,7 +414,7 @@ class CommonFields:
             display_name="Username",
             placeholder="Enter your username",
             description="Your account username or email",
-            min_length=3
+            min_length=3,
         )
 
     @staticmethod
@@ -425,7 +428,7 @@ class CommonFields:
             field_type="PASSWORD",
             min_length=8,
             max_length=2000,
-            is_secret=True
+            is_secret=True,
         )
 
     @staticmethod
@@ -437,11 +440,11 @@ class CommonFields:
             placeholder=f"https://your-{service_name}.com",
             description=f"The base URL of your {service_name} instance",
             field_type="URL",
-            max_length=2000
+            max_length=2000,
         )
 
     @staticmethod
-    def file_types_filter(options_endpoint: Optional[str] = None) -> FilterField:
+    def file_types_filter(options_endpoint: str | None = None) -> FilterField:
         """Standard file types filter"""
         return FilterField(
             name="fileTypes",
@@ -450,11 +453,11 @@ class CommonFields:
             category=FilterCategory.SYNC,
             description="Select the types of files to sync",
             options=["document", "spreadsheet", "presentation", "pdf", "image", "video"],
-            options_endpoint=options_endpoint
+            options_endpoint=options_endpoint,
         )
 
     @staticmethod
-    def folders_filter(options_endpoint: Optional[str] = None) -> FilterField:
+    def folders_filter(options_endpoint: str | None = None) -> FilterField:
         """Standard folders filter"""
         return FilterField(
             name="folders",
@@ -462,11 +465,11 @@ class CommonFields:
             filter_type=FilterType.LIST,
             category=FilterCategory.SYNC,
             description="Select folders to sync from",
-            options_endpoint=options_endpoint
+            options_endpoint=options_endpoint,
         )
 
     @staticmethod
-    def channels_filter(options_endpoint: Optional[str] = None) -> FilterField:
+    def channels_filter(options_endpoint: str | None = None) -> FilterField:
         """Standard channels filter"""
         return FilterField(
             name="channels",
@@ -474,29 +477,29 @@ class CommonFields:
             filter_type=FilterType.LIST,
             category=FilterCategory.SYNC,
             description="Select channels to sync messages from",
-            options_endpoint=options_endpoint
+            options_endpoint=options_endpoint,
         )
 
     @staticmethod
-    def modified_date_filter(description: Optional[str] = None) -> FilterField:
+    def modified_date_filter(description: str | None = None) -> FilterField:
         """Standard modified date filter with operator selection"""
         return FilterField(
             name="modified",
             display_name="Modified Date",
             filter_type=FilterType.DATETIME,
             category=FilterCategory.SYNC,
-            description=description or "Filter content by modification date."
+            description=description or "Filter content by modification date.",
         )
 
     @staticmethod
-    def created_date_filter(description: Optional[str] = None) -> FilterField:
+    def created_date_filter(description: str | None = None) -> FilterField:
         """Standard created date filter with operator selection"""
         return FilterField(
             name="created",
             display_name="Created Date",
             filter_type=FilterType.DATETIME,
             category=FilterCategory.SYNC,
-            description=description or "Filter content by creation date."
+            description=description or "Filter content by creation date.",
         )
 
     @staticmethod
@@ -508,7 +511,7 @@ class CommonFields:
             filter_type=FilterType.BOOLEAN,
             category=FilterCategory.INDEXING,
             description="Disable automatic indexing for all synced records.",
-            default_value=False
+            default_value=False,
         )
 
     @staticmethod
@@ -520,7 +523,7 @@ class CommonFields:
             description="Number of items to process in each batch",
             field_type="SELECT",
             default_value="50",
-            options=["25", "50", "100"]
+            options=["25", "50", "100"],
         )
 
 

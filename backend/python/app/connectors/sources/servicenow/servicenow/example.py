@@ -21,7 +21,7 @@ async def test_run() -> None:
     org_id = "org_id"
 
     async def create_test_users(
-        user_email: str, arango_service: BaseArangoService
+        user_email: str, arango_service: BaseArangoService,
     ) -> None:
         org = {
             "_key": org_id,
@@ -52,7 +52,7 @@ async def test_run() -> None:
                     "entityType": "ORGANIZATION",
                     "createdAtTimestamp": 1718745600,
                     "updatedAtTimestamp": 1718745600,
-                }
+                },
             ],
             CollectionNames.BELONGS_TO.value,
         )
@@ -63,7 +63,7 @@ async def test_run() -> None:
     kafka_service = KafkaConsumerManager(logger, config_service, None, None)
     arango_client = ArangoClient()
     arango_service = BaseArangoService(
-        logger, arango_client, config_service, kafka_service
+        logger, arango_client, config_service, kafka_service,
     )
     await arango_service.connect()
     data_store_provider = ArangoDataStore(logger, arango_service)
@@ -82,11 +82,11 @@ async def test_run() -> None:
         "credentials": {
             "access_token": os.getenv("SERVICENOW_ACCESS_TOKEN"),
             "refresh_token": os.getenv("SERVICENOW_REFRESH_TOKEN"),
-        }
+        },
     }
     await key_value_store.create_key("/services/connectors/servicenow/config", config)
     connector: BaseConnector = await ServiceNowConnector.create_connector(
-        logger, data_store_provider, config_service
+        logger, data_store_provider, config_service,
     )
     await connector.init()
     await connector.run_sync()

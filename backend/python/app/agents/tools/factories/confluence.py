@@ -1,5 +1,4 @@
-"""
-Client factories for Confluence.
+"""Client factories for Confluence.
 """
 
 
@@ -15,8 +14,7 @@ class ConfluenceClientFactory(ClientFactory):
 
     async def create_client(self, config_service, logger, state=None) -> ConfluenceClient:
         """Create Confluence client instance"""
-
         return await ConfluenceClient.build_from_services(
             logger=logger,
-            config_service=config_service
+            config_service=config_service,
         )

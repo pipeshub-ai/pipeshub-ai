@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-from typing import Optional, Tuple
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -15,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 class Linear:
     """Linear tool exposed to the agents"""
+
     def __init__(self, client: LinearClient) -> None:
         """Initialize the Linear tool"""
         """
@@ -45,9 +45,9 @@ class Linear:
         app_name="linear",
         tool_name="get_viewer",
         description="Get current user information",
-        parameters=[]
+        parameters=[],
     )
-    def get_viewer(self) -> Tuple[bool, str]:
+    def get_viewer(self) -> tuple[bool, str]:
         """Get current user information"""
         """
         Returns:
@@ -59,8 +59,7 @@ class Linear:
 
             if response.success:
                 return True, json.dumps({"data": response.data})
-            else:
-                return False, json.dumps({"error": response.message})
+            return False, json.dumps({"error": response.message})
         except Exception as e:
             logger.error(f"Error getting viewer: {e}")
             return False, json.dumps({"error": str(e)})
@@ -74,11 +73,11 @@ class Linear:
                 name="user_id",
                 type=ParameterType.STRING,
                 description="The ID of the user to get",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def get_user(self, user_id: str) -> Tuple[bool, str]:
+    def get_user(self, user_id: str) -> tuple[bool, str]:
         """Get user by ID"""
         """
         Args:
@@ -92,8 +91,7 @@ class Linear:
 
             if response.success:
                 return True, json.dumps({"data": response.data})
-            else:
-                return False, json.dumps({"error": response.message})
+            return False, json.dumps({"error": response.message})
         except Exception as e:
             logger.error(f"Error getting user: {e}")
             return False, json.dumps({"error": str(e)})
@@ -107,21 +105,21 @@ class Linear:
                 name="first",
                 type=ParameterType.INTEGER,
                 description="Number of teams to return",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="after",
                 type=ParameterType.STRING,
                 description="Cursor for pagination",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_teams(
         self,
-        first: Optional[int] = None,
-        after: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        first: int | None = None,
+        after: str | None = None,
+    ) -> tuple[bool, str]:
         """Get teams"""
         """
         Args:
@@ -136,8 +134,7 @@ class Linear:
 
             if response.success:
                 return True, json.dumps({"data": response.data})
-            else:
-                return False, json.dumps({"error": response.message})
+            return False, json.dumps({"error": response.message})
         except Exception as e:
             logger.error(f"Error getting teams: {e}")
             return False, json.dumps({"error": str(e)})
@@ -151,11 +148,11 @@ class Linear:
                 name="team_id",
                 type=ParameterType.STRING,
                 description="The ID of the team to get",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def get_team(self, team_id: str) -> Tuple[bool, str]:
+    def get_team(self, team_id: str) -> tuple[bool, str]:
         """Get team by ID"""
         """
         Args:
@@ -169,8 +166,7 @@ class Linear:
 
             if response.success:
                 return True, json.dumps({"data": response.data})
-            else:
-                return False, json.dumps({"error": response.message})
+            return False, json.dumps({"error": response.message})
         except Exception as e:
             logger.error(f"Error getting team: {e}")
             return False, json.dumps({"error": str(e)})
@@ -184,28 +180,28 @@ class Linear:
                 name="first",
                 type=ParameterType.INTEGER,
                 description="Number of issues to return",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="after",
                 type=ParameterType.STRING,
                 description="Cursor for pagination",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="filter",
                 type=ParameterType.STRING,
                 description="Filter for issues",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def get_issues(
         self,
-        first: Optional[int] = None,
-        after: Optional[str] = None,
-        filter: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        first: int | None = None,
+        after: str | None = None,
+        filter: str | None = None,
+    ) -> tuple[bool, str]:
         """Get issues"""
         """
         Args:
@@ -231,8 +227,7 @@ class Linear:
 
             if response.success:
                 return True, json.dumps({"data": response.data})
-            else:
-                return False, json.dumps({"error": response.message})
+            return False, json.dumps({"error": response.message})
         except Exception as e:
             logger.error(f"Error getting issues: {e}")
             return False, json.dumps({"error": str(e)})
@@ -246,11 +241,11 @@ class Linear:
                 name="issue_id",
                 type=ParameterType.STRING,
                 description="The ID of the issue to get",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def get_issue(self, issue_id: str) -> Tuple[bool, str]:
+    def get_issue(self, issue_id: str) -> tuple[bool, str]:
         """Get issue by ID"""
         """
         Args:
@@ -264,8 +259,7 @@ class Linear:
 
             if response.success:
                 return True, json.dumps({"data": response.data})
-            else:
-                return False, json.dumps({"error": response.message})
+            return False, json.dumps({"error": response.message})
         except Exception as e:
             logger.error(f"Error getting issue: {e}")
             return False, json.dumps({"error": str(e)})
@@ -279,42 +273,42 @@ class Linear:
                 name="team_id",
                 type=ParameterType.STRING,
                 description="The ID of the team",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="title",
                 type=ParameterType.STRING,
                 description="Title of the issue",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="description",
                 type=ParameterType.STRING,
                 description="Description of the issue",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="state_id",
                 type=ParameterType.STRING,
                 description="ID of the state",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="assignee_id",
                 type=ParameterType.STRING,
                 description="ID of the assignee",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def create_issue(
         self,
         team_id: str,
         title: str,
-        description: Optional[str] = None,
-        state_id: Optional[str] = None,
-        assignee_id: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        description: str | None = None,
+        state_id: str | None = None,
+        assignee_id: str | None = None,
+    ) -> tuple[bool, str]:
         """Create a new issue"""
         """
         Args:
@@ -341,8 +335,7 @@ class Linear:
 
             if response.success:
                 return True, json.dumps({"data": response.data})
-            else:
-                return False, json.dumps({"error": response.message})
+            return False, json.dumps({"error": response.message})
         except Exception as e:
             logger.error(f"Error creating issue: {e}")
             return False, json.dumps({"error": str(e)})
@@ -356,42 +349,42 @@ class Linear:
                 name="issue_id",
                 type=ParameterType.STRING,
                 description="The ID of the issue to update",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="title",
                 type=ParameterType.STRING,
                 description="New title of the issue",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="description",
                 type=ParameterType.STRING,
                 description="New description of the issue",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="state_id",
                 type=ParameterType.STRING,
                 description="New state ID",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="assignee_id",
                 type=ParameterType.STRING,
                 description="New assignee ID",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
     )
     def update_issue(
         self,
         issue_id: str,
-        title: Optional[str] = None,
-        description: Optional[str] = None,
-        state_id: Optional[str] = None,
-        assignee_id: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        title: str | None = None,
+        description: str | None = None,
+        state_id: str | None = None,
+        assignee_id: str | None = None,
+    ) -> tuple[bool, str]:
         """Update an issue"""
         """
         Args:
@@ -420,8 +413,7 @@ class Linear:
 
             if response.success:
                 return True, json.dumps({"data": response.data})
-            else:
-                return False, json.dumps({"error": response.message})
+            return False, json.dumps({"error": response.message})
         except Exception as e:
             logger.error(f"Error updating issue: {e}")
             return False, json.dumps({"error": str(e)})
@@ -435,11 +427,11 @@ class Linear:
                 name="issue_id",
                 type=ParameterType.STRING,
                 description="The ID of the issue to delete",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
     )
-    def delete_issue(self, issue_id: str) -> Tuple[bool, str]:
+    def delete_issue(self, issue_id: str) -> tuple[bool, str]:
         """Delete an issue"""
         """
         Args:
@@ -453,8 +445,7 @@ class Linear:
 
             if response.success:
                 return True, json.dumps({"data": response.data})
-            else:
-                return False, json.dumps({"error": response.message})
+            return False, json.dumps({"error": response.message})
         except Exception as e:
             logger.error(f"Error deleting issue: {e}")
             return False, json.dumps({"error": str(e)})

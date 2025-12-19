@@ -61,7 +61,7 @@ class ParserUserService:
 
             try:
                 creds_data = await self.google_token_handler.get_individual_token(
-                    org_id, user_id, app_name=app_name
+                    org_id, user_id, app_name=app_name,
                 )
                 if not creds_data:
                     raise GoogleAuthError(
@@ -103,7 +103,7 @@ class ParserUserService:
                     expiry_ms = creds_data.get("access_token_expiry_time")
                     if expiry_ms:
                         self.token_expiry = datetime.fromtimestamp(
-                            int(expiry_ms) / 1000, tz=timezone.utc
+                            int(expiry_ms) / 1000, tz=timezone.utc,
                         )
                     else:
                         self.token_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
@@ -160,7 +160,7 @@ class ParserUserService:
         now = datetime.now(timezone.utc)
         time_until_refresh = self.token_expiry - now - timedelta(minutes=20)
         self.logger.info(
-            f"Time until refresh: {time_until_refresh.total_seconds()} seconds"
+            f"Time until refresh: {time_until_refresh.total_seconds()} seconds",
         )
 
         if time_until_refresh.total_seconds() <= 0:
@@ -168,7 +168,7 @@ class ParserUserService:
             await self.google_token_handler.refresh_token(self.org_id, self.user_id, app_name=app_name)
 
             creds_data = await self.google_token_handler.get_individual_token(
-                self.org_id, self.user_id, app_name=app_name
+                self.org_id, self.user_id, app_name=app_name,
             )
 
             creds = google.oauth2.credentials.Credentials(
@@ -197,7 +197,7 @@ class ParserUserService:
                     expiry_ms = creds_data.get("access_token_expiry_time")
                     if expiry_ms:
                         self.token_expiry = datetime.fromtimestamp(
-                            int(expiry_ms) / 1000, tz=timezone.utc
+                            int(expiry_ms) / 1000, tz=timezone.utc,
                         )
                     else:
                         self.token_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
@@ -221,7 +221,7 @@ class ParserUserService:
         try:
             if not self.credentials:
                 raise GoogleAuthError(
-                    "No credentials provided for enterprise connection."
+                    "No credentials provided for enterprise connection.",
                 )
             self.org_id = org_id
             self.user_id = user_id
@@ -229,10 +229,10 @@ class ParserUserService:
                 # Initialize services
                 self.docs_service = build("docs", "v1", credentials=self.credentials)
                 self.sheets_service = build(
-                    "sheets", "v4", credentials=self.credentials
+                    "sheets", "v4", credentials=self.credentials,
                 )
                 self.slides_service = build(
-                    "slides", "v1", credentials=self.credentials
+                    "slides", "v1", credentials=self.credentials,
                 )
 
             except Exception as e:
@@ -274,5 +274,5 @@ class ParserUserService:
             self.logger.info("✅ Parser services disconnected successfully")
             return True
         except Exception as e:
-            self.logger.error(f"❌ Failed to disconnect parser services: {str(e)}")
+            self.logger.error(f"❌ Failed to disconnect parser services: {e!s}")
             return False

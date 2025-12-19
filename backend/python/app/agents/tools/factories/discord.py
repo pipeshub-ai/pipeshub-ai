@@ -1,5 +1,4 @@
-"""
-Client factories for Discord.
+"""Client factories for Discord.
 """
 
 
@@ -15,8 +14,7 @@ class DiscordClientFactory(ClientFactory):
 
     async def create_client(self, config_service, logger) -> DiscordClient:
         """Create Discord client instance"""
-
         return await DiscordClient.build_from_services(
             logger=logger,
-            config_service=config_service
+            config_service=config_service,
         )

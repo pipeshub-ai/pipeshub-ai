@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Coroutine, Optional, Tuple
+from collections.abc import Coroutine
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -25,13 +25,14 @@ class BookStack:
 
         Args:
             client: An initialized `BookStackClient` instance
+
         """
         self.client = BookStackDataSource(client)
         # Dedicated background event loop for running coroutines from sync context
         self._bg_loop = asyncio.new_event_loop()
         self._bg_loop_thread = threading.Thread(
             target=self._start_background_loop,
-            daemon=True
+            daemon=True,
         )
         self._bg_loop_thread.start()
 
@@ -60,18 +61,17 @@ class BookStack:
     def _handle_response(
         self,
         response,
-        success_message: str
-    ) -> Tuple[bool, str]:
+        success_message: str,
+    ) -> tuple[bool, str]:
         """Handle BookStack response and return standardized format."""
         try:
-            if hasattr(response, 'success') and response.success:
+            if hasattr(response, "success") and response.success:
                 return True, json.dumps({
                     "message": success_message,
-                    "data": response.data or {}
+                    "data": response.data or {},
                 })
-            else:
-                error_msg = getattr(response, 'error', 'Unknown error')
-                return False, json.dumps({"error": error_msg})
+            error_msg = getattr(response, "error", "Unknown error")
+            return False, json.dumps({"error": error_msg})
         except Exception as e:
             logger.error(f"Error handling response: {e}")
             return False, json.dumps({"error": str(e)})
@@ -84,57 +84,57 @@ class BookStack:
             ToolParameter(
                 name="name",
                 type=ParameterType.STRING,
-                description="The name/title of the page"
+                description="The name/title of the page",
             ),
             ToolParameter(
                 name="book_id",
                 type=ParameterType.INTEGER,
                 description="The ID of the book to create the page in",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="chapter_id",
                 type=ParameterType.INTEGER,
                 description="The ID of the chapter to create the page in",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="html",
                 type=ParameterType.STRING,
                 description="The HTML content of the page",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="markdown",
                 type=ParameterType.STRING,
                 description="The Markdown content of the page",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="tags",
                 type=ParameterType.STRING,
                 description="JSON array of tag objects: [{'name': 'tag1', 'value': 'value1'}]",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="priority",
                 type=ParameterType.INTEGER,
                 description="Priority/order of the page",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with page creation result"
+        returns="JSON with page creation result",
     )
     def create_page(
         self,
         name: str,
-        book_id: Optional[int] = None,
-        chapter_id: Optional[int] = None,
-        html: Optional[str] = None,
-        markdown: Optional[str] = None,
-        tags: Optional[str] = None,
-        priority: Optional[int] = None
-    ) -> Tuple[bool, str]:
+        book_id: int | None = None,
+        chapter_id: int | None = None,
+        html: str | None = None,
+        markdown: str | None = None,
+        tags: str | None = None,
+        priority: int | None = None,
+    ) -> tuple[bool, str]:
         """Create a new page in BookStack."""
         try:
             # Parse tags if provided
@@ -155,8 +155,8 @@ class BookStack:
                     html=html,
                     markdown=markdown,
                     tags=tags_list,
-                    priority=priority
-                )
+                    priority=priority,
+                ),
             )
             return self._handle_response(response, "Page created successfully")
         except Exception as e:
@@ -171,16 +171,16 @@ class BookStack:
             ToolParameter(
                 name="page_id",
                 type=ParameterType.INTEGER,
-                description="The ID of the page to retrieve"
-            )
+                description="The ID of the page to retrieve",
+            ),
         ],
-        returns="JSON with page data"
+        returns="JSON with page data",
     )
-    def get_page(self, page_id: int) -> Tuple[bool, str]:
+    def get_page(self, page_id: int) -> tuple[bool, str]:
         """Get a page by ID from BookStack."""
         try:
             response = self._run_async(
-                self.client.get_page(page_id=page_id)
+                self.client.get_page(page_id=page_id),
             )
             return self._handle_response(response, "Page retrieved successfully")
         except Exception as e:
@@ -195,64 +195,64 @@ class BookStack:
             ToolParameter(
                 name="page_id",
                 type=ParameterType.INTEGER,
-                description="The ID of the page to update"
+                description="The ID of the page to update",
             ),
             ToolParameter(
                 name="name",
                 type=ParameterType.STRING,
                 description="The new name/title of the page",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="book_id",
                 type=ParameterType.INTEGER,
                 description="The new book ID",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="chapter_id",
                 type=ParameterType.INTEGER,
                 description="The new chapter ID",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="html",
                 type=ParameterType.STRING,
                 description="The new HTML content",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="markdown",
                 type=ParameterType.STRING,
                 description="The new Markdown content",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="tags",
                 type=ParameterType.STRING,
                 description="JSON array of tag objects: [{'name': 'tag1', 'value': 'value1'}]",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="priority",
                 type=ParameterType.INTEGER,
                 description="New priority/order of the page",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with page update result"
+        returns="JSON with page update result",
     )
     def update_page(
         self,
         page_id: int,
-        name: Optional[str] = None,
-        book_id: Optional[int] = None,
-        chapter_id: Optional[int] = None,
-        html: Optional[str] = None,
-        markdown: Optional[str] = None,
-        tags: Optional[str] = None,
-        priority: Optional[int] = None
-    ) -> Tuple[bool, str]:
+        name: str | None = None,
+        book_id: int | None = None,
+        chapter_id: int | None = None,
+        html: str | None = None,
+        markdown: str | None = None,
+        tags: str | None = None,
+        priority: int | None = None,
+    ) -> tuple[bool, str]:
         """Update an existing page in BookStack."""
         try:
             # Parse tags if provided
@@ -274,8 +274,8 @@ class BookStack:
                     html=html,
                     markdown=markdown,
                     tags=tags_list,
-                    priority=priority
-                )
+                    priority=priority,
+                ),
             )
             return self._handle_response(response, "Page updated successfully")
         except Exception as e:
@@ -290,16 +290,16 @@ class BookStack:
             ToolParameter(
                 name="page_id",
                 type=ParameterType.INTEGER,
-                description="The ID of the page to delete"
-            )
+                description="The ID of the page to delete",
+            ),
         ],
-        returns="JSON with deletion result"
+        returns="JSON with deletion result",
     )
-    def delete_page(self, page_id: int) -> Tuple[bool, str]:
+    def delete_page(self, page_id: int) -> tuple[bool, str]:
         """Delete a page from BookStack."""
         try:
             response = self._run_async(
-                self.client.delete_page(page_id=page_id)
+                self.client.delete_page(page_id=page_id),
             )
             return self._handle_response(response, "Page deleted successfully")
         except Exception as e:
@@ -315,37 +315,37 @@ class BookStack:
                 name="query",
                 type=ParameterType.STRING,
                 description="Search query string",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="page",
                 type=ParameterType.INTEGER,
                 description="Page number for pagination",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="count",
                 type=ParameterType.INTEGER,
                 description="Number of results per page",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with search results"
+        returns="JSON with search results",
     )
     def search_all(
         self,
-        query: Optional[str] = None,
-        page: Optional[int] = None,
-        count: Optional[int] = None
-    ) -> Tuple[bool, str]:
+        query: str | None = None,
+        page: int | None = None,
+        count: int | None = None,
+    ) -> tuple[bool, str]:
         """Search across all content in BookStack."""
         try:
             response = self._run_async(
                 self.client.search_all(
                     query=query,
                     page=page,
-                    count=count
-                )
+                    count=count,
+                ),
             )
             return self._handle_response(response, "Search completed successfully")
         except Exception as e:

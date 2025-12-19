@@ -1,7 +1,8 @@
 import json
 import uuid
+from collections.abc import AsyncGenerator
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -22,20 +23,20 @@ router = APIRouter()
 
 class ChatQuery(BaseModel):
     query: str
-    limit: Optional[int] = 50
-    previousConversations: List[Dict] = []
+    limit: int | None = 50
+    previousConversations: list[dict] = []
     quickMode: bool = False
-    filters: Optional[Dict[str, Any]] = None
-    retrievalMode: Optional[str] = "HYBRID"
-    systemPrompt: Optional[str] = None
-    tools: Optional[List[str]] = None
-    chatMode: Optional[str] = "quick"
-    modelKey: Optional[str] = None
-    modelName: Optional[str] = None
+    filters: dict[str, Any] | None = None
+    retrievalMode: str | None = "HYBRID"
+    systemPrompt: str | None = None
+    tools: list[str] | None = None
+    chatMode: str | None = "quick"
+    modelKey: str | None = None
+    modelName: str | None = None
 
 
 
-async def get_services(request: Request) -> Dict[str, Any]:
+async def get_services(request: Request) -> dict[str, Any]:
     """Get all required services from the container"""
     container = request.app.container
 
@@ -65,7 +66,7 @@ async def get_services(request: Request) -> Dict[str, Any]:
         "llm": llm,
     }
 
-async def get_user_org_info(request: Request, user_info: Dict[str, Any], arango_service: BaseArangoService, logger: Logger) -> Dict[str, Any]:
+async def get_user_org_info(request: Request, user_info: dict[str, Any], arango_service: BaseArangoService, logger: Logger) -> dict[str, Any]:
     """Get user and org info from request"""
     org_info = None
     try:
@@ -96,14 +97,14 @@ async def get_user_org_info(request: Request, user_info: Dict[str, Any], arango_
 
         org_info = {
             "orgId": user_info.get("orgId"),
-            "accountType": account_type
+            "accountType": account_type,
         }
         return org_info
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error fetching user/org info: {str(e)}", exc_info=True)
+        logger.error(f"Error fetching user/org info: {e!s}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch user/org information")
 
 
@@ -168,19 +169,19 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         # Re-raise HTTP exceptions with their original status codes
         raise he
     except Exception as e:
-        logger.error(f"Error in askAI: {str(e)}", exc_info=True)
+        logger.error(f"Error in askAI: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 
 async def stream_response(
-    query_info: Dict[str, Any],
-    user_info: Dict[str, Any],
+    query_info: dict[str, Any],
+    user_info: dict[str, Any],
     llm: BaseChatModel,
     logger: Logger,
     retrieval_service: RetrievalService,
     arango_service: BaseArangoService,
     reranker_service: RerankerService,
-    org_info: Dict[str, Any] = None,
+    org_info: dict[str, Any] = None,
 ) -> AsyncGenerator[str, None]:
     # Build initial state
     initial_state = build_initial_state(
@@ -231,7 +232,7 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
         # Stream the response
         return StreamingResponse(
             stream_response(
-                query_info.model_dump(), user_info, llm, logger, retrieval_service, arango_service, reranker_service, org_info
+                query_info.model_dump(), user_info, llm, logger, retrieval_service, arango_service, reranker_service, org_info,
             ),
             media_type="text/event-stream",
         )
@@ -239,7 +240,7 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
     except HTTPException as he:
         raise he
     except Exception as e:
-        logger.error(f"Error in askAIStream: {str(e)}", exc_info=True)
+        logger.error(f"Error in askAIStream: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -253,7 +254,7 @@ async def create_agent_template(request: Request) -> JSONResponse:
         arango_service = services["arango_service"]
 
         body = await request.body()
-        body_dict = json.loads(body.decode('utf-8'))
+        body_dict = json.loads(body.decode("utf-8"))
 
         # Validate required fields
         required_fields = ["name", "description", "systemPrompt"]
@@ -325,7 +326,7 @@ async def create_agent_template(request: Request) -> JSONResponse:
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in create_agent_template: {str(e)}", exc_info=True)
+        logger.error(f"Error in create_agent_template: {e!s}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.get("/template/list")
@@ -366,7 +367,7 @@ async def get_agent_templates(request: Request) -> JSONResponse:
             },
         )
     except Exception as e:
-        logger.error(f"Error in get_agent_templates: {str(e)}", exc_info=True)
+        logger.error(f"Error in get_agent_templates: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -401,11 +402,11 @@ async def get_agent_template(request: Request, template_id: str) -> JSONResponse
             },
         )
     except Exception as e:
-        logger.error(f"Error in get_agent_template: {str(e)}", exc_info=True)
+        logger.error(f"Error in get_agent_template: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/share-template/{template_id}")
-async def share_agent_template(request: Request, template_id: str, user_ids: List[str] = Body(...), team_ids: List[str] = Body(...)) -> JSONResponse:
+async def share_agent_template(request: Request, template_id: str, user_ids: list[str] = Body(...), team_ids: list[str] = Body(...)) -> JSONResponse:
     """Share an agent template"""
     try:
         # Get all services
@@ -438,7 +439,7 @@ async def share_agent_template(request: Request, template_id: str, user_ids: Lis
             },
         )
     except Exception as e:
-        logger.error(f"Error in share_agent_template: {str(e)}", exc_info=True)
+        logger.error(f"Error in share_agent_template: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/template/{template_id}/clone")
@@ -462,7 +463,7 @@ async def clone_agent_template(request: Request, template_id: str) -> JSONRespon
             },
         )
     except Exception as e:
-        logger.error(f"Error in clone_agent_template: {str(e)}", exc_info=True)
+        logger.error(f"Error in clone_agent_template: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.delete("/template/{template_id}")
@@ -494,7 +495,7 @@ async def delete_agent_template(request: Request, template_id: str) -> JSONRespo
             },
         )
     except Exception as e:
-        logger.error(f"Error in delete_agent_template: {str(e)}", exc_info=True)
+        logger.error(f"Error in delete_agent_template: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.put("/template/{template_id}")
@@ -511,7 +512,7 @@ async def update_agent_template(request: Request, template_id: str) -> JSONRespo
             "userId": request.state.user.get("userId"),
         }
         body = await request.body()
-        body_dict = json.loads(body.decode('utf-8'))
+        body_dict = json.loads(body.decode("utf-8"))
         # Update the template
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
 
@@ -528,7 +529,7 @@ async def update_agent_template(request: Request, template_id: str) -> JSONRespo
             },
         )
     except Exception as e:
-        logger.error(f"Error in update_agent_template: {str(e)}", exc_info=True)
+        logger.error(f"Error in update_agent_template: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/create")
@@ -547,7 +548,7 @@ async def create_agent(request: Request) -> JSONResponse:
         }
         time = get_epoch_timestamp_in_ms()
         body = await request.body()
-        body_dict = json.loads(body.decode('utf-8'))
+        body_dict = json.loads(body.decode("utf-8"))
         if not body_dict.get("name"):
             raise HTTPException(status_code=400, detail="Agent name is required")
 
@@ -567,7 +568,7 @@ async def create_agent(request: Request) -> JSONResponse:
             if not has_reasoning_model:
                 raise HTTPException(
                     status_code=400,
-                    detail="At least one reasoning model must be present in the models array. Please add a reasoning model to your agent configuration."
+                    detail="At least one reasoning model must be present in the models array. Please add a reasoning model to your agent configuration.",
                 )
 
         agent = {
@@ -617,7 +618,7 @@ async def create_agent(request: Request) -> JSONResponse:
         # Re-raise HTTP exceptions with their original status codes
         raise he
     except Exception as e:
-        logger.error(f"Error in create_agent: {str(e)}", exc_info=True)
+        logger.error(f"Error in create_agent: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("/{agent_id}")
@@ -650,7 +651,7 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
             },
         )
     except Exception as e:
-        logger.error(f"Error in get_agent: {str(e)}", exc_info=True)
+        logger.error(f"Error in get_agent: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("/")
@@ -683,7 +684,7 @@ async def get_agents(request: Request) -> JSONResponse:
             },
         )
     except Exception as e:
-        logger.error(f"Error in get_agents: {str(e)}", exc_info=True)
+        logger.error(f"Error in get_agents: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.put("/{agent_id}")
@@ -700,7 +701,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
             "userId": request.state.user.get("userId"),
         }
         body = await request.body()
-        body_dict = json.loads(body.decode('utf-8'))
+        body_dict = json.loads(body.decode("utf-8"))
 
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
         if user is None:
@@ -727,7 +728,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
             },
         )
     except Exception as e:
-        logger.error(f"Error in update_agent: {str(e)}", exc_info=True)
+        logger.error(f"Error in update_agent: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.delete("/{agent_id}")
@@ -770,7 +771,7 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
             },
         )
     except Exception as e:
-        logger.error(f"Error in delete_agent: {str(e)}", exc_info=True)
+        logger.error(f"Error in delete_agent: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/{agent_id}/share")
@@ -783,7 +784,7 @@ async def share_agent(request: Request, agent_id: str) -> JSONResponse:
         arango_service = services["arango_service"]
 
         body = await request.body()
-        body_dict = json.loads(body.decode('utf-8'))
+        body_dict = json.loads(body.decode("utf-8"))
         user_ids = body_dict.get("userIds", [])
         team_ids = body_dict.get("teamIds", [])
 
@@ -819,7 +820,7 @@ async def share_agent(request: Request, agent_id: str) -> JSONResponse:
             },
         )
     except Exception as e:
-        logger.error(f"Error in share_agent: {str(e)}", exc_info=True)
+        logger.error(f"Error in share_agent: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/{agent_id}/unshare")
@@ -831,7 +832,7 @@ async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
         logger = services["logger"]
         arango_service = services["arango_service"]
         body = await request.body()
-        body_dict = json.loads(body.decode('utf-8'))
+        body_dict = json.loads(body.decode("utf-8"))
         user_ids = body_dict.get("userIds", [])
         team_ids = body_dict.get("teamIds", [])
 
@@ -868,7 +869,7 @@ async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
             },
         )
     except Exception as e:
-        logger.error(f"Error in unshare_agent: {str(e)}", exc_info=True)
+        logger.error(f"Error in unshare_agent: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -906,7 +907,7 @@ async def get_agent_permissions(request: Request, agent_id: str) -> JSONResponse
             },
         )
     except Exception as e:
-        logger.error(f"Error in get_agent_permissions: {str(e)}", exc_info=True)
+        logger.error(f"Error in get_agent_permissions: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -926,7 +927,7 @@ async def update_agent_permission(request: Request, agent_id: str) -> JSONRespon
         }
 
         body = await request.body()
-        body_dict = json.loads(body.decode('utf-8'))
+        body_dict = json.loads(body.decode("utf-8"))
         user_ids = body_dict.get("userIds", [])
         team_ids = body_dict.get("teamIds", [])
         role = body_dict.get("role")
@@ -949,7 +950,7 @@ async def update_agent_permission(request: Request, agent_id: str) -> JSONRespon
             },
         )
     except Exception as e:
-        logger.error(f"Error in update_agent_permission: {str(e)}", exc_info=True)
+        logger.error(f"Error in update_agent_permission: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/{agent_id}/chat")
@@ -992,7 +993,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             filters = {
                 "apps": agent.get("apps"),
                 "kb": agent.get("kb"),
-                "vectorDBs": agent.get("vectorDBs")
+                "vectorDBs": agent.get("vectorDBs"),
             }
 
         # Override individual filter values if they exist in chat query
@@ -1054,7 +1055,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         return final_state["response"]
 
     except Exception as e:
-        logger.error(f"Error in chat: {str(e)}", exc_info=True)
+        logger.error(f"Error in chat: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/{agent_id}/chat/stream")
@@ -1071,7 +1072,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         reranker_service = services["reranker_service"]
 
         body = await request.body()
-        body_dict = json.loads(body.decode('utf-8'))
+        body_dict = json.loads(body.decode("utf-8"))
         chat_query = ChatQuery(**body_dict)
 
         logger.info(f"body dict : {body_dict}")
@@ -1110,7 +1111,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             filters = {
                 "apps": agent.get("apps"),
                 "kb": agent.get("kb"),
-                "vectorDBs": agent.get("vectorDBs")
+                "vectorDBs": agent.get("vectorDBs"),
             }
 
         # Override individual filter values if they exist in chat query
@@ -1149,10 +1150,10 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         return StreamingResponse(
             stream_response(
-                query_info, user_info, llm, logger, retrieval_service, arango_service, reranker_service, org_info
+                query_info, user_info, llm, logger, retrieval_service, arango_service, reranker_service, org_info,
             ),
             media_type="text/event-stream",
         )
     except Exception as e:
-        logger.error(f"Error in chat_stream: {str(e)}", exc_info=True)
+        logger.error(f"Error in chat_stream: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))

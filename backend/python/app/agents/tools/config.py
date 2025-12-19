@@ -1,16 +1,16 @@
-"""
-Configuration module for tool discovery and management.
+"""Configuration module for tool discovery and management.
 Centralizes all configuration to make the system easier to maintain and extend.
 """
 
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 
 class ToolCategory(Enum):
     """Categories for organizing tools"""
+
     COMMUNICATION = "communication"
     PROJECT_MANAGEMENT = "project_management"
     DOCUMENTATION = "documentation"
@@ -22,8 +22,7 @@ class ToolCategory(Enum):
 
 
 class ToolMetadata(BaseModel):
-    """
-    Metadata for a tool.
+    """Metadata for a tool.
 
     Attributes:
         app_name: Name of the application the tool belongs to
@@ -34,20 +33,21 @@ class ToolMetadata(BaseModel):
         requires_auth: Whether the tool requires authentication
         dependencies: List of tool dependencies
         tags: Tags for categorization and search
+
     """
+
     app_name: str
     tool_name: str
     description: str
     category: ToolCategory
     is_essential: bool = False
     requires_auth: bool = True
-    dependencies: List[str] = Field(default_factory=list)
-    tags: List[str] = Field(default_factory=list)
+    dependencies: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
 
 
 class AppConfiguration(BaseModel):
-    """
-    Configuration for an application and its tools.
+    """Configuration for an application and its tools.
 
     Attributes:
         app_name: Name of the application
@@ -55,22 +55,23 @@ class AppConfiguration(BaseModel):
         subdirectories: List of subdirectories for nested structures
         client_builder: Name of the client class (e.g., "GoogleClient")
         service_configs: Additional service-specific configuration
+
     """
+
     app_name: str
     enabled: bool = True
-    subdirectories: List[str] = Field(default_factory=list)
-    client_builder: Optional[str] = None
-    service_configs: Dict[str, Any] = Field(default_factory=dict)
+    subdirectories: list[str] = Field(default_factory=list)
+    client_builder: str | None = None
+    service_configs: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolDiscoveryConfig:
-    """
-    Centralized configuration for tool discovery.
+    """Centralized configuration for tool discovery.
     All app configurations and discovery rules are defined here.
     """
 
     # Application configurations
-    APP_CONFIGS: Dict[str, AppConfiguration] = {
+    APP_CONFIGS: dict[str, AppConfiguration] = {
         "confluence": AppConfiguration(
             app_name="confluence",
             client_builder="ConfluenceClient",
@@ -103,7 +104,7 @@ class ToolDiscoveryConfig:
                 "calendar": {"service_name": "calendar", "version": "v3"},
                 "drive": {"service_name": "drive", "version": "v3"},
                 "meet": {"service_name": "meet", "version": "v2"},
-            }
+            },
         ),
         "microsoft": AppConfiguration(
             app_name="microsoft",
@@ -178,81 +179,81 @@ class ToolDiscoveryConfig:
     }
 
     # Essential tools that should always be loaded
-    ESSENTIAL_TOOL_PATTERNS: Set[str] = {
+    ESSENTIAL_TOOL_PATTERNS: set[str] = {
         "calculator.",
         "web_search",
         "get_current_datetime",
     }
 
     # Files to skip during discovery
-    SKIP_FILES: Set[str] = {"__init__.py", "config.py", "base.py"}
+    SKIP_FILES: set[str] = {"__init__.py", "config.py", "base.py"}
 
     @classmethod
-    def get_app_config(cls, app_name: str) -> Optional[AppConfiguration]:
-        """
-        Get configuration for a specific app.
+    def get_app_config(cls, app_name: str) -> AppConfiguration | None:
+        """Get configuration for a specific app.
 
         Args:
             app_name: Name of the application
 
         Returns:
             AppConfiguration if found, None otherwise
+
         """
         return cls.APP_CONFIGS.get(app_name)
 
     @classmethod
     def is_essential_tool(cls, tool_name: str) -> bool:
-        """
-        Check if a tool is essential and should always be loaded.
+        """Check if a tool is essential and should always be loaded.
 
         Args:
             tool_name: Full name of the tool
 
         Returns:
             True if tool is essential, False otherwise
+
         """
         return any(pattern in tool_name for pattern in cls.ESSENTIAL_TOOL_PATTERNS)
 
     @classmethod
     def add_app_config(cls, config: AppConfiguration) -> None:
-        """
-        Add or update an app configuration.
+        """Add or update an app configuration.
         Useful for dynamically adding new apps.
 
         Args:
             config: AppConfiguration to add
+
         """
         cls.APP_CONFIGS[config.app_name] = config
 
     @classmethod
     def disable_app(cls, app_name: str) -> None:
-        """
-        Disable an app from discovery.
+        """Disable an app from discovery.
 
         Args:
             app_name: Name of the app to disable
+
         """
         if app_name in cls.APP_CONFIGS:
             cls.APP_CONFIGS[app_name].enabled = False
 
     @classmethod
     def enable_app(cls, app_name: str) -> None:
-        """
-        Enable an app for discovery.
+        """Enable an app for discovery.
 
         Args:
             app_name: Name of the app to enable
+
         """
         if app_name in cls.APP_CONFIGS:
             cls.APP_CONFIGS[app_name].enabled = True
 
     @classmethod
-    def get_enabled_apps(cls) -> List[str]:
-        """
-        Get list of enabled app names.
+    def get_enabled_apps(cls) -> list[str]:
+        """Get list of enabled app names.
 
         Returns:
             List of enabled app names
+
         """
         return [
             name for name, config in cls.APP_CONFIGS.items()

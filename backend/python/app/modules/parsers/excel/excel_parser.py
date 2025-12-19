@@ -2,7 +2,7 @@ import asyncio
 import io
 import json
 from datetime import datetime
-from typing import Any, Dict, List, Union
+from typing import Any
 
 from langchain.chat_models.base import BaseChatModel
 from openpyxl import load_workbook
@@ -49,8 +49,7 @@ class ExcelParser:
         self.max_wait = 10  # seconds
 
     async def parse(self, file_binary: bytes, llm: BaseChatModel) -> BlocksContainer:
-        """
-        Parse Excel file and extract all content including sheets, cells, formulas, etc.
+        """Parse Excel file and extract all content including sheets, cells, formulas, etc.
 
         Returns:
             Dict containing parsed content with structure:
@@ -62,6 +61,7 @@ class ExcelParser:
                 'total_rows': int,           # Total rows across all sheets
                 'total_cells': int           # Total cells with content
             }
+
         """
         try:
             self.file_binary = file_binary
@@ -69,7 +69,7 @@ class ExcelParser:
             if self.file_binary:
 
                 self.workbook = load_workbook(
-                    io.BytesIO(self.file_binary), data_only=True
+                    io.BytesIO(self.file_binary), data_only=True,
                 )
 
             return await self.get_blocks_from_workbook(llm)
@@ -85,7 +85,7 @@ class ExcelParser:
             return obj.isoformat()
         return str(obj)
 
-    def _process_sheet(self, sheet) -> Dict[str, List[List[Dict[str, Any]]]]:
+    def _process_sheet(self, sheet) -> dict[str, list[list[dict[str, Any]]]]:
         """Process individual sheet and extract cell data"""
         try:
             sheet_data = {"headers": [], "data": []}
@@ -143,7 +143,7 @@ class ExcelParser:
                                         cell.fill.start_color.rgb
                                         if cell.fill.start_color
                                         else None
-                                    )
+                                    ),
                                 },
                                 "alignment": {
                                     "horizontal": cell.alignment.horizontal,
@@ -165,13 +165,13 @@ class ExcelParser:
         except Exception:
             raise
 
-    def find_tables(self, sheet) -> List[Dict[str, Any]]:
+    def find_tables(self, sheet) -> list[dict[str, Any]]:
         """Find and process all tables in a sheet"""
         try:
             tables = []
             visited_cells = set()  # Track already processed cells
 
-            def get_table(start_row: int, start_col: int) -> Dict[str, Any]:
+            def get_table(start_row: int, start_col: int) -> dict[str, Any]:
                 """Extract a table starting from (start_row, start_col)."""
                 # Find the last column of the table
                 max_col = start_col
@@ -271,7 +271,7 @@ class ExcelParser:
         except Exception:
             raise
 
-    def _process_cell(self, cell, header, row, col) -> Dict[str, Any]:
+    def _process_cell(self, cell, header, row, col) -> dict[str, Any]:
         """Process a single cell and return its data with denormalized merged cell values."""
         try:
             # Check if the cell is a merged cell
@@ -282,7 +282,7 @@ class ExcelParser:
                     if cell.coordinate in merged_range:
                         # Get the top-left cell of the merged range
                         top_left_cell = cell.parent.cell(
-                            row=merged_range.min_row, column=merged_range.min_col
+                            row=merged_range.min_row, column=merged_range.min_col,
                         )
                         merged_value = top_left_cell.value
                         break
@@ -317,7 +317,7 @@ class ExcelParser:
                     "fill": {
                         "background_color": (
                             cell.fill.start_color.rgb if cell.fill.start_color else None
-                        )
+                        ),
                     },
                     "alignment": {
                         "horizontal": cell.alignment.horizontal,
@@ -332,14 +332,14 @@ class ExcelParser:
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         before_sleep=lambda retry_state: retry_state.args[0].logger.warning(
-            f"Retrying LLM call after error. Attempt {retry_state.attempt_number}"
+            f"Retrying LLM call after error. Attempt {retry_state.attempt_number}",
         ),
     )
-    async def _call_llm(self, messages) -> Union[str, dict, list]:
+    async def _call_llm(self, messages) -> str | dict | list:
         """Wrapper for LLM calls with retry logic"""
         return await self.llm.ainvoke(messages)
 
-    async def get_tables_in_sheet(self, sheet_name: str) -> List[Dict[str, Any]]:
+    async def get_tables_in_sheet(self, sheet_name: str) -> list[dict[str, Any]]:
         """Get all tables in a specific sheet"""
         try:
             if not self.workbook:
@@ -383,8 +383,8 @@ class ExcelParser:
                     {"role": "user", "content": formatted_prompt},
                 ]
                 response = await self._call_llm(messages)
-                if '</think>' in response.content:
-                    response.content = response.content.split('</think>')[-1]
+                if "</think>" in response.content:
+                    response.content = response.content.split("</think>")[-1]
 
                 try:
                     # Parse LLM response to get headers
@@ -424,7 +424,7 @@ class ExcelParser:
         except Exception:
             raise
 
-    async def get_table_summary(self, table: Dict[str, Any]) -> str:
+    async def get_table_summary(self, table: dict[str, Any]) -> str:
         """Get a natural language summary of a specific table"""
         try:
             # Prepare sample data
@@ -442,19 +442,19 @@ class ExcelParser:
 
             # Get summary from LLM with retry
             messages = self.table_summary_prompt.format_messages(
-                headers=table["headers"], sample_data=json.dumps(sample_data, indent=2)
+                headers=table["headers"], sample_data=json.dumps(sample_data, indent=2),
             )
             response = await self._call_llm(messages)
-            if '</think>' in response.content:
-                response.content = response.content.split('</think>')[-1]
+            if "</think>" in response.content:
+                response.content = response.content.split("</think>")[-1]
             return response.content
 
         except Exception:
             raise
 
     async def get_rows_text(
-        self, rows: List[List[Dict[str, Any]]], table_summary: str
-    ) -> List[str]:
+        self, rows: list[list[dict[str, Any]]], table_summary: str,
+    ) -> list[str]:
         """Convert multiple rows into natural language text using context from summaries in a single prompt"""
         try:
             # Prepare rows data
@@ -472,12 +472,12 @@ class ExcelParser:
 
             # Get natural language text from LLM with retry
             messages = self.row_text_prompt.format_messages(
-                table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2)
+                table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2),
             )
 
             response = await self._call_llm(messages)
-            if '</think>' in response.content:
-                response.content = response.content.split('</think>')[-1]
+            if "</think>" in response.content:
+                response.content = response.content.split("</think>")[-1]
             # Try to extract JSON array from response
             try:
                 # First try direct JSON parsing
@@ -502,8 +502,8 @@ class ExcelParser:
             raise
 
     async def process_sheet_with_summaries(
-        self, llm, sheet_name: str
-    ) -> Dict[str, Any]:
+        self, llm, sheet_name: str,
+    ) -> dict[str, Any]:
         """Process a sheet and generate all summaries and row texts"""
         self.llm = llm
 
@@ -533,7 +533,7 @@ class ExcelParser:
             # Limit parallel processing to at most 10 concurrent batches
             semaphore = asyncio.Semaphore(10)
 
-            async def limited_get_rows_text(batch) -> List[str]:
+            async def limited_get_rows_text(batch) -> list[str]:
                 async with semaphore:
                     return await self.get_rows_text(batch, table_summary)
 
@@ -557,7 +557,7 @@ class ExcelParser:
                             "raw_data": {cell["header"]: cell["value"] for cell in row},
                             "natural_language_text": row_text,
                             "row_num": row[0]["row"],  # Include row number
-                        }
+                        },
                     )
 
             processed_tables.append(
@@ -571,7 +571,7 @@ class ExcelParser:
                         "end_row": table["end_row"],
                         "end_col": table["end_col"],
                     },
-                }
+                },
             )
 
         return {"sheet_name": sheet_name, "tables": processed_tables}
@@ -581,8 +581,8 @@ class ExcelParser:
 
         Mirrors the CSV blocks structure, but nests tables under sheet groups.
         """
-        blocks: List[Block] = []
-        block_groups: List[BlockGroup] = []
+        blocks: list[Block] = []
+        block_groups: list[BlockGroup] = []
 
         # Iterate sheets and build hierarchy
         for sheet_idx, sheet_name in enumerate(self.workbook.sheetnames, 1):
@@ -592,7 +592,7 @@ class ExcelParser:
 
             # Create SHEET group
             sheet_group_index = len(block_groups)
-            sheet_group_children: List[BlockContainerIndex] = []
+            sheet_group_children: list[BlockContainerIndex] = []
             sheet_group = BlockGroup(
                 index=sheet_group_index,
                 name=sheet_result["sheet_name"],
@@ -615,7 +615,7 @@ class ExcelParser:
                 headers = table.get("headers", [])
                 rows = table.get("rows", [])
 
-                table_group_children: List[BlockContainerIndex] = []
+                table_group_children: list[BlockContainerIndex] = []
                 table_markdown = self.to_markdown(headers, rows)
                 table_group = BlockGroup(
                     index=table_group_index,
@@ -657,7 +657,7 @@ class ExcelParser:
                                 "sheet_name": sheet_name,
                             },
                             parent_index=table_group_index,
-                        )
+                        ),
                     )
                     table_group_children.append(BlockContainerIndex(block_index=block_index))
 
@@ -669,13 +669,14 @@ class ExcelParser:
 
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
-    def to_markdown(self, headers: List[str], rows: List[Dict[str, Any]]) -> str:
-        """
-        Convert CSV data to markdown table format.
+    def to_markdown(self, headers: list[str], rows: list[dict[str, Any]]) -> str:
+        """Convert CSV data to markdown table format.
+
         Args:
             data: List of dictionaries from read_stream() method
         Returns:
             String containing markdown formatted table
+
         """
         if not headers and not rows:
             return ""

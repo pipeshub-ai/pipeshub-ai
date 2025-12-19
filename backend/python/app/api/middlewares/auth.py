@@ -1,5 +1,4 @@
 import os
-from typing import Optional
 
 from dependency_injector.wiring import inject
 from fastapi import HTTPException, Request, status
@@ -16,9 +15,8 @@ async def get_config_service(request: Request) -> ConfigurationService:
     return config_service
 
 
-def extract_bearer_token(authorization_header: Optional[str]) -> str:
-    """
-    Extract JWT token from Authorization header.
+def extract_bearer_token(authorization_header: str | None) -> str:
+    """Extract JWT token from Authorization header.
 
     Args:
         authorization_header: The Authorization header value (e.g., "Bearer <token>")
@@ -28,6 +26,7 @@ def extract_bearer_token(authorization_header: Optional[str]) -> str:
 
     Raises:
         HTTPException: If Authorization header is missing or malformed
+
     """
     if not authorization_header:
         raise HTTPException(
@@ -58,8 +57,7 @@ def extract_bearer_token(authorization_header: Optional[str]) -> str:
 # Authentication logic
 @inject
 async def isJwtTokenValid(request: Request) -> dict:
-    """
-    Validate JWT token using either regular JWT secret (for frontend) or scoped JWT secret (for internal services).
+    """Validate JWT token using either regular JWT secret (for frontend) or scoped JWT secret (for internal services).
 
     This function maintains backward compatibility by trying regular JWT first (the original behavior),
     then falls back to scoped JWT for internal service calls. This ensures existing frontend calls
@@ -76,6 +74,7 @@ async def isJwtTokenValid(request: Request) -> dict:
 
     Raises:
         HTTPException: If token validation fails with both secrets
+
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -89,7 +88,7 @@ async def isJwtTokenValid(request: Request) -> dict:
 
         config_service = await get_config_service(request)
         secret_keys = await config_service.get_config(
-            config_node_constants.SECRET_KEYS.value
+            config_node_constants.SECRET_KEYS.value,
         )
 
         if not secret_keys:
@@ -135,7 +134,7 @@ async def isJwtTokenValid(request: Request) -> dict:
                     logger.warning(
                         f"Token validation failed with both secrets. "
                         f"Regular JWT error: {type(regular_jwt_error).__name__}, "
-                        f"Scoped JWT error: {type(scoped_jwt_error).__name__}"
+                        f"Scoped JWT error: {type(scoped_jwt_error).__name__}",
                     )
                     raise credentials_exception
             else:
@@ -161,8 +160,7 @@ async def isJwtTokenValid(request: Request) -> dict:
 
 # Dependency for injecting authentication
 async def authMiddleware(request: Request) -> Request:
-    """
-    FastAPI middleware dependency for authenticating requests.
+    """FastAPI middleware dependency for authenticating requests.
 
     Validates JWT token and attaches authenticated user information to request.state.user.
     Supports both regular JWT (frontend) and scoped JWT (internal services).
@@ -173,6 +171,7 @@ async def authMiddleware(request: Request) -> Request:
         Request: The request object with authenticated user info in request.state.user
     Raises:
         HTTPException: If authentication fails
+
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,

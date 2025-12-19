@@ -1,6 +1,5 @@
 import json
 import uuid
-from typing import Optional
 
 from docling.datamodel.document import DoclingDocument
 
@@ -35,7 +34,7 @@ DOCLING_REF_NODE= "$ref"
 
 
 
-class DoclingDocToBlocksConverter():
+class DoclingDocToBlocksConverter:
     def __init__(self, logger, config) -> None:
         self.logger = logger
         self.config = config
@@ -89,16 +88,16 @@ class DoclingDocToBlocksConverter():
     #     "tables": [
     # }
     #
-    # Todo: Handle Bounding Boxes, PPTX, CSV, Excel, Docx, markdown, html etc.
+    # TODO: Handle Bounding Boxes, PPTX, CSV, Excel, Docx, markdown, html etc.
     async def _process_content_in_order(self, doc: DoclingDocument) -> BlocksContainer|bool:
-        """
-        Process document content in proper reading order by following references.
+        """Process document content in proper reading order by following references.
 
         Args:
             doc_dict (dict): The document dictionary from Docling
 
         Returns:
             list: Ordered list of text items with their context
+
         """
         block_groups = []
         blocks = []
@@ -143,7 +142,7 @@ class DoclingDocToBlocksConverter():
                                 block.citation_metadata = CitationMetadata(page_number=page_no)
 
 
-        async def _handle_text_block(item: dict, doc_dict: dict, parent_index: int, ref_path: str,level: int,doc: DoclingDocument) -> Optional[Block]:
+        async def _handle_text_block(item: dict, doc_dict: dict, parent_index: int, ref_path: str,level: int,doc: DoclingDocument) -> Block | None:
             block = None
             if item.get("text") != "":
                 block = Block(
@@ -229,7 +228,7 @@ class DoclingDocToBlocksConverter():
                     index=len(blocks),
                     type=BlockType.IMAGE,
                     format=DataFormat.BASE64,
-                    data=item.get("image",None ),
+                    data=item.get("image"),
                     comments=[],
                     source_creation_date=None,
                     source_update_date=None,
@@ -308,9 +307,9 @@ class DoclingDocToBlocksConverter():
                     data={
                         "row_natural_language_text": table_rows_text[i] if i<len(table_rows_text) else "",
                         "row_number": i+1,
-                        "row":json.dumps(row)
+                        "row":json.dumps(row),
                     },
-                    citation_metadata=block_group.citation_metadata
+                    citation_metadata=block_group.citation_metadata,
                 )
                 # _enrich_metadata(block, row, doc_dict)
                 blocks.append(block)

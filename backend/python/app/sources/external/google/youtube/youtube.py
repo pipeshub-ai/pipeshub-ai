@@ -1,11 +1,10 @@
-from typing import Any, Dict, Optional
+from typing import Any
 
 from app.sources.client.google.google import GoogleClient
 
 
 class YouTubeDataSource:
-    """
-    Auto-generated YouTube Data API client wrapper.
+    """Auto-generated YouTube Data API client wrapper.
     Uses Google SDK client internally for all operations.
     This class wraps all YouTube Data API v3 methods and provides
     a consistent interface while using the official Google SDK.
@@ -13,19 +12,20 @@ class YouTubeDataSource:
 
     def __init__(
         self,
-        client: GoogleClient
+        client: GoogleClient,
     ) -> None:
-        """
-        Initialize with YouTube Data API client.
+        """Initialize with YouTube Data API client.
+
         Args:
             client: YouTube Data API client from build('youtube', 'v3', credentials=credentials)
+
         """
         self.client = client
 
     async def abuse_reports_insert(
         self,
-        part: str
-    ) -> Dict[str, Any]:
+        part: str,
+    ) -> dict[str, Any]:
         """YouTube Data API: Inserts a new resource into this collection.
 
         HTTP POST youtube/v3/abuseReports
@@ -35,14 +35,15 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.abuseReports().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.abuseReports().insert(**kwargs) # type: ignore
@@ -51,15 +52,15 @@ class YouTubeDataSource:
     async def activities_list(
         self,
         part: str,
-        channelId: Optional[str] = None,
-        home: Optional[bool] = None,
-        mine: Optional[bool] = None,
-        publishedAfter: Optional[str] = None,
-        publishedBefore: Optional[str] = None,
-        regionCode: Optional[str] = None,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None
-    ) -> Dict[str, Any]:
+        channelId: str | None = None,
+        home: bool | None = None,
+        mine: bool | None = None,
+        publishedAfter: str | None = None,
+        publishedBefore: str | None = None,
+        regionCode: str | None = None,
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of resources, possibly filtered.
         HTTP GET youtube/v3/activities
         Args:
@@ -75,26 +76,27 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if channelId is not None:
-            kwargs['channelId'] = channelId
+            kwargs["channelId"] = channelId
         if home is not None:
-            kwargs['home'] = home
+            kwargs["home"] = home
         if mine is not None:
-            kwargs['mine'] = mine
+            kwargs["mine"] = mine
         if publishedAfter is not None:
-            kwargs['publishedAfter'] = publishedAfter
+            kwargs["publishedAfter"] = publishedAfter
         if publishedBefore is not None:
-            kwargs['publishedBefore'] = publishedBefore
+            kwargs["publishedBefore"] = publishedBefore
         if regionCode is not None:
-            kwargs['regionCode'] = regionCode
+            kwargs["regionCode"] = regionCode
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         request = self.client.activities().list(**kwargs) # type: ignore
         return request.execute()
@@ -103,10 +105,10 @@ class YouTubeDataSource:
         self,
         videoId: str,
         part: str,
-        id: Optional[str] = None,
-        onBehalfOf: Optional[str] = None,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        id: str | None = None,
+        onBehalfOf: str | None = None,
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of resources, possibly filtered.
 
         HTTP GET youtube/v3/captions
@@ -120,18 +122,19 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if videoId is not None:
-            kwargs['videoId'] = videoId
+            kwargs["videoId"] = videoId
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOf is not None:
-            kwargs['onBehalfOf'] = onBehalfOf
+            kwargs["onBehalfOf"] = onBehalfOf
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         request = self.client.captions().list(**kwargs) # type: ignore
         return request.execute()
@@ -139,10 +142,10 @@ class YouTubeDataSource:
     async def captions_insert(
         self,
         part: str,
-        sync: Optional[bool] = None,
-        onBehalfOf: Optional[str] = None,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        sync: bool | None = None,
+        onBehalfOf: str | None = None,
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Inserts a new resource into this collection.
 
         HTTP POST youtube/v3/captions
@@ -155,20 +158,21 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if sync is not None:
-            kwargs['sync'] = sync
+            kwargs["sync"] = sync
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOf is not None:
-            kwargs['onBehalfOf'] = onBehalfOf
+            kwargs["onBehalfOf"] = onBehalfOf
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.captions().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.captions().insert(**kwargs) # type: ignore
@@ -177,10 +181,10 @@ class YouTubeDataSource:
     async def captions_update(
         self,
         part: str,
-        sync: Optional[bool] = None,
-        onBehalfOf: Optional[str] = None,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        sync: bool | None = None,
+        onBehalfOf: str | None = None,
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Updates an existing resource.
 
         HTTP PUT youtube/v3/captions
@@ -193,20 +197,21 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if sync is not None:
-            kwargs['sync'] = sync
+            kwargs["sync"] = sync
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOf is not None:
-            kwargs['onBehalfOf'] = onBehalfOf
+            kwargs["onBehalfOf"] = onBehalfOf
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.captions().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.captions().update(**kwargs) # type: ignore
@@ -215,9 +220,9 @@ class YouTubeDataSource:
     async def captions_delete(
         self,
         id: str,
-        onBehalfOf: Optional[str] = None,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOf: str | None = None,
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Deletes a resource.
 
         HTTP DELETE youtube/v3/captions
@@ -229,14 +234,15 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if onBehalfOf is not None:
-            kwargs['onBehalfOf'] = onBehalfOf
+            kwargs["onBehalfOf"] = onBehalfOf
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         request = self.client.captions().delete(**kwargs) # type: ignore
         return request.execute()
@@ -244,11 +250,11 @@ class YouTubeDataSource:
     async def captions_download(
         self,
         id: str,
-        tlang: Optional[str] = None,
-        tfmt: Optional[str] = None,
-        onBehalfOf: Optional[str] = None,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        tlang: str | None = None,
+        tfmt: str | None = None,
+        onBehalfOf: str | None = None,
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Downloads a caption track.
 
         HTTP GET youtube/v3/captions/{id}
@@ -262,18 +268,19 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if tlang is not None:
-            kwargs['tlang'] = tlang
+            kwargs["tlang"] = tlang
         if tfmt is not None:
-            kwargs['tfmt'] = tfmt
+            kwargs["tfmt"] = tfmt
         if onBehalfOf is not None:
-            kwargs['onBehalfOf'] = onBehalfOf
+            kwargs["onBehalfOf"] = onBehalfOf
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         request = self.client.captions().download(**kwargs) # type: ignore
         return request.execute()
@@ -281,18 +288,18 @@ class YouTubeDataSource:
     async def channels_list(
         self,
         part: str,
-        mine: Optional[bool] = None,
-        id: Optional[str] = None,
-        mySubscribers: Optional[bool] = None,
-        categoryId: Optional[str] = None,
-        managedByMe: Optional[bool] = None,
-        forUsername: Optional[str] = None,
-        forHandle: Optional[str] = None,
-        hl: Optional[str] = None,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        mine: bool | None = None,
+        id: str | None = None,
+        mySubscribers: bool | None = None,
+        categoryId: str | None = None,
+        managedByMe: bool | None = None,
+        forUsername: str | None = None,
+        forHandle: str | None = None,
+        hl: str | None = None,
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of resources, possibly filtered.
 
         HTTP GET youtube/v3/channels
@@ -313,32 +320,33 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if mine is not None:
-            kwargs['mine'] = mine
+            kwargs["mine"] = mine
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if mySubscribers is not None:
-            kwargs['mySubscribers'] = mySubscribers
+            kwargs["mySubscribers"] = mySubscribers
         if categoryId is not None:
-            kwargs['categoryId'] = categoryId
+            kwargs["categoryId"] = categoryId
         if managedByMe is not None:
-            kwargs['managedByMe'] = managedByMe
+            kwargs["managedByMe"] = managedByMe
         if forUsername is not None:
-            kwargs['forUsername'] = forUsername
+            kwargs["forUsername"] = forUsername
         if forHandle is not None:
-            kwargs['forHandle'] = forHandle
+            kwargs["forHandle"] = forHandle
         if hl is not None:
-            kwargs['hl'] = hl
+            kwargs["hl"] = hl
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         request = self.client.channels().list(**kwargs) # type: ignore
         return request.execute()
@@ -346,8 +354,8 @@ class YouTubeDataSource:
     async def channels_update(
         self,
         part: str,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Updates an existing resource.
 
         HTTP PUT youtube/v3/channels
@@ -358,16 +366,17 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.channels().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.channels().update(**kwargs) # type: ignore
@@ -375,10 +384,10 @@ class YouTubeDataSource:
 
     async def channel_banners_insert(
         self,
-        channelId: Optional[str] = None,
-        onBehalfOfContentOwner: Optional[str] = None,
-        onBehalfOfContentOwnerChannel: Optional[str] = None
-    ) -> Dict[str, Any]:
+        channelId: str | None = None,
+        onBehalfOfContentOwner: str | None = None,
+        onBehalfOfContentOwnerChannel: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Inserts a new resource into this collection.
 
         HTTP POST youtube/v3/channelBanners/insert
@@ -390,18 +399,19 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if channelId is not None:
-            kwargs['channelId'] = channelId
+            kwargs["channelId"] = channelId
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
         if onBehalfOfContentOwnerChannel is not None:
-            kwargs['onBehalfOfContentOwnerChannel'] = onBehalfOfContentOwnerChannel
+            kwargs["onBehalfOfContentOwnerChannel"] = onBehalfOfContentOwnerChannel
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.channelBanners().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.channelBanners().insert(**kwargs) # type: ignore
@@ -410,12 +420,12 @@ class YouTubeDataSource:
     async def channel_sections_list(
         self,
         part: str,
-        id: Optional[str] = None,
-        mine: Optional[bool] = None,
-        channelId: Optional[str] = None,
-        hl: Optional[str] = None,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        id: str | None = None,
+        mine: bool | None = None,
+        channelId: str | None = None,
+        hl: str | None = None,
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of resources, possibly filtered.
 
         HTTP GET youtube/v3/channelSections
@@ -430,20 +440,21 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if mine is not None:
-            kwargs['mine'] = mine
+            kwargs["mine"] = mine
         if channelId is not None:
-            kwargs['channelId'] = channelId
+            kwargs["channelId"] = channelId
         if hl is not None:
-            kwargs['hl'] = hl
+            kwargs["hl"] = hl
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         request = self.client.channelSections().list(**kwargs) # type: ignore
         return request.execute()
@@ -451,9 +462,9 @@ class YouTubeDataSource:
     async def channel_sections_insert(
         self,
         part: str,
-        onBehalfOfContentOwner: Optional[str] = None,
-        onBehalfOfContentOwnerChannel: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+        onBehalfOfContentOwnerChannel: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Inserts a new resource into this collection.
 
         HTTP POST youtube/v3/channelSections
@@ -465,18 +476,19 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
         if onBehalfOfContentOwnerChannel is not None:
-            kwargs['onBehalfOfContentOwnerChannel'] = onBehalfOfContentOwnerChannel
+            kwargs["onBehalfOfContentOwnerChannel"] = onBehalfOfContentOwnerChannel
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.channelSections().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.channelSections().insert(**kwargs) # type: ignore
@@ -485,8 +497,8 @@ class YouTubeDataSource:
     async def channel_sections_update(
         self,
         part: str,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Updates an existing resource.
 
         HTTP PUT youtube/v3/channelSections
@@ -497,16 +509,17 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.channelSections().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.channelSections().update(**kwargs) # type: ignore
@@ -515,8 +528,8 @@ class YouTubeDataSource:
     async def channel_sections_delete(
         self,
         id: str,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Deletes a resource.
 
         HTTP DELETE youtube/v3/channelSections
@@ -527,12 +540,13 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         request = self.client.channelSections().delete(**kwargs) # type: ignore
         return request.execute()
@@ -540,12 +554,12 @@ class YouTubeDataSource:
     async def comments_list(
         self,
         part: str,
-        id: Optional[str] = None,
-        parentId: Optional[str] = None,
-        textFormat: Optional[str] = None,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None
-    ) -> Dict[str, Any]:
+        id: str | None = None,
+        parentId: str | None = None,
+        textFormat: str | None = None,
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of resources, possibly filtered.
 
         HTTP GET youtube/v3/comments
@@ -560,28 +574,29 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if parentId is not None:
-            kwargs['parentId'] = parentId
+            kwargs["parentId"] = parentId
         if textFormat is not None:
-            kwargs['textFormat'] = textFormat
+            kwargs["textFormat"] = textFormat
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         request = self.client.comments().list(**kwargs) # type: ignore
         return request.execute()
 
     async def comments_insert(
         self,
-        part: str
-    ) -> Dict[str, Any]:
+        part: str,
+    ) -> dict[str, Any]:
         """YouTube Data API: Inserts a new resource into this collection.
 
         HTTP POST youtube/v3/comments
@@ -591,14 +606,15 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.comments().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.comments().insert(**kwargs) # type: ignore
@@ -606,8 +622,8 @@ class YouTubeDataSource:
 
     async def comments_update(
         self,
-        part: str
-    ) -> Dict[str, Any]:
+        part: str,
+    ) -> dict[str, Any]:
         """YouTube Data API: Updates an existing resource.
 
         HTTP PUT youtube/v3/comments
@@ -617,14 +633,15 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.comments().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.comments().update(**kwargs) # type: ignore
@@ -632,8 +649,8 @@ class YouTubeDataSource:
 
     async def comments_delete(
         self,
-        id: str
-    ) -> Dict[str, Any]:
+        id: str,
+    ) -> dict[str, Any]:
         """YouTube Data API: Deletes a resource.
 
         HTTP DELETE youtube/v3/comments
@@ -642,10 +659,11 @@ class YouTubeDataSource:
             id (str, required):
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
 
         request = self.client.comments().delete(**kwargs) # type: ignore
         return request.execute()
@@ -654,8 +672,8 @@ class YouTubeDataSource:
         self,
         id: str,
         moderationStatus: str,
-        banAuthor: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        banAuthor: bool | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Sets the moderation status of one or more comments.
 
         HTTP POST youtube/v3/comments/setModerationStatus
@@ -667,18 +685,19 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if moderationStatus is not None:
-            kwargs['moderationStatus'] = moderationStatus
+            kwargs["moderationStatus"] = moderationStatus
         if banAuthor is not None:
-            kwargs['banAuthor'] = banAuthor
+            kwargs["banAuthor"] = banAuthor
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.comments().setModerationStatus(**kwargs, body=body) # type: ignore
         else:
             request = self.client.comments().setModerationStatus(**kwargs) # type: ignore
@@ -686,8 +705,8 @@ class YouTubeDataSource:
 
     async def comments_mark_as_spam(
         self,
-        id: str
-    ) -> Dict[str, Any]:
+        id: str,
+    ) -> dict[str, Any]:
         """YouTube Data API: Expresses the caller's opinion that one or more comments should be flagged as spam.
 
         HTTP POST youtube/v3/comments/markAsSpam
@@ -697,14 +716,15 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.comments().markAsSpam(**kwargs, body=body) # type: ignore
         else:
             request = self.client.comments().markAsSpam(**kwargs) # type: ignore
@@ -713,18 +733,18 @@ class YouTubeDataSource:
     async def comment_threads_list(
         self,
         part: str,
-        id: Optional[str] = None,
-        videoId: Optional[str] = None,
-        postId: Optional[str] = None,
-        channelId: Optional[str] = None,
-        allThreadsRelatedToChannelId: Optional[str] = None,
-        moderationStatus: Optional[str] = None,
-        searchTerms: Optional[str] = None,
-        textFormat: Optional[str] = None,
-        order: Optional[str] = None,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None
-    ) -> Dict[str, Any]:
+        id: str | None = None,
+        videoId: str | None = None,
+        postId: str | None = None,
+        channelId: str | None = None,
+        allThreadsRelatedToChannelId: str | None = None,
+        moderationStatus: str | None = None,
+        searchTerms: str | None = None,
+        textFormat: str | None = None,
+        order: str | None = None,
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of resources, possibly filtered.
 
         HTTP GET youtube/v3/commentThreads
@@ -745,40 +765,41 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if videoId is not None:
-            kwargs['videoId'] = videoId
+            kwargs["videoId"] = videoId
         if postId is not None:
-            kwargs['postId'] = postId
+            kwargs["postId"] = postId
         if channelId is not None:
-            kwargs['channelId'] = channelId
+            kwargs["channelId"] = channelId
         if allThreadsRelatedToChannelId is not None:
-            kwargs['allThreadsRelatedToChannelId'] = allThreadsRelatedToChannelId
+            kwargs["allThreadsRelatedToChannelId"] = allThreadsRelatedToChannelId
         if moderationStatus is not None:
-            kwargs['moderationStatus'] = moderationStatus
+            kwargs["moderationStatus"] = moderationStatus
         if searchTerms is not None:
-            kwargs['searchTerms'] = searchTerms
+            kwargs["searchTerms"] = searchTerms
         if textFormat is not None:
-            kwargs['textFormat'] = textFormat
+            kwargs["textFormat"] = textFormat
         if order is not None:
-            kwargs['order'] = order
+            kwargs["order"] = order
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         request = self.client.commentThreads().list(**kwargs) # type: ignore
         return request.execute()
 
     async def comment_threads_insert(
         self,
-        part: str
-    ) -> Dict[str, Any]:
+        part: str,
+    ) -> dict[str, Any]:
         """YouTube Data API: Inserts a new resource into this collection.
 
         HTTP POST youtube/v3/commentThreads
@@ -788,14 +809,15 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.commentThreads().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.commentThreads().insert(**kwargs) # type: ignore
@@ -803,8 +825,8 @@ class YouTubeDataSource:
 
     async def youtube_v3_update_comment_threads(
         self,
-        part: Optional[str] = None
-    ) -> Dict[str, Any]:
+        part: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Updates an existing resource.
 
         HTTP PUT youtube/v3/commentThreads
@@ -814,14 +836,15 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.youtube_v3().updateCommentThreads(**kwargs, body=body) # type: ignore
         else:
             request = self.client.youtube_v3().updateCommentThreads(**kwargs) # type: ignore
@@ -829,13 +852,13 @@ class YouTubeDataSource:
 
     async def youtube_v3_live_chat_messages_stream(
         self,
-        liveChatId: Optional[str] = None,
-        hl: Optional[str] = None,
-        profileImageSize: Optional[int] = None,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        part: Optional[str] = None
-    ) -> Dict[str, Any]:
+        liveChatId: str | None = None,
+        hl: str | None = None,
+        profileImageSize: int | None = None,
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+        part: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Allows a user to load live chat through a server-streamed RPC.
 
         HTTP GET youtube/v3/liveChat/messages/stream
@@ -850,20 +873,21 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if liveChatId is not None:
-            kwargs['liveChatId'] = liveChatId
+            kwargs["liveChatId"] = liveChatId
         if hl is not None:
-            kwargs['hl'] = hl
+            kwargs["hl"] = hl
         if profileImageSize is not None:
-            kwargs['profileImageSize'] = profileImageSize
+            kwargs["profileImageSize"] = profileImageSize
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         request = self.client.youtube_v3_liveChat_messages().stream(**kwargs) # type: ignore
         return request.execute()
@@ -871,8 +895,8 @@ class YouTubeDataSource:
     async def i18n_languages_list(
         self,
         part: str,
-        hl: Optional[str] = None
-    ) -> Dict[str, Any]:
+        hl: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of resources, possibly filtered.
 
         HTTP GET youtube/v3/i18nLanguages
@@ -880,14 +904,16 @@ class YouTubeDataSource:
         Args:
             hl (str, optional):
             part (str, required): The *part* parameter specifies the i18nLanguage resource properties that the API response will include. Set the parameter value to snippet.
+
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if hl is not None:
-            kwargs['hl'] = hl
+            kwargs["hl"] = hl
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         request = self.client.i18nLanguages().list(**kwargs) # type: ignore
         return request.execute()
@@ -895,8 +921,8 @@ class YouTubeDataSource:
     async def i18n_regions_list(
         self,
         part: str,
-        hl: Optional[str] = None
-    ) -> Dict[str, Any]:
+        hl: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of resources, possibly filtered.
 
         HTTP GET youtube/v3/i18nRegions
@@ -907,12 +933,13 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if hl is not None:
-            kwargs['hl'] = hl
+            kwargs["hl"] = hl
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         request = self.client.i18nRegions().list(**kwargs) # type: ignore
         return request.execute()
@@ -920,15 +947,15 @@ class YouTubeDataSource:
     async def live_broadcasts_list(
         self,
         part: str,
-        broadcastStatus: Optional[str] = None,
-        id: Optional[str] = None,
-        mine: Optional[bool] = None,
-        broadcastType: Optional[str] = None,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        onBehalfOfContentOwner: Optional[str] = None,
-        onBehalfOfContentOwnerChannel: Optional[str] = None
-    ) -> Dict[str, Any]:
+        broadcastStatus: str | None = None,
+        id: str | None = None,
+        mine: bool | None = None,
+        broadcastType: str | None = None,
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+        onBehalfOfContentOwner: str | None = None,
+        onBehalfOfContentOwnerChannel: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieve the list of broadcasts associated with the given channel.
 
         HTTP GET youtube/v3/liveBroadcasts
@@ -946,26 +973,27 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if broadcastStatus is not None:
-            kwargs['broadcastStatus'] = broadcastStatus
+            kwargs["broadcastStatus"] = broadcastStatus
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if mine is not None:
-            kwargs['mine'] = mine
+            kwargs["mine"] = mine
         if broadcastType is not None:
-            kwargs['broadcastType'] = broadcastType
+            kwargs["broadcastType"] = broadcastType
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
         if onBehalfOfContentOwnerChannel is not None:
-            kwargs['onBehalfOfContentOwnerChannel'] = onBehalfOfContentOwnerChannel
+            kwargs["onBehalfOfContentOwnerChannel"] = onBehalfOfContentOwnerChannel
 
         request = self.client.liveBroadcasts().list(**kwargs) # type: ignore
         return request.execute()
@@ -973,9 +1001,9 @@ class YouTubeDataSource:
     async def live_broadcasts_insert(
         self,
         part: str,
-        onBehalfOfContentOwner: Optional[str] = None,
-        onBehalfOfContentOwnerChannel: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+        onBehalfOfContentOwnerChannel: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Inserts a new stream for the authenticated user.
 
         HTTP POST youtube/v3/liveBroadcasts
@@ -987,18 +1015,19 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
         if onBehalfOfContentOwnerChannel is not None:
-            kwargs['onBehalfOfContentOwnerChannel'] = onBehalfOfContentOwnerChannel
+            kwargs["onBehalfOfContentOwnerChannel"] = onBehalfOfContentOwnerChannel
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.liveBroadcasts().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.liveBroadcasts().insert(**kwargs) # type: ignore
@@ -1007,9 +1036,9 @@ class YouTubeDataSource:
     async def live_broadcasts_update(
         self,
         part: str,
-        onBehalfOfContentOwner: Optional[str] = None,
-        onBehalfOfContentOwnerChannel: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+        onBehalfOfContentOwnerChannel: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Updates an existing broadcast for the authenticated user.
 
         HTTP PUT youtube/v3/liveBroadcasts
@@ -1021,18 +1050,19 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
         if onBehalfOfContentOwnerChannel is not None:
-            kwargs['onBehalfOfContentOwnerChannel'] = onBehalfOfContentOwnerChannel
+            kwargs["onBehalfOfContentOwnerChannel"] = onBehalfOfContentOwnerChannel
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.liveBroadcasts().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.liveBroadcasts().update(**kwargs) # type: ignore
@@ -1041,9 +1071,9 @@ class YouTubeDataSource:
     async def live_broadcasts_delete(
         self,
         id: str,
-        onBehalfOfContentOwner: Optional[str] = None,
-        onBehalfOfContentOwnerChannel: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+        onBehalfOfContentOwnerChannel: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Delete a given broadcast.
 
         HTTP DELETE youtube/v3/liveBroadcasts
@@ -1055,14 +1085,15 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
         if onBehalfOfContentOwnerChannel is not None:
-            kwargs['onBehalfOfContentOwnerChannel'] = onBehalfOfContentOwnerChannel
+            kwargs["onBehalfOfContentOwnerChannel"] = onBehalfOfContentOwnerChannel
 
         request = self.client.liveBroadcasts().delete(**kwargs) # type: ignore
         return request.execute()
@@ -1071,10 +1102,10 @@ class YouTubeDataSource:
         self,
         id: str,
         part: str,
-        streamId: Optional[str] = None,
-        onBehalfOfContentOwner: Optional[str] = None,
-        onBehalfOfContentOwnerChannel: Optional[str] = None
-    ) -> Dict[str, Any]:
+        streamId: str | None = None,
+        onBehalfOfContentOwner: str | None = None,
+        onBehalfOfContentOwnerChannel: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Bind a broadcast to a stream.
 
         HTTP POST youtube/v3/liveBroadcasts/bind
@@ -1088,22 +1119,23 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if streamId is not None:
-            kwargs['streamId'] = streamId
+            kwargs["streamId"] = streamId
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
         if onBehalfOfContentOwnerChannel is not None:
-            kwargs['onBehalfOfContentOwnerChannel'] = onBehalfOfContentOwnerChannel
+            kwargs["onBehalfOfContentOwnerChannel"] = onBehalfOfContentOwnerChannel
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.liveBroadcasts().bind(**kwargs, body=body) # type: ignore
         else:
             request = self.client.liveBroadcasts().bind(**kwargs) # type: ignore
@@ -1114,9 +1146,9 @@ class YouTubeDataSource:
         id: str,
         broadcastStatus: str,
         part: str,
-        onBehalfOfContentOwner: Optional[str] = None,
-        onBehalfOfContentOwnerChannel: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+        onBehalfOfContentOwnerChannel: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Transition a broadcast to a given status.
 
         HTTP POST youtube/v3/liveBroadcasts/transition
@@ -1130,22 +1162,23 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if broadcastStatus is not None:
-            kwargs['broadcastStatus'] = broadcastStatus
+            kwargs["broadcastStatus"] = broadcastStatus
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
         if onBehalfOfContentOwnerChannel is not None:
-            kwargs['onBehalfOfContentOwnerChannel'] = onBehalfOfContentOwnerChannel
+            kwargs["onBehalfOfContentOwnerChannel"] = onBehalfOfContentOwnerChannel
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.liveBroadcasts().transition(**kwargs, body=body) # type: ignore
         else:
             request = self.client.liveBroadcasts().transition(**kwargs) # type: ignore
@@ -1153,11 +1186,11 @@ class YouTubeDataSource:
 
     async def live_broadcasts_insert_cuepoint(
         self,
-        id: Optional[str] = None,
-        part: Optional[str] = None,
-        onBehalfOfContentOwner: Optional[str] = None,
-        onBehalfOfContentOwnerChannel: Optional[str] = None
-    ) -> Dict[str, Any]:
+        id: str | None = None,
+        part: str | None = None,
+        onBehalfOfContentOwner: str | None = None,
+        onBehalfOfContentOwnerChannel: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Insert cuepoints in a broadcast
 
         HTTP POST youtube/v3/liveBroadcasts/cuepoint
@@ -1170,20 +1203,21 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
         if onBehalfOfContentOwnerChannel is not None:
-            kwargs['onBehalfOfContentOwnerChannel'] = onBehalfOfContentOwnerChannel
+            kwargs["onBehalfOfContentOwnerChannel"] = onBehalfOfContentOwnerChannel
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.liveBroadcasts().insertCuepoint(**kwargs, body=body) # type: ignore
         else:
             request = self.client.liveBroadcasts().insertCuepoint(**kwargs) # type: ignore
@@ -1191,8 +1225,8 @@ class YouTubeDataSource:
 
     async def live_chat_bans_insert(
         self,
-        part: str
-    ) -> Dict[str, Any]:
+        part: str,
+    ) -> dict[str, Any]:
         """YouTube Data API: Inserts a new resource into this collection.
 
         HTTP POST youtube/v3/liveChat/bans
@@ -1202,14 +1236,15 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.liveChatBans().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.liveChatBans().insert(**kwargs) # type: ignore
@@ -1217,8 +1252,8 @@ class YouTubeDataSource:
 
     async def live_chat_bans_delete(
         self,
-        id: str
-    ) -> Dict[str, Any]:
+        id: str,
+    ) -> dict[str, Any]:
         """YouTube Data API: Deletes a chat ban.
 
         HTTP DELETE youtube/v3/liveChat/bans
@@ -1227,10 +1262,11 @@ class YouTubeDataSource:
             id (str, required):
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
 
         request = self.client.liveChatBans().delete(**kwargs) # type: ignore
         return request.execute()
@@ -1239,11 +1275,11 @@ class YouTubeDataSource:
         self,
         liveChatId: str,
         part: str,
-        hl: Optional[str] = None,
-        profileImageSize: Optional[int] = None,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None
-    ) -> Dict[str, Any]:
+        hl: str | None = None,
+        profileImageSize: int | None = None,
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of resources, possibly filtered.
 
         HTTP GET youtube/v3/liveChat/messages
@@ -1258,28 +1294,29 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if liveChatId is not None:
-            kwargs['liveChatId'] = liveChatId
+            kwargs["liveChatId"] = liveChatId
         if hl is not None:
-            kwargs['hl'] = hl
+            kwargs["hl"] = hl
         if profileImageSize is not None:
-            kwargs['profileImageSize'] = profileImageSize
+            kwargs["profileImageSize"] = profileImageSize
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         request = self.client.liveChatMessages().list(**kwargs) # type: ignore
         return request.execute()
 
     async def live_chat_messages_insert(
         self,
-        part: str
-    ) -> Dict[str, Any]:
+        part: str,
+    ) -> dict[str, Any]:
         """YouTube Data API: Inserts a new resource into this collection.
 
         HTTP POST youtube/v3/liveChat/messages
@@ -1289,14 +1326,15 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.liveChatMessages().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.liveChatMessages().insert(**kwargs) # type: ignore
@@ -1304,8 +1342,8 @@ class YouTubeDataSource:
 
     async def live_chat_messages_delete(
         self,
-        id: str
-    ) -> Dict[str, Any]:
+        id: str,
+    ) -> dict[str, Any]:
         """YouTube Data API: Deletes a chat message.
 
         HTTP DELETE youtube/v3/liveChat/messages
@@ -1314,19 +1352,20 @@ class YouTubeDataSource:
             id (str, required):
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
 
         request = self.client.liveChatMessages().delete(**kwargs) # type: ignore
         return request.execute()
 
     async def live_chat_messages_transition(
         self,
-        id: Optional[str] = None,
-        status: Optional[str] = None
-    ) -> Dict[str, Any]:
+        id: str | None = None,
+        status: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Transition a durable chat event.
 
         HTTP POST youtube/v3/liveChat/messages/transition
@@ -1337,16 +1376,17 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if status is not None:
-            kwargs['status'] = status
+            kwargs["status"] = status
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.liveChatMessages().transition(**kwargs, body=body) # type: ignore
         else:
             request = self.client.liveChatMessages().transition(**kwargs) # type: ignore
@@ -1356,9 +1396,9 @@ class YouTubeDataSource:
         self,
         liveChatId: str,
         part: str,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None
-    ) -> Dict[str, Any]:
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of resources, possibly filtered.
 
         HTTP GET youtube/v3/liveChat/moderators
@@ -1371,24 +1411,25 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if liveChatId is not None:
-            kwargs['liveChatId'] = liveChatId
+            kwargs["liveChatId"] = liveChatId
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         request = self.client.liveChatModerators().list(**kwargs) # type: ignore
         return request.execute()
 
     async def live_chat_moderators_insert(
         self,
-        part: str
-    ) -> Dict[str, Any]:
+        part: str,
+    ) -> dict[str, Any]:
         """YouTube Data API: Inserts a new resource into this collection.
 
         HTTP POST youtube/v3/liveChat/moderators
@@ -1398,14 +1439,15 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.liveChatModerators().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.liveChatModerators().insert(**kwargs) # type: ignore
@@ -1413,8 +1455,8 @@ class YouTubeDataSource:
 
     async def live_chat_moderators_delete(
         self,
-        id: str
-    ) -> Dict[str, Any]:
+        id: str,
+    ) -> dict[str, Any]:
         """YouTube Data API: Deletes a chat moderator.
 
         HTTP DELETE youtube/v3/liveChat/moderators
@@ -1423,10 +1465,11 @@ class YouTubeDataSource:
             id (str, required):
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
 
         request = self.client.liveChatModerators().delete(**kwargs) # type: ignore
         return request.execute()
@@ -1434,13 +1477,13 @@ class YouTubeDataSource:
     async def live_streams_list(
         self,
         part: str,
-        id: Optional[str] = None,
-        mine: Optional[bool] = None,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        onBehalfOfContentOwner: Optional[str] = None,
-        onBehalfOfContentOwnerChannel: Optional[str] = None
-    ) -> Dict[str, Any]:
+        id: str | None = None,
+        mine: bool | None = None,
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+        onBehalfOfContentOwner: str | None = None,
+        onBehalfOfContentOwnerChannel: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieve the list of streams associated with the given channel. --
 
         HTTP GET youtube/v3/liveStreams
@@ -1456,22 +1499,23 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if mine is not None:
-            kwargs['mine'] = mine
+            kwargs["mine"] = mine
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
         if onBehalfOfContentOwnerChannel is not None:
-            kwargs['onBehalfOfContentOwnerChannel'] = onBehalfOfContentOwnerChannel
+            kwargs["onBehalfOfContentOwnerChannel"] = onBehalfOfContentOwnerChannel
 
         request = self.client.liveStreams().list(**kwargs) # type: ignore
         return request.execute()
@@ -1479,9 +1523,9 @@ class YouTubeDataSource:
     async def live_streams_insert(
         self,
         part: str,
-        onBehalfOfContentOwner: Optional[str] = None,
-        onBehalfOfContentOwnerChannel: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+        onBehalfOfContentOwnerChannel: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Inserts a new stream for the authenticated user.
 
         HTTP POST youtube/v3/liveStreams
@@ -1493,18 +1537,19 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
         if onBehalfOfContentOwnerChannel is not None:
-            kwargs['onBehalfOfContentOwnerChannel'] = onBehalfOfContentOwnerChannel
+            kwargs["onBehalfOfContentOwnerChannel"] = onBehalfOfContentOwnerChannel
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.liveStreams().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.liveStreams().insert(**kwargs) # type: ignore
@@ -1513,9 +1558,9 @@ class YouTubeDataSource:
     async def live_streams_update(
         self,
         part: str,
-        onBehalfOfContentOwner: Optional[str] = None,
-        onBehalfOfContentOwnerChannel: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+        onBehalfOfContentOwnerChannel: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Updates an existing stream for the authenticated user.
 
         HTTP PUT youtube/v3/liveStreams
@@ -1527,18 +1572,19 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
         if onBehalfOfContentOwnerChannel is not None:
-            kwargs['onBehalfOfContentOwnerChannel'] = onBehalfOfContentOwnerChannel
+            kwargs["onBehalfOfContentOwnerChannel"] = onBehalfOfContentOwnerChannel
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.liveStreams().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.liveStreams().update(**kwargs) # type: ignore
@@ -1547,9 +1593,9 @@ class YouTubeDataSource:
     async def live_streams_delete(
         self,
         id: str,
-        onBehalfOfContentOwner: Optional[str] = None,
-        onBehalfOfContentOwnerChannel: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+        onBehalfOfContentOwnerChannel: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Deletes an existing stream for the authenticated user.
 
         HTTP DELETE youtube/v3/liveStreams
@@ -1561,14 +1607,15 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
         if onBehalfOfContentOwnerChannel is not None:
-            kwargs['onBehalfOfContentOwnerChannel'] = onBehalfOfContentOwnerChannel
+            kwargs["onBehalfOfContentOwnerChannel"] = onBehalfOfContentOwnerChannel
 
         request = self.client.liveStreams().delete(**kwargs) # type: ignore
         return request.execute()
@@ -1576,12 +1623,12 @@ class YouTubeDataSource:
     async def members_list(
         self,
         part: str,
-        mode: Optional[str] = None,
-        hasAccessToLevel: Optional[str] = None,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        filterByMemberChannelId: Optional[str] = None
-    ) -> Dict[str, Any]:
+        mode: str | None = None,
+        hasAccessToLevel: str | None = None,
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+        filterByMemberChannelId: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of members that match the request criteria for a channel.
 
         HTTP GET youtube/v3/members
@@ -1596,28 +1643,29 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if mode is not None:
-            kwargs['mode'] = mode
+            kwargs["mode"] = mode
         if hasAccessToLevel is not None:
-            kwargs['hasAccessToLevel'] = hasAccessToLevel
+            kwargs["hasAccessToLevel"] = hasAccessToLevel
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if filterByMemberChannelId is not None:
-            kwargs['filterByMemberChannelId'] = filterByMemberChannelId
+            kwargs["filterByMemberChannelId"] = filterByMemberChannelId
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         request = self.client.members().list(**kwargs) # type: ignore
         return request.execute()
 
     async def memberships_levels_list(
         self,
-        part: str
-    ) -> Dict[str, Any]:
+        part: str,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of all pricing levels offered by a creator to the fans.
 
         HTTP GET youtube/v3/membershipsLevels
@@ -1627,10 +1675,11 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         request = self.client.membershipsLevels().list(**kwargs) # type: ignore
         return request.execute()
@@ -1638,15 +1687,15 @@ class YouTubeDataSource:
     async def playlists_list(
         self,
         part: str,
-        id: Optional[str] = None,
-        mine: Optional[bool] = None,
-        channelId: Optional[str] = None,
-        hl: Optional[str] = None,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        onBehalfOfContentOwner: Optional[str] = None,
-        onBehalfOfContentOwnerChannel: Optional[str] = None
-    ) -> Dict[str, Any]:
+        id: str | None = None,
+        mine: bool | None = None,
+        channelId: str | None = None,
+        hl: str | None = None,
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+        onBehalfOfContentOwner: str | None = None,
+        onBehalfOfContentOwnerChannel: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of resources, possibly filtered.
 
         HTTP GET youtube/v3/playlists
@@ -1664,26 +1713,27 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if mine is not None:
-            kwargs['mine'] = mine
+            kwargs["mine"] = mine
         if channelId is not None:
-            kwargs['channelId'] = channelId
+            kwargs["channelId"] = channelId
         if hl is not None:
-            kwargs['hl'] = hl
+            kwargs["hl"] = hl
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
         if onBehalfOfContentOwnerChannel is not None:
-            kwargs['onBehalfOfContentOwnerChannel'] = onBehalfOfContentOwnerChannel
+            kwargs["onBehalfOfContentOwnerChannel"] = onBehalfOfContentOwnerChannel
 
         request = self.client.playlists().list(**kwargs) # type: ignore
         return request.execute()
@@ -1691,9 +1741,9 @@ class YouTubeDataSource:
     async def playlists_insert(
         self,
         part: str,
-        onBehalfOfContentOwner: Optional[str] = None,
-        onBehalfOfContentOwnerChannel: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+        onBehalfOfContentOwnerChannel: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Inserts a new resource into this collection.
 
         HTTP POST youtube/v3/playlists
@@ -1705,18 +1755,19 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
         if onBehalfOfContentOwnerChannel is not None:
-            kwargs['onBehalfOfContentOwnerChannel'] = onBehalfOfContentOwnerChannel
+            kwargs["onBehalfOfContentOwnerChannel"] = onBehalfOfContentOwnerChannel
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.playlists().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.playlists().insert(**kwargs) # type: ignore
@@ -1725,8 +1776,8 @@ class YouTubeDataSource:
     async def playlists_update(
         self,
         part: str,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Updates an existing resource.
 
         HTTP PUT youtube/v3/playlists
@@ -1737,16 +1788,17 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.playlists().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.playlists().update(**kwargs) # type: ignore
@@ -1755,8 +1807,8 @@ class YouTubeDataSource:
     async def playlists_delete(
         self,
         id: str,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Deletes a resource.
 
         HTTP DELETE youtube/v3/playlists
@@ -1767,12 +1819,13 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         request = self.client.playlists().delete(**kwargs) # type: ignore
         return request.execute()
@@ -1780,13 +1833,13 @@ class YouTubeDataSource:
     async def playlist_items_list(
         self,
         part: str,
-        id: Optional[str] = None,
-        playlistId: Optional[str] = None,
-        videoId: Optional[str] = None,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        id: str | None = None,
+        playlistId: str | None = None,
+        videoId: str | None = None,
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of resources, possibly filtered.
 
         HTTP GET youtube/v3/playlistItems
@@ -1802,22 +1855,23 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if playlistId is not None:
-            kwargs['playlistId'] = playlistId
+            kwargs["playlistId"] = playlistId
         if videoId is not None:
-            kwargs['videoId'] = videoId
+            kwargs["videoId"] = videoId
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         request = self.client.playlistItems().list(**kwargs) # type: ignore
         return request.execute()
@@ -1825,8 +1879,8 @@ class YouTubeDataSource:
     async def playlist_items_delete(
         self,
         id: str,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Deletes a resource.
 
         HTTP DELETE youtube/v3/playlistItems
@@ -1834,14 +1888,16 @@ class YouTubeDataSource:
         Args:
             id (str, required):
             onBehalfOfContentOwner (str, optional): *Note:* This parameter is intended exclusively for YouTube content partners. The *onBehalfOfContentOwner* parameter indicates that the request's authorization credentials identify a YouTube CMS user who is acting on behalf of the content owner specified in the parameter value. This parameter is intended for YouTube content partners that own and manage many different YouTube channels. It allows content owners to authenticate once and get access to all their video and channel data, without having to provide authentication credentials for each individual channel. The CMS account that the user authenticates with must be linked to the specified YouTube content owner.
+
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         request = self.client.playlistItems().delete(**kwargs) # type: ignore
         return request.execute()
@@ -1849,8 +1905,8 @@ class YouTubeDataSource:
     async def playlist_items_insert(
         self,
         part: str,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Inserts a new resource into this collection.
 
         HTTP POST youtube/v3/playlistItems
@@ -1861,16 +1917,17 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.playlistItems().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.playlistItems().insert(**kwargs) # type: ignore
@@ -1879,8 +1936,8 @@ class YouTubeDataSource:
     async def playlist_items_update(
         self,
         part: str,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Updates an existing resource.
 
         HTTP PUT youtube/v3/playlistItems
@@ -1891,16 +1948,17 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.playlistItems().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.playlistItems().update(**kwargs) # type: ignore
@@ -1908,13 +1966,13 @@ class YouTubeDataSource:
 
     async def playlist_images_list(
         self,
-        parent: Optional[str] = None,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        part: Optional[str] = None,
-        onBehalfOfContentOwner: Optional[str] = None,
-        onBehalfOfContentOwnerChannel: Optional[str] = None
-    ) -> Dict[str, Any]:
+        parent: str | None = None,
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+        part: str | None = None,
+        onBehalfOfContentOwner: str | None = None,
+        onBehalfOfContentOwnerChannel: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of resources, possibly filtered.
 
         HTTP GET youtube/v3/playlistImages
@@ -1929,30 +1987,31 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if parent is not None:
-            kwargs['parent'] = parent
+            kwargs["parent"] = parent
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
         if onBehalfOfContentOwnerChannel is not None:
-            kwargs['onBehalfOfContentOwnerChannel'] = onBehalfOfContentOwnerChannel
+            kwargs["onBehalfOfContentOwnerChannel"] = onBehalfOfContentOwnerChannel
 
         request = self.client.playlistImages().list(**kwargs) # type: ignore
         return request.execute()
 
     async def playlist_images_insert(
         self,
-        part: Optional[str] = None,
-        onBehalfOfContentOwner: Optional[str] = None,
-        onBehalfOfContentOwnerChannel: Optional[str] = None
-    ) -> Dict[str, Any]:
+        part: str | None = None,
+        onBehalfOfContentOwner: str | None = None,
+        onBehalfOfContentOwnerChannel: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Inserts a new resource into this collection.
 
         HTTP POST youtube/v3/playlistImages
@@ -1964,18 +2023,19 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
         if onBehalfOfContentOwnerChannel is not None:
-            kwargs['onBehalfOfContentOwnerChannel'] = onBehalfOfContentOwnerChannel
+            kwargs["onBehalfOfContentOwnerChannel"] = onBehalfOfContentOwnerChannel
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.playlistImages().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.playlistImages().insert(**kwargs) # type: ignore
@@ -1983,9 +2043,9 @@ class YouTubeDataSource:
 
     async def playlist_images_update(
         self,
-        part: Optional[str] = None,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        part: str | None = None,
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Updates an existing resource.
 
         HTTP PUT youtube/v3/playlistImages
@@ -1996,16 +2056,17 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.playlistImages().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.playlistImages().update(**kwargs) # type: ignore
@@ -2013,9 +2074,9 @@ class YouTubeDataSource:
 
     async def playlist_images_delete(
         self,
-        id: Optional[str] = None,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        id: str | None = None,
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Deletes a resource.
 
         HTTP DELETE youtube/v3/playlistImages
@@ -2026,12 +2087,13 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         request = self.client.playlistImages().delete(**kwargs) # type: ignore
         return request.execute()
@@ -2039,37 +2101,37 @@ class YouTubeDataSource:
     async def search_list(
         self,
         part: str,
-        q: Optional[str] = None,
-        type: Optional[str] = None,
-        order: Optional[str] = None,
-        relevanceLanguage: Optional[str] = None,
-        videoDimension: Optional[str] = None,
-        videoDefinition: Optional[str] = None,
-        videoLicense: Optional[str] = None,
-        videoDuration: Optional[str] = None,
-        videoCaption: Optional[str] = None,
-        videoEmbeddable: Optional[str] = None,
-        videoSyndicated: Optional[str] = None,
-        videoCategoryId: Optional[str] = None,
-        videoType: Optional[str] = None,
-        eventType: Optional[str] = None,
-        location: Optional[str] = None,
-        locationRadius: Optional[str] = None,
-        channelId: Optional[str] = None,
-        publishedAfter: Optional[str] = None,
-        publishedBefore: Optional[str] = None,
-        topicId: Optional[str] = None,
-        videoPaidProductPlacement: Optional[str] = None,
-        forContentOwner: Optional[bool] = None,
-        regionCode: Optional[str] = None,
-        channelType: Optional[str] = None,
-        safeSearch: Optional[str] = None,
-        forMine: Optional[bool] = None,
-        forDeveloper: Optional[bool] = None,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        q: str | None = None,
+        type: str | None = None,
+        order: str | None = None,
+        relevanceLanguage: str | None = None,
+        videoDimension: str | None = None,
+        videoDefinition: str | None = None,
+        videoLicense: str | None = None,
+        videoDuration: str | None = None,
+        videoCaption: str | None = None,
+        videoEmbeddable: str | None = None,
+        videoSyndicated: str | None = None,
+        videoCategoryId: str | None = None,
+        videoType: str | None = None,
+        eventType: str | None = None,
+        location: str | None = None,
+        locationRadius: str | None = None,
+        channelId: str | None = None,
+        publishedAfter: str | None = None,
+        publishedBefore: str | None = None,
+        topicId: str | None = None,
+        videoPaidProductPlacement: str | None = None,
+        forContentOwner: bool | None = None,
+        regionCode: str | None = None,
+        channelType: str | None = None,
+        safeSearch: str | None = None,
+        forMine: bool | None = None,
+        forDeveloper: bool | None = None,
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of search resources
 
         HTTP GET youtube/v3/search
@@ -2109,70 +2171,71 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if q is not None:
-            kwargs['q'] = q
+            kwargs["q"] = q
         if type is not None:
-            kwargs['type'] = type
+            kwargs["type"] = type
         if order is not None:
-            kwargs['order'] = order
+            kwargs["order"] = order
         if relevanceLanguage is not None:
-            kwargs['relevanceLanguage'] = relevanceLanguage
+            kwargs["relevanceLanguage"] = relevanceLanguage
         if videoDimension is not None:
-            kwargs['videoDimension'] = videoDimension
+            kwargs["videoDimension"] = videoDimension
         if videoDefinition is not None:
-            kwargs['videoDefinition'] = videoDefinition
+            kwargs["videoDefinition"] = videoDefinition
         if videoLicense is not None:
-            kwargs['videoLicense'] = videoLicense
+            kwargs["videoLicense"] = videoLicense
         if videoDuration is not None:
-            kwargs['videoDuration'] = videoDuration
+            kwargs["videoDuration"] = videoDuration
         if videoCaption is not None:
-            kwargs['videoCaption'] = videoCaption
+            kwargs["videoCaption"] = videoCaption
         if videoEmbeddable is not None:
-            kwargs['videoEmbeddable'] = videoEmbeddable
+            kwargs["videoEmbeddable"] = videoEmbeddable
         if videoSyndicated is not None:
-            kwargs['videoSyndicated'] = videoSyndicated
+            kwargs["videoSyndicated"] = videoSyndicated
         if videoCategoryId is not None:
-            kwargs['videoCategoryId'] = videoCategoryId
+            kwargs["videoCategoryId"] = videoCategoryId
         if videoType is not None:
-            kwargs['videoType'] = videoType
+            kwargs["videoType"] = videoType
         if eventType is not None:
-            kwargs['eventType'] = eventType
+            kwargs["eventType"] = eventType
         if location is not None:
-            kwargs['location'] = location
+            kwargs["location"] = location
         if locationRadius is not None:
-            kwargs['locationRadius'] = locationRadius
+            kwargs["locationRadius"] = locationRadius
         if channelId is not None:
-            kwargs['channelId'] = channelId
+            kwargs["channelId"] = channelId
         if publishedAfter is not None:
-            kwargs['publishedAfter'] = publishedAfter
+            kwargs["publishedAfter"] = publishedAfter
         if publishedBefore is not None:
-            kwargs['publishedBefore'] = publishedBefore
+            kwargs["publishedBefore"] = publishedBefore
         if topicId is not None:
-            kwargs['topicId'] = topicId
+            kwargs["topicId"] = topicId
         if videoPaidProductPlacement is not None:
-            kwargs['videoPaidProductPlacement'] = videoPaidProductPlacement
+            kwargs["videoPaidProductPlacement"] = videoPaidProductPlacement
         if forContentOwner is not None:
-            kwargs['forContentOwner'] = forContentOwner
+            kwargs["forContentOwner"] = forContentOwner
         if regionCode is not None:
-            kwargs['regionCode'] = regionCode
+            kwargs["regionCode"] = regionCode
         if channelType is not None:
-            kwargs['channelType'] = channelType
+            kwargs["channelType"] = channelType
         if safeSearch is not None:
-            kwargs['safeSearch'] = safeSearch
+            kwargs["safeSearch"] = safeSearch
         if forMine is not None:
-            kwargs['forMine'] = forMine
+            kwargs["forMine"] = forMine
         if forDeveloper is not None:
-            kwargs['forDeveloper'] = forDeveloper
+            kwargs["forDeveloper"] = forDeveloper
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         request = self.client.search().list(**kwargs) # type: ignore
         return request.execute()
@@ -2180,18 +2243,18 @@ class YouTubeDataSource:
     async def subscriptions_list(
         self,
         part: str,
-        id: Optional[str] = None,
-        mine: Optional[bool] = None,
-        channelId: Optional[str] = None,
-        forChannelId: Optional[str] = None,
-        order: Optional[str] = None,
-        mySubscribers: Optional[bool] = None,
-        myRecentSubscribers: Optional[bool] = None,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        onBehalfOfContentOwner: Optional[str] = None,
-        onBehalfOfContentOwnerChannel: Optional[str] = None
-    ) -> Dict[str, Any]:
+        id: str | None = None,
+        mine: bool | None = None,
+        channelId: str | None = None,
+        forChannelId: str | None = None,
+        order: str | None = None,
+        mySubscribers: bool | None = None,
+        myRecentSubscribers: bool | None = None,
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+        onBehalfOfContentOwner: str | None = None,
+        onBehalfOfContentOwnerChannel: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of resources, possibly filtered.
 
         HTTP GET youtube/v3/subscriptions
@@ -2212,40 +2275,41 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if mine is not None:
-            kwargs['mine'] = mine
+            kwargs["mine"] = mine
         if channelId is not None:
-            kwargs['channelId'] = channelId
+            kwargs["channelId"] = channelId
         if forChannelId is not None:
-            kwargs['forChannelId'] = forChannelId
+            kwargs["forChannelId"] = forChannelId
         if order is not None:
-            kwargs['order'] = order
+            kwargs["order"] = order
         if mySubscribers is not None:
-            kwargs['mySubscribers'] = mySubscribers
+            kwargs["mySubscribers"] = mySubscribers
         if myRecentSubscribers is not None:
-            kwargs['myRecentSubscribers'] = myRecentSubscribers
+            kwargs["myRecentSubscribers"] = myRecentSubscribers
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
         if onBehalfOfContentOwnerChannel is not None:
-            kwargs['onBehalfOfContentOwnerChannel'] = onBehalfOfContentOwnerChannel
+            kwargs["onBehalfOfContentOwnerChannel"] = onBehalfOfContentOwnerChannel
 
         request = self.client.subscriptions().list(**kwargs) # type: ignore
         return request.execute()
 
     async def subscriptions_delete(
         self,
-        id: str
-    ) -> Dict[str, Any]:
+        id: str,
+    ) -> dict[str, Any]:
         """YouTube Data API: Deletes a resource.
 
         HTTP DELETE youtube/v3/subscriptions
@@ -2254,18 +2318,19 @@ class YouTubeDataSource:
             id (str, required):
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
 
         request = self.client.subscriptions().delete(**kwargs) # type: ignore
         return request.execute()
 
     async def subscriptions_insert(
         self,
-        part: str
-    ) -> Dict[str, Any]:
+        part: str,
+    ) -> dict[str, Any]:
         """YouTube Data API: Inserts a new resource into this collection.
 
         HTTP POST youtube/v3/subscriptions
@@ -2275,14 +2340,15 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.subscriptions().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.subscriptions().insert(**kwargs) # type: ignore
@@ -2291,10 +2357,10 @@ class YouTubeDataSource:
     async def super_chat_events_list(
         self,
         part: str,
-        hl: Optional[str] = None,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None
-    ) -> Dict[str, Any]:
+        hl: str | None = None,
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of resources, possibly filtered.
 
         HTTP GET youtube/v3/superChatEvents
@@ -2307,16 +2373,17 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if hl is not None:
-            kwargs['hl'] = hl
+            kwargs["hl"] = hl
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         request = self.client.superChatEvents().list(**kwargs) # type: ignore
         return request.execute()
@@ -2324,8 +2391,8 @@ class YouTubeDataSource:
     async def tests_insert(
         self,
         part: str,
-        externalChannelId: Optional[str] = None
-    ) -> Dict[str, Any]:
+        externalChannelId: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: POST method.
 
         HTTP POST youtube/v3/tests
@@ -2335,16 +2402,17 @@ class YouTubeDataSource:
             externalChannelId (str, optional):
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if externalChannelId is not None:
-            kwargs['externalChannelId'] = externalChannelId
+            kwargs["externalChannelId"] = externalChannelId
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.tests().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.tests().insert(**kwargs) # type: ignore
@@ -2353,10 +2421,10 @@ class YouTubeDataSource:
     async def third_party_links_list(
         self,
         part: str,
-        linkingToken: Optional[str] = None,
-        type: Optional[str] = None,
-        externalChannelId: Optional[str] = None
-    ) -> Dict[str, Any]:
+        linkingToken: str | None = None,
+        type: str | None = None,
+        externalChannelId: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of resources, possibly filtered.
 
         HTTP GET youtube/v3/thirdPartyLinks
@@ -2369,16 +2437,17 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if linkingToken is not None:
-            kwargs['linkingToken'] = linkingToken
+            kwargs["linkingToken"] = linkingToken
         if type is not None:
-            kwargs['type'] = type
+            kwargs["type"] = type
         if externalChannelId is not None:
-            kwargs['externalChannelId'] = externalChannelId
+            kwargs["externalChannelId"] = externalChannelId
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         request = self.client.thirdPartyLinks().list(**kwargs) # type: ignore
         return request.execute()
@@ -2386,8 +2455,8 @@ class YouTubeDataSource:
     async def third_party_links_insert(
         self,
         part: str,
-        externalChannelId: Optional[str] = None
-    ) -> Dict[str, Any]:
+        externalChannelId: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Inserts a new resource into this collection.
 
         HTTP POST youtube/v3/thirdPartyLinks
@@ -2398,16 +2467,17 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if externalChannelId is not None:
-            kwargs['externalChannelId'] = externalChannelId
+            kwargs["externalChannelId"] = externalChannelId
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.thirdPartyLinks().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.thirdPartyLinks().insert(**kwargs) # type: ignore
@@ -2416,8 +2486,8 @@ class YouTubeDataSource:
     async def third_party_links_update(
         self,
         part: str,
-        externalChannelId: Optional[str] = None
-    ) -> Dict[str, Any]:
+        externalChannelId: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Updates an existing resource.
 
         HTTP PUT youtube/v3/thirdPartyLinks
@@ -2428,16 +2498,17 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if externalChannelId is not None:
-            kwargs['externalChannelId'] = externalChannelId
+            kwargs["externalChannelId"] = externalChannelId
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.thirdPartyLinks().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.thirdPartyLinks().update(**kwargs) # type: ignore
@@ -2447,9 +2518,9 @@ class YouTubeDataSource:
         self,
         linkingToken: str,
         type: str,
-        externalChannelId: Optional[str] = None,
-        part: Optional[str] = None
-    ) -> Dict[str, Any]:
+        externalChannelId: str | None = None,
+        part: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Deletes a resource.
 
         HTTP DELETE youtube/v3/thirdPartyLinks
@@ -2462,16 +2533,17 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if linkingToken is not None:
-            kwargs['linkingToken'] = linkingToken
+            kwargs["linkingToken"] = linkingToken
         if type is not None:
-            kwargs['type'] = type
+            kwargs["type"] = type
         if externalChannelId is not None:
-            kwargs['externalChannelId'] = externalChannelId
+            kwargs["externalChannelId"] = externalChannelId
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         request = self.client.thirdPartyLinks().delete(**kwargs) # type: ignore
         return request.execute()
@@ -2479,8 +2551,8 @@ class YouTubeDataSource:
     async def thumbnails_set(
         self,
         videoId: str,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: As this is not an insert in a strict sense (it supports uploading/setting of a thumbnail for multiple videos, which doesn't result in creation of a single resource), I use a custom verb here.
 
         HTTP POST youtube/v3/thumbnails/set
@@ -2491,16 +2563,17 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if videoId is not None:
-            kwargs['videoId'] = videoId
+            kwargs["videoId"] = videoId
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.thumbnails().set(**kwargs, body=body) # type: ignore
         else:
             request = self.client.thumbnails().set(**kwargs) # type: ignore
@@ -2509,19 +2582,19 @@ class YouTubeDataSource:
     async def videos_list(
         self,
         part: str,
-        id: Optional[str] = None,
-        myRating: Optional[str] = None,
-        chart: Optional[str] = None,
-        videoCategoryId: Optional[str] = None,
-        regionCode: Optional[str] = None,
-        maxWidth: Optional[int] = None,
-        maxHeight: Optional[int] = None,
-        hl: Optional[str] = None,
-        locale: Optional[str] = None,
-        maxResults: Optional[int] = None,
-        pageToken: Optional[str] = None,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        id: str | None = None,
+        myRating: str | None = None,
+        chart: str | None = None,
+        videoCategoryId: str | None = None,
+        regionCode: str | None = None,
+        maxWidth: int | None = None,
+        maxHeight: int | None = None,
+        hl: str | None = None,
+        locale: str | None = None,
+        maxResults: int | None = None,
+        pageToken: str | None = None,
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of resources, possibly filtered.
 
         HTTP GET youtube/v3/videos
@@ -2543,34 +2616,35 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if myRating is not None:
-            kwargs['myRating'] = myRating
+            kwargs["myRating"] = myRating
         if chart is not None:
-            kwargs['chart'] = chart
+            kwargs["chart"] = chart
         if videoCategoryId is not None:
-            kwargs['videoCategoryId'] = videoCategoryId
+            kwargs["videoCategoryId"] = videoCategoryId
         if regionCode is not None:
-            kwargs['regionCode'] = regionCode
+            kwargs["regionCode"] = regionCode
         if maxWidth is not None:
-            kwargs['maxWidth'] = maxWidth
+            kwargs["maxWidth"] = maxWidth
         if maxHeight is not None:
-            kwargs['maxHeight'] = maxHeight
+            kwargs["maxHeight"] = maxHeight
         if hl is not None:
-            kwargs['hl'] = hl
+            kwargs["hl"] = hl
         if locale is not None:
-            kwargs['locale'] = locale
+            kwargs["locale"] = locale
         if maxResults is not None:
-            kwargs['maxResults'] = maxResults
+            kwargs["maxResults"] = maxResults
         if pageToken is not None:
-            kwargs['pageToken'] = pageToken
+            kwargs["pageToken"] = pageToken
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         request = self.client.videos().list(**kwargs) # type: ignore
         return request.execute()
@@ -2578,12 +2652,12 @@ class YouTubeDataSource:
     async def videos_insert(
         self,
         part: str,
-        autoLevels: Optional[bool] = None,
-        stabilize: Optional[bool] = None,
-        notifySubscribers: Optional[bool] = None,
-        onBehalfOfContentOwner: Optional[str] = None,
-        onBehalfOfContentOwnerChannel: Optional[str] = None
-    ) -> Dict[str, Any]:
+        autoLevels: bool | None = None,
+        stabilize: bool | None = None,
+        notifySubscribers: bool | None = None,
+        onBehalfOfContentOwner: str | None = None,
+        onBehalfOfContentOwnerChannel: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Inserts a new resource into this collection.
 
         HTTP POST youtube/v3/videos
@@ -2598,24 +2672,25 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if autoLevels is not None:
-            kwargs['autoLevels'] = autoLevels
+            kwargs["autoLevels"] = autoLevels
         if stabilize is not None:
-            kwargs['stabilize'] = stabilize
+            kwargs["stabilize"] = stabilize
         if notifySubscribers is not None:
-            kwargs['notifySubscribers'] = notifySubscribers
+            kwargs["notifySubscribers"] = notifySubscribers
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
         if onBehalfOfContentOwnerChannel is not None:
-            kwargs['onBehalfOfContentOwnerChannel'] = onBehalfOfContentOwnerChannel
+            kwargs["onBehalfOfContentOwnerChannel"] = onBehalfOfContentOwnerChannel
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.videos().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.videos().insert(**kwargs) # type: ignore
@@ -2624,8 +2699,8 @@ class YouTubeDataSource:
     async def videos_update(
         self,
         part: str,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Updates an existing resource.
 
         HTTP PUT youtube/v3/videos
@@ -2636,16 +2711,17 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.videos().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.videos().update(**kwargs) # type: ignore
@@ -2654,8 +2730,8 @@ class YouTubeDataSource:
     async def videos_delete(
         self,
         id: str,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Deletes a resource.
 
         HTTP DELETE youtube/v3/videos
@@ -2666,20 +2742,21 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         request = self.client.videos().delete(**kwargs) # type: ignore
         return request.execute()
 
     async def videos_report_abuse(
         self,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Report abuse for a video.
 
         HTTP POST youtube/v3/videos/reportAbuse
@@ -2689,14 +2766,15 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.videos().reportAbuse(**kwargs, body=body) # type: ignore
         else:
             request = self.client.videos().reportAbuse(**kwargs) # type: ignore
@@ -2705,8 +2783,8 @@ class YouTubeDataSource:
     async def videos_rate(
         self,
         id: str,
-        rating: str
-    ) -> Dict[str, Any]:
+        rating: str,
+    ) -> dict[str, Any]:
         """YouTube Data API: Adds a like or dislike rating to a video or removes a rating from a video.
 
         HTTP POST youtube/v3/videos/rate
@@ -2716,16 +2794,17 @@ class YouTubeDataSource:
             rating (str, required):
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if rating is not None:
-            kwargs['rating'] = rating
+            kwargs["rating"] = rating
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.videos().rate(**kwargs, body=body) # type: ignore
         else:
             request = self.client.videos().rate(**kwargs) # type: ignore
@@ -2734,8 +2813,8 @@ class YouTubeDataSource:
     async def videos_get_rating(
         self,
         id: str,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves the ratings that the authorized user gave to a list of specified videos.
 
         HTTP GET youtube/v3/videos/getRating
@@ -2746,12 +2825,13 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         request = self.client.videos().getRating(**kwargs) # type: ignore
         return request.execute()
@@ -2759,8 +2839,8 @@ class YouTubeDataSource:
     async def video_abuse_report_reasons_list(
         self,
         part: str,
-        hl: Optional[str] = None
-    ) -> Dict[str, Any]:
+        hl: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of resources, possibly filtered.
 
         HTTP GET youtube/v3/videoAbuseReportReasons
@@ -2771,12 +2851,13 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if hl is not None:
-            kwargs['hl'] = hl
+            kwargs["hl"] = hl
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         request = self.client.videoAbuseReportReasons().list(**kwargs) # type: ignore
         return request.execute()
@@ -2784,10 +2865,10 @@ class YouTubeDataSource:
     async def video_categories_list(
         self,
         part: str,
-        id: Optional[str] = None,
-        regionCode: Optional[str] = None,
-        hl: Optional[str] = None
-    ) -> Dict[str, Any]:
+        id: str | None = None,
+        regionCode: str | None = None,
+        hl: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Retrieves a list of resources, possibly filtered.
 
         HTTP GET youtube/v3/videoCategories
@@ -2800,24 +2881,25 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
         if regionCode is not None:
-            kwargs['regionCode'] = regionCode
+            kwargs["regionCode"] = regionCode
         if hl is not None:
-            kwargs['hl'] = hl
+            kwargs["hl"] = hl
         if part is not None:
-            kwargs['part'] = part
+            kwargs["part"] = part
 
         request = self.client.videoCategories().list(**kwargs) # type: ignore
         return request.execute()
 
     async def video_trainability_get(
         self,
-        id: Optional[str] = None
-    ) -> Dict[str, Any]:
+        id: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Returns the trainability status of a video.
 
         HTTP GET youtube/v3/videoTrainability
@@ -2827,10 +2909,11 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if id is not None:
-            kwargs['id'] = id
+            kwargs["id"] = id
 
         request = self.client.videoTrainability().get(**kwargs) # type: ignore
         return request.execute()
@@ -2838,8 +2921,8 @@ class YouTubeDataSource:
     async def watermarks_set(
         self,
         channelId: str,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Allows upload of watermark image and setting it for a channel.
 
         HTTP POST youtube/v3/watermarks/set
@@ -2850,16 +2933,17 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if channelId is not None:
-            kwargs['channelId'] = channelId
+            kwargs["channelId"] = channelId
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.watermarks().set(**kwargs, body=body) # type: ignore
         else:
             request = self.client.watermarks().set(**kwargs) # type: ignore
@@ -2868,8 +2952,8 @@ class YouTubeDataSource:
     async def watermarks_unset(
         self,
         channelId: str,
-        onBehalfOfContentOwner: Optional[str] = None
-    ) -> Dict[str, Any]:
+        onBehalfOfContentOwner: str | None = None,
+    ) -> dict[str, Any]:
         """YouTube Data API: Allows removal of channel watermark.
 
         HTTP POST youtube/v3/watermarks/unset
@@ -2880,16 +2964,17 @@ class YouTubeDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if channelId is not None:
-            kwargs['channelId'] = channelId
+            kwargs["channelId"] = channelId
         if onBehalfOfContentOwner is not None:
-            kwargs['onBehalfOfContentOwner'] = onBehalfOfContentOwner
+            kwargs["onBehalfOfContentOwner"] = onBehalfOfContentOwner
 
         # Handle request body if needed
-        if 'body' in kwargs:
-            body = kwargs.pop('body')
+        if "body" in kwargs:
+            body = kwargs.pop("body")
             request = self.client.watermarks().unset(**kwargs, body=body) # type: ignore
         else:
             request = self.client.watermarks().unset(**kwargs) # type: ignore

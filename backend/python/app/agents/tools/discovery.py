@@ -1,12 +1,11 @@
-"""
-Tool discovery system with strategy pattern for flexible discovery.
+"""Tool discovery system with strategy pattern for flexible discovery.
 """
 
 import importlib
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 from app.agents.tools.config import ToolDiscoveryConfig
 from app.agents.tools.registry import _global_tools_registry
@@ -17,18 +16,18 @@ class ModuleImporter:
 
     def __init__(self, logger: logging.Logger) -> None:
         self.logger = logger
-        self.imported_modules: List[str] = []
-        self.failed_imports: List[str] = []
+        self.imported_modules: list[str] = []
+        self.failed_imports: list[str] = []
 
     def import_module(self, module_path: str) -> bool:
-        """
-        Import a module and track success/failure.
+        """Import a module and track success/failure.
 
         Args:
             module_path: Full module path to import
 
         Returns:
             True if successful, False otherwise
+
         """
         try:
             self.logger.debug(f"Importing module: {module_path}")
@@ -44,14 +43,15 @@ class ModuleImporter:
             self.failed_imports.append(f"{module_path}: {e}")
             return False
 
-    def import_modules(self, module_paths: List[str]) -> Dict[str, Any]:
-        """
-        Import multiple modules.
+    def import_modules(self, module_paths: list[str]) -> dict[str, Any]:
+        """Import multiple modules.
+
         Args:
             module_paths: List of module paths to import
 
         Returns:
             Dictionary with import results
+
         """
         for path in module_paths:
             self.import_module(path)
@@ -62,7 +62,7 @@ class ModuleImporter:
             "success_rate": (
                 len(self.imported_modules) / len(module_paths)
                 if module_paths else 0
-            )
+            ),
         }
 
 
@@ -70,9 +70,8 @@ class DiscoveryStrategy(ABC):
     """Abstract base class for tool discovery strategies"""
 
     @abstractmethod
-    def discover(self, base_dir: Path, importer: ModuleImporter) -> List[str]:
-        """
-        Discover and return module paths to import.
+    def discover(self, base_dir: Path, importer: ModuleImporter) -> list[str]:
+        """Discover and return module paths to import.
 
         Args:
             base_dir: Base directory to search
@@ -80,8 +79,8 @@ class DiscoveryStrategy(ABC):
 
         Returns:
             List of module paths to import
+
         """
-        pass
 
 
 class SimpleAppDiscovery(DiscoveryStrategy):
@@ -90,7 +89,7 @@ class SimpleAppDiscovery(DiscoveryStrategy):
     def __init__(self, app_name: str) -> None:
         self.app_name = app_name
 
-    def discover(self, base_dir: Path, importer: ModuleImporter) -> List[str]:
+    def discover(self, base_dir: Path, importer: ModuleImporter) -> list[str]:
         """Discover tools in a simple app structure"""
         app_dir = base_dir / self.app_name
         if not app_dir.exists():
@@ -115,11 +114,11 @@ class SimpleAppDiscovery(DiscoveryStrategy):
 class NestedAppDiscovery(DiscoveryStrategy):
     """Discovery strategy for apps with nested structure (Google, Microsoft)"""
 
-    def __init__(self, app_name: str, subdirs: List[str]) -> None:
+    def __init__(self, app_name: str, subdirs: list[str]) -> None:
         self.app_name = app_name
         self.subdirs = subdirs
 
-    def discover(self, base_dir: Path, importer: ModuleImporter) -> List[str]:
+    def discover(self, base_dir: Path, importer: ModuleImporter) -> list[str]:
         """Discover tools in a nested app structure"""
         app_dir = base_dir / self.app_name
         if not app_dir.exists():
@@ -132,7 +131,7 @@ class NestedAppDiscovery(DiscoveryStrategy):
                 main_file = subdir_path / f"{subdir}.py"
                 if main_file.exists():
                     modules.append(
-                        f"app.agents.actions.{self.app_name}.{subdir}.{subdir}"
+                        f"app.agents.actions.{self.app_name}.{subdir}.{subdir}",
                     )
 
         return modules
@@ -144,7 +143,7 @@ class ToolsDiscovery:
     def __init__(self, logger: logging.Logger) -> None:
         self.logger = logger
         self.importer = ModuleImporter(logger)
-        self.strategies: Dict[str, DiscoveryStrategy] = {}
+        self.strategies: dict[str, DiscoveryStrategy] = {}
         self._initialize_strategies()
 
     def _initialize_strategies(self) -> None:
@@ -152,17 +151,17 @@ class ToolsDiscovery:
         for app_name, config in ToolDiscoveryConfig.APP_CONFIGS.items():
             if config.subdirectories:
                 self.strategies[app_name] = NestedAppDiscovery(
-                    app_name, config.subdirectories
+                    app_name, config.subdirectories,
                 )
             else:
                 self.strategies[app_name] = SimpleAppDiscovery(app_name)
 
-    def discover_all_tools(self) -> Dict[str, Any]:
-        """
-        Discover and import all tools.
+    def discover_all_tools(self) -> dict[str, Any]:
+        """Discover and import all tools.
 
         Returns:
             Dictionary with discovery results
+
         """
         self.logger.info("Starting tools discovery process")
 
@@ -205,12 +204,12 @@ class ToolsDiscovery:
 
         if self.importer.failed_imports:
             self.logger.warning(
-                f"Failed imports: {len(self.importer.failed_imports)}"
+                f"Failed imports: {len(self.importer.failed_imports)}",
             )
             for failure in self.importer.failed_imports[:5]:  # Show first 5
                 self.logger.warning(f"  - {failure}")
 
-    def _get_discovery_results(self) -> Dict[str, Any]:
+    def _get_discovery_results(self) -> dict[str, Any]:
         """Get discovery results"""
         registered_tools = _global_tools_registry.list_tools()
         total_attempts = (
@@ -226,18 +225,18 @@ class ToolsDiscovery:
             "success_rate": (
                 len(self.importer.imported_modules) / total_attempts
                 if total_attempts > 0 else 0
-            )
+            ),
         }
 
 
-def discover_tools(logger: logging.Logger) -> Dict[str, Any]:
-    """
-    Convenience function to discover all tools.
+def discover_tools(logger: logging.Logger) -> dict[str, Any]:
+    """Convenience function to discover all tools.
 
     Args:
         logger: Logger instance
     Returns:
         Dictionary with discovery results
+
     """
     discovery = ToolsDiscovery(logger)
     return discovery.discover_all_tools()

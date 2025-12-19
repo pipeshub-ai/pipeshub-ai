@@ -9,7 +9,7 @@ from app.sources.client.workday import (
 from app.sources.external.workday.workday import WorkdayDataSource
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 async def main() -> None:
@@ -46,13 +46,13 @@ async def main() -> None:
     logger.info("  ↳ Fetching workers list (limit: 5)...")
     workers_response = await data_source.list_staffing_v7_workers(limit=5, offset=0)
     if workers_response.success:
-        workers_count = len(workers_response.data.get('data', [])) if workers_response.data else 0
+        workers_count = len(workers_response.data.get("data", [])) if workers_response.data else 0
         logger.info(f"  ✓ Successfully fetched {workers_count} workers")
 
         # Get details of first worker if available
-        if workers_response.data and workers_response.data.get('data'):
-            first_worker = workers_response.data['data'][0]
-            worker_id = first_worker.get('id')
+        if workers_response.data and workers_response.data.get("data"):
+            first_worker = workers_response.data["data"][0]
+            worker_id = first_worker.get("id")
             if worker_id:
                 logger.info(f"  ↳ Fetching details for worker: {worker_id}")
                 worker_detail = await data_source.get_staffing_v7_workers(ID=worker_id)
@@ -67,7 +67,7 @@ async def main() -> None:
     logger.info("\n  ↳ Fetching worker personal information...")
     personal_info = await data_source.list_person_v4_people_personal_information(limit=3)
     if personal_info.success:
-        info_count = len(personal_info.data.get('data', [])) if personal_info.data else 0
+        info_count = len(personal_info.data.get("data", [])) if personal_info.data else 0
         logger.info(f"  ✓ Retrieved personal info for {info_count} people")
     else:
         logger.error(f"  ✗ Failed to fetch personal info: {personal_info.error}")
@@ -82,13 +82,13 @@ async def main() -> None:
     logger.info("  ↳ Fetching supervisory organizations...")
     orgs_response = await data_source.list_staffing_v7_supervisory_organizations(limit=5)
     if orgs_response.success:
-        orgs_count = len(orgs_response.data.get('data', [])) if orgs_response.data else 0
+        orgs_count = len(orgs_response.data.get("data", [])) if orgs_response.data else 0
         logger.info(f"  ✓ Successfully fetched {orgs_count} organizations")
 
         # Get details of first organization
-        if orgs_response.data and orgs_response.data.get('data'):
-            first_org = orgs_response.data['data'][0]
-            org_id = first_org.get('id')
+        if orgs_response.data and orgs_response.data.get("data"):
+            first_org = orgs_response.data["data"][0]
+            org_id = first_org.get("id")
             if org_id:
                 logger.info(f"  ↳ Fetching details for organization: {org_id}")
                 org_detail = await data_source.get_staffing_v7_supervisory_organizations(ID=org_id)
@@ -99,10 +99,10 @@ async def main() -> None:
                 logger.info(f"  ↳ Fetching workers in organization: {org_id}")
                 org_workers = await data_source.list_staffing_v7_supervisory_organizations_workers(
                     ID=org_id,
-                    limit=5
+                    limit=5,
                 )
                 if org_workers.success:
-                    worker_count = len(org_workers.data.get('data', [])) if org_workers.data else 0
+                    worker_count = len(org_workers.data.get("data", [])) if org_workers.data else 0
                     logger.info(f"  ✓ Found {worker_count} workers in this organization")
     else:
         logger.error(f"  ✗ Failed to fetch organizations: {orgs_response.error}")
@@ -117,7 +117,7 @@ async def main() -> None:
     logger.info("  ↳ Fetching worker organizations (includes security context)...")
     worker_orgs = await data_source.list_api_common_v1_workers_organizations(limit=5)
     if worker_orgs.success:
-        orgs_count = len(worker_orgs.data.get('data', [])) if worker_orgs.data else 0
+        orgs_count = len(worker_orgs.data.get("data", [])) if worker_orgs.data else 0
         logger.info(f"  ✓ Retrieved {orgs_count} worker organization records")
     else:
         logger.error(f"  ✗ Failed to fetch worker organizations: {worker_orgs.error}")
@@ -126,7 +126,7 @@ async def main() -> None:
     logger.info("  ↳ Fetching managed supervisory organizations...")
     managed_orgs = await data_source.list_api_common_v1_workers_supervisory_organizations_managed(limit=5)
     if managed_orgs.success:
-        managed_count = len(managed_orgs.data.get('data', [])) if managed_orgs.data else 0
+        managed_count = len(managed_orgs.data.get("data", [])) if managed_orgs.data else 0
         logger.info(f"  ✓ Retrieved {managed_count} managed organizations")
     else:
         logger.error(f"  ✗ Failed to fetch managed orgs: {managed_orgs.error}")
@@ -141,13 +141,13 @@ async def main() -> None:
     logger.info("  ↳ Fetching job profiles...")
     profiles_response = await data_source.list_staffing_v7_job_profiles(limit=5)
     if profiles_response.success:
-        profiles_count = len(profiles_response.data.get('data', [])) if profiles_response.data else 0
+        profiles_count = len(profiles_response.data.get("data", [])) if profiles_response.data else 0
         logger.info(f"  ✓ Successfully fetched {profiles_count} job profiles")
 
         # Get details of first job profile
-        if profiles_response.data and profiles_response.data.get('data'):
-            first_profile = profiles_response.data['data'][0]
-            profile_id = first_profile.get('id')
+        if profiles_response.data and profiles_response.data.get("data"):
+            first_profile = profiles_response.data["data"][0]
+            profile_id = first_profile.get("id")
             if profile_id:
                 logger.info(f"  ↳ Fetching details for job profile: {profile_id}")
                 profile_detail = await data_source.get_staffing_v7_job_profiles(ID=profile_id)
@@ -160,7 +160,7 @@ async def main() -> None:
     logger.info("  ↳ Fetching job families...")
     families_response = await data_source.list_staffing_v7_job_families(limit=5)
     if families_response.success:
-        families_count = len(families_response.data.get('data', [])) if families_response.data else 0
+        families_count = len(families_response.data.get("data", [])) if families_response.data else 0
         logger.info(f"  ✓ Successfully fetched {families_count} job families")
     else:
         logger.error(f"  ✗ Failed to fetch job families: {families_response.error}")
@@ -175,7 +175,7 @@ async def main() -> None:
     logger.info("  ↳ Fetching worker direct reports...")
     reports_response = await data_source.list_api_common_v1_workers_direct_reports(limit=5)
     if reports_response.success:
-        reports_count = len(reports_response.data.get('data', [])) if reports_response.data else 0
+        reports_count = len(reports_response.data.get("data", [])) if reports_response.data else 0
         logger.info(f"  ✓ Retrieved {reports_count} direct report records")
     else:
         logger.error(f"  ✗ Failed to fetch direct reports: {reports_response.error}")
@@ -184,7 +184,7 @@ async def main() -> None:
     logger.info("  ↳ Fetching worker history...")
     history_response = await data_source.list_api_common_v1_workers_history(limit=5)
     if history_response.success:
-        history_count = len(history_response.data.get('data', [])) if history_response.data else 0
+        history_count = len(history_response.data.get("data", [])) if history_response.data else 0
         logger.info(f"  ✓ Retrieved {history_count} history records")
     else:
         logger.error(f"  ✗ Failed to fetch history: {history_response.error}")

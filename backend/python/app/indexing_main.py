@@ -4,8 +4,8 @@ import asyncio
 import signal
 import sys
 import time
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, List
 
 import httpx
 import uvicorn
@@ -46,7 +46,7 @@ async def get_initialized_container() -> IndexingAppContainer:
     if not hasattr(get_initialized_container, "initialized"):
         async with container_lock:
             if not hasattr(
-                get_initialized_container, "initialized"
+                get_initialized_container, "initialized",
             ):  # Double-check inside lock
                 await initialize_container(container)
                 container.wire(modules=["app.modules.retrieval.retrieval_service"])
@@ -54,8 +54,7 @@ async def get_initialized_container() -> IndexingAppContainer:
     return container
 
 async def recover_in_progress_records(app_container: IndexingAppContainer) -> None:
-    """
-    Recover and process records that were in progress when the service crashed.
+    """Recover and process records that were in progress when the service crashed.
     This ensures that any incomplete indexing operations are completed before
     processing new events from Kafka.
     """
@@ -69,7 +68,7 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
         # Query for records that are in IN_PROGRESS status
         in_progress_records = await arango_service.get_documents_by_status(
             CollectionNames.RECORDS.value,
-            ProgressStatus.IN_PROGRESS.value
+            ProgressStatus.IN_PROGRESS.value,
         )
 
         if not in_progress_records:
@@ -77,7 +76,7 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
             return
 
         logger.info(f"📋 Found {len(in_progress_records)} in-progress records to recover")
-        # Todo: Fix properly. Wait for connector service to be ready. This is a temporary solution.
+        # TODO: Fix properly. Wait for connector service to be ready. This is a temporary solution.
         time.sleep(60)
         # Create the message handler that will process these records
         record_message_handler: RecordEventHandler = await KafkaUtils.create_record_message_handler(app_container)
@@ -88,7 +87,7 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
                 record_id = record.get("_key")
                 record_name = record.get("recordName", "Unknown")
                 logger.info(
-                    f"🔄 [{idx}/{len(in_progress_records)}] Recovering record: {record_name} (ID: {record_id})"
+                    f"🔄 [{idx}/{len(in_progress_records)}] Recovering record: {record_name} (ID: {record_id})",
                 )
 
                 # Reconstruct the payload from the record data
@@ -121,35 +120,35 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
                 # Process the record using the same handler that processes Kafka messages
                 success = await record_message_handler({
                     "eventType": event_type,
-                    "payload": payload
+                    "payload": payload,
                 })
 
                 if success:
                     logger.info(
-                        f"✅ [{idx}/{len(in_progress_records)}] Successfully recovered record: {record_name}"
+                        f"✅ [{idx}/{len(in_progress_records)}] Successfully recovered record: {record_name}",
                     )
                 else:
                     logger.warning(
-                        f"⚠️ [{idx}/{len(in_progress_records)}] Failed to recover record: {record_name}"
+                        f"⚠️ [{idx}/{len(in_progress_records)}] Failed to recover record: {record_name}",
                     )
 
             except Exception as e:
                 logger.error(
-                    f"❌ Error recovering record {record.get('_key')}: {str(e)}"
+                    f"❌ Error recovering record {record.get('_key')}: {e!s}",
                 )
                 # Continue with next record even if one fails
                 continue
 
         logger.info(
-            f"✅ Recovery complete. Processed {len(in_progress_records)} in-progress records"
+            f"✅ Recovery complete. Processed {len(in_progress_records)} in-progress records",
         )
 
     except Exception as e:
-        logger.error(f"❌ Error during record recovery: {str(e)}")
+        logger.error(f"❌ Error during record recovery: {e!s}")
         # Don't raise - we want to continue starting the service even if recovery fails
         logger.warning("⚠️ Continuing to start Kafka consumers despite recovery errors")
 
-async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
+async def start_kafka_consumers(app_container: IndexingAppContainer) -> list:
     """Start all Kafka consumers at application level"""
     logger = app_container.logger()
     consumers = []
@@ -165,7 +164,7 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
             broker_type="kafka",
             logger=logger,
             config=record_kafka_consumer_config,
-            rate_limiter=rate_limiter
+            rate_limiter=rate_limiter,
         )
         record_message_handler = await KafkaUtils.create_record_message_handler(app_container)
         await record_kafka_consumer.start(record_message_handler)
@@ -175,7 +174,7 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
         return consumers
 
     except Exception as e:
-        logger.error(f"❌ Error starting Kafka consumers: {str(e)}")
+        logger.error(f"❌ Error starting Kafka consumers: {e!s}")
         # Cleanup any started consumers
         for name, consumer in consumers:
             try:
@@ -188,24 +187,22 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
 
 async def stop_kafka_consumers(container) -> None:
     """Stop all Kafka consumers"""
-
     logger = container.logger()
-    consumers = getattr(container, 'kafka_consumers', [])
+    consumers = getattr(container, "kafka_consumers", [])
     for name, consumer in consumers:
         try:
             await consumer.stop()
             logger.info(f"✅ {name.title()} Kafka consumer stopped")
         except Exception as e:
-            logger.error(f"❌ Error stopping {name} consumer: {str(e)}")
+            logger.error(f"❌ Error stopping {name} consumer: {e!s}")
 
     # Clear the consumers list
-    if hasattr(container, 'kafka_consumers'):
+    if hasattr(container, "kafka_consumers"):
         container.kafka_consumers = []
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
-
     app_container = await get_initialized_container()
     app.container = app_container
     logger = app.container.logger()
@@ -215,7 +212,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         await recover_in_progress_records(app_container)
     except Exception as e:
-        logger.error(f"❌ Error during record recovery: {str(e)}")
+        logger.error(f"❌ Error during record recovery: {e!s}")
         # Continue even if recovery fails
 
     # Start all Kafka consumers centrally
@@ -224,7 +221,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app_container.kafka_consumers = consumers
         logger.info("✅ All Kafka consumers started successfully")
     except Exception as e:
-        logger.error(f"❌ Failed to start Kafka consumers: {str(e)}")
+        logger.error(f"❌ Failed to start Kafka consumers: {e!s}")
         raise
 
     yield
@@ -234,7 +231,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         await stop_kafka_consumers(app_container)
     except Exception as e:
-        logger.error(f"❌ Error during application shutdown: {str(e)}")
+        logger.error(f"❌ Error during application shutdown: {e!s}")
 
 
 app = FastAPI(
@@ -250,7 +247,7 @@ async def health_check() -> JSONResponse:
     """Health check endpoint that also verifies connector service health"""
     try:
         endpoints = await app.container.config_service().get_config(
-            config_node_constants.ENDPOINTS.value
+            config_node_constants.ENDPOINTS.value,
         )
         connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
         connector_url = f"{connector_endpoint}/health"
@@ -279,7 +276,7 @@ async def health_check() -> JSONResponse:
             status_code=500,
             content={
                 "status": "fail",
-                "error": f"Failed to connect to connector service: {str(e)}",
+                "error": f"Failed to connect to connector service: {e!s}",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
@@ -297,7 +294,7 @@ async def health_check() -> JSONResponse:
 def run(host: str = "0.0.0.0", port: int = 8091, reload: bool = True) -> None:
     """Run the application"""
     uvicorn.run(
-        "app.indexing_main:app", host=host, port=port, log_level="info", reload=reload
+        "app.indexing_main:app", host=host, port=port, log_level="info", reload=reload,
     )
 
 

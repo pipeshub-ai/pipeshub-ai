@@ -1,5 +1,4 @@
-"""
-SharePoint HTML Cleaning Utilities
+"""SharePoint HTML Cleaning Utilities
 
 This module provides functions to clean SharePoint page HTML by removing
 unnecessary attributes, empty elements, and vendor-specific styles.
@@ -14,65 +13,65 @@ from bs4 import BeautifulSoup
 # =====================================================
 ATTRS_TO_REMOVE = {
     # SharePoint Canvas/WebPart Data
-    'data-sp-canvasdataversion',
-    'data-sp-canvascontrol',
-    'data-sp-controldata',
-    'data-sp-webpartdata',
-    'data-sp-webpart',
-    'data-sp-webpartid',
-    'data-sp-prop-name',
-    'data-sp-original-src',
-    'data-sp-a11y-id',
-    'data-sp-feature-tag',
-    'data-sp-feature-instance',
+    "data-sp-canvasdataversion",
+    "data-sp-canvascontrol",
+    "data-sp-controldata",
+    "data-sp-webpartdata",
+    "data-sp-webpart",
+    "data-sp-webpartid",
+    "data-sp-prop-name",
+    "data-sp-original-src",
+    "data-sp-a11y-id",
+    "data-sp-feature-tag",
+    "data-sp-feature-instance",
 
     # SharePoint RTE (Rich Text Editor)
-    'data-sp-rte',
-    'data-cke-saved-href',
-    'data-cke-widget-data',
-    'data-cke-widget-id',
-    'data-cke-widget-upcasted',
-    'data-cke-widget-wrapper',
+    "data-sp-rte",
+    "data-cke-saved-href",
+    "data-cke-widget-data",
+    "data-cke-widget-id",
+    "data-cke-widget-upcasted",
+    "data-cke-widget-wrapper",
 
     # SharePoint Image Attributes
-    'data-sp-originalwidth',
-    'data-sp-originalheight',
-    'data-sp-containsembeddedlink',
+    "data-sp-originalwidth",
+    "data-sp-originalheight",
+    "data-sp-containsembeddedlink",
 
     # SharePoint Layout/Section Attributes
-    'data-automation-id',
-    'data-viewport-id',
-    'data-instanceid',
-    'data-position',
+    "data-automation-id",
+    "data-viewport-id",
+    "data-instanceid",
+    "data-position",
 
     # Accessibility duplicates (optional)
-    'aria-label',
-    'aria-hidden',
+    "aria-label",
+    "aria-hidden",
 
     # Microsoft Specific
-    'data-ms-clickableimage',
-    'data-version',
-    'data-onerror',
+    "data-ms-clickableimage",
+    "data-version",
+    "data-onerror",
 }
 
 # Attributes that START WITH these prefixes (catch-all)
 ATTR_PREFIXES_TO_REMOVE = (
-    'data-sp-',
-    'data-cke-',
-    'data-pnp-',
-    'data-ms-',
+    "data-sp-",
+    "data-cke-",
+    "data-pnp-",
+    "data-ms-",
 )
 
 
 def strip_sharepoint_attributes(soup: BeautifulSoup) -> int:
-    """
-    Remove all SharePoint-specific attributes from all tags.
+    """Remove all SharePoint-specific attributes from all tags.
 
     Args:
         soup: BeautifulSoup object to clean
 
     Returns:
         Count of removed attributes
+
     """
     count = 0
     for tag in soup.find_all(True):
@@ -96,8 +95,7 @@ def strip_sharepoint_attributes(soup: BeautifulSoup) -> int:
 
 
 def remove_empty_divs(soup: BeautifulSoup) -> int:
-    """
-    Remove empty divs that SharePoint leaves behind.
+    """Remove empty divs that SharePoint leaves behind.
     Run multiple passes since removing one can make its parent empty.
 
     Args:
@@ -105,13 +103,14 @@ def remove_empty_divs(soup: BeautifulSoup) -> int:
 
     Returns:
         Count of removed divs
+
     """
     removed = 0
     for _ in range(5):  # Max 5 passes
         empty_divs = soup.find_all(
-            lambda tag: tag.name == 'div' and
+            lambda tag: tag.name == "div" and
             not tag.get_text(strip=True) and
-            not tag.find(['img', 'video', 'iframe', 'table', 'input', 'button', 'svg'])
+            not tag.find(["img", "video", "iframe", "table", "input", "button", "svg"]),
         )
         if not empty_divs:
             break
@@ -122,31 +121,30 @@ def remove_empty_divs(soup: BeautifulSoup) -> int:
 
 
 def clean_inline_styles(soup: BeautifulSoup) -> None:
-    """
-    Simplify inline styles by removing vendor prefixes and MS-specific styles.
+    """Simplify inline styles by removing vendor prefixes and MS-specific styles.
 
     Args:
         soup: BeautifulSoup object to clean
+
     """
     for tag in soup.find_all(style=True):
-        style = tag['style']
+        style = tag["style"]
         # Remove MS-specific styles
-        style = re.sub(r'-ms-[^;]+;?', '', style)
-        style = re.sub(r'-webkit-[^;]+;?', '', style)
-        style = re.sub(r'mso-[^;]+;?', '', style)
+        style = re.sub(r"-ms-[^;]+;?", "", style)
+        style = re.sub(r"-webkit-[^;]+;?", "", style)
+        style = re.sub(r"mso-[^;]+;?", "", style)
         # Clean up extra whitespace/semicolons
-        style = re.sub(r';\s*;', ';', style)
-        style = style.strip().strip(';')
+        style = re.sub(r";\s*;", ";", style)
+        style = style.strip().strip(";")
 
         if style:
-            tag['style'] = style
+            tag["style"] = style
         else:
-            del tag['style']
+            del tag["style"]
 
 
 def clean_html_output(soup: BeautifulSoup, logger=None) -> str:
-    """
-    Final cleanup pass - strips attributes, removes empty divs, cleans styles.
+    """Final cleanup pass - strips attributes, removes empty divs, cleans styles.
 
     Args:
         soup: BeautifulSoup object to clean
@@ -154,6 +152,7 @@ def clean_html_output(soup: BeautifulSoup, logger=None) -> str:
 
     Returns:
         Cleaned HTML string
+
     """
     # 1. Strip SharePoint attributes
     attrs_removed = strip_sharepoint_attributes(soup)
@@ -170,6 +169,6 @@ def clean_html_output(soup: BeautifulSoup, logger=None) -> str:
 
     # 4. Convert to string and clean up whitespace
     output_html = str(soup)
-    output_html = re.sub(r'\n\s*\n', '\n', output_html)
+    output_html = re.sub(r"\n\s*\n", "\n", output_html)
 
     return output_html

@@ -1,7 +1,7 @@
 import json
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Optional
+from typing import Any
 
 try:
     import aioboto3  # type: ignore
@@ -15,12 +15,13 @@ from app.sources.client.iclient import IClient
 @dataclass
 class S3Response:
     """Standardized S3 API response wrapper"""
-    success: bool
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    message: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    success: bool
+    data: dict[str, Any] | None = None
+    error: str | None = None
+    message: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
         return asdict(self)
 
@@ -43,7 +44,7 @@ class S3RESTClientViaAccessKey:
         access_key_id: str,
         secret_access_key: str,
         region_name: str,
-        bucket_name: Optional[str] = None
+        bucket_name: str | None = None,
     ) -> None:
         self.access_key_id = access_key_id
         self.secret_access_key = secret_access_key
@@ -56,7 +57,7 @@ class S3RESTClientViaAccessKey:
         self.session = aioboto3.Session(
             aws_access_key_id=self.access_key_id,
             aws_secret_access_key=self.secret_access_key,
-            region_name=self.region_name
+            region_name=self.region_name,
         )
         return self.session
 
@@ -69,9 +70,9 @@ class S3RESTClientViaAccessKey:
     async def get_s3_client(self) -> object:
         """Get an S3 client context manager from aioboto3 session"""
         session = self.get_session()
-        return session.client('s3')  # type: ignore[valid-type]
+        return session.client("s3")  # type: ignore[valid-type]
 
-    def get_bucket_name(self) -> Optional[str]:
+    def get_bucket_name(self) -> str | None:
         """Get the configured bucket name"""
         return self.bucket_name
 
@@ -83,12 +84,12 @@ class S3RESTClientViaAccessKey:
         """Get the configured region name"""
         return self.region_name
 
-    def get_credentials(self) -> Dict[str, str]:
+    def get_credentials(self) -> dict[str, str]:
         """Get AWS credentials"""
         return {
-            'aws_access_key_id': self.access_key_id,
-            'aws_secret_access_key': self.secret_access_key,
-            'region_name': self.region_name
+            "aws_access_key_id": self.access_key_id,
+            "aws_secret_access_key": self.secret_access_key,
+            "region_name": self.region_name,
         }
 
 
@@ -102,10 +103,11 @@ class S3AccessKeyConfig:
         bucket_name: The S3 bucket name (optional)
         ssl: Whether to use SSL (always True for AWS)
     """
+
     access_key_id: str
     secret_access_key: str
     region_name: str
-    bucket_name: Optional[str] = None
+    bucket_name: str | None = None
     ssl: bool = True
 
     def create_client(self) -> S3RESTClientViaAccessKey:
@@ -113,7 +115,7 @@ class S3AccessKeyConfig:
             self.access_key_id,
             self.secret_access_key,
             self.region_name,
-            self.bucket_name
+            self.bucket_name,
         )
 
     def to_dict(self) -> dict:
@@ -140,7 +142,7 @@ class S3Client(IClient):
         """Get the aioboto3 session"""
         return self.client.get_session()  # type: ignore[valid-type]
 
-    def get_bucket_name(self) -> Optional[str]:
+    def get_bucket_name(self) -> str | None:
         """Get the configured bucket name"""
         return self.client.get_bucket_name()
 
@@ -148,7 +150,7 @@ class S3Client(IClient):
         """Set the bucket name for operations"""
         self.client.set_bucket_name(bucket_name)
 
-    def get_credentials(self) -> Dict[str, str]:
+    def get_credentials(self) -> dict[str, str]:
         """Get AWS credentials for aioboto3 session creation"""
         return self.client.get_credentials()
 
@@ -166,7 +168,7 @@ class S3Client(IClient):
     async def build_from_services(
         cls,
         logger: logging.Logger,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
     ) -> "S3Client":
         """Build S3Client using configuration service
         Args:
@@ -175,8 +177,10 @@ class S3Client(IClient):
             arango_service: ArangoDB service instance (optional)
             org_id: Organization ID (optional)
             user_id: User ID (optional)
+
         Returns:
             S3Client instance
+
         """
         try:
             # Get S3 configuration from the configuration service
@@ -201,7 +205,7 @@ class S3Client(IClient):
                     access_key_id=access_key_id,
                     secret_access_key=secret_access_key,
                     region_name=region_name,
-                    bucket_name=bucket_name
+                    bucket_name=bucket_name,
                 )
 
             else:
@@ -210,11 +214,11 @@ class S3Client(IClient):
             return cls(client)
 
         except Exception as e:
-            logger.error(f"Failed to build S3 client from services: {str(e)}")
+            logger.error(f"Failed to build S3 client from services: {e!s}")
             raise
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> dict[str, Any]:
         """Fetch connector config from etcd for S3."""
         try:
             config = await config_service.get_config("/services/connectors/s3/config")

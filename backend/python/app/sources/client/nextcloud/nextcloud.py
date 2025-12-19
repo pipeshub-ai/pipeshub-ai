@@ -1,7 +1,7 @@
 import base64
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Union
+from typing import Any
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.http_client import HTTPClient
@@ -10,10 +10,12 @@ from app.sources.client.iclient import IClient
 
 class NextcloudRESTClientViaUsernamePassword(HTTPClient):
     """Nextcloud REST client via Username and App Password (Basic Auth).
+
     Args:
         base_url: The URL of the Nextcloud instance
         username: The username
         password: The App Password (generated in Security settings)
+
     """
 
     def __init__(self, base_url: str, username: str, password: str) -> None:
@@ -29,10 +31,13 @@ class NextcloudRESTClientViaUsernamePassword(HTTPClient):
 
 class NextcloudRESTClientViaToken(HTTPClient):
     """Nextcloud REST client via Bearer Token (OIDC/OAuth2).
+
     Args:
         base_url: The URL of the Nextcloud instance
         token: The Bearer token
+
     """
+
     def __init__(self, base_url: str, token: str, token_type: str = "Bearer") -> None:
         super().__init__(token, token_type)
         self.base_url = base_url
@@ -54,6 +59,7 @@ class NextcloudRESTClientViaToken(HTTPClient):
 @dataclass
 class NextcloudUsernamePasswordConfig:
     """Configuration for Nextcloud REST client via username and password"""
+
     base_url: str
     username: str
     password: str
@@ -68,6 +74,7 @@ class NextcloudUsernamePasswordConfig:
 @dataclass
 class NextcloudTokenConfig:
     """Configuration for Nextcloud REST client via token"""
+
     base_url: str
     token: str
     ssl: bool = True
@@ -83,19 +90,19 @@ class NextcloudClient(IClient):
 
     def __init__(
         self,
-        client: Union[NextcloudRESTClientViaUsernamePassword, NextcloudRESTClientViaToken],
+        client: NextcloudRESTClientViaUsernamePassword | NextcloudRESTClientViaToken,
     ) -> None:
         """Initialize with a Nextcloud client object"""
         self.client = client
 
-    def get_client(self) -> Union[NextcloudRESTClientViaUsernamePassword, NextcloudRESTClientViaToken]:
+    def get_client(self) -> NextcloudRESTClientViaUsernamePassword | NextcloudRESTClientViaToken:
         """Return the Nextcloud client object"""
         return self.client
 
     @classmethod
     def build_with_config(
         cls,
-        config: Union[NextcloudUsernamePasswordConfig, NextcloudTokenConfig],
+        config: NextcloudUsernamePasswordConfig | NextcloudTokenConfig,
     ) -> "NextcloudClient":
         """Build NextcloudClient with configuration object"""
         return cls(config.create_client())
@@ -107,11 +114,13 @@ class NextcloudClient(IClient):
         config_service: ConfigurationService,
     ) -> "NextcloudClient":
         """Build NextcloudClient using configuration service (ETCD/Env)
+
         Args:
             logger: Logger instance
             config_service: Configuration service instance
         Returns:
             NextcloudClient instance
+
         """
         try:
             # 1. Fetch Configuration
@@ -159,11 +168,11 @@ class NextcloudClient(IClient):
             return cls(client)
 
         except Exception as e:
-            logger.error(f"Failed to build Nextcloud client from services: {str(e)}")
+            logger.error(f"Failed to build Nextcloud client from services: {e!s}")
             raise
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> dict[str, Any]:
         """Fetch connector config from etcd for Nextcloud."""
         try:
             config = await config_service.get_config("/services/connectors/nextcloud/config")

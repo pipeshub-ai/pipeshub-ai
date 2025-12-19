@@ -1,4 +1,3 @@
-from typing import List
 
 from app.config.constants.arangodb import AppGroups, Connectors
 
@@ -15,7 +14,7 @@ class App:
         return self.app_group_name
 
 class AppGroup:
-    def __init__(self, app_group_name: AppGroups, apps: List[App]) -> None:
+    def __init__(self, app_group_name: AppGroups, apps: list[App]) -> None:
         self.app_group_name = app_group_name
         self.apps = apps
 

@@ -1,10 +1,11 @@
-from typing import List, Literal
+from typing import Literal
 
 from pydantic import BaseModel
 
 
 class SourceReference(BaseModel):
     """Schema for source reference with URL"""
+
     index: int
     url: str
     title: str
@@ -12,12 +13,13 @@ class SourceReference(BaseModel):
 
 class WebSearchAnswerWithMetadata(BaseModel):
     """Schema for the web search answer with metadata and source citations"""
+
     answer: str
     reason: str
     confidence: Literal["Very High", "High", "Medium", "Low"]
     answerMatchType: Literal["Derived From Web Sources", "Exact Match", "Synthesized", "Inferred", "Partial Match"]
-    sourceIndexes: List[int]
-    sources: List[SourceReference]
+    sourceIndexes: list[int]
+    sources: list[SourceReference]
 
 
 web_search_prompt = """

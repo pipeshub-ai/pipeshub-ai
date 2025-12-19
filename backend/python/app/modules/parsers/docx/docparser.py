@@ -23,12 +23,13 @@ class DocParser:
             subprocess.CalledProcessError: If LibreOffice is not installed or conversion fails
             FileNotFoundError: If the converted file is not found
             Exception: For other conversion errors
+
         """
         with tempfile.TemporaryDirectory() as temp_dir:
             try:
                 # Check if LibreOffice is installed
                 subprocess.run(
-                    ["which", "libreoffice"], check=True, capture_output=True
+                    ["which", "libreoffice"], check=True, capture_output=True,
                 )
 
                 # Create input file path
@@ -59,7 +60,7 @@ class DocParser:
 
                 if not os.path.exists(docx_file):
                     raise FileNotFoundError(
-                        "DOCX conversion failed - output file not found"
+                        "DOCX conversion failed - output file not found",
                     )
 
                 # Read the converted file into BytesIO
@@ -75,11 +76,11 @@ class DocParser:
                         f"\nError details: {e.stderr.decode('utf-8', errors='replace')}"
                     )
                 raise subprocess.CalledProcessError(
-                    e.returncode, e.cmd, output=e.output, stderr=error_msg.encode()
+                    e.returncode, e.cmd, output=e.output, stderr=error_msg.encode(),
                 )
             except subprocess.TimeoutExpired as e:
                 raise Exception(
-                    "LibreOffice conversion timed out after 30 seconds"
+                    "LibreOffice conversion timed out after 30 seconds",
                 ) from e
             except Exception as e:
-                raise Exception(f"Error converting .doc to .docx: {str(e)}") from e
+                raise Exception(f"Error converting .doc to .docx: {e!s}") from e

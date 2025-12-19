@@ -2,7 +2,7 @@ import base64
 import json
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Optional, Union
+from typing import Any
 
 from app.sources.client.http.http_request import HTTPRequest
 
@@ -19,12 +19,13 @@ from app.sources.client.iclient import IClient
 @dataclass
 class DropboxResponse:
     """Standardized Dropbox API response wrapper."""
-    success: bool
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    message: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    success: bool
+    data: dict[str, Any] | None = None
+    error: str | None = None
+    message: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     def to_json(self) -> str:
@@ -33,14 +34,15 @@ class DropboxResponse:
 
 class DropboxRESTClientViaToken:
     """Dropbox client via short/long‑lived OAuth2 access token."""
+
     def __init__(
         self,
         access_token: str,
-        refresh_token: Optional[str] = None,
-        app_key: Optional[str] = None,
-        app_secret: Optional[str] = None,
-        timeout: Optional[float] = None,
-        is_team: bool = False
+        refresh_token: str | None = None,
+        app_key: str | None = None,
+        app_secret: str | None = None,
+        timeout: float | None = None,
+        is_team: bool = False,
     ) -> None:
         self.access_token = access_token
         self.refresh_token = refresh_token
@@ -58,7 +60,7 @@ class DropboxRESTClientViaToken:
                 timeout=self.timeout,
                 oauth2_refresh_token=self.refresh_token,
                 app_key=self.app_key,
-                app_secret=self.app_secret
+                app_secret=self.app_secret,
             ) # type: ignore[valid-type]
         else:
             self.dropbox_client = Dropbox(
@@ -66,7 +68,7 @@ class DropboxRESTClientViaToken:
                 timeout=self.timeout,
                 oauth2_refresh_token=self.refresh_token,
                 app_key=self.app_key,
-                app_secret=self.app_secret
+                app_secret=self.app_secret,
             ) # type: ignore[valid-type]
         return self.dropbox_client
 
@@ -76,20 +78,21 @@ class DropboxRESTClientViaToken:
         return self.dropbox_client
 
 class DropboxRESTClientWithAppKeySecret:
-    """
-    Dropbox client via refresh token + app key/secret (recommended for servers).
+    """Dropbox client via refresh token + app key/secret (recommended for servers).
 
     Args:
         app_key: Dropbox app key
         app_secret: Dropbox app secret
         timeout: Optional request timeout (seconds)
+
     """
+
     def __init__(
         self,
         app_key: str,
         app_secret: str,
         token: str,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
         is_team: bool = False,
     ) -> None:
         self.app_key = app_key
@@ -121,20 +124,21 @@ class DropboxRESTClientWithAppKeySecret:
 
 @dataclass
 class DropboxTokenConfig:
-    """
-    Configuration for Dropbox client via access token.
+    """Configuration for Dropbox client via access token.
 
     Args:
         access_token: OAuth2 access token (user or app-scoped)
         timeout: Optional request timeout in seconds
         base_url: Present for API parity with Slack config; ignored by Dropbox SDK
         ssl: Unused; kept for interface parity
+
     """
+
     token: str
-    refresh_token: Optional[str] = None
-    app_key: Optional[str] = None
-    app_secret: Optional[str] = None
-    timeout: Optional[float] = None
+    refresh_token: str | None = None
+    app_key: str | None = None
+    app_secret: str | None = None
+    timeout: float | None = None
     base_url: str = "https://api.dropboxapi.com"   # not used by SDK, for parity only
     ssl: bool = True
 
@@ -146,7 +150,7 @@ class DropboxTokenConfig:
             app_key=self.app_key,
             app_secret=self.app_secret,
             timeout=self.timeout,
-            is_team=is_team
+            is_team=is_team,
         )
 
     def to_dict(self) -> dict:
@@ -155,8 +159,7 @@ class DropboxTokenConfig:
 
 @dataclass
 class DropboxAppKeySecretConfig:
-    """
-    Configuration for Dropbox client via refresh token + app key/secret.
+    """Configuration for Dropbox client via refresh token + app key/secret.
 
     Args:
         app_key: Dropbox app key
@@ -164,10 +167,12 @@ class DropboxAppKeySecretConfig:
         timeout: Optional request timeout in seconds
         base_url: Present for parity; ignored by Dropbox SDK
         ssl: Unused; kept for interface parity
+
     """
+
     app_key: str
     app_secret: str
-    timeout: Optional[float] = None
+    timeout: float | None = None
     base_url: str = "https://api.dropboxapi.com"   # not used by SDK
     ssl: bool = True
 
@@ -190,7 +195,7 @@ class DropboxAppKeySecretConfig:
             url="https://api.dropboxapi.com/oauth2/token",
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
-                "Authorization": f"Basic {credentials}"
+                "Authorization": f"Basic {credentials}",
             },
             body={"grant_type": "client_credentials"},
         )
@@ -202,26 +207,25 @@ class DropboxAppKeySecretConfig:
         return asdict(self)
 
 class DropboxClient(IClient):
-    """
-    Builder class for Dropbox clients with multiple construction methods.
+    """Builder class for Dropbox clients with multiple construction methods.
 
     Mirrors your SlackClient shape so it can be swapped in existing wiring.
     """
 
     def __init__(
         self,
-        client: Union[DropboxRESTClientViaToken, DropboxRESTClientWithAppKeySecret],
+        client: DropboxRESTClientViaToken | DropboxRESTClientWithAppKeySecret,
         ) -> None:
         self.client = client
 
-    def get_client(self) -> Union[DropboxRESTClientViaToken, DropboxRESTClientWithAppKeySecret]:
+    def get_client(self) -> DropboxRESTClientViaToken | DropboxRESTClientWithAppKeySecret:
         """Return the underlying auth-holder client object (call `.create_client()` to get SDK)."""
         return self.client
 
     @classmethod
     async def build_with_config(
         cls,
-        config: Union[DropboxTokenConfig, DropboxAppKeySecretConfig],
+        config: DropboxTokenConfig | DropboxAppKeySecretConfig,
         is_team: bool = False,
     ) -> "DropboxClient":
         """Build DropboxClient using one of the config dataclasses."""
@@ -234,8 +238,7 @@ class DropboxClient(IClient):
         logger: logging.Logger,
         config_service: ConfigurationService,
     ) -> "DropboxClient":
-        """
-        Build DropboxClient using configuration service
+        """Build DropboxClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
@@ -265,7 +268,7 @@ class DropboxClient(IClient):
                 app_config = DropboxAppKeySecretConfig(
                     app_key=app_key,
                     app_secret=app_secret,
-                    timeout=timeout
+                    timeout=timeout,
                 )
                 client = await app_config.create_client(is_team=is_team)
 
@@ -283,11 +286,11 @@ class DropboxClient(IClient):
             return cls(client)
 
         except Exception as e:
-            logger.error(f"Failed to build Dropbox client from services: {str(e)}")
+            logger.error(f"Failed to build Dropbox client from services: {e!s}")
             raise
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> dict[str, Any]:
         """Fetch connector config from etcd for Dropbox."""
         try:
             config = await config_service.get_config("/services/connectors/dropbox/config")

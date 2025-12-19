@@ -1,6 +1,7 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from logging import Logger
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 from aiolimiter import AsyncLimiter
 from kiota_abstractions.base_request_configuration import RequestConfiguration
@@ -27,48 +28,48 @@ def map_msgraph_role_to_permission_type(role: str) -> PermissionType:
     role_lower = role.lower()
     if role_lower in ["owner", "fullcontrol"]:
         return PermissionType.OWNER
-    elif role_lower in ["write", "editor", "contributor", "writeaccess"]:
+    if role_lower in ["write", "editor", "contributor", "writeaccess"]:
         return PermissionType.WRITE
-    elif role_lower in ["read", "reader", "readaccess"]:
+    if role_lower in ["read", "reader", "readaccess"]:
         return PermissionType.READ
-    else:
-        # Default to read for unknown roles
-        return PermissionType.READ
+    # Default to read for unknown roles
+    return PermissionType.READ
 
 
 
 @dataclass
 class PermissionChange:
     """Track permission changes for a record"""
+
     record_id: str
     external_record_id: str
-    added_permissions: List[Permission]
-    removed_permissions: List[Permission]
-    modified_permissions: List[Permission]
+    added_permissions: list[Permission]
+    removed_permissions: list[Permission]
+    modified_permissions: list[Permission]
 
 @dataclass
 class RecordUpdate:
     """Track updates to a record"""
-    record: Optional[FileRecord]
+
+    record: FileRecord | None
     is_new: bool
     is_updated: bool
     is_deleted: bool
     metadata_changed: bool
     content_changed: bool
     permissions_changed: bool
-    old_permissions: Optional[List[Permission]] = None
-    new_permissions: Optional[List[Permission]] = None
-    external_record_id: Optional[str] = None
+    old_permissions: list[Permission] | None = None
+    new_permissions: list[Permission] | None = None
+    external_record_id: str | None = None
 
 @dataclass
 class DeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
     # The value property
-    value: Optional[List[DriveItem]] = None
+    value: list[DriveItem] | None = None
 
     @staticmethod
     def create_from_discriminator_value(parse_node: ParseNode) -> "DeltaGetResponse":
-        """
-        Creates a new instance of the appropriate class based on discriminator value
+        """Creates a new instance of the appropriate class based on discriminator value
         param parse_node: The parse node to use to read the discriminator value and create the object
         Returns: DeltaGetResponse
         """
@@ -76,21 +77,19 @@ class DeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
             raise TypeError("parse_node cannot be null.")
         return DeltaGetResponse()
 
-    def get_field_deserializers(self) -> Dict[str, Callable[[ParseNode], None]]:
-        """
-        The deserialization information for the current model
+    def get_field_deserializers(self) -> dict[str, Callable[[ParseNode], None]]:
+        """The deserialization information for the current model
         Returns: Dict[str, Callable[[ParseNode], None]]
         """
-        fields: Dict[str, Callable[[Any], None]] = {
-            "value": lambda n: setattr(self, 'value', n.get_collection_of_object_values(DriveItem)),
+        fields: dict[str, Callable[[Any], None]] = {
+            "value": lambda n: setattr(self, "value", n.get_collection_of_object_values(DriveItem)),
         }
         super_fields = super().get_field_deserializers()
         fields.update(super_fields)
         return fields
 
     def serialize(self, writer: SerializationWriter) -> None:
-        """
-        Serializes information the current object
+        """Serializes information the current object
         param writer: Serialization writer to use to serialize this model
         Returns: None
         """
@@ -102,7 +101,7 @@ class DeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
 @dataclass
 class GroupDeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
     # The value property specialized for Groups
-    value: Optional[List[Group]] = None
+    value: list[Group] | None = None
 
     @staticmethod
     def create_from_discriminator_value(parse_node: ParseNode) -> "GroupDeltaGetResponse":
@@ -110,10 +109,10 @@ class GroupDeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
             raise TypeError("parse_node cannot be null.")
         return GroupDeltaGetResponse()
 
-    def get_field_deserializers(self) -> Dict[str, Callable[[ParseNode], None]]:
-        fields: Dict[str, Callable[[Any], None]] = {
+    def get_field_deserializers(self) -> dict[str, Callable[[ParseNode], None]]:
+        fields: dict[str, Callable[[Any], None]] = {
             # Use Group here instead of DriveItem
-            "value": lambda n: setattr(self, 'value', n.get_collection_of_object_values(Group)),
+            "value": lambda n: setattr(self, "value", n.get_collection_of_object_values(Group)),
         }
         super_fields = super().get_field_deserializers()
         fields.update(super_fields)
@@ -127,25 +126,25 @@ class GroupDeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
 
 class MSGraphClient:
     def __init__(self, app_name: str, client: GraphServiceClient, logger: Logger, max_requests_per_second: int = 10) -> None:
-        """
-        Initializes the OneDriveSync instance with a rate limiter.
+        """Initializes the OneDriveSync instance with a rate limiter.
 
         Args:
             client (GraphServiceClient): The Microsoft Graph API client.
             logger: Logger instance for logging.
             max_requests_per_second (int): Maximum allowed API requests per second.
+
         """
         self.client = client
         self.app_name = app_name
         self.logger = logger
         self.rate_limiter = AsyncLimiter(max_requests_per_second, 1)
 
-    async def get_all_user_groups(self) -> List[dict]:
-        """
-        Retrieves a list of all groups in the organization.
+    async def get_all_user_groups(self) -> list[dict]:
+        """Retrieves a list of all groups in the organization.
 
         Returns:
             List[dict]: A list of groups with their details.
+
         """
         try:
             groups = []
@@ -168,15 +167,15 @@ class MSGraphClient:
             self.logger.error(f"Unexpected error fetching groups: {ex}")
             raise ex
 
-    async def get_group_members(self, group_id: str) -> List[dict]:
-        """
-        Get all members of a specific group.
+    async def get_group_members(self, group_id: str) -> list[dict]:
+        """Get all members of a specific group.
 
         Args:
             group_id: The ID of the group
 
         Returns:
             List of user IDs who are members of the group
+
         """
         try:
             members = []
@@ -195,25 +194,25 @@ class MSGraphClient:
             self.logger.error(f"Error fetching group members for {group_id}: {e}")
             return []
 
-    async def get_all_users(self) -> List[AppUser]:
-        """
-        Retrieves a list of all users in the organization.
+    async def get_all_users(self) -> list[AppUser]:
+        """Retrieves a list of all users in the organization.
 
         Returns:
             List[User]: A list of users with their details.
+
         """
         try:
             users = []
 
             async with self.rate_limiter:
                 query_params = UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(
-                    select=['id', 'displayName', 'userPrincipalName', 'accountEnabled',
-                            'mail', 'jobTitle', 'department', 'surname']
+                    select=["id", "displayName", "userPrincipalName", "accountEnabled",
+                            "mail", "jobTitle", "department", "surname"],
                 )
 
                 # Create request configuration
                 request_configuration = RequestConfiguration(
-                    query_parameters=query_params
+                    query_parameters=query_params,
                 )
 
                 result = await self.client.users.get(request_configuration)
@@ -225,7 +224,7 @@ class MSGraphClient:
                     users.extend(result.value)
                 self.logger.info(f"Retrieved {len(users)} users.")
 
-            user_list: List[AppUser] = []
+            user_list: list[AppUser] = []
             for user in users:
                 user_list.append(AppUser(
                     app_name=self.app_name,
@@ -248,19 +247,18 @@ class MSGraphClient:
             self.logger.error(f"Unexpected error fetching users: {ex}")
             raise ex
 
-    async def get_user_email(self, user_id: str) -> Optional[str]:
-        """
-        Fetches the email of a specific user by ID.
+    async def get_user_email(self, user_id: str) -> str | None:
+        """Fetches the email of a specific user by ID.
         Tries 'mail' first, falls back to 'userPrincipalName'.
         """
         try:
             async with self.rate_limiter:
                 # Only select the fields we strictly need to keep it fast
                 query_params = UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(
-                    select=['id', 'mail', 'userPrincipalName']
+                    select=["id", "mail", "userPrincipalName"],
                 )
                 request_configuration = RequestConfiguration(
-                    query_parameters=query_params
+                    query_parameters=query_params,
                 )
 
                 user = await self.client.users.by_user_id(user_id).get(request_configuration)
@@ -274,7 +272,7 @@ class MSGraphClient:
             return None
 
     async def get_delta_response_sharepoint(self, url: str) -> dict:
-        response = {'delta_link': None, 'next_link': None, 'drive_items': []}
+        response = {"delta_link": None, "next_link": None, "drive_items": []}
 
         try:
             async with self.rate_limiter:
@@ -283,7 +281,7 @@ class MSGraphClient:
                 ri.url = url  # absolute URL
                 ri.headers.add("Accept", "application/json")
 
-                error_mapping: Dict[str, type[ParsableFactory]] = {
+                error_mapping: dict[str, type[ParsableFactory]] = {
                     "4XX": ODataError,
                     "5XX": ODataError,
                 }
@@ -291,15 +289,15 @@ class MSGraphClient:
                 result = await self.client.request_adapter.send_async(
                     request_info=ri,
                     parsable_factory=DeltaGetResponse,  # or DriveItemCollectionResponse
-                    error_map=error_mapping
+                    error_map=error_mapping,
                 )
 
-            if hasattr(result, 'value') and result.value:
-                response['drive_items'] = result.value
-            if hasattr(result, 'odata_next_link') and result.odata_next_link:
-                response['next_link'] = result.odata_next_link
-            if hasattr(result, 'odata_delta_link') and result.odata_delta_link:
-                response['delta_link'] = result.odata_delta_link
+            if hasattr(result, "value") and result.value:
+                response["drive_items"] = result.value
+            if hasattr(result, "odata_next_link") and result.odata_next_link:
+                response["next_link"] = result.odata_next_link
+            if hasattr(result, "odata_delta_link") and result.odata_delta_link:
+                response["delta_link"] = result.odata_delta_link
 
             self.logger.info(f"Retrieved delta response with {len(response['drive_items'])} items")
             return response
@@ -310,25 +308,25 @@ class MSGraphClient:
 
 
     async def get_delta_response(self, url: str) -> dict:
-        """
-        Retrieves the drive items, delta token and next link for a given Microsoft Graph API URL.
+        """Retrieves the drive items, delta token and next link for a given Microsoft Graph API URL.
 
         Args:
             url (str): The full Microsoft Graph API URL to query.
 
         Returns:
             dict: Dictionary containing 'deltaLink', 'nextLink', and 'driveItems'.
+
         """
         try:
             response = {
-                'delta_link': None,
-                'next_link': None,
-                'drive_items': []
+                "delta_link": None,
+                "next_link": None,
+                "drive_items": [],
             }
 
             async with self.rate_limiter:
                 request_info = RequestInformation(Method.GET, url)
-                error_mapping: Dict[str, type[ParsableFactory]] = {
+                error_mapping: dict[str, type[ParsableFactory]] = {
                     "4XX": ODataError,
                     "5XX": ODataError,
                 }
@@ -336,20 +334,20 @@ class MSGraphClient:
                 result = await self.client.request_adapter.send_async(
                     request_info=request_info,
                     parsable_factory=DeltaGetResponse,
-                    error_map=error_mapping
+                    error_map=error_mapping,
                 )
 
                 # Extract the drive items
-                if hasattr(result, 'value') and result.value:
-                    response['drive_items'] = result.value
+                if hasattr(result, "value") and result.value:
+                    response["drive_items"] = result.value
 
                 # Extract the next link if available
-                if hasattr(result, 'odata_next_link') and result.odata_next_link:
-                    response['next_link'] = result.odata_next_link
+                if hasattr(result, "odata_next_link") and result.odata_next_link:
+                    response["next_link"] = result.odata_next_link
 
                 # Extract the delta link if available
-                if hasattr(result, 'odata_delta_link') and result.odata_delta_link:
-                    response['delta_link'] = result.odata_delta_link
+                if hasattr(result, "odata_delta_link") and result.odata_delta_link:
+                    response["delta_link"] = result.odata_delta_link
 
                 self.logger.info(f"Retrieved delta response with {len(response['drive_items'])} items")
                 return response
@@ -359,8 +357,7 @@ class MSGraphClient:
             raise ex
 
     async def get_groups_delta_response(self, url: str) -> dict:
-        """
-        Retrieves groups using delta query to track changes.
+        """Retrieves groups using delta query to track changes.
         Note: This doesn't include members - they need to be fetched separately.
 
         Args:
@@ -368,17 +365,18 @@ class MSGraphClient:
 
         Returns:
             dict: Dictionary containing 'delta_link', 'next_link', and 'groups'.
+
         """
         try:
             response = {
-                'delta_link': None,
-                'next_link': None,
-                'groups': []
+                "delta_link": None,
+                "next_link": None,
+                "groups": [],
             }
 
             async with self.rate_limiter:
                 request_info = RequestInformation(Method.GET, url)
-                error_mapping: Dict[str, type[ParsableFactory]] = {
+                error_mapping: dict[str, type[ParsableFactory]] = {
                     "4XX": ODataError,
                     "5XX": ODataError,
                 }
@@ -387,20 +385,20 @@ class MSGraphClient:
                 result = await self.client.request_adapter.send_async(
                     request_info=request_info,
                     parsable_factory=GroupDeltaGetResponse,
-                    error_map=error_mapping
+                    error_map=error_mapping,
                 )
 
                 # Extract the groups
-                if hasattr(result, 'value') and result.value:
-                    response['groups'] = result.value
+                if hasattr(result, "value") and result.value:
+                    response["groups"] = result.value
 
                 # Extract the next link if available
-                if hasattr(result, 'odata_next_link') and result.odata_next_link:
-                    response['next_link'] = result.odata_next_link
+                if hasattr(result, "odata_next_link") and result.odata_next_link:
+                    response["next_link"] = result.odata_next_link
 
                 # Extract the delta link if available
-                if hasattr(result, 'odata_delta_link') and result.odata_delta_link:
-                    response['delta_link'] = result.odata_delta_link
+                if hasattr(result, "odata_delta_link") and result.odata_delta_link:
+                    response["delta_link"] = result.odata_delta_link
 
             self.logger.info(f"Retrieved groups delta response with {len(response['groups'])} groups")
             return response
@@ -410,9 +408,8 @@ class MSGraphClient:
             raise ex
 
 
-    async def get_file_permission(self, drive_id: str, item_id: str) -> List['Permission']:
-        """
-        Retrieves permissions for a specified file by Drive ID and File ID.
+    async def get_file_permission(self, drive_id: str, item_id: str) -> list["Permission"]:
+        """Retrieves permissions for a specified file by Drive ID and File ID.
 
         Args:
             drive_id (str): The ID of the drive containing the file
@@ -420,6 +417,7 @@ class MSGraphClient:
 
         Returns:
             List[Permission]: A list of Permission objects associated with the file
+
         """
         try:
             permissions = []
@@ -429,7 +427,7 @@ class MSGraphClient:
             if result and result.value:
                 permissions.extend(result.value)
 
-            while result and hasattr(result, 'odata_next_link') and result.odata_next_link:
+            while result and hasattr(result, "odata_next_link") and result.odata_next_link:
                 async with self.rate_limiter:
                     result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).permissions.get_next_page(result.odata_next_link)
                 if result and result.value:
@@ -444,9 +442,8 @@ class MSGraphClient:
             self.logger.error(f"Unexpected error fetching file permissions for File ID {item_id}: {ex}")
             return []
 
-    async def list_folder_children(self, drive_id: str, folder_id: str) -> List[DriveItem]:
-        """
-        List all children of a folder.
+    async def list_folder_children(self, drive_id: str, folder_id: str) -> list[DriveItem]:
+        """List all children of a folder.
 
         Args:
             drive_id: The drive ID
@@ -454,6 +451,7 @@ class MSGraphClient:
 
         Returns:
             List of DriveItem objects
+
         """
         try:
             children = []
@@ -464,7 +462,7 @@ class MSGraphClient:
                 children.extend(result.value)
 
             # Handle pagination
-            while result and hasattr(result, 'odata_next_link') and result.odata_next_link:
+            while result and hasattr(result, "odata_next_link") and result.odata_next_link:
                 async with self.rate_limiter:
                     result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(folder_id).children.with_url(result.odata_next_link).get()
                 if result and result.value:
@@ -480,9 +478,8 @@ class MSGraphClient:
             self.logger.error(f"Unexpected error listing folder children for {folder_id}: {ex}")
             return []
 
-    async def get_signed_url(self, drive_id: str, item_id: str) -> Optional[str]:
-        """
-        Creates a signed URL (sharing link) for a file or folder, valid for the specified duration.
+    async def get_signed_url(self, drive_id: str, item_id: str) -> str | None:
+        """Creates a signed URL (sharing link) for a file or folder, valid for the specified duration.
 
         Args:
             drive_id (str): The ID of the drive.
@@ -490,11 +487,12 @@ class MSGraphClient:
 
         Returns:
             str: The signed URL or None if not available.
+
         """
         try:
             async with self.rate_limiter:
                 item = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).get()
-                if item and hasattr(item, 'additional_data'):
+                if item and hasattr(item, "additional_data"):
                     signed_url = item.additional_data.get("@microsoft.graph.downloadUrl")
                     return signed_url
                 return None

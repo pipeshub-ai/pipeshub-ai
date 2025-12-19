@@ -1,32 +1,33 @@
-from typing import Any, Dict, Optional
+from typing import Any
 
 from app.sources.client.google.google import GoogleClient
 
 
 class GoogleDocsDataSource:
-    """
-    Auto-generated Google Docs API client wrapper.
+    """Auto-generated Google Docs API client wrapper.
     Uses Google SDK client internally for all operations.
     This class wraps all Google Docs API v1 methods and provides
     a consistent interface while using the official Google SDK.
     """
+
     def __init__(
         self,
-        client: GoogleClient
+        client: GoogleClient,
     ) -> None:
-        """
-        Initialize with Google Docs API client.
+        """Initialize with Google Docs API client.
+
         Args:
             client: Google Docs API client from build('docs', 'v1', credentials=credentials)
+
         """
         self.client = client
 
     async def documents_get(
         self,
         documentId: str,
-        suggestionsViewMode: Optional[str] = None,
-        includeTabsContent: Optional[bool] = None
-    ) -> Dict[str, Any]:
+        suggestionsViewMode: str | None = None,
+        includeTabsContent: bool | None = None,
+    ) -> dict[str, Any]:
         """Google Docs API: Gets the latest version of the specified document.
 
         HTTP GET v1/documents/{documentId}
@@ -38,38 +39,39 @@ class GoogleDocsDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         kwargs = {}
         if documentId is not None:
-            kwargs['documentId'] = documentId
+            kwargs["documentId"] = documentId
         if suggestionsViewMode is not None:
-            kwargs['suggestionsViewMode'] = suggestionsViewMode
+            kwargs["suggestionsViewMode"] = suggestionsViewMode
         if includeTabsContent is not None:
-            kwargs['includeTabsContent'] = includeTabsContent
+            kwargs["includeTabsContent"] = includeTabsContent
 
         request = self.client.documents().get(**kwargs) # type: ignore
         return request.execute()
 
     async def documents_create(
         self,
-        documentId: Optional[str] = None,
-        title: Optional[str] = None,
-        tabs: Optional[list] = None,
-        revisionId: Optional[str] = None,
-        suggestionsViewMode: Optional[str] = None,
-        body: Optional[Dict[str, Any]] = None,
-        headers: Optional[Dict[str, Any]] = None,
-        footers: Optional[Dict[str, Any]] = None,
-        footnotes: Optional[Dict[str, Any]] = None,
-        documentStyle: Optional[Dict[str, Any]] = None,
-        suggestedDocumentStyleChanges: Optional[Dict[str, Any]] = None,
-        namedStyles: Optional[Dict[str, Any]] = None,
-        suggestedNamedStylesChanges: Optional[Dict[str, Any]] = None,
-        lists: Optional[Dict[str, Any]] = None,
-        namedRanges: Optional[Dict[str, Any]] = None,
-        inlineObjects: Optional[Dict[str, Any]] = None,
-        positionedObjects: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        documentId: str | None = None,
+        title: str | None = None,
+        tabs: list | None = None,
+        revisionId: str | None = None,
+        suggestionsViewMode: str | None = None,
+        body: dict[str, Any] | None = None,
+        headers: dict[str, Any] | None = None,
+        footers: dict[str, Any] | None = None,
+        footnotes: dict[str, Any] | None = None,
+        documentStyle: dict[str, Any] | None = None,
+        suggestedDocumentStyleChanges: dict[str, Any] | None = None,
+        namedStyles: dict[str, Any] | None = None,
+        suggestedNamedStylesChanges: dict[str, Any] | None = None,
+        lists: dict[str, Any] | None = None,
+        namedRanges: dict[str, Any] | None = None,
+        inlineObjects: dict[str, Any] | None = None,
+        positionedObjects: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Google Docs API: Creates a blank document using the title given in the request. Other fields in the request, including any provided content, are ignored. Returns the created document.
 
         HTTP POST v1/documents
@@ -95,42 +97,43 @@ class GoogleDocsDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         request_body = {}
         if documentId is not None:
-            request_body['documentId'] = documentId
+            request_body["documentId"] = documentId
         if title is not None:
-            request_body['title'] = title
+            request_body["title"] = title
         if tabs is not None:
-            request_body['tabs'] = tabs
+            request_body["tabs"] = tabs
         if revisionId is not None:
-            request_body['revisionId'] = revisionId
+            request_body["revisionId"] = revisionId
         if suggestionsViewMode is not None:
-            request_body['suggestionsViewMode'] = suggestionsViewMode
+            request_body["suggestionsViewMode"] = suggestionsViewMode
         if body is not None:
-            request_body['body'] = body
+            request_body["body"] = body
         if headers is not None:
-            request_body['headers'] = headers
+            request_body["headers"] = headers
         if footers is not None:
-            request_body['footers'] = footers
+            request_body["footers"] = footers
         if footnotes is not None:
-            request_body['footnotes'] = footnotes
+            request_body["footnotes"] = footnotes
         if documentStyle is not None:
-            request_body['documentStyle'] = documentStyle
+            request_body["documentStyle"] = documentStyle
         if suggestedDocumentStyleChanges is not None:
-            request_body['suggestedDocumentStyleChanges'] = suggestedDocumentStyleChanges
+            request_body["suggestedDocumentStyleChanges"] = suggestedDocumentStyleChanges
         if namedStyles is not None:
-            request_body['namedStyles'] = namedStyles
+            request_body["namedStyles"] = namedStyles
         if suggestedNamedStylesChanges is not None:
-            request_body['suggestedNamedStylesChanges'] = suggestedNamedStylesChanges
+            request_body["suggestedNamedStylesChanges"] = suggestedNamedStylesChanges
         if lists is not None:
-            request_body['lists'] = lists
+            request_body["lists"] = lists
         if namedRanges is not None:
-            request_body['namedRanges'] = namedRanges
+            request_body["namedRanges"] = namedRanges
         if inlineObjects is not None:
-            request_body['inlineObjects'] = inlineObjects
+            request_body["inlineObjects"] = inlineObjects
         if positionedObjects is not None:
-            request_body['positionedObjects'] = positionedObjects
+            request_body["positionedObjects"] = positionedObjects
 
         request = self.client.documents().create(body=request_body) # type: ignore
         return request.execute()
@@ -138,10 +141,10 @@ class GoogleDocsDataSource:
     async def documents_batch_update(
         self,
         documentId: str,
-        requests: Optional[list] = None,
-        writeControl: Optional[Dict[str, Any]] = None,
-        **kwargs
-    ) -> Dict[str, Any]:
+        requests: list | None = None,
+        writeControl: dict[str, Any] | None = None,
+        **kwargs,
+    ) -> dict[str, Any]:
         """Google Docs API: Applies one or more updates to the document. Each request is validated before being applied. If any request is not valid, then the entire request will fail and nothing will be applied. Some requests have replies to give you some information about how they are applied. Other requests do not need to return information; these each return an empty reply. The order of replies matches that of the requests. For example, suppose you call batchUpdate with four updates, and only the third one returns information. The response would have two empty replies, the reply to the third request, and another empty reply, in that order. Because other users may be editing the document, the document might not exactly reflect your changes: your changes may be altered with respect to collaborator changes. If there are no collaborators, the document should reflect your changes. In any case, the updates in your request are guaranteed to be applied together atomically.
 
         HTTP POST v1/documents/{documentId}:batchUpdate
@@ -187,16 +190,17 @@ class GoogleDocsDataSource:
 
         Returns:
             Dict[str, Any]: API response
+
         """
         request_params = {}
         if documentId is not None:
-            request_params['documentId'] = documentId
+            request_params["documentId"] = documentId
 
         request_body = {}
         if requests is not None:
-            request_body['requests'] = requests
+            request_body["requests"] = requests
         if writeControl is not None:
-            request_body['writeControl'] = writeControl
+            request_body["writeControl"] = writeControl
 
         # Add any additional kwargs to request body
         for key, value in kwargs.items():

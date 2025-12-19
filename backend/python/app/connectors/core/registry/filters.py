@@ -1,5 +1,4 @@
-"""
-Filter Types, Operators, and Models for Connector Filtering System.
+"""Filter Types, Operators, and Models for Connector Filtering System.
 
 This module provides:
 1. FilterType - Supported filter data types with fixed operators per type
@@ -15,7 +14,7 @@ from dataclasses import field as dataclass_field
 from datetime import datetime, timezone
 from enum import Enum
 from logging import Logger
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Union
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -26,11 +25,12 @@ _logger = logging.getLogger(__name__)
 
 # Type alias for filter values (string, bool, list, number, datetime tuple, or None)
 # Datetime values are stored as (start, end) tuple of epoch integers in milliseconds
-FilterValue = Union[str, bool, int, float, List[str], Tuple[Optional[int], Optional[int]], None]
+FilterValue = Union[str, bool, int, float, list[str], tuple[int | None, int | None], None]
 MAX_DATETIME_TUPLE_LENGTH = 2  # (start, end)
 
 class FilterType(str, Enum):
     """Supported filter data types"""
+
     STRING = "string"
     BOOLEAN = "boolean"
     DATETIME = "datetime"
@@ -41,6 +41,7 @@ class FilterType(str, Enum):
 
 class FilterCategory(str, Enum):
     """Filter categories"""
+
     SYNC = "sync"          # Applied at API level (what to fetch)
     INDEXING = "indexing"  # Applied at record level (what to index)
 
@@ -80,6 +81,7 @@ class FilterOperator:
 # Type-specific operator enums that reference FilterOperator values
 class StringOperator(str, Enum):
     """Operators for STRING type filters"""
+
     IS = FilterOperator.IS
     IS_NOT = FilterOperator.IS_NOT
     IS_EMPTY = FilterOperator.IS_EMPTY
@@ -90,12 +92,14 @@ class StringOperator(str, Enum):
 
 class BooleanOperator(str, Enum):
     """Operators for BOOLEAN type filters"""
+
     IS = FilterOperator.IS
     IS_NOT = FilterOperator.IS_NOT
 
 
 class DatetimeOperator(str, Enum):
     """Operators for DATETIME type filters"""
+
     LAST_7_DAYS = FilterOperator.LAST_7_DAYS
     LAST_14_DAYS = FilterOperator.LAST_14_DAYS
     LAST_30_DAYS = FilterOperator.LAST_30_DAYS
@@ -109,18 +113,21 @@ class DatetimeOperator(str, Enum):
 
 class ListOperator(str, Enum):
     """Operators for LIST type filters"""
+
     IN = FilterOperator.IN
     NOT_IN = FilterOperator.NOT_IN
 
 
 class MultiselectOperator(str, Enum):
     """Operators for MULTISELECT type filters (select from predefined options)"""
+
     IN = FilterOperator.IN
     NOT_IN = FilterOperator.NOT_IN
 
 
 class NumberOperator(str, Enum):
     """Operators for NUMBER type filters"""
+
     IS_BETWEEN = FilterOperator.IS_BETWEEN
     GREATER_THAN_OR_EQUAL = FilterOperator.GREATER_THAN_OR_EQUAL
     GREATER_THAN = FilterOperator.GREATER_THAN
@@ -135,16 +142,16 @@ FilterOperatorType = Union[
     DatetimeOperator,
     ListOperator,
     MultiselectOperator,
-    NumberOperator
+    NumberOperator,
 ]
 
 
 # FILTER KEYS (for runtime access with FilterCollection)
 class SyncFilterKey(str, Enum):
-    """
-    Common sync filter keys for connector data fetching.
+    """Common sync filter keys for connector data fetching.
     These control what data is fetched from external APIs.
     """
+
     # Time-based filters
     MODIFIED = "modified"
     CREATED = "created"
@@ -171,10 +178,10 @@ class SyncFilterKey(str, Enum):
 
 
 class IndexingFilterKey(str, Enum):
-    """
-    Common indexing filter keys for record types.
+    """Common indexing filter keys for record types.
     These control what record types get indexed (boolean filters).
     """
+
     # Master control for manual sync mode
     ENABLE_MANUAL_SYNC = "enable_manual_sync"
 
@@ -208,7 +215,7 @@ class IndexingFilterKey(str, Enum):
 
 
 # Type to operators mapping (for validation and UI)
-TYPE_OPERATORS: Dict[FilterType, List[str]] = {
+TYPE_OPERATORS: dict[FilterType, list[str]] = {
     FilterType.STRING: [op.value for op in StringOperator],
     FilterType.BOOLEAN: [op.value for op in BooleanOperator],
     FilterType.DATETIME: [op.value for op in DatetimeOperator],
@@ -218,14 +225,14 @@ TYPE_OPERATORS: Dict[FilterType, List[str]] = {
 }
 
 
-def get_operators_for_type(filter_type: FilterType) -> List[str]:
+def get_operators_for_type(filter_type: FilterType) -> list[str]:
     """Get allowed operators for a filter type"""
     return TYPE_OPERATORS.get(filter_type, [])
 
 
 def get_operator_enum_class(filter_type: FilterType) -> type:
     """Get the operator enum class for a filter type"""
-    operator_map: Dict[FilterType, type] = {
+    operator_map: dict[FilterType, type] = {
         FilterType.STRING: StringOperator,
         FilterType.BOOLEAN: BooleanOperator,
         FilterType.DATETIME: DatetimeOperator,
@@ -239,8 +246,7 @@ def get_operator_enum_class(filter_type: FilterType) -> type:
 # FILTER FIELD - SCHEMA DEFINITION (for connector_builder decorator)
 @dataclass
 class FilterField:
-    """
-    Schema definition for a filter field (used in add_filter_field).
+    """Schema definition for a filter field (used in add_filter_field).
 
     This defines what the UI will show to users.
 
@@ -262,7 +268,9 @@ class FilterField:
         LIST        → List[str] (free-form tags)
         MULTISELECT → List[str] (selected from predefined options)
         NUMBER      → float (supports decimals)
+
     """
+
     name: str
     display_name: str
     filter_type: FilterType
@@ -270,8 +278,8 @@ class FilterField:
     description: str = ""
     required: bool = False
     default_value: FilterValue = None
-    default_operator: Optional[str] = None
-    options: List[str] = dataclass_field(default_factory=list)
+    default_operator: str | None = None
+    options: list[str] = dataclass_field(default_factory=list)
 
     def __post_init__(self) -> None:
         """Set default values based on filter_type"""
@@ -280,7 +288,7 @@ class FilterField:
         if self.default_operator is None:
             self.default_operator = self._get_default_operator()
 
-    def _get_default_for_type(self) -> Union[str, bool, List[str], tuple, None]:
+    def _get_default_for_type(self) -> str | bool | list[str] | tuple | None:
         """Get default value based on type"""
         defaults = {
             FilterType.STRING: "",
@@ -305,11 +313,11 @@ class FilterField:
         return defaults.get(self.filter_type, "")
 
     @property
-    def operators(self) -> List[str]:
+    def operators(self) -> list[str]:
         """Get allowed operators for this filter type"""
         return get_operators_for_type(self.filter_type)
 
-    def to_schema_dict(self) -> Dict[str, Any]:
+    def to_schema_dict(self) -> dict[str, Any]:
         """Convert to dict for connector schema/config"""
         schema = {
             "name": self.name,
@@ -331,8 +339,7 @@ class FilterField:
 
 # RUNTIME FILTER MODELS (parsed from config)
 class Filter(BaseModel):
-    """
-    Runtime filter value parsed from config.
+    """Runtime filter value parsed from config.
 
     Structure in config:
         {
@@ -342,18 +349,19 @@ class Filter(BaseModel):
             "operator": "in"
         }
     """
+
     key: str
     value: FilterValue = None
     type: FilterType
     operator: FilterOperatorType
 
-    @model_validator(mode='before')
+    @model_validator(mode="before")
     @classmethod
     def convert_operator_to_enum(cls, data: object) -> dict[str, object]:
         """Convert string operator to appropriate enum and normalize datetime values"""
-        if isinstance(data, dict) and 'operator' in data and 'type' in data:
-            operator_str = data['operator']
-            filter_type_str = data['type']
+        if isinstance(data, dict) and "operator" in data and "type" in data:
+            operator_str = data["operator"]
+            filter_type_str = data["type"]
 
             # If operator is already an enum, skip conversion
             if isinstance(operator_str, (StringOperator, BooleanOperator, DatetimeOperator, ListOperator, MultiselectOperator, NumberOperator)):
@@ -376,14 +384,14 @@ class Filter(BaseModel):
                             # Try to find the enum by value
                             for op in operator_enum_class:
                                 if op.value == operator_str:
-                                    data['operator'] = op
+                                    data["operator"] = op
                                     break
                         except (ValueError, AttributeError):
                             pass
 
             # Convert datetime value to tuple of epoch integers
-            if 'value' in data and 'type' in data:
-                filter_type_str = data['type']
+            if "value" in data and "type" in data:
+                filter_type_str = data["type"]
                 if isinstance(filter_type_str, str):
                     try:
                         filter_type = FilterType(filter_type_str)
@@ -392,23 +400,23 @@ class Filter(BaseModel):
                 else:
                     filter_type = filter_type_str
 
-                if filter_type == FilterType.DATETIME and data['value'] is not None:
-                    value = data['value']
+                if filter_type == FilterType.DATETIME and data["value"] is not None:
+                    value = data["value"]
                     # Convert dict {start, end} to tuple of epoch integers (milliseconds)
                     if isinstance(value, dict):
-                        start = value.get('start')
-                        end = value.get('end')
+                        start = value.get("start")
+                        end = value.get("end")
                         # Convert to integers (epoch in milliseconds)
                         start = int(start) if start is not None else None
                         end = int(end) if end is not None else None
-                        data['value'] = (start, end)
+                        data["value"] = (start, end)
                     else:
-                        data['value'] = None
+                        data["value"] = None
 
         return data
 
-    @model_validator(mode='after')
-    def validate_filter(self) -> 'Filter':
+    @model_validator(mode="after")
+    def validate_filter(self) -> "Filter":
         """Validate key, operator, and value are valid for the filter type"""
         # Validate key is non-empty
         if not self.key or not self.key.strip():
@@ -429,13 +437,13 @@ class Filter(BaseModel):
                         valid_operators = TYPE_OPERATORS.get(self.type, [])
                         raise ValueError(
                             f"Invalid operator '{self.operator}' for type '{self.type.value}'. "
-                            f"Valid operators: {valid_operators}"
+                            f"Valid operators: {valid_operators}",
                         )
                 except (ValueError, AttributeError) as e:
                     valid_operators = TYPE_OPERATORS.get(self.type, [])
                     raise ValueError(
                         f"Invalid operator '{self.operator}' for type '{self.type.value}'. "
-                        f"Valid operators: {valid_operators}"
+                        f"Valid operators: {valid_operators}",
                     ) from e
 
         # Validate operator is valid for type
@@ -444,7 +452,7 @@ class Filter(BaseModel):
         if operator_value not in valid_operators:
             raise ValueError(
                 f"Invalid operator '{operator_value}' for type '{self.type.value}'. "
-                f"Valid operators: {valid_operators}"
+                f"Valid operators: {valid_operators}",
             )
 
         # Validate value type (if value is set)
@@ -454,21 +462,21 @@ class Filter(BaseModel):
                 if not isinstance(self.value, tuple):
                     raise ValueError(
                         f"Invalid value type for '{self.type.value}': "
-                        f"expected tuple, got {type(self.value).__name__}"
+                        f"expected tuple, got {type(self.value).__name__}",
                     )
                 # Validate tuple length is exactly 2
                 if len(self.value) != MAX_DATETIME_TUPLE_LENGTH:
                     raise ValueError(
-                        f"Invalid datetime tuple length: expected 2 elements (start, end), got {len(self.value)}"
+                        f"Invalid datetime tuple length: expected 2 elements (start, end), got {len(self.value)}",
                     )
                 # Validate tuple elements are integers (epoch ms) or None
                 for i, item in enumerate(self.value):
                     if item is not None and not isinstance(item, int):
                         raise ValueError(
-                            f"Invalid datetime tuple item at index {i}: expected int (epoch ms), got {type(item).__name__}"
+                            f"Invalid datetime tuple item at index {i}: expected int (epoch ms), got {type(item).__name__}",
                         )
             else:
-                expected_types: Dict[FilterType, type | tuple] = {
+                expected_types: dict[FilterType, type | tuple] = {
                     FilterType.STRING: str,
                     FilterType.BOOLEAN: bool,
                     FilterType.LIST: list,
@@ -479,7 +487,7 @@ class Filter(BaseModel):
                 if expected and not isinstance(self.value, expected):
                     raise ValueError(
                         f"Invalid value type for '{self.type.value}': "
-                        f"expected {expected}, got {type(self.value).__name__}"
+                        f"expected {expected}, got {type(self.value).__name__}",
                     )
 
             # For LIST and MULTISELECT types, validate all elements are strings
@@ -487,7 +495,7 @@ class Filter(BaseModel):
                 for i, item in enumerate(self.value):
                     if not isinstance(item, str):
                         raise ValueError(
-                            f"Invalid list item at index {i}: expected str, got {type(item).__name__}"
+                            f"Invalid list item at index {i}: expected str, got {type(item).__name__}",
                         )
 
         return self
@@ -504,15 +512,14 @@ class Filter(BaseModel):
             return True
         return False
 
-    def as_list(self) -> List[Any]:
+    def as_list(self) -> list[Any]:
         """Get value as list (wraps single values)"""
         if isinstance(self.value, list):
             return self.value
         return [self.value] if self.value is not None else []
 
-    def get_value(self, default: Optional[FilterValue] = None) -> FilterValue:
-        """
-        Get filter value (raw).
+    def get_value(self, default: FilterValue | None = None) -> FilterValue:
+        """Get filter value (raw).
 
         For datetime filters, returns tuple (start, end) in epoch milliseconds:
         - IS_AFTER: (start_epoch, None)
@@ -525,6 +532,7 @@ class Filter(BaseModel):
         Returns:
             Filter value, or default if value is empty/None
             For datetime filters: tuple[int | None, int | None] (epoch in milliseconds)
+
         """
         if self.is_empty():
             return default
@@ -532,20 +540,20 @@ class Filter(BaseModel):
         return self.value
 
     def get_operator(self) -> FilterOperatorType:
-        """
-        Get filter operator as enum.
+        """Get filter operator as enum.
 
         Returns:
             FilterOperatorType enum instance (Union of all operator enums)
+
         """
         return self.operator
 
-    def get_datetime_start(self) -> Optional[int]:
-        """
-        Get start epoch from datetime filter value.
+    def get_datetime_start(self) -> int | None:
+        """Get start epoch from datetime filter value.
 
         Returns:
             Start epoch timestamp (milliseconds), or None if not a datetime filter or value is empty
+
         """
         if self.type != FilterType.DATETIME or self.is_empty():
             return None
@@ -553,12 +561,12 @@ class Filter(BaseModel):
             return self.value[0]
         return None
 
-    def get_datetime_end(self) -> Optional[int]:
-        """
-        Get end epoch from datetime filter value.
+    def get_datetime_end(self) -> int | None:
+        """Get end epoch from datetime filter value.
 
         Returns:
             End epoch timestamp (milliseconds), or None if not a datetime filter, value is empty, or no end date
+
         """
         if self.type != FilterType.DATETIME or self.is_empty():
             return None
@@ -567,7 +575,7 @@ class Filter(BaseModel):
         return None
 
     @staticmethod
-    def _epoch_to_iso(epoch: Optional[int]) -> Optional[str]:
+    def _epoch_to_iso(epoch: int | None) -> str | None:
         """Convert epoch timestamp (milliseconds) to ISO format string.
 
         Args:
@@ -575,6 +583,7 @@ class Filter(BaseModel):
 
         Returns:
             ISO format string (e.g., "2025-12-04T10:30:00")
+
         """
         if epoch is None:
             return None
@@ -583,9 +592,8 @@ class Filter(BaseModel):
         dt = datetime.fromtimestamp(epoch_seconds, tz=timezone.utc)
         return dt.strftime("%Y-%m-%dT%H:%M:%S")
 
-    def get_datetime_iso(self) -> Tuple[Optional[str], Optional[str]]:
-        """
-        Get datetime filter value as ISO format strings.
+    def get_datetime_iso(self) -> tuple[str | None, str | None]:
+        """Get datetime filter value as ISO format strings.
 
         Value format from JSON is always {start, end} → tuple (start, end)
         - IS_AFTER: {start: epoch, end: None} → (start_iso, None)
@@ -595,6 +603,7 @@ class Filter(BaseModel):
         Returns:
             Tuple of (start_iso, end_iso) where each is an ISO format string or None.
             Returns (None, None) if not a datetime filter or value is empty.
+
         """
         if self.type != FilterType.DATETIME or self.is_empty():
             return (None, None)
@@ -610,8 +619,7 @@ class Filter(BaseModel):
         return self.operator.value if isinstance(self.operator, Enum) else str(self.operator)
 
 class FilterCollection(BaseModel):
-    """
-    Collection of filters with easy access methods.
+    """Collection of filters with easy access methods.
 
     Used for both sync filters and indexing filters.
 
@@ -620,11 +628,11 @@ class FilterCollection(BaseModel):
         - get_value(key, default) → Any: Get value, None if empty
         - is_enabled(key, default=True) → bool: For boolean filters
     """
-    filters: List[Filter] = Field(default_factory=list)
 
-    def get(self, key: Union[str, Enum]) -> Optional[Filter]:
-        """
-        Get filter by key.
+    filters: list[Filter] = Field(default_factory=list)
+
+    def get(self, key: str | Enum) -> Filter | None:
+        """Get filter by key.
 
         Returns None if not found.
         Use this when you need access to operator or type.
@@ -636,10 +644,9 @@ class FilterCollection(BaseModel):
         return None
 
     def get_value(
-        self, key: Union[str, Enum], default: Optional[FilterValue] = None
+        self, key: str | Enum, default: FilterValue | None = None,
     ) -> FilterValue:
-        """
-        Get filter value.
+        """Get filter value.
 
         Returns default (None) if:
         - Filter doesn't exist
@@ -657,9 +664,8 @@ class FilterCollection(BaseModel):
             return default
         return f.value
 
-    def is_enabled(self, key: Union[str, Enum], default: Optional[bool] = True) -> bool:
-        """
-        Check if boolean filter is enabled.
+    def is_enabled(self, key: str | Enum, default: bool | None = True) -> bool:
+        """Check if boolean filter is enabled.
 
         Args:
             key: Filter key (string or enum)
@@ -678,6 +684,7 @@ class FilterCollection(BaseModel):
             - Lists: True if non-empty
             - Strings: True if non-empty
             - Numbers: True if non-zero
+
         """
         # Get the filter being checked
         f = self.get(key)
@@ -714,7 +721,7 @@ class FilterCollection(BaseModel):
             return bool(f.value)
         return True  # Non-empty non-boolean = enabled
 
-    def keys(self) -> List[str]:
+    def keys(self) -> list[str]:
         """Get all filter keys"""
         return [f.key for f in self.filters]
 
@@ -728,11 +735,10 @@ class FilterCollection(BaseModel):
     @classmethod
     def from_dict(
         cls,
-        filter_dict: Dict[str, Any],
-        logger: Optional[Logger] = None
-    ) -> 'FilterCollection':
-        """
-        Create FilterCollection from config dict.
+        filter_dict: dict[str, Any],
+        logger: Logger | None = None,
+    ) -> "FilterCollection":
+        """Create FilterCollection from config dict.
 
         Args:
             filter_dict: Dict of filter configurations (pass empty dict if no filters)
@@ -746,13 +752,14 @@ class FilterCollection(BaseModel):
 
         Returns:
             FilterCollection with valid filters. Invalid filters are logged and skipped.
+
         """
         log = logger or _logger
 
         if not filter_dict:
             return cls()
 
-        filters: List[Filter] = []
+        filters: list[Filter] = []
         for key, val in filter_dict.items():
             try:
                 # Validate filter structure
@@ -778,10 +785,9 @@ class FilterCollection(BaseModel):
 async def load_connector_filters(
     config_service: ConfigurationService,
     connector_name: str,
-    logger: Optional[Logger] = None
-) -> Tuple[FilterCollection, FilterCollection]:
-    """
-    Load sync and indexing filters from config service.
+    logger: Logger | None = None,
+) -> tuple[FilterCollection, FilterCollection]:
+    """Load sync and indexing filters from config service.
 
     Args:
         config_service: ConfigurationService instance
@@ -808,6 +814,7 @@ async def load_connector_filters(
                 }
             }
         }
+
     """
     log = logger or _logger
     empty_filters = (FilterCollection(), FilterCollection())
@@ -846,7 +853,7 @@ async def load_connector_filters(
     if sync_filters or indexing_filters:
         log.info(
             f"Loaded filters for {connector_name}: "
-            f"{len(sync_filters)} sync, {len(indexing_filters)} indexing"
+            f"{len(sync_filters)} sync, {len(indexing_filters)} indexing",
         )
 
     return sync_filters, indexing_filters
