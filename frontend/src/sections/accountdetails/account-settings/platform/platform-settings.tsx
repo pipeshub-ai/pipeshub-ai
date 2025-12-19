@@ -241,14 +241,14 @@ export default function PlatformSettings() {
                     <Iconify icon="mdi:content-save" width={18} height={18} />
                   )
                 }
-                variant="outlined"
+                variant="contained"
                 color="primary"
                 sx={{
                   borderRadius: 1,
                   borderColor: theme.palette.divider,
-                  color: theme.palette.text.primary,
+                  color: theme.palette.common.white,
                   '&:hover': {
-                    borderColor: theme.palette.text.primary,
+                    backgroundColor: theme.palette.primary.main,
                   },
                 }}
               >

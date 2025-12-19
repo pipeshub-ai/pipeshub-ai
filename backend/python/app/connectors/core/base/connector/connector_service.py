@@ -22,15 +22,17 @@ class BaseConnector(ABC):
     config_service: ConfigurationService
     app: App
     connector_name: Connectors
+    connector_id: str
 
     def __init__(self, app: App, logger, data_entities_processor: DataSourceEntitiesProcessor,
-        data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
+        data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> None:
         self.logger = logger
         self.data_entities_processor = data_entities_processor
         self.app = app
         self.connector_name = app.get_app_name()
         self.data_store_provider = data_store_provider
         self.config_service = config_service
+        self.connector_id = connector_id
 
     @abstractmethod
     async def init(self) -> bool:
@@ -70,7 +72,7 @@ class BaseConnector(ABC):
 
     @classmethod
     @abstractmethod
-    async def create_connector(cls, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> "BaseConnector":
+    async def create_connector(cls, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> "BaseConnector":
         NotImplementedError("This method should be implemented by the subclass")
 
     def get_app(self) -> App:
@@ -84,3 +86,6 @@ class BaseConnector(ABC):
 
     def get_app_group_name(self) -> str:
         return self.app.get_app_group_name()
+
+    def get_connector_id(self) -> str:
+        return self.connector_id

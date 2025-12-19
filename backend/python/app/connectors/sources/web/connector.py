@@ -21,6 +21,7 @@ from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.interfaces.connector.apps import App
 from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
+    ConnectorScope,
     CustomField,
     DocumentationLink,
 )
@@ -65,6 +66,7 @@ class WebApp(App):
     .with_auth_type("NONE")\
     .with_description("Crawl and sync data from web pages")\
     .with_categories(["Web"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/web.svg")
         .with_realtime_support(False)

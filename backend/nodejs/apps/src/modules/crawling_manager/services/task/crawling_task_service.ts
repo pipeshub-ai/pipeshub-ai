@@ -6,6 +6,7 @@ export interface ICrawlingTaskService {
     userId: string, 
     config: ICrawlingSchedule, 
     connector: string,
+    connectorId: string,
   ): Promise<CrawlingResult>;
 }
 

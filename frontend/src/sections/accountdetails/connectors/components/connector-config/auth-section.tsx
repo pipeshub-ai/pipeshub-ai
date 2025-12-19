@@ -65,6 +65,11 @@ interface AuthSectionProps {
   certificateInputRef: React.RefObject<HTMLInputElement>;
   privateKeyInputRef: React.RefObject<HTMLInputElement>;
   onFieldChange: (section: string, fieldName: string, value: any) => void;
+  // Create-mode connector instance naming
+  isCreateMode: boolean;
+  instanceName: string;
+  instanceNameError: string | null;
+  onInstanceNameChange: (value: string) => void;
 }
 
 const AuthSection: React.FC<AuthSectionProps> = ({
@@ -100,6 +105,10 @@ const AuthSection: React.FC<AuthSectionProps> = ({
   certificateInputRef,
   privateKeyInputRef,
   onFieldChange,
+  isCreateMode,
+  instanceName,
+  instanceNameError,
+  onInstanceNameChange,
 }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
@@ -114,14 +123,15 @@ const AuthSection: React.FC<AuthSectionProps> = ({
   const customGoogleBusinessOAuth = (connectorParam: Connector, accountType: string): boolean =>
     accountType === 'business' &&
     connectorParam.appGroup === 'Google Workspace' &&
-    connectorParam.authType === 'OAUTH';
+    connectorParam.authType === 'OAUTH' &&
+    connectorParam.scope === 'team';
 
   const isSharePointCertificateAuth = (connectorParam: Connector): boolean =>
     connectorParam.name === 'SharePoint Online' &&
     (connectorParam.authType === 'OAUTH_CERTIFICATE' ||
       connectorParam.authType === 'OAUTH_ADMIN_CONSENT');
 
-  const pipeshubDocumentationUrl =
+    const pipeshubDocumentationUrl =
     documentationLinks?.find((link) => link.type === 'pipeshub')?.url ||
     `https://docs.pipeshub.com/connectors/overview`;
 
@@ -312,8 +322,8 @@ const AuthSection: React.FC<AuthSectionProps> = ({
               </Box>
             </Box>
           </Collapse>
-        </Paper>
-      )}
+          </Paper>
+        )}
 
       {/* Collapsible Documentation Links */}
       {documentationLinks && documentationLinks.length > 0 && (
@@ -596,6 +606,31 @@ const AuthSection: React.FC<AuthSectionProps> = ({
             </Typography>
           </Box>
         </Box>
+
+        {isCreateMode && (
+          <Box sx={{ mb: 2.5 }}> 
+            <Grid container spacing={2}>
+              <Grid item xs={12}>
+                <FieldRenderer
+                  field={{
+                    name: 'instanceName',
+                    displayName: 'Connector name',
+                    fieldType: 'TEXT',
+                    required: true,
+                    placeholder: `e.g., ${connector.name[0].toUpperCase() + connector.name.slice(1).toLowerCase()} - Production`,
+                    description: 'Give this connector a unique, descriptive name',
+                    defaultValue: '',
+                    validation: {},
+                    isSecret: false,
+                  }}
+                  value={instanceName}
+                  onChange={(value) => onInstanceNameChange(value)}
+                  error={instanceNameError || undefined}
+                />
+              </Grid>
+            </Grid>
+          </Box>
+        )}
 
         <Grid container spacing={2}>
           {auth.schema.fields.map((field) => {

@@ -72,6 +72,7 @@ class Record(BaseModel):
     version: int = Field(description="Version of the record")
     origin: OriginTypes = Field(description="Origin of the record")
     connector_name: Connectors = Field(description="Name of the connector used to create the record")
+    connector_id: Optional[str] = Field(default=None, description="Internal connector configuration instance id")
     virtual_record_id: Optional[str] = Field(description="Virtual record identifier", default=None)
     summary_document_id: Optional[str] = Field(description="Summary document identifier", default=None)
     md5_hash: Optional[str] = Field(default=None, description="MD5 hash of the record")
@@ -110,6 +111,7 @@ class Record(BaseModel):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
             "mimeType": self.mime_type,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
@@ -151,6 +153,7 @@ class Record(BaseModel):
             version=arango_base_record["version"],
             origin=OriginTypes(arango_base_record["origin"]),
             connector_name=connector_name,
+            connector_id=arango_base_record.get("connectorId", None),
             mime_type=arango_base_record.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=arango_base_record.get("webUrl", None),
             created_at=arango_base_record.get("createdAtTimestamp", None),
@@ -209,6 +212,7 @@ class FileRecord(Record):
             version=arango_base_record["version"],
             origin=OriginTypes(arango_base_record["origin"]),
             connector_name=Connectors(arango_base_record["connectorName"]),
+            connector_id=arango_base_record.get("connectorId"),
             mime_type=arango_base_record.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=arango_base_record["webUrl"],
             external_record_group_id=arango_base_record.get("externalGroupId", None),
@@ -239,6 +243,7 @@ class FileRecord(Record):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
             "mimeType": self.mime_type,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
@@ -264,6 +269,8 @@ class MessageRecord(Record):
             "orgId": self.org_id,
             "recordName": self.record_name,
             "recordType": self.record_type.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
@@ -302,6 +309,8 @@ class MailRecord(Record):
         return {
             "recordId": self.id,
             "orgId": self.org_id,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
             "recordName": self.record_name,
             "recordType": self.record_type.value,
             "mimeType": self.mime_type,
@@ -329,6 +338,7 @@ class MailRecord(Record):
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
             connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
             mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=mail_doc.get("webUrl"),
             created_at=record_doc.get("createdAtTimestamp"),
@@ -354,6 +364,8 @@ class WebpageRecord(Record):
             "orgId": self.org_id,
             "recordName": self.record_name,
             "recordType": self.record_type.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
             "mimeType": self.mime_type,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -390,6 +402,7 @@ class WebpageRecord(Record):
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
             connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
             mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=record_doc.get("webUrl"),
             created_at=record_doc.get("createdAtTimestamp"),
@@ -418,6 +431,8 @@ class CommentRecord(Record):
             "orgId": self.org_id,
             "recordName": self.record_name,
             "recordType": self.record_type.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
             "mimeType": self.mime_type,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -454,6 +469,7 @@ class CommentRecord(Record):
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
             connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
             mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=record_doc.get("webUrl"),
             created_at=record_doc.get("createdAtTimestamp"),
@@ -515,6 +531,7 @@ class TicketRecord(Record):
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
             connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
             mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=record_doc.get("webUrl"),
             created_at=record_doc.get("createdAtTimestamp"),
@@ -542,6 +559,7 @@ class TicketRecord(Record):
             "recordName": self.record_name,
             "recordType": self.record_type.value,
             "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
             "mimeType": self.mime_type,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -566,6 +584,7 @@ class SharePointListRecord(Record):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name,
+            "connectorId": self.connector_id,
             "mimeType": self.mime_type,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
@@ -590,6 +609,7 @@ class SharePointListItemRecord(Record):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name,
+            "connectorId": self.connector_id,
             "mimeType": self.mime_type,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
@@ -614,6 +634,7 @@ class SharePointDocumentLibraryRecord(Record):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
             "mimeType": self.mime_type,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
@@ -644,6 +665,7 @@ class SharePointPageRecord(Record):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
             "mimeType": self.mime_type,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
@@ -665,6 +687,7 @@ class RecordGroup(BaseModel):
     parent_external_group_id: Optional[str] = Field(default=None, description="External identifier for the parent record group")
     parent_record_group_id: Optional[str] = Field(default=None, description="Internal identifier for the parent record group")
     connector_name: Connectors = Field(description="Name of the connector used to create the record group")
+    connector_id: Optional[str] = Field(default=None, description="Internal connector configuration instance id")
     web_url: Optional[str] = Field(default=None, description="Web URL of the record group")
     group_type: Optional[RecordGroupType] = Field(description="Type of the record group")
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record group creation")
@@ -683,6 +706,7 @@ class RecordGroup(BaseModel):
             "externalGroupId": self.external_group_id,
             "parentExternalGroupId": self.parent_external_group_id,
             "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
             "groupType": self.group_type.value,
             "webUrl": self.web_url,
             "createdAtTimestamp": self.created_at,
@@ -703,6 +727,7 @@ class RecordGroup(BaseModel):
             external_group_id=arango_base_record_group["externalGroupId"],
             parent_external_group_id=arango_base_record_group.get("parentExternalGroupId", None),
             connector_name=arango_base_record_group["connectorName"],
+            connector_id=arango_base_record_group.get("connectorId"),
             group_type=arango_base_record_group["groupType"],
             web_url=arango_base_record_group.get("webUrl", None),
             created_at=arango_base_record_group["createdAtTimestamp"],
@@ -841,6 +866,7 @@ class UserGroup(BaseModel):
 
 class AppUser(BaseModel):
     app_name: Connectors = Field(description="Name of the app")
+    connector_id: str = Field(description="Unique identifier for the connector")
     id: str = Field(description="Unique identifier for the user", default_factory=lambda: str(uuid4()))
     source_user_id: str = Field(description="Unique identifier for the user in the source system")
     org_id: str = Field(default="", description="Unique identifier for the organization")
@@ -876,11 +902,13 @@ class AppUser(BaseModel):
             full_name=data.get("fullName", None),
             source_user_id=data.get("sourceUserId", ""),
             app_name=Connectors(data.get("appName", Connectors.UNKNOWN.value)),
+            connector_id=data.get("connectorId", ""),
         )
 
 class AppUserGroup(BaseModel):
     id: str = Field(description="Unique identifier for the user group", default_factory=lambda: str(uuid4()))
     app_name: Connectors = Field(description="Name of the app")
+    connector_id: str = Field(description="Unique identifier for the connector")
     source_user_group_id: str = Field(description="Unique identifier for the user group in the source system")
     name: str = Field(description="Name of the user group")
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the user group creation")
@@ -901,6 +929,7 @@ class AppUserGroup(BaseModel):
             "appName": self.app_name.value,
             "externalGroupId": self.source_user_group_id,
             "connectorName": self.app_name.value,
+            "connectorId": self.connector_id,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
@@ -916,6 +945,7 @@ class AppUserGroup(BaseModel):
             name=arango_doc["name"],
             source_user_group_id=arango_doc["externalGroupId"],
             app_name=Connectors(arango_doc["connectorName"]),
+            connector_id=arango_doc.get("connectorId", None),
             created_at=arango_doc["createdAtTimestamp"],
             updated_at=arango_doc["updatedAtTimestamp"],
             source_created_at=arango_doc.get("sourceCreatedAtTimestamp"),
@@ -925,6 +955,7 @@ class AppUserGroup(BaseModel):
 class AppRole(BaseModel):
     id: str = Field(description="Unique identifier for the role", default_factory=lambda: str(uuid4()))
     app_name: Connectors = Field(description="Name of the app")
+    connector_id: str = Field(description="Unique identifier for the connector")
     source_role_id: str = Field(description="Unique identifier for the role in the source system")
     name: str = Field(description="Name of the role")
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the role creation")
@@ -943,6 +974,7 @@ class AppRole(BaseModel):
             "name": self.name,
             "externalRoleId": self.source_role_id,
             "connectorName": self.app_name.value,
+            "connectorId": self.connector_id,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
@@ -958,6 +990,7 @@ class AppRole(BaseModel):
             name=arango_doc["name"],
             source_role_id=arango_doc["externalRoleId"],
             app_name=Connectors(arango_doc["connectorName"]),
+            connector_id=arango_doc.get("connectorId", None),
             created_at=arango_doc["createdAtTimestamp"],
             updated_at=arango_doc["updatedAtTimestamp"],
             source_created_at=arango_doc.get("sourceCreatedAtTimestamp"),

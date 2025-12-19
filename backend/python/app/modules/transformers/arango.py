@@ -304,19 +304,18 @@ class Arango(Transformer):
                     "🚀 Metadata saved successfully for document"
                 )
 
-                record.update(
-                    {
-                        "extractionStatus": "COMPLETED",
-                        "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
-                    }
-                )
-                docs = [record]
+                # Update extraction status for the record in ArangoDB
+                status_doc = {
+                    "_key": record_id,
+                    "extractionStatus": "COMPLETED",
+                    "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
+                }
 
                 self.logger.info(
-                    "🎯 Upserting domain metadata for document"
+                    "🎯 Upserting extraction status metadata for document"
                 )
                 await tx_store.batch_upsert_nodes(
-                    docs, CollectionNames.RECORDS.value
+                    [status_doc], CollectionNames.RECORDS.value
                 )
 
             except Exception as e:

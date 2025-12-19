@@ -17,6 +17,7 @@ import fileDocumentBoxIcon from '@iconify-icons/mdi/file-document-box';
 import descriptionIcon from '@iconify-icons/mdi/file-document-outline';
 import databaseIcon from '@iconify-icons/mdi/database';
 import infoIcon from '@iconify-icons/mdi/information-outline';
+import ticketIcon from '@iconify-icons/mdi/ticket-outline';
 
 import {
   Box,
@@ -237,12 +238,17 @@ export default function RecordDetails() {
   }
 
   const { record, knowledgeBase, permissions, metadata } = recordData;
-  const createdAt = new Date(record.sourceCreatedAtTimestamp).toLocaleString();
-  const updatedAt = new Date(record.sourceLastModifiedTimestamp).toLocaleString();
+  const createdAt = new Date(
+    record.sourceCreatedAtTimestamp || record.createdAtTimestamp
+  ).toLocaleString();
+  const updatedAt = new Date(
+    record.sourceLastModifiedTimestamp || record.updatedAtTimestamp
+  ).toLocaleString();
 
   // Check record type
   const isFileRecord = record.recordType === 'FILE' && record.fileRecord;
   const isMailRecord = record.recordType === 'MAIL' && record.mailRecord;
+  const isTicketRecord = record.recordType === 'TICKET' && record.ticketRecord;
 
   // Get file information if it's a file record
   let fileSize = 'N/A';
@@ -263,6 +269,11 @@ export default function RecordDetails() {
     fileIconColor = '#2196f3';
     fileType = 'EMAIL';
     // We don't have a size for emails, so leave fileSize as N/A
+  } else if (isTicketRecord) {
+    fileIcon = ticketIcon;
+    fileIconColor = '#ff9800';
+    fileType = 'TICKET';
+    // We don't have a size for tickets, so leave fileSize as N/A
   }
   // Check all possible sources for webUrl
   const webUrl = record.webUrl || record.fileRecord?.webUrl || record.mailRecord?.webUrl;
@@ -798,6 +809,28 @@ export default function RecordDetails() {
                           </Box>
                         )}
 
+                        {isTicketRecord && record.ticketRecord && (
+                          <Box>
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                              gutterBottom
+                              sx={{
+                                textTransform: 'uppercase',
+                                fontWeight: 500,
+                                letterSpacing: '0.5px',
+                                display: 'block',
+                                mb: 0.75,
+                              }}
+                            >
+                              Summary
+                            </Typography>
+                            <Typography variant="body2">
+                              {record.ticketRecord?.summary || record.ticketRecord?.name || 'N/A'}
+                            </Typography>
+                          </Box>
+                        )}
+
                         <Box>
                           <Typography
                             variant="caption"
@@ -1178,6 +1211,38 @@ export default function RecordDetails() {
                           }}
                         >
                           {record.mailRecord.date}
+                        </Typography>
+                      </Box>
+                    )}
+
+                    {isTicketRecord && record.ticketRecord && record.ticketRecord.description && (
+                      <Box>
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          gutterBottom
+                          sx={{
+                            textTransform: 'uppercase',
+                            fontWeight: 600,
+                            letterSpacing: '0.8px',
+                            fontSize: '0.6875rem',
+                            display: 'block',
+                            mb: 1.25,
+                            opacity: 0.85,
+                          }}
+                        >
+                          Description
+                        </Typography>
+                        <Typography
+                          variant="body2"
+                          sx={{
+                            fontWeight: 400,
+                            color: 'text.primary',
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word',
+                          }}
+                        >
+                          {record.ticketRecord.description}
                         </Typography>
                       </Box>
                     )}

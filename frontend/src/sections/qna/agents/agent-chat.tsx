@@ -1160,9 +1160,11 @@ const AgentChat = () => {
           moduleIds: [],
           appSpecificRecordTypes: [],
 
-          // Apps: Use persistent selected app names
-          // If no apps selected, use agent defaults, if no agent defaults, use empty array
-          apps: selectedApps && selectedApps.length > 0 ? selectedApps : agent?.apps || [],
+          // Apps: Extract connector instance IDs from connectors with category='knowledge'
+          // If no apps selected, use agent defaults from connectors array
+          apps: selectedApps && selectedApps.length > 0 
+            ? selectedApps 
+            : (agent?.connectors?.filter(ci => ci.category === 'knowledge').map(ci => ci.id) || []),
 
           // Knowledge bases: Use persistent selected KB IDs
           // If no KBs selected, use agent defaults, if no agent defaults, use empty array

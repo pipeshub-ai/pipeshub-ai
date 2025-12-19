@@ -270,6 +270,10 @@ class AccountType(Enum):
     BUSINESS = "business"
     ADMIN = "admin"
 
+class ConnectorScopes(Enum):
+    PERSONAL = "personal"
+    TEAM = "team"
+
 RECORD_TYPE_COLLECTION_MAPPING = {
     "FILE": CollectionNames.FILES.value,
     "MAIL": CollectionNames.MAILS.value,

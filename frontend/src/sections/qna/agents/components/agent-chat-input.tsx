@@ -195,15 +195,17 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
       }
 
       // Initialize with agent's default apps
-      if (agent.apps && Array.isArray(agent.apps)) {
-        setSelectedApps([...agent.apps]);
+      // Extract connector instance IDs from connectors with category='knowledge'
+      const knowledgeConnectorIds = agent.connectors?.filter((ci: any) => ci.category === 'knowledge').map((ci: any) => ci.id) || [];
+      if (knowledgeConnectorIds.length > 0) {
+        setSelectedApps([...knowledgeConnectorIds]);
       }
 
       setInitialized(true);
       console.log('Initialized selections from agent:', {
         tools: agent.tools,
         kb: agent.kb,
-        apps: agent.apps,
+        connectors: agent.connectors,
       });
     }
   }, [agent, initialized]);
@@ -238,16 +240,18 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
       }));
   }, [availableKBs, agent?.kb]);
 
-  // Convert agent apps to app options
+  // Convert agent connectors (knowledge category) to app options
   const agentAppOptions: AppOption[] = useMemo(() => {
-    if (!agent?.apps) return [];
+    if (!agent?.connectors) return [];
 
-    return agent.apps.map((appName: string) => ({
-      id: appName, // Use app name for API
-      name: appName,
-      displayName: normalizeDisplayName(appName),
-    }));
-  }, [agent?.apps]);
+    return agent.connectors
+      .filter((ci: any) => ci.category === 'knowledge')
+      .map((connector: any) => ({
+        id: connector.id, // Use connector instance ID for API
+        name: connector.name || connector.type,
+        displayName: normalizeDisplayName(connector.name || connector.type),
+      }));
+  }, [agent?.connectors]);
 
   // All available apps for autocomplete
   const allAppOptions: AppOption[] = activeConnectors.map((app) => ({
@@ -437,7 +441,9 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
     if (agent) {
       setSelectedTools(agent.tools ? [...agent.tools] : []);
       setSelectedKBs(agent.kb ? [...agent.kb] : []);
-      setSelectedApps(agent.apps ? [...agent.apps] : []);
+      // Extract connector instance IDs from connectors with category='knowledge'
+      const knowledgeConnectorIds = agent.connectors?.filter((ci: any) => ci.category === 'knowledge').map((ci: any) => ci.id) || [];
+      setSelectedApps(knowledgeConnectorIds);
       console.log('Reset selections to agent defaults');
     }
   }, [agent]);

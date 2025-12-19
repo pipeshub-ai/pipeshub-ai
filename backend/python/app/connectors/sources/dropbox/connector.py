@@ -46,6 +46,7 @@ from app.connectors.core.base.sync_point.sync_point import (
 from app.connectors.core.registry.connector_builder import (
     CommonFields,
     ConnectorBuilder,
+    ConnectorScope,
     DocumentationLink,
 )
 
@@ -148,6 +149,7 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
     .with_auth_type("OAUTH")\
     .with_description("Sync files and folders from Dropbox")\
     .with_categories(["Storage"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/dropbox.svg")
         .with_realtime_support(True)
@@ -185,6 +187,8 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
         .with_webhook_config(True, ["file.added", "file.modified", "file.deleted"])
         .with_scheduled_config(True, 60)
         .add_sync_custom_field(CommonFields.batch_size_field())
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class DropboxConnector(BaseConnector):
@@ -200,18 +204,20 @@ class DropboxConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
+        connector_id: str,
     ) -> None:
 
-        super().__init__(DropboxApp(), logger, data_entities_processor, data_store_provider, config_service)
+        super().__init__(DropboxApp(), logger, data_entities_processor, data_store_provider, config_service, connector_id)
 
         self.connector_name = Connectors.DROPBOX
+        self.connector_id = connector_id
 
 
 
         # Initialize sync point for tracking record changes
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
             return SyncPoint(
-                connector_name=self.connector_name,
+                connector_id=self.connector_id,
                 org_id=self.data_entities_processor.org_id,
                 sync_data_point_type=sync_data_point_type,
                 data_store_provider=self.data_store_provider
@@ -229,7 +235,7 @@ class DropboxConnector(BaseConnector):
     async def init(self) -> bool:
         """Initializes the Dropbox client using credentials from the config service."""
         config = await self.config_service.get_config(
-            "/services/connectors/dropbox/config"
+            f"/services/connectors/{self.connector_id}/config"
         )
         if not config:
             self.logger.error("Dropbox access token not found in configuration.")
@@ -281,7 +287,7 @@ class DropboxConnector(BaseConnector):
 
                 # async with self.data_store_provider.transaction() as tx_store:
                 #     record = await tx_store.get_record_by_path(
-                #         connector_name=self.connector_name,
+                #         connector_id=self.connector_id,
                 #         path=entry.path_lower,
                 #     )
 
@@ -306,7 +312,7 @@ class DropboxConnector(BaseConnector):
             # 2. Get existing record from the database
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
-                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
                     external_id=entry.id
                 )
 
@@ -450,6 +456,7 @@ class DropboxConnector(BaseConnector):
                 version=0 if is_new else existing_record.version + 1,
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
+                connector_id=self.connector_id,
                 created_at=timestamp_ms,
                 updated_at=timestamp_ms,
                 source_created_at=timestamp_ms,
@@ -709,6 +716,7 @@ class DropboxConnector(BaseConnector):
             external_revision_id=entry.rev if is_file else None,
             origin=OriginTypes.CONNECTOR.value,
             connector_name=self.connector_name,
+            connector_id=self.connector_id,
             updated_at=int(entry.server_modified.timestamp() * 1000) if is_file else None,
             source_updated_at=int(entry.server_modified.timestamp() * 1000) if is_file else None,
             web_url=f"https://www.dropbox.com/home{entry.path_display}",
@@ -772,7 +780,7 @@ class DropboxConnector(BaseConnector):
 
         has_more = True
         batch_records = []
-        sync_point_key = generate_record_sync_point_key(RecordType.DRIVE.value, "root")
+        sync_point_key = generate_record_sync_point_key(RecordType.DRIVE.value, "root", "")
 
         while has_more:
             try:
@@ -1043,6 +1051,7 @@ class DropboxConnector(BaseConnector):
             app_users.append(
                 AppUser(
                     app_name=self.connector_name,
+                    connector_id=self.connector_id,
                     source_user_id=profile.team_member_id,
                     full_name=profile.name.display_name,
                     email=profile.email,
@@ -1540,7 +1549,7 @@ class DropboxConnector(BaseConnector):
                 external_group_id=group_id,
                 user_email=member_email,
                 permission_type=permission_type,
-                connector_name=self.connector_name
+                connector_id=self.connector_id
             )
 
         elif event_type == "group_remove_member":
@@ -1549,7 +1558,7 @@ class DropboxConnector(BaseConnector):
             await self.data_entities_processor.on_user_group_member_removed(
                 external_group_id=group_id,
                 user_email=member_email,
-                connector_name=self.connector_name
+                connector_id=self.connector_id
             )
 
     async def _handle_group_deleted_event(self, event) -> None:
@@ -1575,7 +1584,7 @@ class DropboxConnector(BaseConnector):
 
         await self.data_entities_processor.on_user_group_deleted(
             external_group_id=group_id,
-            connector_name=self.connector_name
+            connector_id=self.connector_id
         )
 
     async def _handle_group_created_event(self, event) -> None:
@@ -1669,6 +1678,7 @@ class DropboxConnector(BaseConnector):
         # Create the AppUserGroup object (from _sync_user_groups section 3b)
         processor_group = AppUserGroup(
             app_name=self.connector_name,
+            connector_id=self.connector_id,
             source_user_group_id=group_id,
             name=group_name,
             org_id=self.data_entities_processor.org_id
@@ -1678,10 +1688,10 @@ class DropboxConnector(BaseConnector):
         member_permissions = []
         for member in all_members:
             user_permission = AppUser(
+                connector_id=self.connector_id,
                 source_user_id=member.profile.team_member_id,
                 email=member.profile.email,
                 full_name=member.profile.name.display_name,
-                app_name=self.connector_name,
             )
             member_permissions.append(user_permission)
 
@@ -1737,7 +1747,7 @@ class DropboxConnector(BaseConnector):
             async with self.data_store_provider.transaction() as tx_store:
                 # 1. Look up the existing group by external ID
                 existing_group = await tx_store.get_user_group_by_external_id(
-                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
                     external_id=group_id
                 )
 
@@ -1850,7 +1860,7 @@ class DropboxConnector(BaseConnector):
 
                 # 2. Look up the group by external ID
                 user_group = await tx_store.get_user_group_by_external_id(
-                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
                     external_id=group_id
                 )
                 if not user_group:
@@ -2016,7 +2026,8 @@ class DropboxConnector(BaseConnector):
                 org_id=self.data_entities_processor.org_id,
                 external_group_id=folder_id,
                 description="Team Folder",
-                connector_name=Connectors.DROPBOX,
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
                 group_type=RecordGroupType.DRIVE,
             )
 
@@ -2139,7 +2150,8 @@ class DropboxConnector(BaseConnector):
                 org_id=self.data_entities_processor.org_id,
                 description="Personal Folder",
                 external_group_id=user.source_user_id,
-                connector_name=Connectors.DROPBOX,
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
                 group_type=RecordGroupType.DRIVE,
             )
 
@@ -2291,7 +2303,7 @@ class DropboxConnector(BaseConnector):
         self.logger.info(f"Renaming record group {folder_id} from '{old_name}' to '{new_name}'")
 
         try:
-            await self.data_entities_processor.update_record_group_name(folder_id, new_name, old_name, self.connector_name)
+            await self.data_entities_processor.update_record_group_name(folder_id, new_name, old_name, self.connector_id)
         except Exception as e:
             self.logger.error(
                 f"Error processing team_folder_rename event for folder {folder_id}: {e}",
@@ -2311,7 +2323,7 @@ class DropboxConnector(BaseConnector):
         try:
             await self.data_entities_processor.on_record_group_deleted(
                 external_group_id=folder_id,
-                connector_name=self.connector_name
+                connector_id=self.connector_id
             )
         except Exception as e:
             self.logger.error(
@@ -2527,7 +2539,7 @@ class DropboxConnector(BaseConnector):
             # Determine record_group_id based on entry type
             if isinstance(entry, FileMetadata):
                 async with self.data_store_provider.transaction() as tx_store:
-                    existing_record = await tx_store.get_record_by_external_id(self.connector_name, external_id)
+                    existing_record = await tx_store.get_record_by_external_id(self.connector_id, external_id)
                     if not existing_record:
                         self.logger.warning(f"File record {external_id} not found in DB for re-sync. Cannot determine parent group.")
                         return
@@ -2535,7 +2547,7 @@ class DropboxConnector(BaseConnector):
                     is_person_folder = (record_group_id == team_member_id)
             else:  # FolderMetadata (shared folder)
                 async with self.data_store_provider.transaction() as tx_store:
-                    existing_record = await tx_store.get_record_by_external_id(self.connector_name, file_id)
+                    existing_record = await tx_store.get_record_by_external_id(self.connector_id, file_id)
                     if not existing_record:
                         self.logger.warning(f"File record {file_id} not found in DB for re-sync. Cannot determine parent group.")
                         return
@@ -2564,7 +2576,7 @@ class DropboxConnector(BaseConnector):
     async def run_incremental_sync(self) -> None:
         """Runs an incremental sync using the last known cursor."""
         self.logger.info("Starting Dropbox incremental sync.")
-        sync_point_key = generate_record_sync_point_key(RecordType.DRIVE.value, "root", )
+        sync_point_key = generate_record_sync_point_key(RecordType.DRIVE.value, "root","" )
         sync_point = await self.record_sync_point.dropbox_cursor_sync_point(sync_point_key)
 
         cursor = sync_point.get('cursor') if sync_point else None
@@ -2658,12 +2670,12 @@ class DropboxConnector(BaseConnector):
 
     @classmethod
     async def create_connector(
-        cls, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService
+        cls, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str
     ) -> "BaseConnector":
         data_entities_processor = DataSourceEntitiesProcessor(
             logger, data_store_provider, config_service
         )
         await data_entities_processor.initialize()
         return DropboxConnector(
-            logger, data_entities_processor, data_store_provider, config_service
+            logger, data_entities_processor, data_store_provider, config_service, connector_id
         )
