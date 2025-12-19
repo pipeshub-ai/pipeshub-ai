@@ -619,8 +619,8 @@ class OneDriveConnector(BaseConnector):
                     # More data available, update URL for next loop iteration
                     url = result.get('next_link')
 
-                    # OPTIONAL: Save intermediate 'nextLink' here if you want resumability during a very long initial sync.
-                    # await self.user_group_sync_point.update_sync_point(sync_point_key, {"nextLink": url, "deltaLink": None})
+                    # Save intermediate 'nextLink' for resumability during a very long initial sync.
+                    await self.user_group_sync_point.update_sync_point(sync_point_key, {"nextLink": url, "deltaLink": None})
 
                 elif result.get('delta_link'):
                     # End of current data stream. Save the delta_link for the NEXT run.
