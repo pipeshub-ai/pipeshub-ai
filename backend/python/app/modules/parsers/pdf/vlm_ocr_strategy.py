@@ -50,7 +50,7 @@ You are a precise document OCR specialist. Convert the provided document image t
 ## Images & Visual Elements
 - Describe all images, photos, diagrams, charts, logos, and illustrations in reading order
 - Use format: `[Image: <description>]`
-- Descriptions should be concise but informative (what it shows, relevant details)
+- Descriptions should be informative (what it shows, relevant details)
 - For charts/graphs: include type, axis labels, and key data points if visible
 - For diagrams: describe structure and labeled components
 - For decorative images: brief description is sufficient
@@ -79,69 +79,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         self.llm_config = None
         self.document_analysis_result = None
 
-    async def _get_default_llm(self) -> BaseChatModel:
-        """
-        Get the default LLM from configuration
-        
-        Returns:
-            BaseChatModel: Default LLM instance
-            
-        Raises:
-            ValueError: If no LLM is found in configuration
-        """
-        self.logger.info("🔍 Getting default LLM for VLM OCR")
-        
-        try:
-            # Get AI models configuration
-            ai_models = await self.config.get_config(
-                config_node_constants.AI_MODELS.value,
-                use_cache=False
-            )
-            llm_configs = ai_models.get("llm", [])
-            
-            if not llm_configs:
-                raise ValueError("No LLM configurations found")
-            
-            # Store the config for multimodal verification
-            self.llm_config = None
-            
-            # Find default LLM
-            for config in llm_configs:
-                if config.get("isDefault", False):
-                    self.logger.info(f"✅ Found default LLM: {config.get('provider')}")
-                    provider = config["provider"]
-                    
-                    # Get model name from configuration
-                    model_string = config.get("configuration", {}).get("model")
-                    if model_string:
-                        model_names = [name.strip() for name in model_string.split(",") if name.strip()]
-                        model_name = model_names[0] if model_names else None
-                    else:
-                        model_name = None
-                    
-                    self.llm_config = config
-                    llm = get_generator_model(provider, config, model_name)
-                    return llm
-            
-            # If no default LLM found, use first available as fallback
-            self.logger.warning("⚠️ No default LLM found, using first available LLM")
-            config = llm_configs[0]
-            provider = config["provider"]
-            model_string = config.get("configuration", {}).get("model")
-            if model_string:
-                model_names = [name.strip() for name in model_string.split(",") if name.strip()]
-                model_name = model_names[0] if model_names else None
-            else:
-                model_name = None
-            
-            self.llm_config = config
-            llm = get_generator_model(provider, config, model_name)
-            return llm
-            
-        except Exception as e:
-            self.logger.error(f"❌ Error getting default LLM: {str(e)}")
-            raise ValueError(f"Failed to get default LLM: {str(e)}")
-    
+
     def _is_multimodal(self, config: Dict[str, Any]) -> bool:
         """
         Check if an LLM configuration supports multimodal capabilities
@@ -157,6 +95,18 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             config.get("configuration", {}).get("isMultimodal", False)
         )
     
+    def _create_llm_from_config(self, config: Dict[str, Any]) -> BaseChatModel:
+        """Helper to create an LLM instance from a configuration dictionary."""
+        self.llm_config = config
+        provider = config["provider"]
+        model_string = config.get("configuration", {}).get("model")
+        if model_string:
+            model_names = [name.strip() for name in model_string.split(",") if name.strip()]
+            model_name = model_names[0] if model_names else None
+        else:
+            model_name = None
+        return get_generator_model(provider, config, model_name)
+
     async def _get_multimodal_llm(self) -> BaseChatModel:
         """
         Get a multimodal LLM, preferring the default LLM if it's multimodal,
@@ -192,15 +142,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 # If we find a default multimodal LLM, use it immediately
                 if is_default and is_multimodal:
                     self.logger.info(f"✅ Using default multimodal LLM: {config.get('provider')}")
-                    self.llm_config = config
-                    provider = config["provider"]
-                    model_string = config.get("configuration", {}).get("model")
-                    if model_string:
-                        model_names = [name.strip() for name in model_string.split(",") if name.strip()]
-                        model_name = model_names[0] if model_names else None
-                    else:
-                        model_name = None
-                    llm = get_generator_model(provider, config, model_name)
+                    llm = self._create_llm_from_config(config)
                     return llm
                 
                 # Track default LLM (even if not multimodal) for warning
@@ -223,16 +165,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             
             # Use first available multimodal LLM
             if first_multimodal_config:
-                provider = first_multimodal_config.get("provider", "unknown")
-                self.logger.info(f"✅ Using first available multimodal LLM: {provider}")
-                self.llm_config = first_multimodal_config
-                model_string = first_multimodal_config.get("configuration", {}).get("model")
-                if model_string:
-                    model_names = [name.strip() for name in model_string.split(",") if name.strip()]
-                    model_name = model_names[0] if model_names else None
-                else:
-                    model_name = None
-                llm = get_generator_model(provider, first_multimodal_config, model_name)
+                llm = self._create_llm_from_config(first_multimodal_config)
                 return llm
             
             # No multimodal LLM found
@@ -305,7 +238,6 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             # Extract content
             markdown_content = response.content if hasattr(response, 'content') else str(response)
             
-            
             # Clean up: Remove markdown code block wrapper if present
             markdown_content = markdown_content.strip()
             if markdown_content.startswith("```markdown"):
@@ -369,14 +301,41 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         # Create semaphore for concurrency control
         semaphore = asyncio.Semaphore(self.CONCURRENCY_LIMIT)
         
-        async def process_page_with_semaphore(page):
+        async def process_page_with_retry(page):
+            """Process page with retry logic (3 total attempts)"""
             async with semaphore:
-                return await self.process_page(page)
+                last_error = None
+                for attempt in range(3):  # 0, 1, 2 = 3 total attempts
+                    try:
+                        return await self.process_page(page)
+                    except Exception as e:
+                        last_error = e
+                        if attempt < 2:  # Not the last attempt
+                            self.logger.warning(
+                                f"⚠️ Retry {attempt + 1}/2 for page {page.number + 1}: {str(e)}"
+                            )
+                        else:  # Last attempt failed
+                            self.logger.error(
+                                f"❌ All retries failed for page {page.number + 1}"
+                            )
+                            raise last_error
         
-        # Process all pages concurrently
-        tasks = [process_page_with_semaphore(page) for page in self.doc]
-        pages_results = await asyncio.gather(*tasks)
-
+        # Create tasks
+        tasks = [asyncio.create_task(process_page_with_retry(page)) for page in self.doc]
+        
+        try:
+            # Process all pages concurrently
+            pages_results = await asyncio.gather(*tasks)
+        except Exception as e:
+            # Cancel all remaining tasks
+            self.logger.error("❌ Cancelling all remaining tasks due to failure")
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            # Wait for all tasks to complete cancellation
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        
         doc_markdown = "\n\n---\n\n".join([page["markdown"] for page in pages_results])
         # Build result structure
         result = {

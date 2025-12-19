@@ -2,6 +2,8 @@ import asyncio
 import hashlib
 from io import BytesIO
 from uuid import uuid4
+import fitz
+from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 
 import aiohttp
 
@@ -383,23 +385,13 @@ class EventProcessor:
 
             if extension == ExtensionTypes.PDF.value or mime_type == MimeTypes.PDF.value:
                 # Check if document needs OCR before using docling
-                import fitz
-                from app.modules.parsers.pdf.ocr_handler import OCRStrategy
-                
-                # Helper class to use the needs_ocr method from OCRStrategy
-                class OCRChecker(OCRStrategy):
-                    async def process_page(self, page):
-                        pass
-                    async def load_document(self, content: bytes):
-                        pass
                 
                 self.logger.info("🔍 Checking if PDF needs OCR processing")
                 try:
                     temp_doc = fitz.open(stream=file_content, filetype="pdf")
                     
                     # Check if any page needs OCR
-                    ocr_checker = OCRChecker(self.logger)
-                    needs_ocr = any(ocr_checker.needs_ocr(page) for page in temp_doc)
+                    needs_ocr = any(OCRStrategy.needs_ocr(page) for page in temp_doc)
                     temp_doc.close()
                     
                     self.logger.info(f"📊 OCR requirement: {'YES - Using OCR handler' if needs_ocr else 'NO - Using Docling'}")
