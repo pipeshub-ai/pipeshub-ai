@@ -781,8 +781,9 @@ class Processor:
                 ocr_result = await handler.process_document(pdf_binary)
             except Exception:
                 if provider == OCRProvider.AZURE_DI.value or provider == OCRProvider.VLM_OCR.value:
+                    provider = OCRProvider.OCRMYPDF.value
                     self.logger.info(f"🔄 Switching to OCRmyPDF handler as {provider} failed")
-                    handler = OCRHandler(self.logger, OCRProvider.OCRMYPDF.value, config=self.config_service)
+                    handler = OCRHandler(self.logger, provider, config=self.config_service)
                     ocr_result = await handler.process_document(pdf_binary)
                 else:
                     raise
