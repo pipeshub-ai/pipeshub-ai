@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import os
 import re
 import tempfile
@@ -12,12 +13,13 @@ from enum import Enum
 from http import HTTPStatus
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 
 import aiohttp
 import httpx
 from aiolimiter import AsyncLimiter
 from azure.identity.aio import CertificateCredential, ClientSecretCredential
+from bs4 import BeautifulSoup, Comment
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from msgraph import GraphServiceClient
@@ -56,6 +58,7 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     RecordUpdate,
     map_msgraph_role_to_permission_type,
 )
+from app.connectors.sources.microsoft.sharepoint_online.utils import clean_html_output
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -76,7 +79,6 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 # A composite site ID has the format: "hostname,site-id,web-id"
 COMPOSITE_SITE_ID_COMMA_COUNT = 2
 COMPOSITE_SITE_ID_PARTS_COUNT = 3
-
 
 class SharePointRecordType(Enum):
     """Extended record types for SharePoint"""
@@ -681,7 +683,7 @@ class SharePointConnector(BaseConnector):
                 if record_update.is_deleted:
                     await self._handle_record_updates(record_update)
                     continue
-                if record_update.is_updated:
+                elif record_update.is_updated:
                     await self._handle_record_updates(record_update)
                     continue
                 elif record:
@@ -699,6 +701,9 @@ class SharePointConnector(BaseConnector):
             # async for record, permissions, record_update in self._process_site_lists(site_id):
             #     if record_update.is_deleted:
             #         await self._handle_record_updates(record_update)
+            #     elif record_update.is_updated:
+            #         await self._handle_record_updates(record_update)
+            #         continue
             #     elif record:
             #         batch_records.append((record, permissions))
             #         total_processed += 1
@@ -708,19 +713,24 @@ class SharePointConnector(BaseConnector):
             #             batch_records = []
             #             await asyncio.sleep(0.1)
 
-            # # Process pages
-            # self.logger.info(f"Processing pages for site: {site_name}")
-            # async for record, permissions, record_update in self._process_site_pages(site_id):
-                # if record_update.is_deleted:
-                #     await self._handle_record_updates(record_update)
-                # elif record:
-                #     batch_records.append((record, permissions))
-                #     total_processed += 1
+            # Process pages
+            self.logger.info(f"Processing pages for site: {site_name}")
+            async for record, permissions, record_update in self._process_site_pages(site_id, site_name):
+                self.logger.info(f"\n\n\n\nPage record_update: is_new={record_update.is_new}, is_updated={record_update.is_updated}, content_changed={record_update.content_changed}")
+                if record_update.is_deleted:
+                    await self._handle_record_updates(record_update)
+                    continue
+                elif record_update.is_updated:
+                    await self._handle_record_updates(record_update)
+                    continue
+                elif record:
+                    batch_records.append((record, permissions))
+                    total_processed += 1
 
-                #     if len(batch_records) >= self.batch_size:
-                #         await self.data_entities_processor.on_new_records(batch_records)
-                #         batch_records = []
-                #         await asyncio.sleep(0.1)
+                    if len(batch_records) >= self.batch_size:
+                        await self.data_entities_processor.on_new_records(batch_records)
+                        batch_records = []
+                        await asyncio.sleep(0.1)
 
             # # Process remaining records
             if batch_records:
@@ -1197,7 +1207,6 @@ class SharePointConnector(BaseConnector):
                 record_type=RecordType.SHAREPOINT_LIST,
                 record_status=ProgressStatus.NOT_STARTED,
                 record_group_type=RecordGroupType.SHAREPOINT_SITE,
-                parent_record_type=RecordType.SITE,
                 external_record_id=list_id,
                 external_revision_id=getattr(list_obj, 'e_tag', None),
                 version=0,
@@ -1210,7 +1219,7 @@ class SharePointConnector(BaseConnector):
                 weburl=getattr(list_obj, 'web_url', None),
                 parent_external_record_id=site_id,
                 external_record_group_id=site_id,
-                metadata=metadata
+                semantic_metadata=metadata
             )
 
         except Exception as e:
@@ -1346,10 +1355,10 @@ class SharePointConnector(BaseConnector):
             return SharePointListItemRecord(
                 id=str(uuid.uuid4()),
                 record_name=str(title)[:255],
-                record_type=RecordType.SHAREPOINT_LIST_ITEM.value,
+                record_type=RecordType.SHAREPOINT_LIST_ITEM,
                 record_status=ProgressStatus.NOT_STARTED,
-                record_group_type=RecordGroupType.SHAREPOINT_LIST.value,
-                parent_record_type=RecordType.SHAREPOINT_LIST.value,
+                record_group_type=RecordGroupType.SHAREPOINT_SITE,
+                parent_record_type=RecordType.SHAREPOINT_LIST,
                 external_record_id=item_id,
                 external_revision_id=getattr(item, 'e_tag', None),
                 version=0,
@@ -1362,14 +1371,14 @@ class SharePointConnector(BaseConnector):
                 weburl=getattr(item, 'web_url', None),
                 parent_external_record_id=list_id,
                 external_record_group_id=site_id,
-                metadata=metadata
+                semantic_metadata=metadata
             )
 
         except Exception as e:
             self.logger.debug(f"❌ Error creating list item record: {e}")
             return None
 
-    async def _process_site_pages(self, site_id: str) -> AsyncGenerator[Tuple[Record, List[Permission], RecordUpdate], None]:
+    async def _process_site_pages(self, site_id: str, site_name: str) -> AsyncGenerator[Tuple[Record, List[Permission], RecordUpdate], None]:
         """
         Process all pages in a SharePoint site.
         """
@@ -1397,16 +1406,60 @@ class SharePointConnector(BaseConnector):
 
             for page in pages:
                 try:
-                    page_record = await self._create_page_record(page, site_id)
+                    page_id = getattr(page, 'id', None)
+                    page_name = getattr(page, 'title', getattr(page, 'name', 'unknown'))
+
+                    if not page_id:
+                        self.logger.debug(f"Skipping page with missing ID in site {site_id}")
+                        continue
+
+                    # Check the 'created_by' field to skip System Account created pages
+                    is_system_page = False
+                    created_by = getattr(page, 'created_by', None)
+
+                    if created_by:
+                        # Check User Display Name
+                        user_identity = getattr(created_by, 'user', None)
+                        display_name = getattr(user_identity, 'display_name', '').lower() if user_identity else ''
+
+                        # "System Account" is the standard display name for internal SharePoint operations
+                        if display_name == 'system account':
+                            is_system_page = True
+
+                    if is_system_page:
+                        self.logger.info(f"⏭️ Skipping System Account/Template page: '{page_name}'")
+                        continue
+
+
+                    existing_record = None
+                    # Get existing record for change detection
+                    async with self.data_store_provider.transaction() as tx_store:
+                        existing_record = await tx_store.get_record_by_external_id(
+                            connector_name=self.connector_name,
+                            external_id=page_id
+                        )
+
+                    is_new = existing_record is None
+                    is_updated = False
+                    metadata_changed = False
+                    content_changed = False
+
+                    if existing_record:
+                        # Check for changes
+                        is_updated = True  # Placeholder logic - need to compare timestamps or content hashes
+                        content_changed = True  # Placeholder logic - If a page is coming in it means it has been updated - will implement full logic later
+
+
+                    page_record = await self._create_page_record(page, site_id, site_name, existing_record)
                     if page_record:
                         permissions = await self._get_page_permissions(site_id, page.id)
                         yield (page_record, permissions, RecordUpdate(
                             record=page_record,
-                            is_new=True,
-                            is_updated=False,
+                            is_new=is_new,
+                            is_updated=is_updated,
                             is_deleted=False,
-                            metadata_changed=False,
-                            content_changed=False,
+                            metadata_changed=metadata_changed,
+                            content_changed=content_changed,
                             permissions_changed=False,
                             new_permissions=permissions
                         ))
@@ -1420,7 +1473,7 @@ class SharePointConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error processing pages for site {site_id}: {e}")
 
-    async def _create_page_record(self, page: SitePage, site_id: str) -> Optional[SharePointPageRecord]:
+    async def _create_page_record(self, page: SitePage, site_id: str, site_name: str, existing_record: Optional[SharePointPageRecord] = None) -> Optional[SharePointPageRecord]:
         """
         Create a record for a SharePoint page.
         """
@@ -1430,6 +1483,9 @@ class SharePointConnector(BaseConnector):
                 return None
 
             page_name = getattr(page, 'title', None) or getattr(page, 'name', f'Page {page_id}')
+
+            if page_name:
+                page_name = f"{page_name} - {site_name}"
 
             # Get timestamps
             created_at = None
@@ -1447,25 +1503,26 @@ class SharePointConnector(BaseConnector):
             }
 
             return SharePointPageRecord(
-                id=str(uuid.uuid4()),
+                id=existing_record.id if existing_record else str(uuid.uuid4()),
                 record_name=str(page_name)[:255],
-                record_type=SharePointRecordType.PAGE.value,
-                record_status=ProgressStatus.NOT_STARTED,
-                record_group_type="SHAREPOINT_SITE",
-                parent_record_type="SITE",
+                record_type=RecordType.SHAREPOINT_PAGE,
+                record_status=ProgressStatus.NOT_STARTED if not existing_record else existing_record.record_status,
+                record_group_type=RecordGroupType.SHAREPOINT_SITE,
                 external_record_id=page_id,
                 external_revision_id=getattr(page, 'e_tag', None),
-                version=0,
-                origin=OriginTypes.CONNECTOR.value,
+                version=0 if not existing_record else existing_record.version + 1,
+                origin=OriginTypes.CONNECTOR,
                 connector_name=self.connector_name,
                 created_at=created_at,
                 updated_at=updated_at,
                 source_created_at=created_at,
                 source_updated_at=updated_at,
                 weburl=getattr(page, 'web_url', None),
-                parent_external_record_id=site_id,
                 external_record_group_id=site_id,
-                metadata=metadata
+                mime_type=MimeTypes.HTML.value,
+                inherit_permissions=True,
+                semantic_metadata=metadata,
+                preview_renderable=False,
             )
 
         except Exception as e:
@@ -1698,9 +1755,6 @@ class SharePointConnector(BaseConnector):
                 principal_type = v.get('PrincipalType')
                 title = v.get('Title', '')
 
-                # DEBUG: Print everything found in visitors so you can see it in logs
-                self.logger.info(f"👀 Visitor Found: '{title}' | Type: {principal_type} | Login: {login_name}")
-
                 # CASE A: Standard User (Type 1)
                 if principal_type == 1:
                     email = v.get('Email') or v.get('UserPrincipalName')
@@ -1823,332 +1877,6 @@ class SharePointConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"⚠️ Failed to expand M365 Group {group_id}: {e}")
             return users # Return whatever we found so far
-
-    async def _get_site_members_direct(self, site_url: str, access_token: str) -> List[dict]:
-        """
-        Get all site members directly using SharePoint REST API.
-        Optimized to filter only for real users (PrincipalType=1) to avoid 503/Throttling.
-        """
-
-        # OPTIMIZATION: Filter for Users only (1) and exclude hidden system users.
-        # We also only select the fields we need to reduce payload size.
-        base_endpoint = f"{site_url}/_api/web/siteusers"
-        query_params = (
-            "?$filter=PrincipalType eq 1 and IsHiddenInUI eq false"
-            "&$select=Id,Email,UserPrincipalName,Title,LoginName"
-        )
-        endpoint = base_endpoint + query_params
-
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Accept": "application/json;odata=verbose"
-        }
-
-        self.logger.debug(f"Fetching site members from: {endpoint}")
-
-        max_retries = 3
-
-        async with aiohttp.ClientSession() as session:
-            for attempt in range(max_retries):
-                try:
-                    async with session.get(endpoint, headers=headers) as response:
-                        if response.status == HTTPStatus.OK:
-                            data = await response.json()
-                            members = data.get('d', {}).get('results', [])
-                            self.logger.info(f"✅ Retrieved {len(members)} site members directly")
-                            return members
-
-                        # Handle 503 (Service Unavailable) or 429 (Throttling)
-                        elif response.status in [503, 429, 504]:
-                            self.logger.warning(f"⚠️ SharePoint is throttling/busy (Status {response.status}). Retrying {attempt + 1}/{max_retries}...")
-                            await asyncio.sleep(2 * (attempt + 1)) # Exponential backoff: 2s, 4s, 6s
-                            continue
-
-                        else:
-                            # Permanent error
-                            error_text = await response.text()
-                            self.logger.warning(f"❌ Failed to get site members: {response.status} - {error_text[:200]}") # Truncate error log
-                            return []
-
-                except Exception as e:
-                    self.logger.error(f"❌ Exception fetching site members (Attempt {attempt + 1}): {e}")
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(2)
-                    else:
-                        return []
-
-            return []
-
-    async def _get_site_role_assignments_with_members(self, site_url: str, access_token: str) -> List[dict]:
-        """Get role assignments with expanded member and role information."""
-
-        try:
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Accept": "application/json;odata=verbose"
-            }
-
-            # Get role assignments with member and role definition details
-            endpoint = f"{site_url}/_api/web/roleassignments?$expand=Member,RoleDefinitionBindings"
-
-            self.logger.debug(f"Fetching role assignments from: {endpoint}")
-
-            async with aiohttp.ClientSession() as session:
-                async with session.get(endpoint, headers=headers) as response:
-                    if response.status == HTTPStatus.OK:
-                        data = await response.json()
-                        assignments = data.get('d', {}).get('results', [])
-                        self.logger.info(f"✅ Retrieved {len(assignments)} role assignments")
-                        return assignments
-                    else:
-                        error_text = await response.text()
-                        self.logger.warning(f"❌ Failed to get role assignments: {response.status} - {error_text}")
-                        return []
-
-        except Exception as e:
-            self.logger.error(f"❌ Error fetching role assignments: {e}")
-            return []
-
-    def _map_sharepoint_group_to_permission_type(self, group_name: str, group_login_name: str = "") -> PermissionType:
-        """Map SharePoint group names and login names to permission types."""
-        if not group_name and not group_login_name:
-            return PermissionType.READ
-
-        # Combine both name and login name for matching
-        combined_name = f"{group_name} {group_login_name}".lower()
-
-        # Site Owners patterns
-        owner_patterns = [
-            'owner', 'owners', 'admin', 'administrator', 'fullcontrol', 'full control',
-            'site owners', 'siteowners', '_o', 'owners group'
-        ]
-        if any(pattern in combined_name for pattern in owner_patterns):
-            return PermissionType.OWNER
-
-        # Site Members patterns (Contributors/Edit permissions)
-        member_patterns = [
-            'member', 'members', 'contributor', 'contributors', 'editor', 'editors',
-            'site members', 'sitemembers', '_m', 'members group', 'contribute', 'edit'
-        ]
-        if any(pattern in combined_name for pattern in member_patterns):
-            return PermissionType.WRITE
-
-        # Site Visitors patterns (Read-only)
-        visitor_patterns = [
-            'visitor', 'visitors', 'reader', 'readers', 'read only', 'readonly',
-            'site visitors', 'sitevisitors', '_v', 'visitors group', 'view only', 'viewonly'
-        ]
-        if any(pattern in combined_name for pattern in visitor_patterns):
-            return PermissionType.READ
-
-        # Special SharePoint groups
-        if 'everyone except external users' in combined_name:
-            return PermissionType.READ
-        elif 'everyone' in combined_name:
-            return PermissionType.READ
-        elif 'limited access' in combined_name:
-            return PermissionType.READ
-
-        # Default to read for unknown groups
-        self.logger.debug(f"Unknown SharePoint group pattern, defaulting to READ: '{group_name}' (LoginName: '{group_login_name}')")
-        return PermissionType.READ
-
-    async def _get_sharepoint_site_groups(self, site_url: str, access_token: str) -> List[Dict]:
-        """Get SharePoint site groups using REST API."""
-        try:
-            # Construct the REST API URL for site groups
-            rest_url = f"{site_url.rstrip('/')}/_api/web/sitegroups"
-
-            headers = {
-                'Authorization': f'Bearer {access_token}',
-                'Accept': 'application/json;odata=verbose',
-                'Content-Type': 'application/json'
-            }
-
-            # Apply rate limiting
-            async with self.rate_limiter:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.get(rest_url, headers=headers)
-                    response.raise_for_status()
-
-                    data = response.json()
-                    groups = data.get('d', {}).get('results', [])
-
-                    self.logger.debug(f"Retrieved {len(groups)} site groups from {site_url}")
-
-                    # Log group details for debugging
-                    for group in groups:
-                        self.logger.debug(f"Found group: '{group.get('Title')}' (LoginName: '{group.get('LoginName')}', ID: {group.get('Id')})")
-
-                    return groups
-
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == HttpStatusCode.FORBIDDEN.value:
-                self.logger.warning(f"Access denied when getting site groups from {site_url}: {e}")
-            elif e.response.status_code == HttpStatusCode.NOT_FOUND.value:
-                self.logger.warning(f"Site groups endpoint not found for {site_url}: {e}")
-            elif e.response.status_code == HttpStatusCode.UNAUTHORIZED.value:
-                self.logger.error(
-                    (
-                        f"❌ Unauthorized when getting site groups from {site_url}: {e}. "
-                        f"This usually indicates the token is for the wrong audience/resource or missing SharePoint app permissions. "
-                        f"Ensure your Azure AD app has SharePoint application permissions (e.g., Sites.Read.All or Sites.FullControl.All) "
-                        f"with admin consent, and that the token is requested for 'https://<tenant>.sharepoint.com/.default' (not Microsoft Graph)."
-                    )
-                )
-            else:
-                self.logger.error(f"❌ HTTP error getting SharePoint site groups from {site_url}: {e}")
-            return []
-        except Exception as e:
-            self.logger.error(f"Error getting SharePoint site groups from {site_url}: {e}")
-            return []
-
-    async def _get_site_role_assignments(self, site_id: str) -> List[Permission]:
-        """Get site role assignments as a fallback method."""
-        try:
-            permissions = []
-            site_metadata = self.site_cache.get(site_id)
-
-            if not site_metadata:
-                return []
-
-            site_url = site_metadata.site_url
-            access_token = await self._get_sharepoint_access_token()
-
-            if not site_url or not access_token:
-                return []
-            self.logger.info(f"Site URL: {site_url}")
-            # Do not log raw access tokens; just confirm retrieval
-            self.logger.debug("Obtained SharePoint access token for role assignments")
-            # Get role assignments
-            rest_url = f"{site_url.rstrip('/')}/_api/web/roleassignments?$expand=Member,RoleDefinitionBindings"
-
-            headers = {
-                'Authorization': f'Bearer {access_token}',
-                'Accept': 'application/json;odata=verbose',
-                'Content-Type': 'application/json'
-            }
-
-            async with self.rate_limiter:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.get(rest_url, headers=headers)
-                    response.raise_for_status()
-
-                    data = response.json()
-                    role_assignments = data.get('d', {}).get('results', [])
-
-                    for assignment in role_assignments:
-                        try:
-                            member = assignment.get('Member', {})
-                            role_bindings = assignment.get('RoleDefinitionBindings', {}).get('results', [])
-
-                            member_id = member.get('Id')
-                            member_title = member.get('Title', 'Unknown')
-                            member_login = member.get('LoginName', '')
-                            member_type = member.get('PrincipalType', 1)
-
-                            # Determine permission type from role definitions
-                            permission_type = PermissionType.READ
-                            for role_def in role_bindings:
-                                role_name = role_def.get('Name', '').lower()
-                                if role_name in ['full control', 'site owner']:
-                                    permission_type = PermissionType.OWNER
-                                    break
-                                elif role_name in ['contribute', 'edit', 'design']:
-                                    permission_type = PermissionType.WRITE
-                                    break
-
-                            entity_type = EntityType.USER if member_type == 1 else EntityType.GROUP
-
-                            permissions.append(Permission(
-                                external_id=str(member_id),
-                                email=member_login if '@' in member_login else None,
-                                type=permission_type,
-                                entity_type=entity_type
-                            ))
-
-                            self.logger.debug(f"Added role assignment permission for {entity_type.value.lower()} '{member_title}' with type {permission_type}")
-
-                        except Exception as assignment_error:
-                            self.logger.debug(f"❌ Error processing role assignment: {assignment_error}")
-                            continue
-
-                    return permissions
-
-        except Exception as e:
-            self.logger.debug(f"❌ Error getting role assignments for site {site_id}: {e}")
-            return []
-
-    async def _get_sharepoint_site_groups(self, site_url: str, access_token: str) -> List[Dict]:
-        """Get site groups via SharePoint REST API."""
-        try:
-            self.logger.info(f"Site URL: {site_url}")
-            rest_url = f"{site_url.rstrip('/')}/_api/web/sitegroups"
-
-            headers = {
-                'Authorization': f'Bearer {access_token}',
-                'Accept': 'application/json;odata=verbose'
-            }
-
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(rest_url, headers=headers)
-
-                if response.status_code == HttpStatusCode.UNAUTHORIZED.value:
-                    self.logger.error(f"❌ 401 Unauthorized for {rest_url}")
-                    self.logger.error("   This usually means the token audience is wrong.")
-                    self.logger.error(f"   Token must be requested for '{site_url.split('/')[2]}/.default'")
-                    self.logger.error("   NOT for 'https://graph.microsoft.com/.default'")
-                    return []
-
-                response.raise_for_status()
-
-                data = response.json()
-                groups = data.get('d', {}).get('results', [])
-
-                return groups
-
-        except httpx.HTTPStatusError as e:
-            self.logger.error(f"❌ HTTP {e.response.status_code} error getting site groups: {e}")
-            return []
-        except Exception as e:
-            self.logger.error(f"❌ Error getting site groups: {e}")
-            return []
-
-    async def _get_sharepoint_group_members(self, site_url: str, group_id: int, access_token: str) -> List[Dict]:
-        """Get members of a SharePoint group using REST API."""
-        try:
-            # Construct the REST API URL
-            rest_url = f"{site_url}/_api/web/sitegroups({group_id})/users"
-
-            headers = {
-                'Authorization': f'Bearer {access_token}',
-                'Accept': 'application/json;odata=verbose',
-                'Content-Type': 'application/json'
-            }
-
-            # Apply rate limiting
-            async with self.rate_limiter:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.get(rest_url, headers=headers)
-                    response.raise_for_status()
-
-                    data = response.json()
-                    members = data.get('d', {}).get('results', [])
-
-                    self.logger.debug(f"Retrieved {len(members)} members for group {group_id}")
-                    return members
-
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == HttpStatusCode.FORBIDDEN.value:
-                self.logger.warning(f"Access denied when getting group members for group {group_id}: {e}")
-            elif e.response.status_code == HttpStatusCode.NOT_FOUND.value:
-                self.logger.warning(f"Group members endpoint not found for group {group_id}: {e}")
-            else:
-                self.logger.error(f"❌ HTTP error getting SharePoint group members for group {group_id}: {e}")
-            return []
-        except Exception as e:
-            self.logger.error(f"❌ Error getting SharePoint group members for group {group_id}: {e}")
-            return []
 
     async def _get_drive_permissions(self, site_id: str, drive_id: str) -> List[Permission]:
         """Get permissions for a document library."""
@@ -2723,13 +2451,16 @@ class SharePointConnector(BaseConnector):
             elif record_update.is_updated:
 
                 if record_update.metadata_changed:
+                    self.logger.info(f"Metadata changed for record: {record_update.record.record_name}")
                     await self.data_entities_processor.on_record_metadata_update(record_update.record)
                 if record_update.permissions_changed:
+                    self.logger.info(f"Permissions changed for record: {record_update.record.record_name}")
                     await self.data_entities_processor.on_updated_record_permissions(
                         record_update.record,
                         record_update.new_permissions
                     )
                 if record_update.content_changed:
+                    self.logger.info(f"Content changed for record: {record_update.record.record_name}")
                     await self.data_entities_processor.on_record_content_update(record_update.record)
         except Exception as e:
             self.logger.error(f"❌ Error handling record updates: {e}")
@@ -2808,7 +2539,7 @@ class SharePointConnector(BaseConnector):
             except Exception as user_error:
                 self.logger.error(f"❌ Error syncing users: {user_error}")
 
-            # Step 2: Sync user groups
+            # # Step 2: Sync user groups
             self.logger.info("Syncing SharePoint groups...")
             try:
                 await self._sync_user_groups()
@@ -2925,22 +2656,189 @@ class SharePointConnector(BaseConnector):
             return False
 
     async def stream_record(self, record: Record) -> StreamingResponse:
-        """Stream a record from SharePoint."""
+        """Stream record content (file or page) from SharePoint."""
+        try:
+            if record.record_type == RecordType.FILE:
+                # Get signed URL for file download
+                signed_url = await self.get_signed_url(record)
+                if not signed_url:
+                    raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
 
-        if record.record_type != RecordType.FILE:
-            raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="File not found or access denied")
+                return StreamingResponse(
+                    stream_content(signed_url),
+                    media_type=record.mime_type if record.mime_type else "application/octet-stream",
+                    headers={
+                        "Content-Disposition": f'attachment; filename="{record.record_name}"'
+                    }
+                )
 
-        signed_url = await self.get_signed_url(record)
-        if not signed_url:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
+            elif record.record_type == RecordType.SHAREPOINT_PAGE:
+                self.logger.info("streaming sharepoint page")
+                site_id = record.external_record_group_id
+                page_id = record.external_record_id
 
-        return StreamingResponse(
-            stream_content(signed_url),
-            media_type=record.mime_type if record.mime_type else "application/octet-stream",
-            headers={
-                "Content-Disposition": f"attachment; filename={record.record_name}"
+                page_content = await self._get_page_content(site_id, page_id)
+
+                if not page_content:
+                    raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Page not found or access denied")
+
+                async def generate_page() -> AsyncGenerator[bytes, None]:
+                    yield page_content.encode('utf-8')
+
+                return StreamingResponse(
+                    generate_page(),
+                    media_type='text/html',
+                    headers={
+                        "Content-Disposition": f'inline; filename="{record.record_name}.html"'
+                    }
+                )
+
+            else:
+                raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=f"Unsupported record type: {record.record_type}")
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to stream record {record.id}: {e}")
+            raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Failed to stream record: {str(e)}")
+
+    async def _get_page_content(self, site_id: str, page_id: str) -> str:
+        """
+        Fetches SharePoint page content via REST API using the page's UniqueId (GUID).
+        Parses dynamic content (Web Parts), downloads images, and performs aggressive cleanup.
+        """
+        try:
+            # 1. Resolve Site URL via Graph
+            site_info = await self.client.sites.by_site_id(site_id).get()
+            site_url = site_info.web_url
+
+            # 2. Get Token for SharePoint Scope
+            access_token = await self._get_sharepoint_access_token()
+            if not access_token:
+                self.logger.error(f"Failed to obtain SharePoint access token for page {page_id}")
+                return None
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/json;odata=verbose"
             }
-        )
+
+            # 3. Fetch Page Content
+            api_url = f"{site_url}/_api/web/GetFileById('{page_id}')/ListItemAllFields"
+
+            self.logger.info(f"Fetching page content from: {api_url}")
+
+            params = {"$select": "CanvasContent1,Title"}
+
+            timeout_config = httpx.Timeout(30.0, connect=10.0)
+
+            async with httpx.AsyncClient(timeout=timeout_config) as http_client:
+                resp = await http_client.get(api_url, headers=headers, params=params)
+
+                if resp.status_code == HttpStatusCode.NOT_FOUND.value:
+                    self.logger.warning(f"❌ Page not found via GetFileById: {page_id}")
+                    return None
+
+                if resp.status_code != HTTPStatus.OK.value:
+                    self.logger.error(f"❌ API Error: {resp.status_code} - {resp.text}")
+                    return None
+
+                data = resp.json()
+                item = data.get('d', {})
+                raw_html = item.get('CanvasContent1', '')
+
+                if not raw_html:
+                    self.logger.warning(f"⚠️ Page found but CanvasContent1 is empty: {page_id}")
+                    return "<div></div>"
+
+                # 4. Parse HTML
+                soup = BeautifulSoup(raw_html, "html.parser")
+
+                # Remove unwanted tags
+                for tag in soup(['script', 'style', 'meta', 'link', 'noscript']):
+                    tag.decompose()
+
+                # Remove comments
+                for c in soup.find_all(string=lambda text: isinstance(text, Comment)):
+                    c.extract()
+
+                # --- 4a. PROCESS IMAGES ---
+                images = soup.find_all('img')
+
+                for img in images:
+                    src = img.get('src')
+                    if not src or "data:image" in src or src.lower().startswith(('http:', 'https:')):
+                        continue
+
+                    try:
+                        clean_path = unquote(src.split('?')[0])
+                        image_api_url = f"{site_url}/_api/web/GetFileByServerRelativeUrl('{quote(clean_path)}')/$value"
+
+                        img_resp = await http_client.get(image_api_url, headers=headers)
+
+                        if img_resp.status_code == HTTPStatus.OK.value:
+                            content_type = img_resp.headers.get('Content-Type', 'image/jpeg')
+                            b64_str = base64.b64encode(img_resp.content).decode('utf-8')
+                            img['src'] = f"data:{content_type};base64,{b64_str}"
+                    except Exception as img_error:
+                        self.logger.warning(f"Failed to process image {src}: {img_error}")
+
+                # --- 4b. PROCESS DYNAMIC WEB PARTS (Lists, Docs, Events) ---
+                webparts = soup.find_all("div", attrs={"data-sp-webpartdata": True})
+
+                for wp in webparts:
+                    try:
+                        wp_data = json.loads(wp["data-sp-webpartdata"])
+                        props = wp_data.get("properties", {})
+
+                        list_id = props.get("selectedListId")
+
+                        if list_id:
+                            searchable = wp_data.get("serverProcessedContent", {}).get("searchablePlainTexts", {})
+                            list_title = (
+                                searchable.get("listTitle") or
+                                searchable.get("title") or
+                                searchable.get("displayTitle") or
+                                props.get("webPartTitle") or
+                                wp_data.get("title") or
+                                "Embedded List"
+                            )
+
+                            self.logger.info(f"Found WebPart: '{list_title}' (ID: {list_id})")
+
+                            list_api_url = f"{site_url}/_api/web/lists(guid'{list_id}')/items"
+                            list_resp = await http_client.get(list_api_url, headers=headers, timeout=10)
+
+                            if list_resp.status_code == HTTPStatus.OK.value:
+                                items = list_resp.json().get('d', {}).get('results', [])
+
+                                if items:
+                                    table_html = f"<h3>{list_title}</h3><table border='1' style='border-collapse: collapse; width: 100%;'><thead><tr><th style='padding: 8px;'>Title</th><th style='padding: 8px;'>Info</th></tr></thead><tbody>"
+
+                                    for row_item in items:
+                                        text_main = row_item.get('Title') or row_item.get('FileLeafRef') or "Untitled"
+                                        text_sub = row_item.get('Description') or row_item.get('EventDate') or row_item.get('Created') or ""
+                                        table_html += f"<tr><td style='padding: 8px;'>{text_main}</td><td style='padding: 8px;'>{text_sub}</td></tr>"
+
+                                    table_html += "</tbody></table>"
+
+                                    new_tag = soup.new_tag("div")
+                                    new_tag.append(BeautifulSoup(table_html, 'html.parser'))
+
+                                    wp.clear()
+                                    wp.append(new_tag)
+                            else:
+                                self.logger.warning(f"⚠️ Failed to fetch list items for {list_title}: {list_resp.status_code}")
+
+                    except Exception as wp_error:
+                        self.logger.warning(f"Failed to process web part: {wp_error}")
+
+                # HTML cleanup - remove unnecessary attributes and clean up structure
+                cleaned_html = clean_html_output(soup, logger=self.logger)
+
+                return cleaned_html
+
+        except Exception as e:
+            self.logger.error(f"Failed to process SharePoint page {page_id}: {e}", exc_info=True)
 
     # Utility methods
     async def handle_webhook_notification(self, notification: Dict) -> None:

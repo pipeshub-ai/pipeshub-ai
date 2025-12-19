@@ -274,6 +274,7 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "FILE": CollectionNames.FILES.value,
     "MAIL": CollectionNames.MAILS.value,
     "WEBPAGE": CollectionNames.WEBPAGES.value,
+    "SHAREPOINT_PAGE": CollectionNames.WEBPAGES.value,
     "CONFLUENCE_PAGE": CollectionNames.WEBPAGES.value,
     "CONFLUENCE_BLOGPOST": CollectionNames.WEBPAGES.value,
     "TICKET": CollectionNames.TICKETS.value,
