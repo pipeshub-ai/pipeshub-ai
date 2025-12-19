@@ -2,7 +2,7 @@
 import re
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Tuple
 from uuid import uuid4
 
 from fastapi.responses import StreamingResponse
@@ -1816,7 +1816,7 @@ class JiraConnector(BaseConnector):
                     maxResults=DEFAULT_MAX_RESULTS,
                     nextPageToken=next_page_token,
                     fields=ISSUE_SEARCH_FIELDS,
-                    expand="renderedFields"
+                    expand="renderedFields,changelog"
                 )
 
                 if response.status != HTTP_STATUS_OK:
@@ -1834,7 +1834,8 @@ class JiraConnector(BaseConnector):
                             jql=jql,
                             maxResults=DEFAULT_MAX_RESULTS,
                             nextPageToken=next_page_token,
-                            fields=ISSUE_SEARCH_FIELDS
+                            fields=ISSUE_SEARCH_FIELDS,
+                            expand="renderedFields,changelog"
                         )
                         if response.status == HTTP_STATUS_OK:
                             issues_batch = response.json()
@@ -2023,6 +2024,12 @@ class JiraConnector(BaseConnector):
             # Get fields for attachments (needed by _fetch_issue_attachments)
             fields = issue.get("fields", {})
 
+            # Handle attachment deletions based on changelog for this issue
+            await self._handle_attachment_deletions_from_changelog(issue, tx_store)
+
+            # Detect if there were any comment changes for this issue (add/edit/delete)
+            has_comment_changes = self._issue_has_comment_changes(issue)
+
             # Check for existing record (works for both Epics and regular issues)
             existing_record = await tx_store.get_record_by_external_id(
                 connector_name=Connectors.JIRA,
@@ -2106,7 +2113,8 @@ class JiraConnector(BaseConnector):
                     record_group_type,
                     org_id,
                     user_by_account_id,
-                    tx_store
+                    tx_store,
+                    has_comment_changes,
                 )
                 if comment_records:
                     all_records.extend(comment_records)
@@ -2132,6 +2140,257 @@ class JiraConnector(BaseConnector):
 
         return all_records
 
+    async def _handle_attachment_deletions_from_changelog(
+        self,
+        issue: Dict[str, Any],
+        tx_store,
+    ) -> None:
+        """
+        Detect and delete attachments that were removed from an issue using changelog.
+        For each such attachment ID we delete the corresponding FileRecord (if it exists).
+        """
+        try:
+            changelog = issue.get("changelog")
+            if not changelog:
+                return
+
+            histories = changelog.get("histories", [])
+            if not histories:
+                return
+
+            # Map current attachments by filename so we can resolve inline (wiki) references
+            fields = issue.get("fields", {}) or {}
+            attachments = fields.get("attachment", []) or []
+            attachments_by_filename: Dict[str, List[str]] = {}
+            for att in attachments:
+                att_id = att.get("id")
+                filename = att.get("filename")
+                if not att_id or not filename:
+                    continue
+                key = str(filename).lower()
+                attachments_by_filename.setdefault(key, []).append(str(att_id))
+
+            # Collect unique deleted attachment IDs from changelog
+            deleted_attachment_ids: Set[str] = set()
+            # Track filenames removed from description that couldn't be matched to current attachments
+            # (e.g., attachment already deleted from Jira, so not in fields.attachment anymore)
+            unmatched_removed_filenames: Set[str] = set()
+            has_description_change = False
+
+            for history in histories:
+                items = history.get("items", [])
+                for item in items:
+                    field = item.get("field")
+                    field_id = item.get("fieldId")
+
+                    # Track description field changes (inline attachment removed from description)
+                    if field_id == "description" or field in ("description", "Description"):
+                        has_description_change = True
+                        from_str = item.get("fromString") or ""
+                        to_str = item.get("toString") or ""
+
+                        # Extract attachment filenames from Jira wiki markup in description.
+                        # Pattern: !filename.ext|...!
+                        from_filenames: Set[str] = set()
+                        to_filenames: Set[str] = set()
+
+                        for match in re.finditer(r"!([^!]+)!", from_str):
+                            inner = match.group(1)
+                            filename_part = inner.split("|", 1)[0].strip()
+                            if filename_part:
+                                from_filenames.add(filename_part.lower())
+
+                        for match in re.finditer(r"!([^!]+)!", to_str):
+                            inner = match.group(1)
+                            filename_part = inner.split("|", 1)[0].strip()
+                            if filename_part:
+                                to_filenames.add(filename_part.lower())
+
+                        removed_filenames = from_filenames - to_filenames
+
+                        # Map removed filenames to concrete attachment IDs from current issue fields
+                        for filename_key in removed_filenames:
+                            matched_ids = attachments_by_filename.get(filename_key, [])
+                            if matched_ids:
+                                for att_id in matched_ids:
+                                    deleted_attachment_ids.add(att_id)
+                            else:
+                                # Filename not found in current attachments - will search DB by filename
+                                unmatched_removed_filenames.add(filename_key)
+
+                    # Only keep scanning for attachment deletions below
+                    if field not in ("Attachment", "attachment") and field_id != "attachment":
+                        continue
+
+                    from_id = item.get("from")
+                    to_id = item.get("to")
+
+                    # Deletion event: attachment removed from issue
+                    if from_id and (to_id is None or to_id == ""):
+                        deleted_attachment_ids.add(str(from_id))
+
+            issue_key = issue.get("key")
+
+            # Case 1: explicit attachment deletion events with concrete IDs
+            if deleted_attachment_ids:
+                for attachment_id in deleted_attachment_ids:
+                    external_id = f"attachment_{attachment_id}"
+
+                    # First try new-style external ID (attachment_<id>)
+                    existing_record = await tx_store.get_record_by_external_id(
+                        connector_name=Connectors.JIRA,
+                        external_id=external_id,
+                    )
+
+                    # Fallback: some older data might have used the raw Jira ID as external_record_id
+                    if not existing_record:
+                        legacy_record = await tx_store.get_record_by_external_id(
+                            connector_name=Connectors.JIRA,
+                            external_id=str(attachment_id),
+                        )
+                        if legacy_record:
+                            existing_record = legacy_record
+                            self.logger.info(
+                                f"Found legacy attachment record for id {attachment_id} "
+                                f"using raw external_record_id {attachment_id}"
+                            )
+
+                    if not existing_record:
+                        # Record may already be deleted or never synced; skip
+                        self.logger.debug(
+                            f"Attachment {external_id} referenced in changelog for issue {issue_key} "
+                            "but no matching FileRecord found"
+                        )
+                        continue
+
+                    await tx_store.arango_service.delete_records_and_relations(
+                        node_key=existing_record.id,
+                        hard_delete=True,
+                        transaction=tx_store.txn,
+                    )
+
+                    self.logger.info(
+                        f"Deleted attachment {external_id} for issue {issue_key} "
+                        "based on changelog event"
+                    )
+
+                # If we also have unmatched filenames from description changes, handle them in Case 2
+                if not unmatched_removed_filenames:
+                    return
+
+            # Case 2: description changed (e.g., inline attachment removed) but no explicit attachment IDs.
+            # In this case we diff current attachments in issue fields vs DB and delete missing ones.
+            if has_description_change or unmatched_removed_filenames:
+                issue_id = issue.get("id")
+                if not issue_id:
+                    return
+
+                fields = issue.get("fields", {}) or {}
+                attachments = fields.get("attachment", []) or []
+                current_attachment_ids: Set[str] = {
+                    str(att.get("id")) for att in attachments if att.get("id") is not None
+                }
+
+                all_status_values = [status.value for status in IndexingStatus]
+
+                existing_records = await tx_store.get_records_by_status(
+                    org_id=self.data_entities_processor.org_id,
+                    connector_name=Connectors.JIRA,
+                    status_filters=all_status_values,
+                    limit=None,
+                )
+
+                deleted_count = 0
+                deleted_by_filename = 0
+
+                for record in existing_records:
+                    if record.record_type != RecordType.FILE:
+                        continue
+
+                    parent_external_id = getattr(record, "parent_external_record_id", None)
+                    if parent_external_id != issue_id:
+                        continue
+
+                    # Check if this record matches an unmatched removed filename
+                    record_filename_lower = record.record_name.lower() if record.record_name else ""
+                    if unmatched_removed_filenames and record_filename_lower in unmatched_removed_filenames:
+                        # This filename was removed from description and not found in current attachments
+                        # Delete it
+                        await tx_store.arango_service.delete_records_and_relations(
+                            node_key=record.id,
+                            hard_delete=True,
+                            transaction=tx_store.txn,
+                        )
+                        deleted_count += 1
+                        deleted_by_filename += 1
+                        self.logger.info(
+                            f"Deleted attachment {record.external_record_id} (filename: {record.record_name}) "
+                            f"for issue {issue_id} because it was removed from description"
+                        )
+                        continue
+
+                    external_id = record.external_record_id
+                    # external_record_id format: "attachment_<id>"
+                    if external_id.startswith("attachment_"):
+                        attachment_id = external_id.replace("attachment_", "")
+                    else:
+                        attachment_id = external_id
+
+                    if current_attachment_ids and attachment_id in current_attachment_ids:
+                        continue
+
+                    # Attachment no longer exists at source -> delete record and its relations
+                    await tx_store.arango_service.delete_records_and_relations(
+                        node_key=record.id,
+                        hard_delete=True,
+                        transaction=tx_store.txn,
+                    )
+                    deleted_count += 1
+                    self.logger.info(
+                        f"Deleted attachment {external_id} for issue {issue_id} "
+                        "because it no longer exists in Jira"
+                    )
+
+                if deleted_count > 0:
+                    if deleted_by_filename > 0:
+                        self.logger.info(
+                            f"Deleted {deleted_count} attachments for issue {issue_id} "
+                            f"({deleted_by_filename} by filename match, {deleted_count - deleted_by_filename} by ID diff)"
+                        )
+                    else:
+                        self.logger.info(
+                            f"Deleted {deleted_count} attachments for issue {issue_id} that were removed from Jira"
+                        )
+
+        except Exception as e:
+            issue_key = issue.get("key")
+            self.logger.error(
+                f"Error handling attachment deletions from changelog for issue {issue_key}: {e}",
+                exc_info=True,
+            )
+
+    def _issue_has_comment_changes(self, issue: Dict[str, Any]) -> bool:
+        """
+        Check changelog to see if there were any comment changes (add/edit/delete).
+        """
+        changelog = issue.get("changelog")
+        if not changelog:
+            return False
+
+        histories = changelog.get("histories", [])
+        if not histories:
+            return False
+
+        for history in histories:
+            items = history.get("items", [])
+            for item in items:
+                field = item.get("field")
+                field_id = item.get("fieldId")
+                if field in ("Comment", "comment") or field_id == "comment":
+                    return True
+
+        return False
+
     async def _fetch_issue_comments(
         self,
         issue_id: str,
@@ -2141,7 +2400,8 @@ class JiraConnector(BaseConnector):
         parent_record_group_type: RecordGroupType,
         org_id: str,
         user_by_account_id: Dict[str, AppUser],
-        tx_store
+        tx_store,
+        has_comment_changes: bool = False,
     ) -> List[Tuple[CommentRecord, List[Permission]]]:
         """
         Fetch comments for an issue.
@@ -2187,9 +2447,19 @@ class JiraConnector(BaseConnector):
                     break
 
             if not all_comments:
+                # If we know comments changed and now there are none, delete all DB comments for this issue
+                if has_comment_changes:
+                    await self._delete_missing_comments_for_issue(issue_id, set(), tx_store)
                 return []
 
             self.logger.info(f"Processing {len(all_comments)} comments for issue {issue_key}")
+
+            # If comments changed (add/edit/delete), delete any DB comments that no longer exist at source
+            if has_comment_changes:
+                current_comment_ids: Set[str] = {
+                    str(comment.get("id")) for comment in all_comments if comment.get("id") is not None
+                }
+                await self._delete_missing_comments_for_issue(issue_id, current_comment_ids, tx_store)
 
             # Process each comment
             for comment in all_comments:
@@ -2289,6 +2559,68 @@ class JiraConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Failed to fetch comments for issue {issue_key}: {e}", exc_info=True)
             return []
+
+    async def _delete_missing_comments_for_issue(
+        self,
+        issue_id: str,
+        current_comment_ids: Set[str],
+        tx_store,
+    ) -> None:
+        """
+        Delete CommentRecord entries for this issue that no longer exist in Jira.
+        """
+        try:
+            all_status_values = [status.value for status in IndexingStatus]
+
+            existing_records = await tx_store.get_records_by_status(
+                org_id=self.data_entities_processor.org_id,
+                connector_name=Connectors.JIRA,
+                status_filters=all_status_values,
+                limit=None,
+            )
+
+            deleted_count = 0
+
+            for record in existing_records:
+                if record.record_type != RecordType.COMMENT:
+                    continue
+
+                parent_external_id = getattr(record, "parent_external_record_id", None)
+                if parent_external_id != issue_id:
+                    continue
+
+                external_id = record.external_record_id
+                # external_record_id format: "comment_<id>"
+                if external_id.startswith("comment_"):
+                    comment_id = external_id.replace("comment_", "")
+                else:
+                    comment_id = external_id
+
+                if current_comment_ids and comment_id in current_comment_ids:
+                    continue
+
+                # Comment no longer exists at source -> delete record and its relations
+                await tx_store.arango_service.delete_records_and_relations(
+                    node_key=record.id,
+                    hard_delete=True,
+                    transaction=tx_store.txn,
+                )
+                deleted_count += 1
+                self.logger.info(
+                    f"Deleted comment {external_id} for issue {issue_id} "
+                    "because it no longer exists in Jira"
+                )
+
+            if deleted_count > 0:
+                self.logger.info(
+                    f"Deleted {deleted_count} comments for issue {issue_id} that were removed from Jira"
+                )
+
+        except Exception as e:
+            self.logger.error(
+                f"Error deleting missing comments for issue {issue_id}: {e}",
+                exc_info=True,
+            )
 
     async def _fetch_issue_attachments(
         self,
