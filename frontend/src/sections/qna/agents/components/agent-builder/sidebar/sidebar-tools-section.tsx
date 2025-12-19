@@ -17,6 +17,7 @@ export const SidebarToolsSection: React.FC<SidebarToolsSectionProps> = ({
   toolsGroupedByConnectorType,
   expandedApps,
   onAppToggle,
+  isBusiness
 }) => {
   const theme = useTheme();
 
@@ -41,6 +42,7 @@ export const SidebarToolsSection: React.FC<SidebarToolsSectionProps> = ({
     <Box sx={{ pl: 0 }}>
       {Object.entries(toolsGroupedByConnectorType).map(([displayName, data]) => {
         const { connectorIcon, tools, activeAgentInstances, isConfigured, isAgentActive } = data;
+        console.log(data); 
         const connectorTypeKey = `tool-type-${displayName}`;
         const isTypeExpanded = expandedApps[connectorTypeKey];
         console.log(connectorIcon);
@@ -64,7 +66,11 @@ export const SidebarToolsSection: React.FC<SidebarToolsSectionProps> = ({
               borderColor={theme.palette.divider}
               showConfigureIcon
               onConfigureClick={() => {
-                window.location.href = '/dashboard/connectors';
+                if (isBusiness) {
+                  window.location.href = '/account/company-settings/settings/connector/';
+                } else {
+                  window.location.href = '/account/individual/settings/connector';
+                } 
               }}
             >
               <Box

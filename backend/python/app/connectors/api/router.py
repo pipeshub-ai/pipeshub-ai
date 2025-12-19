@@ -2729,7 +2729,8 @@ async def create_connector_instance(
                 })
 
             prepared_config["auth"].update({
-                "authType": auth_type
+                "authType": auth_type,
+                "connectorScope": scope
             })
 
             await config_service.set_config(config_path, prepared_config)

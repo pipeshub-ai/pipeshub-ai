@@ -10,6 +10,8 @@ import chatIcon from '@iconify-icons/mdi/chat';
 import sparklesIcon from '@iconify-icons/mdi/auto-awesome';
 import replyIcon from '@iconify-icons/mdi/reply';
 
+import { useAccountType } from 'src/hooks/use-account-type';
+
 import type { AgentFormData, AgentTemplate } from 'src/types/agent';
 import type { AgentBuilderProps, NodeData } from './types/agent';
 // Custom hooks
@@ -46,6 +48,8 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
     error,
     setError,
   } = useAgentBuilderData(editingAgent);
+
+  const {isBusiness} = useAccountType();
 
   // State management hook
   const {
@@ -554,6 +558,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         activeAgentConnectors={activeAgentConnectors}
         activeConnectors={activeConnectors}
         connectorRegistry={connectorRegistry}
+        isBusiness={isBusiness}
         nodes={nodes}
         edges={edges}
         onNodesChange={onNodesChange}

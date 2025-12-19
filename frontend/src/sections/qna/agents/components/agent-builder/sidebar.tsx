@@ -40,6 +40,7 @@ interface FlowBuilderSidebarProps {
   activeAgentConnectors: Connector[];
   activeConnectors: Connector[];
   connectorRegistry: any[];
+  isBusiness: boolean;
 }
 
 const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
@@ -50,6 +51,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
   activeAgentConnectors,
   activeConnectors,
   connectorRegistry,
+  isBusiness,
 }) => {
   const theme = useTheme();
   const [searchQuery, setSearchQuery] = useState('');
@@ -330,6 +332,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
                         toolsGroupedByConnectorType={toolsGroupedByConnectorType}
                         expandedApps={expandedApps}
                         onAppToggle={handleAppToggle}
+                        isBusiness={isBusiness}
                       />
                     ) : config.name === 'LLM Models' ? (
                       <List dense sx={{ py: 0 }}>

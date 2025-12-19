@@ -784,7 +784,7 @@ const NodeConfigDialog: React.FC<NodeConfigDialogProps> = memo(
                       backgroundColor: alpha(theme.palette.background.paper, 0.8),
                       backdropFilter: 'blur(8px)',
                       '&::-webkit-scrollbar': {
-                        width: 8,
+                        width: 4,
                       },
                       '&::-webkit-scrollbar-track': {
                         backgroundColor: alpha(theme.palette.background.default, 0.3),

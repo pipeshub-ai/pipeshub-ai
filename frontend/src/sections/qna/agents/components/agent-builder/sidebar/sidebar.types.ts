@@ -230,6 +230,8 @@ export interface SidebarToolsSectionProps {
   expandedApps: ExpandedState;
   /** Callback when app/instance is toggled */
   onAppToggle: (key: string) => void;
+  /** Whether the user is a business user */
+  isBusiness: boolean;
 }
 
 /**

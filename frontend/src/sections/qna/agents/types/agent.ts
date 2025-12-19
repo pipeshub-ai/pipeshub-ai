@@ -57,6 +57,7 @@ export interface AgentBuilderCanvasWrapperProps {
   activeAgentConnectors: Connector[];
   activeConnectors: Connector[];
   connectorRegistry: any[];
+  isBusiness: boolean;
   nodes: any[];
   edges: any[];
   onNodesChange: (changes: any) => void;

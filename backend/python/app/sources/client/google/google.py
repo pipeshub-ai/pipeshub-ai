@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from app.config.configuration_service import ConfigurationService
+from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.sources.google.common.connector_google_exceptions import (
     AdminAuthError,
     AdminDelegationError,
@@ -129,7 +130,12 @@ class GoogleClient(IClient):
             GoogleClient instance
         """
 
-        if is_individual:
+        config = await GoogleClient._get_connector_config(service_name, logger, config_service, connector_instance_id)
+        if not config:
+            raise ValueError(f"Failed to get Google connector configuration for instance {service_name} {connector_instance_id}")
+        connector_scope = config.get("auth", {}).get("connectorScope", None)
+
+        if is_individual or connector_scope == ConnectorScope.PERSONAL.value:
             try:
                 #fetch saved credentials
                 saved_credentials = await GoogleClient.get_individual_token(service_name, logger, config_service, connector_instance_id)
@@ -245,6 +251,7 @@ class GoogleClient(IClient):
                 merged = dict(creds)
                 merged['clientId'] = auth_cfg.get("clientId")
                 merged['clientSecret'] = auth_cfg.get("clientSecret")
+                merged['connectorScope'] = auth_cfg.get("connectorScope")
                 return merged
         except Exception as e:
             logger.error(f"❌ Failed to get individual token for {service_name}: {str(e)}")
