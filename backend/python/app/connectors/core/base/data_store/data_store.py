@@ -111,7 +111,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str) -> None:
+    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str, user_id: str) -> None:
         pass
 
     @abstractmethod

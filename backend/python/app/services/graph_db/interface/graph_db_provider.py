@@ -1421,6 +1421,64 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def delete_record(
+        self,
+        record_id: str,
+        user_id: str,
+        transaction: Optional[str] = None
+    ) -> Dict:
+        """
+        Main entry point for record deletion - routes to connector-specific methods.
+
+        Args:
+            record_id (str): Record ID to delete
+            user_id (str): User ID performing the deletion
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            Dict: Result with success status and reason
+        """
+        pass
+
+    @abstractmethod
+    async def delete_record_by_external_id(
+        self,
+        connector_name: Connectors,
+        external_id: str,
+        user_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """
+        Delete a record by external ID.
+
+        Args:
+            connector_name (Connectors): Connector type
+            external_id (str): External record ID
+            user_id (str): User ID performing the deletion
+            transaction (Optional[str]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def remove_user_access_to_record(
+        self,
+        connector_name: Connectors,
+        external_id: str,
+        user_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """
+        Remove a user's access to a record (for inbox-based deletions).
+
+        Args:
+            connector_name (Connectors): Connector type
+            external_id (str): External record ID
+            user_id (str): User ID to remove access from
+            transaction (Optional[str]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
     async def get_key_by_external_file_id(
         self,
         external_file_id: str

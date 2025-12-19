@@ -15,17 +15,22 @@ from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
     CollectionNames,
     Connectors,
+    OriginTypes,
 )
 from app.config.constants.service import config_node_constants
 from app.models.entities import (
     AppRole,
     AppUser,
     AppUserGroup,
+    CommentRecord,
     FileRecord,
+    MailRecord,
     Record,
     RecordGroup,
     RecordType,
+    TicketRecord,
     User,
+    WebpageRecord,
 )
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -55,6 +60,66 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self.logger = logger
         self.config_service = config_service
         self.http_client: Optional[ArangoHTTPClient] = None
+
+        # Connector-specific delete permissions
+        self.connector_delete_permissions = {
+            Connectors.GOOGLE_DRIVE.value: {
+                "allowed_roles": ["OWNER", "WRITER", "FILEORGANIZER"],
+                "edge_collections": [
+                    CollectionNames.IS_OF_TYPE.value,
+                    CollectionNames.RECORD_RELATIONS.value,
+                    CollectionNames.PERMISSION.value,
+                    CollectionNames.USER_DRIVE_RELATION.value,
+                    CollectionNames.BELONGS_TO.value,
+                    CollectionNames.ANYONE.value
+                ],
+                "document_collections": [
+                    CollectionNames.RECORDS.value,
+                    CollectionNames.FILES.value,
+                ]
+            },
+            Connectors.GOOGLE_MAIL.value: {
+                "allowed_roles": ["OWNER", "WRITER"],
+                "edge_collections": [
+                    CollectionNames.IS_OF_TYPE.value,
+                    CollectionNames.RECORD_RELATIONS.value,
+                    CollectionNames.PERMISSION.value,
+                    CollectionNames.BELONGS_TO.value,
+                ],
+                "document_collections": [
+                    CollectionNames.RECORDS.value,
+                    CollectionNames.MAILS.value,
+                    CollectionNames.FILES.value,  # For attachments
+                ]
+            },
+            Connectors.OUTLOOK.value: {
+                "allowed_roles": ["OWNER", "WRITER"],
+                "edge_collections": [
+                    CollectionNames.IS_OF_TYPE.value,
+                    CollectionNames.RECORD_RELATIONS.value,
+                    CollectionNames.PERMISSION.value,
+                    CollectionNames.BELONGS_TO.value,
+                ],
+                "document_collections": [
+                    CollectionNames.RECORDS.value,
+                    CollectionNames.MAILS.value,
+                    CollectionNames.FILES.value,
+                ]
+            },
+            Connectors.KNOWLEDGE_BASE.value: {
+                "allowed_roles": ["OWNER", "WRITER", "FILEORGANIZER"],
+                "edge_collections": [
+                    CollectionNames.IS_OF_TYPE.value,
+                    CollectionNames.RECORD_RELATIONS.value,
+                    CollectionNames.BELONGS_TO.value,
+                    CollectionNames.PERMISSION.value,
+                ],
+                "document_collections": [
+                    CollectionNames.RECORDS.value,
+                    CollectionNames.FILES.value,
+                ]
+            }
+        }
 
     # ==================== Connection Management ====================
 
@@ -835,30 +900,141 @@ class ArangoHTTPProvider(IGraphDBProvider):
         limit: Optional[int] = None,
         offset: int = 0,
         transaction: Optional[str] = None
-    ) -> List[Dict]:
-        """Get records by indexing status"""
+    ) -> List[Record]:
+        """
+        Get records by their indexing status with pagination support.
+        Returns properly typed Record instances (FileRecord, MailRecord, etc.)
+        """
         try:
-            limit_clause = f"LIMIT {offset}, {limit}" if limit else ""
-            query = f"""
-            FOR record IN @@collection
-                FILTER record.indexingStatus IN @status_filters
-                AND record.orgId == @org_id
-                AND record.connectorName == @connector_name
-                {limit_clause}
-                RETURN record
-            """
+            self.logger.info(f"Retrieving records for connector {connector_name.value} with status filters: {status_filters}, limit: {limit}, offset: {offset}")
+
+            limit_clause = "LIMIT @offset, @limit" if limit else ""
+
+            # Group record types by their collection
+            from collections import defaultdict
+            collection_to_types = defaultdict(list)
+            for record_type, collection in RECORD_TYPE_COLLECTION_MAPPING.items():
+                collection_to_types[collection].append(record_type)
+
+            # Build dynamic typeDoc conditions based on mapping
+            type_doc_conditions = []
             bind_vars = {
-                "@collection": CollectionNames.RECORDS.value,
-                "status_filters": status_filters,
                 "org_id": org_id,
-                "connector_name": connector_name.value
+                "connector_name": connector_name.value,
+                "status_filters": status_filters,
             }
 
-            return await self.http_client.execute_aql(query, bind_vars, transaction)
+            # Generate conditions for each collection
+            for collection, record_types in collection_to_types.items():
+                # Create condition for checking if record type matches any in this group
+                if len(record_types) == 1:
+                    type_check = f"record.recordType == @type_{record_types[0].lower()}"
+                    bind_vars[f"type_{record_types[0].lower()}"] = record_types[0]
+                else:
+                    # Multiple types map to same collection
+                    type_checks = []
+                    for rt in record_types:
+                        type_checks.append(f"record.recordType == @type_{rt.lower()}")
+                        bind_vars[f"type_{rt.lower()}"] = rt
+                    type_check = " || ".join(type_checks)
+
+                # Add condition for this collection
+                condition = f"""({type_check}) ? (
+                        FOR edge IN {CollectionNames.IS_OF_TYPE.value}
+                            FILTER edge._from == record._id
+                            LET doc = DOCUMENT(edge._to)
+                            FILTER doc != null
+                            RETURN doc
+                    )[0]"""
+                type_doc_conditions.append(condition)
+
+            # Build the complete typeDoc expression
+            type_doc_expr = " :\n                    ".join(type_doc_conditions)
+            if type_doc_expr:
+                type_doc_expr += " :\n                    null"
+            else:
+                type_doc_expr = "null"
+
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.orgId == @org_id
+                    AND record.connectorName == @connector_name
+                    AND record.indexingStatus IN @status_filters
+                SORT record._key
+                {limit_clause}
+
+                LET typeDoc = (
+                    {type_doc_expr}
+                )
+
+                RETURN {{
+                    record: record,
+                    typeDoc: typeDoc
+                }}
+            """
+
+            if limit:
+                bind_vars["limit"] = limit
+                bind_vars["offset"] = offset
+
+            results = await self.http_client.execute_aql(query, bind_vars, transaction)
+
+            # Convert raw DB results to properly typed Record instances
+            typed_records = []
+            for result in results:
+                record = self._create_typed_record_from_arango(
+                    result["record"],
+                    result.get("typeDoc")
+                )
+                typed_records.append(record)
+
+            self.logger.info(f"✅ Successfully retrieved {len(typed_records)} typed records for connector {connector_name.value}")
+            return typed_records
 
         except Exception as e:
-            self.logger.error(f"❌ Get records by status failed: {str(e)}")
+            self.logger.error(f"❌ Failed to retrieve records by status for connector {connector_name.value}: {str(e)}")
             return []
+
+    def _create_typed_record_from_arango(self, record_dict: Dict, type_doc: Optional[Dict]) -> Record:
+        """
+        Factory method to create properly typed Record instances from ArangoDB data.
+        Uses centralized RECORD_TYPE_COLLECTION_MAPPING to determine which types have type collections.
+
+        Args:
+            record_dict: Dictionary from records collection
+            type_doc: Dictionary from type-specific collection (files, mails, etc.) or None
+
+        Returns:
+            Properly typed Record instance (FileRecord, MailRecord, etc.)
+        """
+        record_type = record_dict.get("recordType")
+
+        # Check if this record type has a type collection
+        if not type_doc or record_type not in RECORD_TYPE_COLLECTION_MAPPING:
+            # No type collection or no type doc - use base Record
+            return Record.from_arango_base_record(record_dict)
+
+        try:
+            # Determine which collection this type uses
+            collection = RECORD_TYPE_COLLECTION_MAPPING[record_type]
+
+            # Map collections to their corresponding Record classes
+            if collection == CollectionNames.FILES.value:
+                return FileRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.MAILS.value:
+                return MailRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.WEBPAGES.value:
+                return WebpageRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.TICKETS.value:
+                return TicketRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.COMMENTS.value:
+                return CommentRecord.from_arango_record(type_doc, record_dict)
+            else:
+                # Unknown collection - fallback to base Record
+                return Record.from_arango_base_record(record_dict)
+        except Exception as e:
+            self.logger.warning(f"Failed to create typed record for {record_type}, falling back to base Record: {str(e)}")
+            return Record.from_arango_base_record(record_dict)
 
     async def get_record_by_conversation_index(
         self,
@@ -868,7 +1044,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         org_id: str,
         user_id: str,
         transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+    ) -> Optional[Record]:
         """Get record by conversation index"""
         try:
             query = """
@@ -892,7 +1068,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
 
             results = await self.http_client.execute_aql(query, bind_vars, transaction)
-            return results[0] if results else None
+            return Record.from_arango_base_record(results[0]) if results else None
 
         except Exception as e:
             self.logger.error(f"❌ Get record by conversation index failed: {str(e)}")
@@ -1046,12 +1222,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         user_id: str
     ) -> Optional[Dict]:
-        """Get user by user ID"""
+        """
+        Get user by user ID.
+        Note: user_id is the userId field value, not the _key.
+        """
         try:
-            return await self.http_client.get_document(
-                CollectionNames.USERS.value,
-                user_id
+            query = f"""
+                FOR user IN {CollectionNames.USERS.value}
+                    FILTER user.userId == @user_id
+                    LIMIT 1
+                    RETURN user
+            """
+            result = await self.http_client.execute_aql(
+                query,
+                bind_vars={"user_id": user_id}
             )
+            return result[0] if result else None
         except Exception as e:
             self.logger.error(f"❌ Get user by user ID failed: {str(e)}")
             return None
@@ -1108,38 +1294,65 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_app_users(
         self,
         org_id: str,
-        app_name: str
+        app_name: Connectors
     ) -> List[Dict]:
         """
-        Get all users for a specific app.
+        Fetch all users from the database who belong to the organization
+        and are connected to the specified app via userAppRelation edge.
 
-        Generic implementation using query.
-        """
-        query = f"""
-        FOR rel IN {CollectionNames.USER_APP_RELATION.value}
-            FILTER rel._to == CONCAT('apps/', (
-                FOR app IN {CollectionNames.APPS.value}
-                    FILTER app.name == @app_name
-                    AND app.orgId == @org_id
-                    LIMIT 1
-                    RETURN app._key
-            )[0])
-            FOR user IN {CollectionNames.USERS.value}
-                FILTER user._id == rel._from
-                RETURN user
-        """
+        Args:
+            org_id (str): Organization ID
+            app_name (Connectors): App connector name
 
+        Returns:
+            List[Dict]: List of user documents with their details and sourceUserId
+        """
         try:
+            self.logger.info(f"🚀 Fetching users connected to {app_name.value} app")
+
+            query = f"""
+                // First find the app
+                LET app = FIRST(
+                    FOR a IN {CollectionNames.APPS.value}
+                        FILTER LOWER(a.name) == LOWER(@app_name)
+                        RETURN a
+                )
+
+                // Then find users connected via userAppRelation
+                FOR edge IN {CollectionNames.USER_APP_RELATION.value}
+                    FILTER edge._to == app._id
+                    LET user = DOCUMENT(edge._from)
+                    FILTER user != null
+
+                    // Verify user belongs to the organization
+                    LET belongs_to_org = FIRST(
+                        FOR org_edge IN {CollectionNames.BELONGS_TO.value}
+                            FILTER org_edge._from == user._id
+                            FILTER org_edge._to == CONCAT('organizations/', @org_id)
+                            FILTER org_edge.entityType == 'ORGANIZATION'
+                            RETURN true
+                    )
+                    FILTER belongs_to_org == true
+
+                    RETURN MERGE(user, {{
+                        sourceUserId: edge.sourceUserId,
+                        appName: UPPER(app.name)
+                    }})
+            """
+
             results = await self.http_client.execute_aql(
                 query,
                 bind_vars={
-                    "app_name": app_name,
+                    "app_name": app_name.value,
                     "org_id": org_id
                 }
             )
+
+            self.logger.info(f"✅ Successfully fetched {len(results)} users for {app_name.value}")
             return results if results else []
+
         except Exception as e:
-            self.logger.error(f"❌ Get app users failed: {str(e)}")
+            self.logger.error(f"❌ Failed to fetch users for {app_name.value}: {str(e)}")
             return []
 
     async def get_user_group_by_external_id(
@@ -1155,8 +1368,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         query = f"""
         FOR group IN {CollectionNames.GROUPS.value}
-            FILTER group.sourceUserGroupId == @external_id
-            AND group.appName == @connector_name
+            FILTER group.externalGroupId == @external_id
+            AND group.connectorName == @connector_name
             LIMIT 1
             RETURN group
         """
@@ -1187,27 +1400,44 @@ class ArangoHTTPProvider(IGraphDBProvider):
         org_id: str,
         transaction: Optional[str] = None
     ) -> List[AppUserGroup]:
-        """Get user groups"""
+        """
+        Get all user groups for a specific connector and organization.
+        Args:
+            app_name: Connector name
+            org_id: Organization ID
+            transaction: Optional transaction ID
+        Returns:
+            List[AppUserGroup]: List of user group entities
+        """
         try:
-            query = """
-            FOR group IN @@collection
-                FILTER group.appName == @app_name
-                AND group.orgId == @org_id
+            self.logger.info(
+                f"🚀 Retrieving user groups for connector {app_name.value} and org {org_id}"
+            )
+
+            query = f"""
+            FOR group IN {CollectionNames.GROUPS.value}
+                FILTER group.connectorName == @connector_name
+                    AND group.orgId == @org_id
                 RETURN group
             """
+
             bind_vars = {
-                "@collection": CollectionNames.GROUPS.value,
-                "app_name": app_name.value,
+                "connector_name": app_name.value,
                 "org_id": org_id
             }
 
-            groupData = await self.http_client.execute_aql(query, bind_vars, transaction)
+            groupData = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
             groups = [AppUserGroup.from_arango_base_user_group(group_data) for group_data in groupData]
 
+            self.logger.info(
+                f"✅ Successfully retrieved {len(groups)} user groups for connector {app_name.value}"
+            )
             return groups
 
         except Exception as e:
-            self.logger.error(f"❌ Get user groups failed: {str(e)}")
+            self.logger.error(
+                f"❌ Failed to retrieve user groups for connector {app_name.value}: {str(e)}"
+            )
             return []
 
     async def get_app_role_by_external_id(
@@ -1223,8 +1453,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         query = f"""
         FOR role IN {CollectionNames.ROLES.value}
-            FILTER role.sourceRoleId == @external_id
-            AND role.appName == @connector_name
+            FILTER role.externalRoleId == @external_id
+            AND role.connectorName == @connector_name
             LIMIT 1
             RETURN role
         """
@@ -2388,6 +2618,348 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Delete records and relations failed: {str(e)}")
             raise
 
+    async def delete_record(
+        self,
+        record_id: str,
+        user_id: str,
+        transaction: Optional[str] = None
+    ) -> Dict:
+        """
+        Main entry point for record deletion - routes to connector-specific methods.
+
+        Args:
+            record_id: Record ID to delete
+            user_id: User ID performing the deletion
+            transaction: Optional transaction ID
+
+        Returns:
+            Dict: Result with success status and reason
+        """
+        try:
+            self.logger.info(f"🚀 Starting record deletion for {record_id} by user {user_id}")
+
+            # Get record to determine connector type
+            record = await self.http_client.get_document(
+                collection=CollectionNames.RECORDS.value,
+                key=record_id,
+                txn_id=transaction
+            )
+            if not record:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": f"Record not found: {record_id}"
+                }
+
+            connector_name = record.get("connectorName", "")
+            origin = record.get("origin", "")
+
+            # Route to connector-specific deletion method
+            if origin == OriginTypes.UPLOAD.value or connector_name == Connectors.KNOWLEDGE_BASE.value:
+                return await self.delete_knowledge_base_record(record_id, user_id, record, transaction)
+            elif connector_name == Connectors.GOOGLE_DRIVE.value:
+                return await self.delete_google_drive_record(record_id, user_id, record, transaction)
+            elif connector_name == Connectors.GOOGLE_MAIL.value:
+                return await self.delete_gmail_record(record_id, user_id, record, transaction)
+            elif connector_name == Connectors.OUTLOOK.value:
+                return await self.delete_outlook_record(record_id, user_id, record, transaction)
+            else:
+                return {
+                    "success": False,
+                    "code": 400,
+                    "reason": f"Unsupported connector: {connector_name}"
+                }
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete record {record_id}: {str(e)}")
+            return {
+                "success": False,
+                "code": 500,
+                "reason": f"Internal error: {str(e)}"
+            }
+
+    async def delete_record_by_external_id(
+        self,
+        connector_name: Connectors,
+        external_id: str,
+        user_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """
+        Delete a record by external ID.
+
+        Args:
+            connector_name: Connector type
+            external_id: External record ID
+            user_id: User ID performing the deletion
+            transaction: Optional transaction ID
+        """
+        try:
+            self.logger.info(f"🗂️ Deleting record {external_id} from {connector_name}")
+
+            # Get record
+            record = await self.get_record_by_external_id(
+                connector_name,
+                external_id,
+                transaction=transaction
+            )
+            if not record:
+                self.logger.warning(f"⚠️ Record {external_id} not found in {connector_name}")
+                return
+
+            # Delete record using the record's internal ID and user_id
+            deletion_result = await self.delete_record(record.id, user_id, transaction=transaction)
+
+            # Check if deletion was successful
+            if deletion_result.get("success"):
+                self.logger.info(f"✅ Record {external_id} deleted from {connector_name}")
+            else:
+                error_reason = deletion_result.get("reason", "Unknown error")
+                self.logger.error(f"❌ Failed to delete record {external_id}: {error_reason}")
+                raise Exception(f"Deletion failed: {error_reason}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete record {external_id} from {connector_name}: {str(e)}")
+            raise
+
+    async def remove_user_access_to_record(
+        self,
+        connector_name: Connectors,
+        external_id: str,
+        user_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """
+        Remove a user's access to a record (for inbox-based deletions).
+        This removes the user's permissions and belongsTo edges without deleting the record itself.
+
+        Args:
+            connector_name: Connector type
+            external_id: External record ID
+            user_id: User ID to remove access from
+            transaction: Optional transaction ID
+        """
+        try:
+            self.logger.info(f"🔄 Removing user access: {external_id} from {connector_name} for user {user_id}")
+
+            # Get record
+            record = await self.get_record_by_external_id(
+                connector_name,
+                external_id,
+                transaction=transaction
+            )
+            if not record:
+                self.logger.warning(f"⚠️ Record {external_id} not found in {connector_name}")
+                return
+
+            # Remove user's permission edges
+            user_removal_query = """
+            FOR perm IN permission
+                FILTER perm._from == @user_to
+                FILTER perm._to == @record_from
+                REMOVE perm IN permission
+                RETURN OLD
+            """
+
+            result = await self.http_client.execute_aql(
+                query=user_removal_query,
+                bind_vars={
+                    "record_from": f"records/{record.id}",
+                    "user_to": f"users/{user_id}"
+                },
+                txn_id=transaction
+            )
+
+            removed_permissions = result if result else []
+
+            if removed_permissions:
+                self.logger.info(f"✅ Removed {len(removed_permissions)} permission(s) for user {user_id} on record {record.id}")
+            else:
+                self.logger.info(f"ℹ️ No permissions found for user {user_id} on record {record.id}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_name}: {str(e)}")
+            raise
+
+    # ==================== Connector-Specific Delete Methods ====================
+
+    async def delete_knowledge_base_record(
+        self,
+        record_id: str,
+        user_id: str,
+        record: Dict,
+        transaction: Optional[str] = None
+    ) -> Dict:
+        """Delete a Knowledge Base record - handles uploads and KB-specific logic."""
+        try:
+            self.logger.info(f"🗂️ Deleting Knowledge Base record {record_id}")
+
+            # Get user
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": f"User not found: {user_id}"
+                }
+
+            user_key = user.get('_key')
+
+            # Find KB context for this record
+            kb_context = await self._get_kb_context_for_record(record_id, transaction)
+            if not kb_context:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": f"Knowledge base context not found for record {record_id}"
+                }
+
+            # Check KB permissions
+            user_role = await self.get_user_kb_permission(kb_context["kb_id"], user_key, transaction)
+            if user_role not in self.connector_delete_permissions[Connectors.KNOWLEDGE_BASE.value]["allowed_roles"]:
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": f"Insufficient permissions. User role: {user_role}"
+                }
+
+            # Execute KB-specific deletion
+            return await self._execute_kb_record_deletion(record_id, record, kb_context, transaction)
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete KB record: {str(e)}")
+            return {
+                "success": False,
+                "code": 500,
+                "reason": f"KB record deletion failed: {str(e)}"
+            }
+
+    async def delete_google_drive_record(
+        self,
+        record_id: str,
+        user_id: str,
+        record: Dict,
+        transaction: Optional[str] = None
+    ) -> Dict:
+        """Delete a Google Drive record - handles Drive-specific permissions and logic."""
+        try:
+            self.logger.info(f"🔌 Deleting Google Drive record {record_id}")
+
+            # Get user
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": f"User not found: {user_id}"
+                }
+
+            user_key = user.get('_key')
+
+            # Check Drive-specific permissions
+            user_role = await self._check_drive_permissions(record_id, user_key, transaction)
+            if not user_role or user_role not in self.connector_delete_permissions[Connectors.GOOGLE_DRIVE.value]["allowed_roles"]:
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": f"Insufficient Drive permissions. Role: {user_role}"
+                }
+
+            # Execute Drive-specific deletion
+            return await self._execute_drive_record_deletion(record_id, record, user_role, transaction)
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete Drive record: {str(e)}")
+            return {
+                "success": False,
+                "code": 500,
+                "reason": f"Drive record deletion failed: {str(e)}"
+            }
+
+    async def delete_gmail_record(
+        self,
+        record_id: str,
+        user_id: str,
+        record: Dict,
+        transaction: Optional[str] = None
+    ) -> Dict:
+        """Delete a Gmail record - handles Gmail-specific permissions and logic."""
+        try:
+            self.logger.info(f"📧 Deleting Gmail record {record_id}")
+
+            # Get user
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": f"User not found: {user_id}"
+                }
+
+            user_key = user.get('_key')
+
+            # Check Gmail-specific permissions
+            user_role = await self._check_gmail_permissions(record_id, user_key, transaction)
+            if not user_role or user_role not in self.connector_delete_permissions[Connectors.GOOGLE_MAIL.value]["allowed_roles"]:
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": f"Insufficient Gmail permissions. Role: {user_role}"
+                }
+
+            # Execute Gmail-specific deletion
+            return await self._execute_gmail_record_deletion(record_id, record, user_role, transaction)
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete Gmail record: {str(e)}")
+            return {
+                "success": False,
+                "code": 500,
+                "reason": f"Gmail record deletion failed: {str(e)}"
+            }
+
+    async def delete_outlook_record(
+        self,
+        record_id: str,
+        user_id: str,
+        record: Dict,
+        transaction: Optional[str] = None
+    ) -> Dict:
+        """Delete an Outlook record - handles email and its attachments."""
+        try:
+            self.logger.info(f"📧 Deleting Outlook record {record_id}")
+
+            # Get user
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": f"User not found: {user_id}"
+                }
+
+            user_key = user.get('_key')
+
+            # Check if user has OWNER permission
+            user_role = await self._check_record_permission(record_id, user_key, transaction)
+            if user_role != "OWNER":
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": f"Only mailbox owner can delete emails. Role: {user_role}"
+                }
+
+            # Execute deletion
+            return await self._execute_outlook_record_deletion(record_id, record, transaction)
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete Outlook record: {str(e)}")
+            return {
+                "success": False,
+                "code": 500,
+                "reason": f"Outlook record deletion failed: {str(e)}"
+            }
+
     async def get_key_by_external_file_id(
         self,
         external_file_id: str,
@@ -2904,4 +3476,755 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Update edge failed: {str(e)}")
             return False
+
+    # ==================== Helper Methods for Deletion ====================
+
+    async def _check_record_permission(
+        self,
+        record_id: str,
+        user_key: str,
+        transaction: Optional[str] = None
+    ) -> Optional[str]:
+        """Check user's permission role on a record."""
+        try:
+            query = f"""
+            FOR edge IN {CollectionNames.PERMISSION.value}
+                FILTER edge._to == @record_to
+                    AND edge._from == @user_from
+                    AND edge.type == 'USER'
+                LIMIT 1
+                RETURN edge.role
+            """
+
+            result = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "record_to": f"records/{record_id}",
+                    "user_from": f"users/{user_key}"
+                },
+                txn_id=transaction
+            )
+
+            return result[0] if result else None
+
+        except Exception as e:
+            self.logger.error(f"Failed to check record permission: {e}")
+            return None
+
+    async def _check_drive_permissions(
+        self,
+        record_id: str,
+        user_key: str,
+        transaction: Optional[str] = None
+    ) -> Optional[str]:
+        """Check Google Drive specific permissions."""
+        try:
+            self.logger.info(f"🔍 Checking Drive permissions for record {record_id} and user {user_key}")
+
+            drive_permission_query = """
+            LET user_from = CONCAT('users/', @user_key)
+            LET record_from = CONCAT('records/', @record_id)
+
+            // 1. Check direct user permissions on the record
+            LET direct_permission = FIRST(
+                FOR perm IN @@permission
+                    FILTER perm._to == record_from
+                    FILTER perm._from == user_from
+                    FILTER perm.type == "USER"
+                    RETURN perm.role
+            )
+
+            // 2. Check group permissions
+            LET group_permission = FIRST(
+                FOR belongs_edge IN @@belongs_to
+                    FILTER belongs_edge._from == user_from
+                    FILTER belongs_edge.entityType == "GROUP"
+                    LET group = DOCUMENT(belongs_edge._to)
+                    FILTER group != null
+                    FOR perm IN @@permission
+                        FILTER perm._to == record_from
+                        FILTER perm._from == group._id
+                        FILTER perm.type == "GROUP"
+                        RETURN perm.role
+            )
+
+            // 3. Check domain permissions
+            LET domain_permission = FIRST(
+                FOR perm IN @@permission
+                    FILTER perm._to == record_from
+                    FILTER perm.type == "DOMAIN"
+                    RETURN perm.role
+            )
+
+            // 4. Check anyone permissions
+            LET anyone_permission = FIRST(
+                FOR perm IN @@anyone
+                    FILTER perm._to == record_from
+                    RETURN perm.role
+            )
+
+            // Return the highest permission found
+            RETURN direct_permission || group_permission || domain_permission || anyone_permission
+            """
+
+            result = await self.http_client.execute_aql(
+                drive_permission_query,
+                bind_vars={
+                    "record_id": record_id,
+                    "user_key": user_key,
+                    "@permission": CollectionNames.PERMISSION.value,
+                    "@belongs_to": CollectionNames.BELONGS_TO.value,
+                    "@anyone": CollectionNames.ANYONE.value,
+                },
+                txn_id=transaction
+            )
+
+            return result[0] if result else None
+
+        except Exception as e:
+            self.logger.error(f"Failed to check Drive permissions: {e}")
+            return None
+
+    async def _check_gmail_permissions(
+        self,
+        record_id: str,
+        user_key: str,
+        transaction: Optional[str] = None
+    ) -> Optional[str]:
+        """Check Gmail specific permissions."""
+        try:
+            self.logger.info(f"🔍 Checking Gmail permissions for record {record_id} and user {user_key}")
+
+            gmail_permission_query = """
+            LET user_from = CONCAT('users/', @user_key)
+            LET record_from = CONCAT('records/', @record_id)
+
+            // Get user details
+            LET user = DOCUMENT(user_from)
+            LET user_email = user ? user.email : null
+
+            // 1. Check if user is sender/recipient of the email
+            LET email_access = user_email ? (
+                FOR record IN @@records
+                    FILTER record._key == @record_id
+                    FILTER record.recordType == "MAIL"
+                    // Get the mail record
+                    FOR mail_edge IN @@is_of_type
+                        FILTER mail_edge._from == record._id
+                        LET mail = DOCUMENT(mail_edge._to)
+                        FILTER mail != null
+                        // Check if user is sender
+                        LET is_sender = mail.from == user_email OR mail.senderEmail == user_email
+                        // Check if user is in recipients (to, cc, bcc)
+                        LET is_in_to = user_email IN (mail.to || [])
+                        LET is_in_cc = user_email IN (mail.cc || [])
+                        LET is_in_bcc = user_email IN (mail.bcc || [])
+                        LET is_recipient = is_in_to OR is_in_cc OR is_in_bcc
+
+                        FILTER is_sender OR is_recipient
+                        RETURN is_sender ? "OWNER" : "WRITER"
+            ) : null
+
+            // 2. Check direct permissions
+            LET direct_permission = FIRST(
+                FOR perm IN @@permission
+                    FILTER perm._to == record_from
+                    FILTER perm._from == user_from
+                    FILTER perm.type == "USER"
+                    RETURN perm.role
+            )
+
+            // Return email access or direct permission
+            RETURN FIRST(email_access) || direct_permission
+            """
+
+            result = await self.http_client.execute_aql(
+                gmail_permission_query,
+                bind_vars={
+                    "record_id": record_id,
+                    "user_key": user_key,
+                    "@records": CollectionNames.RECORDS.value,
+                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                    "@permission": CollectionNames.PERMISSION.value,
+                },
+                txn_id=transaction
+            )
+
+            return result[0] if result else None
+
+        except Exception as e:
+            self.logger.error(f"Failed to check Gmail permissions: {e}")
+            return None
+
+    async def _get_kb_context_for_record(
+        self,
+        record_id: str,
+        transaction: Optional[str] = None
+    ) -> Optional[Dict]:
+        """Get KB context for a record."""
+        try:
+            self.logger.info(f"🔍 Finding KB context for record {record_id}")
+
+            kb_query = """
+            LET record_from = CONCAT('records/', @record_id)
+            // Find KB via belongs_to edge
+            LET kb_edge = FIRST(
+                FOR btk_edge IN @@belongs_to
+                    FILTER btk_edge._from == record_from
+                    RETURN btk_edge
+            )
+            LET kb = kb_edge ? DOCUMENT(kb_edge._to) : null
+            RETURN kb ? {
+                kb_id: kb._key,
+                kb_name: kb.groupName,
+                org_id: kb.orgId
+            } : null
+            """
+
+            result = await self.http_client.execute_aql(
+                kb_query,
+                bind_vars={
+                    "record_id": record_id,
+                    "@belongs_to": CollectionNames.BELONGS_TO.value,
+                },
+                txn_id=transaction
+            )
+
+            return result[0] if result else None
+
+        except Exception as e:
+            self.logger.error(f"Failed to get KB context: {e}")
+            return None
+
+    async def get_user_kb_permission(
+        self,
+        kb_id: str,
+        user_id: str,
+        transaction: Optional[str] = None
+    ) -> Optional[str]:
+        """Get user's permission on a KB."""
+        try:
+            self.logger.info(f"🔍 Checking permissions for user {user_id} on KB {kb_id}")
+
+            # Check for direct user permission
+            query = """
+            LET user_from = CONCAT('users/', @user_id)
+            LET kb_to = CONCAT('recordGroups/', @kb_id)
+
+            // Check for direct user permission
+            LET direct_perm = FIRST(
+                FOR perm IN @@permissions_collection
+                    FILTER perm._from == user_from
+                    FILTER perm._to == kb_to
+                    FILTER perm.type == "USER"
+                    RETURN perm.role
+            )
+
+            RETURN direct_perm
+            """
+
+            result = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "kb_id": kb_id,
+                    "user_id": user_id,
+                    "@permissions_collection": CollectionNames.PERMISSION.value,
+                },
+                txn_id=transaction
+            )
+
+            role = result[0] if result else None
+            if role:
+                self.logger.info(f"✅ Found permission: user {user_id} has role '{role}' on KB {kb_id}")
+            return role
+
+        except Exception as e:
+            self.logger.error(f"Failed to check KB permission: {e}")
+            return None
+
+    async def _get_attachment_ids(
+        self,
+        record_id: str,
+        transaction: Optional[str] = None
+    ) -> List[str]:
+        """Get attachment IDs for a record."""
+        attachments_query = f"""
+        FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+            FILTER edge._from == @record_from
+                AND edge.relationshipType == 'ATTACHMENT'
+            RETURN PARSE_IDENTIFIER(edge._to).key
+        """
+
+        attachment_ids = await self.http_client.execute_aql(
+            attachments_query,
+            bind_vars={"record_from": f"records/{record_id}"},
+            txn_id=transaction
+        )
+        return attachment_ids if attachment_ids else []
+
+    async def _delete_record_with_type(
+        self,
+        record_id: str,
+        type_collections: List[str],
+        transaction: Optional[str] = None
+    ) -> None:
+        """Delete a record and its type-specific documents using existing generic methods."""
+        record_key = record_id
+        record_full_id = f"{CollectionNames.RECORDS.value}/{record_key}"
+
+        # Delete all edges FROM this record
+        await self.delete_edges_from(record_full_id, CollectionNames.RECORD_RELATIONS.value, transaction)
+        await self.delete_edges_from(record_full_id, CollectionNames.IS_OF_TYPE.value, transaction)
+        await self.delete_edges_from(record_full_id, CollectionNames.BELONGS_TO.value, transaction)
+
+        # Delete all edges TO this record
+        await self.delete_edges_to(record_full_id, CollectionNames.RECORD_RELATIONS.value, transaction)
+        await self.delete_edges_to(record_full_id, CollectionNames.PERMISSION.value, transaction)
+
+        # Delete type-specific documents (files, mails, etc.)
+        for collection in type_collections:
+            try:
+                await self.delete_nodes([record_key], collection, transaction)
+            except Exception:
+                pass  # Collection might not have this document
+
+        # Delete main record
+        await self.delete_nodes([record_key], CollectionNames.RECORDS.value, transaction)
+
+    async def _execute_outlook_record_deletion(
+        self,
+        record_id: str,
+        record: Dict,
+        transaction: Optional[str] = None
+    ) -> Dict:
+        """Execute Outlook record deletion - deletes email and all attachments."""
+        try:
+            # Get attachments (child records with ATTACHMENT relation)
+            attachments_query = f"""
+            FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+                FILTER edge._from == @record_from
+                    AND edge.relationshipType == 'ATTACHMENT'
+                RETURN PARSE_IDENTIFIER(edge._to).key
+            """
+
+            attachment_ids = await self.http_client.execute_aql(
+                attachments_query,
+                bind_vars={"record_from": f"records/{record_id}"},
+                txn_id=transaction
+            )
+            attachment_ids = attachment_ids if attachment_ids else []
+
+            # Delete all attachments first
+            for attachment_id in attachment_ids:
+                self.logger.info(f"Deleting attachment {attachment_id} of email {record_id}")
+                await self._delete_outlook_edges(attachment_id, transaction)
+                await self._delete_file_record(attachment_id, transaction)
+                await self._delete_main_record(attachment_id, transaction)
+
+            # Delete the email itself
+            await self._delete_outlook_edges(record_id, transaction)
+
+            # Delete mail record
+            await self._delete_mail_record(record_id, transaction)
+
+            # Delete main record
+            await self._delete_main_record(record_id, transaction)
+
+            self.logger.info(f"✅ Deleted Outlook record {record_id} with {len(attachment_ids)} attachments")
+
+            return {
+                "success": True,
+                "record_id": record_id,
+                "attachments_deleted": len(attachment_ids)
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Outlook deletion failed: {str(e)}")
+            return {
+                "success": False,
+                "reason": f"Transaction failed: {str(e)}"
+            }
+
+    async def _delete_outlook_edges(
+        self,
+        record_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """Delete Outlook specific edges."""
+        edge_strategies = {
+            CollectionNames.IS_OF_TYPE.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+            },
+            CollectionNames.RECORD_RELATIONS.value: {
+                "filter": "(edge._from == @record_from OR edge._to == @record_to)",
+                "bind_vars": {
+                    "record_from": f"records/{record_id}",
+                    "record_to": f"records/{record_id}",
+                },
+            },
+            CollectionNames.PERMISSION.value: {
+                "filter": "edge._to == @record_to",
+                "bind_vars": {"record_to": f"records/{record_id}"},
+            },
+            CollectionNames.BELONGS_TO.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+            },
+        }
+
+        query_template = """
+        FOR edge IN @@edge_collection
+            FILTER {filter}
+            REMOVE edge IN @@edge_collection
+            RETURN OLD
+        """
+
+        total_deleted = 0
+        for collection, strategy in edge_strategies.items():
+            try:
+                query = query_template.format(filter=strategy["filter"])
+                bind_vars = {"@edge_collection": collection}
+                bind_vars.update(strategy["bind_vars"])
+
+                result = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
+                deleted_count = len(result) if result else 0
+                total_deleted += deleted_count
+
+                if deleted_count > 0:
+                    self.logger.debug(f"Deleted {deleted_count} edges from {collection}")
+
+            except Exception as e:
+                self.logger.error(f"Failed to delete edges from {collection}: {e}")
+                raise
+
+        self.logger.debug(f"Total edges deleted for record {record_id}: {total_deleted}")
+
+    async def _delete_file_record(
+        self,
+        record_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """Delete file record from files collection."""
+        file_deletion_query = """
+        REMOVE @record_id IN @@files_collection
+        RETURN OLD
+        """
+
+        await self.http_client.execute_aql(
+            file_deletion_query,
+            bind_vars={
+                "record_id": record_id,
+                "@files_collection": CollectionNames.FILES.value,
+            },
+            txn_id=transaction
+        )
+
+    async def _delete_mail_record(
+        self,
+        record_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """Delete mail record from mails collection."""
+        mail_deletion_query = """
+        REMOVE @record_id IN @@mails_collection
+        RETURN OLD
+        """
+
+        await self.http_client.execute_aql(
+            mail_deletion_query,
+            bind_vars={
+                "record_id": record_id,
+                "@mails_collection": CollectionNames.MAILS.value,
+            },
+            txn_id=transaction
+        )
+
+    async def _delete_main_record(
+        self,
+        record_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """Delete main record from records collection."""
+        record_deletion_query = """
+        REMOVE @record_id IN @@records_collection
+        RETURN OLD
+        """
+
+        await self.http_client.execute_aql(
+            record_deletion_query,
+            bind_vars={
+                "record_id": record_id,
+                "@records_collection": CollectionNames.RECORDS.value,
+            },
+            txn_id=transaction
+        )
+
+    async def _delete_drive_specific_edges(
+        self,
+        record_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """Delete Google Drive specific edges with optimized queries."""
+        drive_edge_collections = self.connector_delete_permissions[Connectors.GOOGLE_DRIVE.value]["edge_collections"]
+
+        # Define edge deletion strategies - maps collection to query config
+        edge_deletion_strategies = {
+            CollectionNames.USER_DRIVE_RELATION.value: {
+                "filter": "edge._to == CONCAT('drives/', @record_id)",
+                "bind_vars": {"record_id": record_id},
+                "description": "Drive user relations"
+            },
+            CollectionNames.IS_OF_TYPE.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+                "description": "IS_OF_TYPE edges"
+            },
+            CollectionNames.PERMISSION.value: {
+                "filter": "edge._to == @record_to",
+                "bind_vars": {"record_to": f"records/{record_id}"},
+                "description": "Permission edges"
+            },
+            CollectionNames.BELONGS_TO.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+                "description": "Belongs to edges"
+            },
+            # Default strategy for bidirectional edges
+            "default": {
+                "filter": "edge._from == @record_from OR edge._to == @record_to",
+                "bind_vars": {
+                    "record_from": f"records/{record_id}",
+                    "record_to": f"records/{record_id}"
+                },
+                "description": "Bidirectional edges"
+            }
+        }
+
+        # Single query template for all edge collections
+        deletion_query_template = """
+        FOR edge IN @@edge_collection
+            FILTER {filter}
+            REMOVE edge IN @@edge_collection
+            RETURN OLD
+        """
+
+        total_deleted = 0
+
+        for edge_collection in drive_edge_collections:
+            try:
+                # Get strategy for this collection or use default
+                strategy = edge_deletion_strategies.get(edge_collection, edge_deletion_strategies["default"])
+
+                # Build query with specific filter
+                deletion_query = deletion_query_template.format(filter=strategy["filter"])
+
+                # Prepare bind variables
+                bind_vars = {
+                    "@edge_collection": edge_collection,
+                    **strategy["bind_vars"]
+                }
+
+                self.logger.debug(f"🔍 Deleting {strategy['description']} from {edge_collection}")
+
+                # Execute deletion
+                result = await self.http_client.execute_aql(deletion_query, bind_vars, txn_id=transaction)
+                deleted_count = len(result) if result else 0
+                total_deleted += deleted_count
+
+                if deleted_count > 0:
+                    self.logger.info(f"🗑️ Deleted {deleted_count} {strategy['description']} from {edge_collection}")
+                else:
+                    self.logger.debug(f"📝 No {strategy['description']} found in {edge_collection}")
+
+            except Exception as e:
+                self.logger.error(f"❌ Failed to delete edges from {edge_collection}: {str(e)}")
+                raise
+
+        self.logger.info(f"Total Drive edges deleted for record {record_id}: {total_deleted}")
+
+    async def _delete_drive_anyone_permissions(
+        self,
+        record_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """Delete Drive-specific 'anyone' permissions."""
+        anyone_deletion_query = """
+        FOR anyone_perm IN @@anyone
+            FILTER anyone_perm.file_key == @record_id
+            REMOVE anyone_perm IN @@anyone
+            RETURN OLD
+        """
+
+        await self.http_client.execute_aql(
+            anyone_deletion_query,
+            bind_vars={
+                "record_id": record_id,
+                "@anyone": CollectionNames.ANYONE.value,
+            },
+            txn_id=transaction
+        )
+
+    async def _delete_kb_specific_edges(
+        self,
+        record_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """Delete KB-specific edges."""
+        kb_edge_collections = self.connector_delete_permissions[Connectors.KNOWLEDGE_BASE.value]["edge_collections"]
+
+        edge_deletion_query = """
+        FOR edge IN @@edge_collection
+            FILTER edge._from == @record_from OR edge._to == @record_to
+            REMOVE edge IN @@edge_collection
+            RETURN OLD
+        """
+
+        total_deleted = 0
+        for edge_collection in kb_edge_collections:
+            try:
+                bind_vars = {
+                    "@edge_collection": edge_collection,
+                    "record_from": f"records/{record_id}",
+                    "record_to": f"records/{record_id}"
+                }
+
+                result = await self.http_client.execute_aql(edge_deletion_query, bind_vars, txn_id=transaction)
+                deleted_count = len(result) if result else 0
+                total_deleted += deleted_count
+
+                if deleted_count > 0:
+                    self.logger.debug(f"Deleted {deleted_count} edges from {edge_collection}")
+
+            except Exception as e:
+                self.logger.error(f"Failed to delete KB edges from {edge_collection}: {e}")
+                raise
+
+        self.logger.info(f"Total KB edges deleted for record {record_id}: {total_deleted}")
+
+    async def _execute_gmail_record_deletion(
+        self,
+        record_id: str,
+        record: Dict,
+        user_role: str,
+        transaction: Optional[str] = None
+    ) -> Dict:
+        """Execute Gmail record deletion."""
+        try:
+            # Get attachments (child records with ATTACHMENT relation)
+            attachments_query = f"""
+            FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+                FILTER edge._from == @record_from
+                    AND edge.relationshipType == 'ATTACHMENT'
+                RETURN PARSE_IDENTIFIER(edge._to).key
+            """
+
+            attachment_ids = await self.http_client.execute_aql(
+                attachments_query,
+                bind_vars={"record_from": f"records/{record_id}"},
+                txn_id=transaction
+            )
+            attachment_ids = attachment_ids if attachment_ids else []
+
+            # Delete all attachments first
+            for attachment_id in attachment_ids:
+                self.logger.info(f"Deleting attachment {attachment_id} of email {record_id}")
+                await self._delete_outlook_edges(attachment_id, transaction)
+                await self._delete_file_record(attachment_id, transaction)
+                await self._delete_main_record(attachment_id, transaction)
+
+            # Delete the email itself
+            await self._delete_outlook_edges(record_id, transaction)
+
+            # Delete mail record
+            await self._delete_mail_record(record_id, transaction)
+
+            # Delete main record
+            await self._delete_main_record(record_id, transaction)
+
+            self.logger.info(f"✅ Deleted Gmail record {record_id} with {len(attachment_ids)} attachments")
+
+            return {
+                "success": True,
+                "record_id": record_id,
+                "attachments_deleted": len(attachment_ids)
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Gmail deletion failed: {str(e)}")
+            return {
+                "success": False,
+                "reason": f"Transaction failed: {str(e)}"
+            }
+
+    async def _execute_drive_record_deletion(
+        self,
+        record_id: str,
+        record: Dict,
+        user_role: str,
+        transaction: Optional[str] = None
+    ) -> Dict:
+        """Execute Drive record deletion."""
+        try:
+            # Delete Drive-specific edges
+            await self._delete_drive_specific_edges(record_id, transaction)
+
+            # Delete 'anyone' permissions specific to Drive
+            await self._delete_drive_anyone_permissions(record_id, transaction)
+
+            # Delete file record
+            await self._delete_file_record(record_id, transaction)
+
+            # Delete main record
+            await self._delete_main_record(record_id, transaction)
+
+            self.logger.info(f"✅ Deleted Drive record {record_id}")
+
+            return {
+                "success": True,
+                "record_id": record_id,
+                "connector": Connectors.GOOGLE_DRIVE.value,
+                "user_role": user_role
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Drive deletion failed: {str(e)}")
+            return {
+                "success": False,
+                "reason": f"Transaction failed: {str(e)}"
+            }
+
+    async def _execute_kb_record_deletion(
+        self,
+        record_id: str,
+        record: Dict,
+        kb_context: Dict,
+        transaction: Optional[str] = None
+    ) -> Dict:
+        """Execute KB record deletion."""
+        try:
+            # Delete KB-specific edges
+            await self._delete_kb_specific_edges(record_id, transaction)
+
+            # Delete file record
+            await self._delete_file_record(record_id, transaction)
+
+            # Delete main record
+            await self._delete_main_record(record_id, transaction)
+
+            self.logger.info(f"✅ Deleted KB record {record_id}")
+
+            return {
+                "success": True,
+                "record_id": record_id,
+                "connector": Connectors.KNOWLEDGE_BASE.value,
+                "kb_context": kb_context
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ KB deletion failed: {str(e)}")
+            return {
+                "success": False,
+                "reason": f"Transaction failed: {str(e)}"
+            }
 
