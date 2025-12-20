@@ -48,6 +48,7 @@ const MultipleUserValidationSchema = z.object({
   params: z.object({}),
   headers: z.object({}),
 });
+
 const createUserBody = z.object({
   fullName: z.string().min(1, 'Full name is required'),
   email: z.string().email('Invalid email'),
@@ -59,6 +60,7 @@ const createUserBody = z.object({
     }),
   designation: z.string().optional(),
 });
+
 const updateUserBody = z.object({
   fullName: z.string().optional(),
   email: z.string().email('Invalid email').optional(),
@@ -82,6 +84,7 @@ const updateUserBody = z.object({
     })
     .optional(),
   dataCollectionConsent: z.boolean().optional(),
+  hasLoggedIn: z.boolean().optional(),
 }).strict(); // Use strict mode to reject unknown fields
 
 const createUserValidationSchema = z.object({
