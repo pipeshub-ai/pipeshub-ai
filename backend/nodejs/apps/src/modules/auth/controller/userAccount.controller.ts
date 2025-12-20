@@ -202,9 +202,7 @@ export class UserAccountController {
   ): Promise<void> {
     try {
       const { email } = req.body;
-      if (!email) {
-        throw new BadRequestError('Email is required');
-      }
+
       const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
       let result = await this.iamService.getUserByEmail(email, authToken);
 
