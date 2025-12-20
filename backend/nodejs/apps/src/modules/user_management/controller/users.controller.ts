@@ -133,6 +133,9 @@ export class UserController {
     const userId = req.params.id;
     const orgId = req.user?.orgId;
     try {
+      // Check if email should be included based on environment variable
+      const hideEmail = process.env.HIDE_EMAIL === 'true'; 
+
       const user = await Users.findOne({
         _id: userId,
         orgId,
@@ -143,6 +146,10 @@ export class UserController {
 
       if (!user) {
         throw new NotFoundError('User not found');
+      }
+
+      if (hideEmail) {
+        delete (user as any)?.email;
       }
 
       res.json(user);
