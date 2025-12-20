@@ -337,7 +337,6 @@ export class UserController {
         '_id',
         'orgId',
         'slug',
-        'hasLoggedIn',
         '__v',
       ];
 

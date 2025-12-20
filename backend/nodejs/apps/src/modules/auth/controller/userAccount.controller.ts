@@ -1287,7 +1287,7 @@ export class UserAccountController {
 
         if (!user.hasLoggedIn) {
           const userInfo = {
-            ...user,
+            email: user.email,
             hasLoggedIn: true,
           };
           await this.iamService.updateUser(user._id, userInfo, accessToken);

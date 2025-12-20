@@ -332,6 +332,10 @@ class ArangoTransactionStore(TransactionStore):
                         )
 
     async def batch_upsert_app_users(self, users: List[AppUser]) -> None:
+        # Return early if users list is empty
+        if not users:
+            return
+
         orgs = await self.arango_service.get_all_orgs()
         if not orgs:
             raise Exception("No organizations found in the database. Cannot initialize DataSourceEntitiesProcessor.")
