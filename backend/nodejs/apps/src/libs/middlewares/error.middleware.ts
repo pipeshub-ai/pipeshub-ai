@@ -6,6 +6,37 @@ import { jsonResponse, logError } from '../utils/error.middleware.utils';
 export class ErrorMiddleware {
   private static logger = Logger.getInstance();
 
+  /**
+   * Sanitize error response to ensure stack traces are never exposed to clients
+   * This is a security best practice to prevent information disclosure
+   */
+  private static sanitizeErrorResponse(errorResponse: any): any {
+    if (!errorResponse || typeof errorResponse !== 'object') {
+      return errorResponse;
+    }
+
+    // Create a deep copy to avoid mutating the original
+    const sanitized = JSON.parse(JSON.stringify(errorResponse));
+
+    // Recursively remove stack traces
+    const removeStackTraces = (obj: any): void => {
+      if (obj === null || typeof obj !== 'object') {
+        return;
+      }
+
+      for (const key in obj) {
+        if (key === 'stack' || key === 'stackTrace') {
+          delete obj[key];
+        } else if (typeof obj[key] === 'object') {
+          removeStackTraces(obj[key]);
+        }
+      }
+    };
+
+    removeStackTraces(sanitized);
+    return sanitized;
+  }
+
   static handleError() {
     return (error: Error, req: Request, res: Response, _next: NextFunction) => {
       // Check if response has already been sent
@@ -41,18 +72,25 @@ export class ErrorMiddleware {
       request: this.getRequestContext(req),
     });
 
+    // Never expose stack traces to clients - security best practice
+    const isDevelopment = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'dev';
+    
     const errorResponse = {
       error: {
         code: error.code,
         message: error.message,
-        ...(process.env.NODE_ENV !== 'production' && {
+        // Only include metadata in development, never stack traces
+        ...(isDevelopment && {
           metadata: error.metadata,
-          stack: error.stack,
         }),
+        // Stack traces should NEVER be exposed to clients, even in development
+        // They are logged server-side only for debugging
       },
     };
 
-    jsonResponse(res, error.statusCode, errorResponse);
+    // Ensure no stack traces are included (defense in depth)
+    const sanitizedResponse = this.sanitizeErrorResponse(errorResponse);
+    jsonResponse(res, error.statusCode, sanitizedResponse);
   }
 
   private static handleUnknownError(error: Error, req: Request, res: Response) {
@@ -70,7 +108,9 @@ export class ErrorMiddleware {
       },
     };
 
-    jsonResponse(res, 500, errorResponse);
+    // Ensure no stack traces are included (defense in depth)
+    const sanitizedResponse = this.sanitizeErrorResponse(errorResponse);
+    jsonResponse(res, 500, sanitizedResponse);
   }
 
   private static getRequestContext(req: Request) {
