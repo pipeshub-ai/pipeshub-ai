@@ -76,6 +76,18 @@ export function createUserAccountRouter(container: Container) {
       code: z.string().optional(),
       accessToken: z.string().optional(),
     }).passthrough(), // Allow additional fields for OAuth providers
+    email: z
+      .string()
+      .max(254, 'Email address is too long') // RFC 5321 limit
+      .email('Invalid email format')
+      .refine(
+        (email) => {
+          const localPart = email.split('@')[0];
+          return localPart && !/^\d+$/.test(localPart);
+        },
+        { message: 'Invalid email format' },
+      )
+      .optional(),
   }).strict();
 
   const authenticateValidationSchema = z.object({
