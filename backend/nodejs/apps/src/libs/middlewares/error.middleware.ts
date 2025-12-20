@@ -6,35 +6,38 @@ import { jsonResponse, logError } from '../utils/error.middleware.utils';
 export class ErrorMiddleware {
   private static logger = Logger.getInstance();
 
-  /**
-   * Sanitize error response to ensure stack traces are never exposed to clients
-   * This is a security best practice to prevent information disclosure
-   */
+
   private static sanitizeErrorResponse(errorResponse: any): any {
     if (!errorResponse || typeof errorResponse !== 'object') {
       return errorResponse;
     }
 
-    // Create a deep copy to avoid mutating the original
-    const sanitized = JSON.parse(JSON.stringify(errorResponse));
-
-    // Recursively remove stack traces
-    const removeStackTraces = (obj: any): void => {
+    const cloneAndSanitize = (obj: any, seen = new WeakSet()): any => {
       if (obj === null || typeof obj !== 'object') {
-        return;
+        return obj;
       }
 
+      if (seen.has(obj)) {
+        return '[Circular]';
+      }
+      seen.add(obj);
+
+      if (Array.isArray(obj)) {
+        return obj.map(item => cloneAndSanitize(item, seen));
+      }
+
+      const newObj: { [key: string]: any } = {};
       for (const key in obj) {
-        if (key === 'stack' || key === 'stackTrace') {
-          delete obj[key];
-        } else if (typeof obj[key] === 'object') {
-          removeStackTraces(obj[key]);
+        if (Object.prototype.hasOwnProperty.call(obj, key)) {
+          if (key !== 'stack' && key !== 'stackTrace') {
+            newObj[key] = cloneAndSanitize(obj[key], seen);
+          }
         }
       }
+      return newObj;
     };
 
-    removeStackTraces(sanitized);
-    return sanitized;
+    return cloneAndSanitize(errorResponse);
   }
 
   static handleError() {

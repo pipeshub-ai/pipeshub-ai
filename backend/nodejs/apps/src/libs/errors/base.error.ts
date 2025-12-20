@@ -24,8 +24,8 @@ export abstract class BaseError extends Error {
     Error.captureStackTrace(this, this.constructor);
   }
 
-  public toJSON(includeStack: boolean = false): Object {
-    const json: any = {
+  public toJSON(includeStack: boolean = false): Record<string, any> {
+    const json: Record<string, any> = {
       name: this.name,
       code: this.code,
       statusCode: this.statusCode,
