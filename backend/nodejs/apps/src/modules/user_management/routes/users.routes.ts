@@ -61,7 +61,7 @@ const createUserBody = z.object({
 });
 const updateUserBody = z.object({
   fullName: z.string().optional(),
-  email: z.string().email('Invalid email'),
+  email: z.string().email('Invalid email').optional(),
   mobile: z
     .string()
     .optional()
@@ -71,6 +71,7 @@ const updateUserBody = z.object({
   designation: z.string().optional(),
   firstName: z.string().optional(),
   lastName: z.string().optional(),
+  middleName: z.string().optional(),
   address: z
     .object({
       addressLine1: z.string().optional(),
@@ -80,8 +81,8 @@ const updateUserBody = z.object({
       country: z.string().optional(),
     })
     .optional(),
-  hasLoggedIn: z.boolean().optional(),
-});
+  dataCollectionConsent: z.boolean().optional(),
+}).strict(); // Use strict mode to reject unknown fields
 
 const createUserValidationSchema = z.object({
   body: createUserBody,

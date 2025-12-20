@@ -83,6 +83,10 @@ import {
 } from '../schema/agent.conversation.schema';
 import { Users } from '../../user_management/schema/users.schema';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
+import {
+  validateNoXSS,
+  validateNoFormatSpecifiers,
+} from '../../../utils/xss-sanitization';
 
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
@@ -175,6 +179,15 @@ export const streamChat =
     let savedConversation: IConversationDocument | null = null;
 
     const modelInfo = extractModelInfo(req.body);
+
+    // Validate query parameter for XSS and format specifiers
+    if (req.body.query && typeof req.body.query === 'string') {
+      validateNoXSS(req.body.query, 'query');
+      validateNoFormatSpecifiers(req.body.query, 'query');
+      
+    } else if (!req.body.query) {
+      throw new BadRequestError('Query is required');
+    }
 
     try {
       // Set SSE headers
@@ -561,6 +574,15 @@ export const createConversation =
 
     const modelInfo = extractModelInfo(req.body);
 
+    // Validate query parameter for XSS and format specifiers
+    if (req.body.query && typeof req.body.query === 'string') {
+      validateNoXSS(req.body.query, 'query');
+      validateNoFormatSpecifiers(req.body.query, 'query');
+
+    } else if (!req.body.query) {
+      throw new BadRequestError('Query is required');
+    }
+
     // Helper function that contains the common conversation operations.
     async function createConversationUtil(
       session?: ClientSession | null,
@@ -840,6 +862,16 @@ export const addMessage =
 
         req.headers.authorization = `Bearer ${jwtToken}`;
       }
+
+      // Validate query parameter for XSS and format specifiers
+      if (req.body.query && typeof req.body.query === 'string') {
+        validateNoXSS(req.body.query, 'query');
+        validateNoFormatSpecifiers(req.body.query, 'query');
+        
+      } else if (!req.body.query) {
+        throw new BadRequestError('Query is required');
+      }
+
       logger.debug('Adding message to conversation', {
         requestId,
         message: 'Adding message to conversation',
@@ -1123,6 +1155,15 @@ export const addMessageStream =
     let existingConversation: IConversationDocument | null = null;
 
     const modelInfo = extractModelInfo(req.body);
+
+    // Validate query parameter for XSS and format specifiers
+    if (req.body.query && typeof req.body.query === 'string') {
+      validateNoXSS(req.body.query, 'query');
+      validateNoFormatSpecifiers(req.body.query, 'query');
+      
+    } else if (!req.body.query) {
+      throw new BadRequestError('Query is required');
+    }
 
     // Helper function that contains the common conversation operations
     async function performAddMessageStream(
@@ -3298,6 +3339,12 @@ export const search =
     try {
       const { query, limit, filters } = req.body;
 
+      // Validate query parameter for XSS and format specifiers
+      if (query && typeof query === 'string') {
+        validateNoXSS(query, 'search query');
+        validateNoFormatSpecifiers(query, 'search query');
+      }
+
       logger.debug('Attempting to search', {
         requestId,
         query,
@@ -4531,6 +4578,15 @@ export const unshareAgent =
 
     const modelInfo = extractModelInfo(req.body);
 
+    // Validate query parameter for XSS and format specifiers
+    if (req.body.query && typeof req.body.query === 'string') {
+      validateNoXSS(req.body.query, 'query');
+      validateNoFormatSpecifiers(req.body.query, 'query');
+
+    } else if (!req.body.query) {
+      throw new BadRequestError('Query is required');
+    }
+
     try {
       // Set SSE headers
       res.writeHead(200, {
@@ -4840,6 +4896,15 @@ export const createAgentConversation =
 
     const modelInfo = extractModelInfo(req.body);
 
+    // Validate query parameter for XSS and format specifiers
+    if (req.body.query && typeof req.body.query === 'string') {
+      validateNoXSS(req.body.query, 'query');
+      validateNoFormatSpecifiers(req.body.query, 'query');
+
+    } else if (!req.body.query) {
+      throw new BadRequestError('Query is required');
+    }
+
     // Helper function that contains the common conversation operations.
     async function createConversationUtil(
       session?: ClientSession | null,
@@ -5068,6 +5133,15 @@ export const createAgentConversation =
     try {
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
+
+      // Validate query parameter for XSS and format specifiers
+      if (req.body.query && typeof req.body.query === 'string') {
+        validateNoXSS(req.body.query, 'query');
+        validateNoFormatSpecifiers(req.body.query, 'query');
+        
+      } else if (!req.body.query) {
+        throw new BadRequestError('Query is required');
+      }
 
       logger.debug('Adding message to conversation', {
         requestId,
@@ -5366,6 +5440,15 @@ export const addMessageStreamToAgentConversation =
     let existingConversation: IAgentConversationDocument | null = null;
 
     const modelInfo = extractModelInfo(req.body);
+
+    // Validate query parameter for XSS and format specifiers
+    if (req.body.query && typeof req.body.query === 'string') {
+      validateNoXSS(req.body.query, 'query');
+      validateNoFormatSpecifiers(req.body.query, 'query');
+      
+    } else if (!req.body.query) {
+      throw new BadRequestError('Query is required');
+    }
 
     // Helper function that contains the common conversation operations
     async function performAddMessageStream(
