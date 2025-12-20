@@ -1883,8 +1883,8 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
 async def get_records(
     request:Request,
     arango_service: BaseArangoService = Depends(get_arango_service),
-    page: int = 1,
-    limit: int = 20,
+    page: int = Query(1, ge=1, description="Page number (1-based)"),
+    limit: int = Query(20, ge=1, le=100, description="Number of items per page"),
     search: Optional[str] = None,
     record_types: Optional[str] = Query(None, description="Comma-separated list of record types"),
     origins: Optional[str] = Query(None, description="Comma-separated list of origins"),

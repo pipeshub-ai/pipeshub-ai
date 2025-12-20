@@ -42,6 +42,10 @@ import {
   IServiceRecord,
   IServiceRecordsResponse,
 } from '../types/service.records.response';
+import {
+  validateNoXSS,
+  validateNoFormatSpecifiers,
+} from '../../../utils/xss-sanitization';
 
 const logger = Logger.getInstance({
   service: 'Knowledge Base Service',
@@ -1431,8 +1435,23 @@ export class RecordRelationService {
       source: explicitSource = 'all',
     } = options;
 
-    // Calculate skip value for pagination
+    // Calculate skip value for pagination with overflow protection
+    // Validate inputs are safe integers
+    if (page > Number.MAX_SAFE_INTEGER || limit > Number.MAX_SAFE_INTEGER) {
+      throw new BadRequestError('Page or limit exceeds safe integer range');
+    }
+    
+    // Check for overflow: (page - 1) * limit
+    if (limit !== 0 && page - 1 > Number.MAX_SAFE_INTEGER / limit) {
+      throw new BadRequestError('Pagination calculation would overflow');
+    }
+    
     const skip = (page - 1) * limit;
+    
+    // Double-check result is safe
+    if (skip > Number.MAX_SAFE_INTEGER || skip < 0) {
+      throw new BadRequestError('Pagination skip value exceeds safe integer range');
+    }
 
     // Determine the effective source - if connectors are specified without an explicit source,
     // we should default to connector source only
@@ -1560,6 +1579,15 @@ export class RecordRelationService {
 
     // Add search filter if provided
     if (search) {
+      // Validate search parameter for XSS and format specifiers
+      validateNoXSS(search, 'search parameter');
+      validateNoFormatSpecifiers(search, 'search parameter');
+      
+      // Additional validation: limit search length
+      if (search.length > 1000) {
+        throw new BadRequestError('Search parameter too long (max 1000 characters)');
+      }
+      
       baseFilter = aql`
       ${baseFilter} AND (
         LIKE(LOWER(record.recordName), ${'%' + search.toLowerCase() + '%'}) OR 

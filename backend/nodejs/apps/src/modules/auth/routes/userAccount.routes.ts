@@ -25,6 +25,28 @@ const otpGenerationValidationSchema = z.object({
   headers: z.object({}),
 });
 
+const initAuthBody = z.object({
+  email: z
+    .string()
+    .min(1, 'Email is required')
+    .max(254, 'Email address is too long') // RFC 5321 limit
+    .email('Invalid email format')
+    .refine(
+      (email) => {
+        const localPart = email.split('@')[0];
+        return localPart && !/^\d+$/.test(localPart);
+      },
+      { message: 'Invalid email format' },
+    ),
+});
+
+const initAuthValidationSchema = z.object({
+  body: initAuthBody,
+  query: z.object({}),
+  params: z.object({}),
+  headers: z.object({}),
+});
+
 export function createUserAccountRouter(container: Container) {
   const router = Router();
 
@@ -33,6 +55,7 @@ export function createUserAccountRouter(container: Container) {
 
   router.post(
     '/initAuth',
+    ValidationMiddleware.validate(initAuthValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         const userAccountController = container.get<UserAccountController>(
@@ -44,9 +67,28 @@ export function createUserAccountRouter(container: Container) {
       }
     },
   );
+  const authenticateBody = z.object({
+    method: z.string().min(1, 'Authentication method is required'),
+    credentials: z.object({
+      password: z.string().optional(),
+      otp: z.number().optional(),
+      token: z.string().optional(),
+      code: z.string().optional(),
+      accessToken: z.string().optional(),
+    }).passthrough(), // Allow additional fields for OAuth providers
+  }).strict();
+
+  const authenticateValidationSchema = z.object({
+    body: authenticateBody,
+    query: z.object({}),
+    params: z.object({}),
+    headers: z.object({}),
+  });
+
   router.post(
     '/authenticate',
     authSessionMiddleware,
+    ValidationMiddleware.validate(authenticateValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         const userAccountController = container.get<UserAccountController>(
