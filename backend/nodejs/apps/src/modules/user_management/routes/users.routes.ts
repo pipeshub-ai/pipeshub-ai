@@ -268,7 +268,6 @@ export function createUserRouter(container: Container) {
             orgId,
             isDeleted: false,
           })
-            .select('_id slug orgId fullName firstName lastName middleName email designation hasLoggedIn createdAt updatedAt')
             .lean()
             .exec();
 

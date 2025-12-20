@@ -81,10 +81,15 @@ const createRequestContext = (req: Request): RequestContext => {
  */
 export const requestContextMiddleware = (
   req: Request,
-  _res: Response,
+  res: Response,
   next: NextFunction
 ): void => {
   req.context = createRequestContext(req);
+
+  if(process.env.NEED_REQUEST_ID_HEADER === 'true') {
+    res.setHeader("X-Request-ID", req.context.requestId);
+  }
+  
   // DO NOT expose internal request IDs to clients (security/privacy concern)
   // Only use internally for logging and debugging
   next();
