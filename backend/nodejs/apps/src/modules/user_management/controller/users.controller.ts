@@ -330,6 +330,7 @@ export class UserController {
         'mobile',
         'address',
         'dataCollectionConsent',
+        'hasLoggedIn',
       ] as const;
 
       // List of sensitive system fields that must never be updated via API
