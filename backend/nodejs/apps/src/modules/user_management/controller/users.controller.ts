@@ -137,6 +137,7 @@ export class UserController {
         orgId,
         isDeleted: false,
       })
+        .select('_id slug orgId fullName firstName lastName middleName designation hasLoggedIn createdAt updatedAt')
         .lean()
         .exec();
 

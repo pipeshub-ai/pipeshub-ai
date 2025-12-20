@@ -77,14 +77,15 @@ const createRequestContext = (req: Request): RequestContext => {
 
 /**
  * Express middleware to attach request context to the req object.
+ * Note: Request ID is kept internal for logging/debugging and NOT exposed to clients
  */
 export const requestContextMiddleware = (
   req: Request,
-  res: Response,
+  _res: Response,
   next: NextFunction
 ): void => {
   req.context = createRequestContext(req);
-  // Add request ID to response headers
-  res.setHeader("X-Request-ID", req.context.requestId);
+  // DO NOT expose internal request IDs to clients (security/privacy concern)
+  // Only use internally for logging and debugging
   next();
 };
