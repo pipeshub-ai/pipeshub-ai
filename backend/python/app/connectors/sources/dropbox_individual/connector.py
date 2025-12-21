@@ -777,6 +777,11 @@ class DropboxIndividualConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Dropbox connection test failed: {e}", exc_info=True)
             return False
+    
+    async def reindex_records(self, record_results: List[Record]) -> None:
+        """Reindex records - not implemented for Dropbox yet."""
+        self.logger.warning("Reindex not implemented for Dropbox connector")
+        pass
 
     def handle_webhook_notification(self, notification: Dict) -> None:
         """Handle webhook notifications by triggering incremental sync."""
