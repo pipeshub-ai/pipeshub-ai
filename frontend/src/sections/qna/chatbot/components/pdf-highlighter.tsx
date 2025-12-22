@@ -147,7 +147,7 @@ const processHighlight = (citation: DocumentContent): HighlightType | null => {
     const PAGE_WIDTH = 967;
     const PAGE_HEIGHT = 747.2272727272727;
     // If we don't have a valid bounding box but have a page number, create a page-only highlight
-    // This creates a minimal highlight at the top of the page to enable scrolling
+    
     if (!boundingBox || boundingBox.length !== 4) {
       const pageTopRect = {
         x1: 0,
