@@ -391,7 +391,7 @@ class EventProcessor:
                     temp_doc = fitz.open(stream=file_content, filetype="pdf")
 
                     # Check if 50% or more pages need OCR
-                    ocr_pages = [OCRStrategy.needs_ocr(page) for page in temp_doc]
+                    ocr_pages = [OCRStrategy.needs_ocr(page, self.logger) for page in temp_doc]
                     needs_ocr = sum(ocr_pages) >= len(ocr_pages) * 0.5 if ocr_pages else False
                     temp_doc.close()
 

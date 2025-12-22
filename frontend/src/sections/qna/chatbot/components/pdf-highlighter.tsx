@@ -153,7 +153,7 @@ const processHighlight = (citation: DocumentContent): HighlightType | null => {
         x1: 0,
         y1: 0,
         x2: PAGE_WIDTH,
-        y2: PAGE_HEIGHT, // Minimal height at top of page - nearly invisible but allows scrolling
+        y2: PAGE_HEIGHT, 
         width: PAGE_WIDTH,
         height: PAGE_HEIGHT,
         pageNumber,

@@ -819,10 +819,10 @@ class Processor:
                             page_number=page_number
                         )
                     except Exception as e:
-                        self.logger.warning(f"⚠️ Failed to process page {page_number}: {e}")
-                        continue
+                        self.logger.error(f"❌ Failed to process page {page_number}: {str(e)}")
+                        raise
                     
-                    if page_block_containers and page_block_containers is not False:
+                    if page_block_containers:
                         # Adjust block indices to be unique across all pages
                         for block in page_block_containers.blocks:
                             block.index = block.index + block_index_offset

@@ -43,7 +43,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
 
         # Check if any page needs OCR
         self.logger.debug("🔍 Checking if document needs OCR")
-        needs_ocr = any(OCRStrategy.needs_ocr(page) for page in temp_doc)
+        needs_ocr = any(OCRStrategy.needs_ocr(page, self.logger) for page in temp_doc)
         self._needs_ocr = needs_ocr
         self.logger.debug(f"📊 OCR need determination: {needs_ocr}")
 

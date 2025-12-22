@@ -24,7 +24,7 @@ class OCRStrategy(ABC):
 
 
     @staticmethod
-    def needs_ocr(page) -> bool:
+    def needs_ocr(page,logger) -> bool:
         """Determine if a page needs OCR processing"""
         try:
 
@@ -75,13 +75,15 @@ class OCRStrategy(ABC):
                     # pix.save(f"image_{img_index + 1}_{uuid4()}.png")
 
                     pix = None  # Free memory
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"❌ Error extracting image {img_index + 1}: {str(e)}")
                     pass
 
             needs_ocr = (has_minimal_text and has_significant_images) or low_density
             return needs_ocr
 
-        except Exception:
+        except Exception as e:
+            logger.warning(f"❌ Error in needs_ocr function: {str(e)}")
             return True
 
 
