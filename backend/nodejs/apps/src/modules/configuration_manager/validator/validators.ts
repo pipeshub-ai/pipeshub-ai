@@ -507,9 +507,10 @@ export const aiModelsConfigSchema = z.object({
       llm: z.array(modelConfigurationSchema).optional(),
       reasoning: z.array(modelConfigurationSchema).optional(),
       multiModal: z.array(modelConfigurationSchema).optional(),
+      custom_system_prompt: z.string().optional().nullable(),
     })
     .strict({
-      message: 'ai models can be ocr, embedding, llm, slm, reasoning, multimodal',
+      message: 'ai models can be ocr, embedding, llm, slm, reasoning, multimodal, custom_system_prompt',
     })
     .refine(
       (data) => {

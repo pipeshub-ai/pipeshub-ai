@@ -133,7 +133,7 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
     # Get initial config
     ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value)
     llm_configs = ai_models["llm"]
-
+    
     # Search based on provided parameters
     if model_key is None and model_name is None:
         # Return default config
@@ -163,13 +163,16 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
 
     return llm_configs
 
-
 async def get_llm_for_chat(config_service: ConfigurationService, model_key: str = None, model_name: str = None, chat_mode: str = "standard") -> Tuple[BaseChatModel, dict]:
     """Get LLM instance based on user selection or fallback to default"""
     try:
         llm_config = await get_model_config(config_service, model_key, model_name)
         if not llm_config:
             raise ValueError("No LLM configurations found")
+
+        # Handle list of configs - extract first one if we got a list
+        if isinstance(llm_config, list):
+            llm_config = llm_config[0]
 
         # If user specified a model, try to find it
         if model_key and model_name:
@@ -188,8 +191,6 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
             return get_generator_model(model_provider, llm_config, default_model_name), llm_config
 
         # Fallback to first available model
-        if isinstance(llm_config, list):
-            llm_config = llm_config[0]
         model_string = llm_config.get("configuration", {}).get("model")
         model_names = [name.strip() for name in model_string.split(",") if name.strip()]
         default_model_name = model_names[0]
@@ -603,6 +604,13 @@ async def askAIStream(
 
                 # Prepare messages
                 mode_config = get_model_config_for_mode(query_info.chatMode)
+                ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value)
+                
+                custom_system_prompt = ai_models.get("custom_system_prompt", "")
+                if custom_system_prompt:
+                    logger.info(f"Custom system prompt: {custom_system_prompt}")
+                    mode_config["system_prompt"] = custom_system_prompt
+
                 messages = [{"role": "system", "content": mode_config["system_prompt"]}]
 
                 # Add conversation history
@@ -637,6 +645,7 @@ async def askAIStream(
                 return
             except Exception as e:
                 yield create_sse_event("error", {"error": str(e)})
+                logger.error(f"Error in streaming AI: {str(e)}", exc_info=True)
                 return
 
             # Stream response with enhanced tool support using your existing implementation
