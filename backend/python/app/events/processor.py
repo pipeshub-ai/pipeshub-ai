@@ -697,7 +697,7 @@ class Processor:
             self.logger.error(f"❌ Error processing PDF document with external Docling service: {str(e)}")
             raise
 
-    async def process_pdf_document(
+    async def process_pdf_document_with_ocr(
         self, recordName, recordId, version, source, orgId, pdf_binary, virtual_record_id
     ) -> None:
         """Process PDF document with automatic OCR selection based on environment settings"""
@@ -791,9 +791,81 @@ class Processor:
             self.logger.debug("✅ OCR processing completed")
 
             if provider == OCRProvider.VLM_OCR.value:
-                markdown_content = ocr_result.get("markdown", "")
-                self.logger.info(f"📝 Markdown content: {markdown_content}")
-                await self.process_md_document(recordName, recordId, markdown_content, virtual_record_id)
+                pages = ocr_result.get("pages", [])
+                self.logger.info(f"📄 Processing {len(pages)} pages from VLM OCR")
+                
+                all_blocks = []
+                all_block_groups = []
+                block_index_offset = 0
+                block_group_index_offset = 0
+                processor = DoclingProcessor(logger=self.logger, config=self.config_service)
+                
+                for page in pages:
+                    page_number = page.get("page_number")
+                    page_markdown = page.get("markdown", "")
+                    
+                    if not page_markdown.strip():
+                        self.logger.debug(f"⏭️ Skipping empty page {page_number}")
+                        continue
+                    
+                    # Process each page through DoclingProcessor with page number
+                    page_filename = f"{Path(recordName).stem}_page_{page_number}.md"
+                    md_bytes = page_markdown.encode('utf-8')
+                    
+                    try:
+                        page_block_containers = await processor.load_document(
+                            page_filename, 
+                            md_bytes, 
+                            page_number=page_number
+                        )
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ Failed to process page {page_number}: {e}")
+                        continue
+                    
+                    if page_block_containers and page_block_containers is not False:
+                        # Adjust block indices to be unique across all pages
+                        for block in page_block_containers.blocks:
+                            block.index = block.index + block_index_offset
+                            if block.parent_index is not None:
+                                block.parent_index = block.parent_index + block_group_index_offset
+                            all_blocks.append(block)
+                        
+                        for block_group in page_block_containers.block_groups:
+                            block_group.index = block_group.index + block_group_index_offset
+                            if block_group.parent_index is not None:
+                                block_group.parent_index = block_group.parent_index + block_group_index_offset
+                            # Adjust children indices
+                            if block_group.children:
+                                for child in block_group.children:
+                                    if child.block_index is not None:
+                                        child.block_index = child.block_index + block_index_offset
+                                    if child.block_group_index is not None:
+                                        child.block_group_index = child.block_group_index + block_group_index_offset
+                            all_block_groups.append(block_group)
+                        
+                        block_index_offset = len(all_blocks)
+                        block_group_index_offset = len(all_block_groups)
+                
+                # Create combined BlocksContainer
+                combined_block_containers = BlocksContainer(blocks=all_blocks, block_groups=all_block_groups)
+                self.logger.info(f"📦 Combined {len(all_blocks)} blocks and {len(all_block_groups)} block groups from all pages")
+                
+                # Get record and run indexing pipeline
+                record = await self.arango_service.get_document(recordId, CollectionNames.RECORDS.value)
+                if record is None:
+                    self.logger.error(f"❌ Record {recordId} not found in database")
+                    return
+                record = convert_record_dict_to_record(record)
+                record.block_containers = combined_block_containers
+                record.virtual_record_id = virtual_record_id
+                
+                ctx = TransformContext(record=record)
+                pipeline = IndexingPipeline(
+                    document_extraction=self.document_extraction, 
+                    sink_orchestrator=self.sink_orchestrator
+                )
+                await pipeline.apply(ctx)
+                
                 self.logger.info("✅ PDF processing completed successfully using VLM OCR")
                 return
             # Extract domain metadata from paragraphs

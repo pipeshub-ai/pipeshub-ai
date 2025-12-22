@@ -292,7 +292,6 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 "width": page.rect.width,
                 "height": page.rect.height,
             }
-
         except Exception as e:
             self.logger.error(f"❌ Error processing page {page_number}: {str(e)}")
             # Re-raise the error instead of returning empty markdown
@@ -381,7 +380,6 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             self.document_analysis_result = await self._preprocess_document()
 
             self.logger.info("✅ Document loaded and processed successfully")
-
         except Exception as e:
             self.logger.error(f"❌ Error loading document: {str(e)}")
             raise
