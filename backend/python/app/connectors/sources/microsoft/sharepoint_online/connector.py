@@ -193,7 +193,7 @@ class SharePointConnector(BaseConnector):
         config_service: ConfigurationService,
         connector_id: str
     ) -> None:
-        super().__init__(SharePointOnlineApp(), logger, data_entities_processor, data_store_provider, config_service, connector_id)
+        super().__init__(SharePointOnlineApp(connector_id), logger, data_entities_processor, data_store_provider, config_service, connector_id)
 
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
             return SyncPoint(

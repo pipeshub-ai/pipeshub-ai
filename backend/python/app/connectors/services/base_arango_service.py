@@ -4840,7 +4840,7 @@ class BaseArangoService:
 
                     RETURN MERGE(user, {
                         sourceUserId: edge.sourceUserId,
-                        appName: UPPER(app.name)
+                        appName: UPPER(app.type),
                         connectorId: app._key
                     })
             """

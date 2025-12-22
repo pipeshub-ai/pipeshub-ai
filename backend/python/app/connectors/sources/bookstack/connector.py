@@ -131,7 +131,7 @@ class BookStackConnector(BaseConnector):
         connector_id: str
     ) -> None:
         super().__init__(
-            BookStackApp(),
+            BookStackApp(connector_id),
             logger,
             data_entities_processor,
             data_store_provider,

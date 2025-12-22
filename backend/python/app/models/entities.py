@@ -901,7 +901,7 @@ class AppUser(BaseModel):
             is_active=data.get("isActive", False),
             full_name=data.get("fullName", None),
             source_user_id=data.get("sourceUserId", ""),
-            app_name=Connectors(data.get("appName", Connectors.UNKNOWN.value)),
+            app_name=Connectors(data.get("appName", Connectors.UNKNOWN.value).replace("_", " ").upper()),
             connector_id=data.get("connectorId", ""),
         )
 

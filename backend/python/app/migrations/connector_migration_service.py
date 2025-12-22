@@ -14,8 +14,10 @@ Migration Steps:
 7. Backfill connectorId on app user groups
 8. Backfill connectorId on roles
 9. Migrate sync points to reference new connector IDs
-10. Copy etcd configurations to new instance paths
-11. Clean up legacy documents and relationships
+10. Migrate page tokens to reference new connector IDs
+11. Migrate channel history to reference new connector IDs
+12. Copy etcd configurations to new instance paths
+13. Clean up legacy documents and relationships
 
 The migration is idempotent and can be safely re-run.
 All operations within a single app migration are atomic via transactions.
@@ -48,6 +50,8 @@ class ConnectorMigrationService:
     - Backfilling connector IDs on app user groups
     - Backfilling connector IDs on roles
     - Migrating sync points to reference new connector IDs
+    - Migrating page tokens to reference new connector IDs
+    - Migrating channel history to reference new connector IDs
     - Copying etcd configurations
     - Cleaning up legacy data
 
@@ -209,6 +213,8 @@ class ConnectorMigrationService:
                     CollectionNames.GROUPS.value,
                     CollectionNames.ROLES.value,
                     CollectionNames.SYNC_POINTS.value,
+                    CollectionNames.PAGE_TOKENS.value,
+                    CollectionNames.CHANNEL_HISTORY.value,
                 ]
             )
 
@@ -220,37 +226,52 @@ class ConnectorMigrationService:
             # Step 2: Migrate organizational relationships
             await self._fix_org_edges(legacy_app, new_app, transaction)
 
-            # Step 3: Migrate user-app relationships
+            # Step 3: Migrate page tokens (only for Drive connectors, before user-app edges are migrated)
+            connector_type = legacy_app.get("name", "") or legacy_app.get("type", "")
+            updated_page_tokens = 0
+            if connector_type.lower() == "drive":
+                updated_page_tokens = await self._migrate_page_tokens(
+                    legacy_app, new_app, transaction
+                )
+
+            # Step 4: Migrate channel history (only for Gmail connectors, before user-app edges are migrated)
+            updated_channel_history = 0
+            if connector_type.lower() == "gmail":
+                updated_channel_history = await self._migrate_channel_history(
+                    legacy_app, new_app, transaction
+                )
+
+            # Step 5: Migrate user-app relationships
             updated_user_edges = await self._fix_user_app_edges(
                 legacy_app, new_app, transaction
             )
 
-            # Step 4: Backfill connector IDs on records
+            # Step 6: Backfill connector IDs on records
             updated_records = await self._backfill_record_connector_ids(
                 legacy_app, new_app, transaction
             )
 
-            # Step 5: Backfill connector IDs on record groups
+            # Step 7: Backfill connector IDs on record groups
             updated_record_groups = await self._backfill_record_group_connector_ids(
                 legacy_app, new_app, transaction
             )
 
-            # Step 6: Backfill connector IDs on app user groups
+            # Step 8: Backfill connector IDs on app user groups
             updated_user_groups = await self._backfill_user_group_connector_ids(
                 legacy_app, new_app, transaction
             )
 
-            # Step 7: Backfill connector IDs on roles
+            # Step 9: Backfill connector IDs on roles
             updated_roles = await self._backfill_role_connector_ids(
                 legacy_app, new_app, transaction
             )
 
-            # Step 8: Migrate sync points
+            # Step 10: Migrate sync points
             updated_sync_points = await self._migrate_sync_points(
                 legacy_app, new_app, transaction
             )
 
-            # Step 9: Delete legacy app and edges
+            # Step 11: Delete legacy app and edges
             await self._delete_legacy_app_and_edges(legacy_app, transaction)
 
             # Step 10: Commit transaction
@@ -276,6 +297,8 @@ class ConnectorMigrationService:
                 "updated_roles": updated_roles,
                 "updated_user_edges": updated_user_edges,
                 "updated_sync_points": updated_sync_points,
+                "updated_page_tokens": updated_page_tokens,
+                "updated_channel_history": updated_channel_history,
                 "connector_type": connector_name
             }
 
@@ -868,6 +891,222 @@ class ConnectorMigrationService:
 
         return updated_count
 
+    async def _migrate_page_tokens(
+        self,
+        legacy_app: Dict,
+        new_app: Dict,
+        transaction
+    ) -> int:
+        """
+        Migrate page tokens from legacy connector to new UUID-based connector ID.
+
+        IMPORTANT: This method should ONLY be called for Drive connectors.
+        Page tokens are Drive-specific and should not be migrated for other connector types.
+
+        Page tokens are associated with users via userEmail. We need to find all
+        page tokens for users that have user-app edges to the legacy connector,
+        and update them to include the new connector ID.
+
+        Args:
+            legacy_app: Legacy app document (should be a Drive connector)
+            new_app: New app document with UUID key
+            transaction: Active ArangoDB transaction
+
+        Returns:
+            int: Number of page tokens migrated
+        """
+        legacy_key = legacy_app.get("_key", "")
+        new_connector_id = new_app["_key"]
+        legacy_app_id = f"{CollectionNames.APPS.value}/{legacy_key}"
+
+        # Find all users that have user-app edges to the legacy connector
+        # Then find their page tokens and update them
+        query = f"""
+            FOR edge IN {CollectionNames.USER_APP_RELATION.value}
+              FILTER edge._to == @legacy_app_id
+              FOR user IN users
+                FILTER user._id == edge._from
+              FOR token IN {CollectionNames.PAGE_TOKENS.value}
+                FILTER token.userEmail == user.email
+                FILTER !HAS(token, "connectorId") OR token.connectorId == null OR token.connectorId == ""
+              RETURN {{
+                token: token,
+                userEmail: user.email
+              }}
+        """
+
+        try:
+            results = list(
+                transaction.aql.execute(
+                    query,
+                    bind_vars={"legacy_app_id": legacy_app_id}
+                )
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"Could not query page tokens for {legacy_key}: {e} (non-fatal)"
+            )
+            return 0
+
+        if not results:
+            self.logger.debug(f"No page tokens found for connector {legacy_key}")
+            return 0
+
+        updated_count = 0
+        for result in results:
+            try:
+                token = result["token"]
+                token_key = token.get("_key")
+                if not token_key:
+                    self.logger.warning(
+                        f"Page token missing _key, skipping: {result.get('userEmail', 'unknown')}"
+                    )
+                    continue
+
+                # Update the page token with the new connector ID
+                update_query = f"""
+                    UPDATE {{ _key: @token_key }} WITH {{
+                        connectorId: @new_connector_id
+                    }} IN {CollectionNames.PAGE_TOKENS.value}
+                    RETURN NEW
+                """
+
+                transaction.aql.execute(
+                    update_query,
+                    bind_vars={
+                        "token_key": token_key,
+                        "new_connector_id": new_connector_id,
+                    },
+                )
+
+                updated_count += 1
+                self.logger.debug(
+                    f"Migrated page token for user {result['userEmail']} "
+                    f"to connector {new_connector_id}"
+                )
+
+            except Exception as e:
+                self.logger.warning(
+                    f"Failed to migrate page token for {result.get('userEmail', 'unknown')}: {e}"
+                )
+                continue
+
+        if updated_count > 0:
+            self.logger.info(
+                f"Migrated {updated_count} page tokens for connector "
+                f"{legacy_key} -> {new_connector_id}"
+            )
+
+        return updated_count
+
+    async def _migrate_channel_history(
+        self,
+        legacy_app: Dict,
+        new_app: Dict,
+        transaction
+    ) -> int:
+        """
+        Migrate channel history from legacy connector to new UUID-based connector ID.
+
+        IMPORTANT: This method should ONLY be called for Gmail connectors.
+        Channel history is Gmail-specific and should not be migrated for other connector types.
+
+        Channel history is associated with users via userEmail. We need to find all
+        channel history for users that have user-app edges to the legacy connector,
+        and update them to include the new connector ID.
+
+        Args:
+            legacy_app: Legacy app document (should be a Gmail connector)
+            new_app: New app document with UUID key
+            transaction: Active ArangoDB transaction
+
+        Returns:
+            int: Number of channel history records migrated
+        """
+        legacy_key = legacy_app.get("_key", "")
+        new_connector_id = new_app["_key"]
+        legacy_app_id = f"{CollectionNames.APPS.value}/{legacy_key}"
+
+        # Find all users that have user-app edges to the legacy connector
+        # Then find their channel history and update them
+        query = f"""
+            FOR edge IN {CollectionNames.USER_APP_RELATION.value}
+              FILTER edge._to == @legacy_app_id
+              FOR user IN users
+                FILTER user._id == edge._from
+              FOR history IN {CollectionNames.CHANNEL_HISTORY.value}
+                FILTER history.userEmail == user.email
+                FILTER !HAS(history, "connectorId") OR history.connectorId == null OR history.connectorId == ""
+              RETURN {{
+                history: history,
+                userEmail: user.email
+              }}
+        """
+
+        try:
+            results = list(
+                transaction.aql.execute(
+                    query,
+                    bind_vars={"legacy_app_id": legacy_app_id}
+                )
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"Could not query channel history for {legacy_key}: {e} (non-fatal)"
+            )
+            return 0
+
+        if not results:
+            self.logger.debug(f"No channel history found for connector {legacy_key}")
+            return 0
+
+        updated_count = 0
+        for result in results:
+            try:
+                history = result["history"]
+                history_key = history.get("_key")
+                if not history_key:
+                    self.logger.warning(
+                        f"Channel history missing _key, skipping: {result.get('userEmail', 'unknown')}"
+                    )
+                    continue
+
+                # Update the channel history with the new connector ID
+                update_query = f"""
+                    UPDATE {{ _key: @history_key }} WITH {{
+                        connectorId: @new_connector_id
+                    }} IN {CollectionNames.CHANNEL_HISTORY.value}
+                    RETURN NEW
+                """
+
+                transaction.aql.execute(
+                    update_query,
+                    bind_vars={
+                        "history_key": history_key,
+                        "new_connector_id": new_connector_id,
+                    },
+                )
+
+                updated_count += 1
+                self.logger.debug(
+                    f"Migrated channel history for user {result['userEmail']} "
+                    f"to connector {new_connector_id}"
+                )
+
+            except Exception as e:
+                self.logger.warning(
+                    f"Failed to migrate channel history for {result.get('userEmail', 'unknown')}: {e}"
+                )
+                continue
+
+        if updated_count > 0:
+            self.logger.info(
+                f"Migrated {updated_count} channel history records for connector "
+                f"{legacy_key} -> {new_connector_id}"
+            )
+
+        return updated_count
+
     async def _delete_legacy_app_and_edges(
         self,
         legacy_app: Dict,
@@ -1008,6 +1247,10 @@ class ConnectorMigrationService:
                     updates.append(f"{result['updated_user_edges']} user-app edges")
                 if result.get("updated_sync_points", 0) > 0:
                     updates.append(f"{result['updated_sync_points']} sync points")
+                if result.get("updated_page_tokens", 0) > 0:
+                    updates.append(f"{result['updated_page_tokens']} page tokens")
+                if result.get("updated_channel_history", 0) > 0:
+                    updates.append(f"{result['updated_channel_history']} channel history")
 
                 if updates:
                     self.logger.info(

@@ -189,7 +189,7 @@ class OutlookConnector(BaseConnector):
         connector_id: str
     ) -> None:
         super().__init__(
-            OutlookApp(),
+            OutlookApp(connector_id),
             logger,
             data_entities_processor,
             data_store_provider,

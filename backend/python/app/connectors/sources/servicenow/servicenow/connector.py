@@ -186,7 +186,7 @@ class ServiceNowConnector(BaseConnector):
             config_service: Configuration service
         """
         super().__init__(
-            ServicenowApp(),
+            ServicenowApp(connector_id),
             logger,
             data_entities_processor,
             data_store_provider,

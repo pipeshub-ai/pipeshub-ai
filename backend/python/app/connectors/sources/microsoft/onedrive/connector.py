@@ -125,7 +125,7 @@ class OneDriveCredentials:
 class OneDriveConnector(BaseConnector):
     def __init__(self, logger: Logger, data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> None:
-        super().__init__(OneDriveApp(), logger, data_entities_processor, data_store_provider, config_service, connector_id)
+        super().__init__(OneDriveApp(connector_id), logger, data_entities_processor, data_store_provider, config_service, connector_id)
 
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
             return SyncPoint(
@@ -191,7 +191,7 @@ class OneDriveConnector(BaseConnector):
             raise ValueError(f"Failed to initialize OneDrive credential: {token_error}")
 
         self.client = GraphServiceClient(self.credential, scopes=["https://graph.microsoft.com/.default"])
-        self.msgraph_client = MSGraphClient(self.connector_name, self.client, self.logger)
+        self.msgraph_client = MSGraphClient(self.connector_name, self.connector_id, self.client, self.logger)
         return True
 
     async def _process_delta_item(self, item: DriveItem) -> Optional[RecordUpdate]:
@@ -1022,7 +1022,7 @@ class OneDriveConnector(BaseConnector):
                 self.credential,
                 scopes=["https://graph.microsoft.com/.default"]
             )
-            self.msgraph_client = MSGraphClient(self.connector_name, self.client, self.logger)
+            self.msgraph_client = MSGraphClient(self.connector_name, self.connector_id, self.client, self.logger)
 
             self.logger.info("✅ Credential successfully reinitialized")
 

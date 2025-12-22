@@ -514,7 +514,7 @@ class JiraClient:
 class JiraConnector(BaseConnector):
     def __init__(self, logger: Logger, data_entities_processor: DataSourceEntitiesProcessor,
                  data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> None:
-        super().__init__(JiraApp(), logger, data_entities_processor, data_store_provider, config_service, connector_id)
+        super().__init__(JiraApp(connector_id), logger, data_entities_processor, data_store_provider, config_service, connector_id)
         self.provider = None
         self.connector_id = connector_id
 

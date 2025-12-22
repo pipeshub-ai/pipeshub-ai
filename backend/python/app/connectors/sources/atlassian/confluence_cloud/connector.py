@@ -216,7 +216,7 @@ class ConfluenceConnector(BaseConnector):
     ) -> None:
         """Initialize the Confluence connector."""
         super().__init__(
-            ConfluenceApp(),
+            ConfluenceApp(connector_id),
             logger,
             data_entities_processor,
             data_store_provider,

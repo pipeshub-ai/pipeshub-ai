@@ -207,7 +207,7 @@ class DropboxConnector(BaseConnector):
         connector_id: str,
     ) -> None:
 
-        super().__init__(DropboxApp(), logger, data_entities_processor, data_store_provider, config_service, connector_id)
+        super().__init__(DropboxApp(connector_id), logger, data_entities_processor, data_store_provider, config_service, connector_id)
 
         self.connector_name = Connectors.DROPBOX
         self.connector_id = connector_id
