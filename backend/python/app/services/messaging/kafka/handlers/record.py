@@ -205,6 +205,7 @@ class RecordEventHandler(BaseEventService):
                 MimeTypes.GOOGLE_SHEETS.value,
                 MimeTypes.HTML.value,
                 MimeTypes.PLAIN_TEXT.value,
+                MimeTypes.MARKDOWN.value,
                 MimeTypes.PNG.value,
                 MimeTypes.JPG.value,
                 MimeTypes.JPEG.value,

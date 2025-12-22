@@ -95,15 +95,44 @@ class SyncStats:
 
 def adf_to_text(adf_content: Dict[str, Any]) -> str:
     """
-    Convert Atlassian Document Format (ADF) to plain text.
+    Convert Atlassian Document Format (ADF) to Markdown.
+    Returns markdown-formatted text with headers, lists, code blocks, tables, etc.
     """
     if not adf_content or not isinstance(adf_content, dict):
         return ""
 
     text_parts: List[str] = []
 
-    def extract_text(node: Dict[str, Any]) -> str:
-        """Recursively extract text from ADF nodes."""
+    def apply_text_marks(text: str, marks: List[Dict[str, Any]]) -> str:
+        """Apply markdown formatting based on text marks (bold, italic, link, etc.)."""
+        if not marks:
+            return text
+        
+        # Process marks in reverse order (innermost first)
+        for mark in reversed(marks):
+            mark_type = mark.get("type", "")
+            attrs = mark.get("attrs", {})
+            
+            if mark_type == "strong":
+                text = f"**{text}**"
+            elif mark_type == "em":
+                text = f"*{text}*"
+            elif mark_type == "code":
+                text = f"`{text}`"
+            elif mark_type == "strike":
+                text = f"~~{text}~~"
+            elif mark_type == "link":
+                href = attrs.get("href", "")
+                if href:
+                    text = f"[{text}]({href})"
+            elif mark_type == "underline":
+                # Markdown doesn't have underline, use emphasis
+                text = f"*{text}*"
+        
+        return text
+
+    def extract_text(node: Dict[str, Any], in_list: bool = False) -> str:
+        """Recursively extract text from ADF nodes and convert to markdown."""
         if not isinstance(node, dict):
             return ""
 
@@ -113,42 +142,81 @@ def adf_to_text(adf_content: Dict[str, Any]) -> str:
         if node_type == "text":
             text = node.get("text", "")
             marks = node.get("marks", [])
-            for mark in marks:
-                mark_type = mark.get("type", "")
-                if mark_type == "link":
-                    href = mark.get("attrs", {}).get("href", "")
-                    text = f"{text} ({href})"
+            text = apply_text_marks(text, marks)
 
-        elif node_type in ["paragraph", "heading", "blockquote", "listItem"]:
+        elif node_type == "paragraph":
             content = node.get("content", [])
-            text = " ".join(extract_text(child) for child in content)
+            para_text = "".join(extract_text(child, in_list) for child in content).strip()
+            if para_text:
+                # In lists, paragraphs should be on same line or with single newline
+                if in_list:
+                    # Replace double newlines with single for list items
+                    para_text = para_text.replace("\n\n", "\n")
+                    text = f"{para_text}\n"
+                else:
+                    text = f"{para_text}\n\n"
 
-            if node_type == "paragraph":
-                text = text + "\n"
-            elif node_type == "heading":
-                level = node.get("attrs", {}).get("level", 1)
-                text = f"{'#' * level} {text}\n"
-            elif node_type == "blockquote":
-                text = f"> {text}\n"
-            elif node_type == "listItem":
-                text = f"• {text}\n"
+        elif node_type == "heading":
+            level = node.get("attrs", {}).get("level", 1)
+            content = node.get("content", [])
+            heading_text = "".join(extract_text(child, in_list) for child in content).strip()
+            if heading_text:
+                text = f"{'#' * level} {heading_text}\n\n"
 
-        elif node_type in ["bulletList", "orderedList"]:
+        elif node_type == "blockquote":
+            content = node.get("content", [])
+            quote_text = "".join(extract_text(child, in_list) for child in content).strip()
+            if quote_text:
+                # Add > to each line for proper markdown blockquote
+                quoted_lines = quote_text.split("\n")
+                quoted_lines = [f"> {line}" if line.strip() else ">" for line in quoted_lines]
+                text = "\n".join(quoted_lines) + "\n\n"
+
+        elif node_type == "bulletList":
             content = node.get("content", [])
             items: List[str] = []
-            for i, child in enumerate(content):
-                child_text = extract_text(child).strip()
-                if node_type == "orderedList":
-                    items.append(f"{i + 1}. {child_text}")
-                else:
-                    items.append(f"• {child_text}")
-            text = "\n".join(items) + "\n"
+            for child in content:
+                if child.get("type") == "listItem":
+                    item_text = extract_text(child, in_list=True).strip()
+                    if item_text:
+                        # Remove leading/trailing newlines and indent
+                        item_text = re.sub(r'^\n+|\n+$', '', item_text)
+                        items.append(f"- {item_text}")
+            if items:
+                text = "\n".join(items) + "\n\n"
+
+        elif node_type == "orderedList":
+            content = node.get("content", [])
+            items: List[str] = []
+            for i, child in enumerate(content, start=1):
+                if child.get("type") == "listItem":
+                    item_text = extract_text(child, in_list=True).strip()
+                    if item_text:
+                        # Remove leading/trailing newlines and indent
+                        item_text = re.sub(r'^\n+|\n+$', '', item_text)
+                        items.append(f"{i}. {item_text}")
+            if items:
+                text = "\n".join(items) + "\n\n"
+
+        elif node_type == "listItem":
+            content = node.get("content", [])
+            # Join content without extra spacing (handled by parent list)
+            # Handle nested lists and paragraphs within list items
+            item_parts: List[str] = []
+            for child in content:
+                child_text = extract_text(child, in_list=True)
+                if child_text:
+                    item_parts.append(child_text)
+            text = "".join(item_parts)
+            # Clean up excessive newlines within list items
+            text = re.sub(r'\n{2,}', '\n', text)
 
         elif node_type == "codeBlock":
             content = node.get("content", [])
-            code_text = " ".join(extract_text(child) for child in content)
+            code_text = "".join(extract_text(child, in_list) for child in content)
             language = node.get("attrs", {}).get("language", "")
-            text = f"```{language}\n{code_text}\n```\n"
+            # Preserve code formatting - don't strip, but ensure proper code block
+            text = f"```{language}\n{code_text}\n```\n\n"
 
         elif node_type == "inlineCode":
             text = f"`{node.get('text', '')}`"
@@ -157,48 +225,76 @@ def adf_to_text(adf_content: Dict[str, Any]) -> str:
             text = "\n"
 
         elif node_type == "rule":
-            text = "---\n"
+            text = "---\n\n"
 
         elif node_type == "media":
             attrs = node.get("attrs", {})
             alt = attrs.get("alt", "")
             title = attrs.get("title", "")
-            text = f"[Media: {alt or title or 'attachment'}]\n"
+            
+            # Just show the image name/alt text, not a full URL
+            display_text = alt or title or "attachment"
+            text = f"![{display_text}]\n"
 
         elif node_type == "mention":
             attrs = node.get("attrs", {})
-            text = f"@{attrs.get('text', attrs.get('id', 'mention'))}"
+            mention_text = attrs.get("text", attrs.get("id", "mention"))
+            text = f"@{mention_text}"
 
         elif node_type == "emoji":
             attrs = node.get("attrs", {})
-            text = attrs.get("shortName", attrs.get("text", ""))
+            short_name = attrs.get("shortName", "")
+            if short_name:
+                text = f":{short_name}:"
+            else:
+                text = attrs.get("text", "")
 
         elif node_type == "table":
             content = node.get("content", [])
             rows: List[str] = []
+            is_first_row = True
+            
             for row in content:
                 if row.get("type") == "tableRow":
                     cells: List[str] = []
                     for cell in row.get("content", []):
-                        cell_text = extract_text(cell).strip()
-                        cells.append(cell_text)
-                    rows.append(" | ".join(cells))
-            text = "\n".join(rows) + "\n"
+                        cell_type = cell.get("type", "")
+                        if cell_type in ["tableCell", "tableHeader"]:
+                            cell_text = extract_text(cell, in_list).strip()
+                            # Escape pipe characters in cell content
+                            cell_text = cell_text.replace("|", "\\|")
+                            cells.append(cell_text)
+                    
+                    if cells:
+                        rows.append(" | ".join(cells))
+                        
+                        # Add header separator after first row
+                        if is_first_row:
+                            separator = " | ".join(["---"] * len(cells))
+                            rows.append(separator)
+                            is_first_row = False
+            
+            if rows:
+                text = "\n".join(rows) + "\n\n"
 
         elif node_type in ["tableCell", "tableHeader"]:
             content = node.get("content", [])
-            text = " ".join(extract_text(child) for child in content)
+            text = "".join(extract_text(child, in_list) for child in content)
 
         elif node_type == "panel":
             attrs = node.get("attrs", {})
             panel_type = attrs.get("panelType", "info")
             content = node.get("content", [])
-            panel_text = " ".join(extract_text(child) for child in content)
-            text = f"[{panel_type.upper()}] {panel_text}\n"
+            panel_text = "".join(extract_text(child, in_list) for child in content).strip()
+            if panel_text:
+                # Use blockquote style for panels
+                panel_lines = panel_text.split("\n")
+                panel_lines = [f"> **{panel_type.upper()}**: {line}" if line.strip() else ">" for line in panel_lines]
+                text = "\n".join(panel_lines) + "\n\n"
 
         elif "content" in node:
             content = node.get("content", [])
-            text = " ".join(extract_text(child) for child in content)
+            text = "".join(extract_text(child, in_list) for child in content)
 
         return text
 
@@ -213,7 +309,10 @@ def adf_to_text(adf_content: Dict[str, Any]) -> str:
             text_parts.append(text)
 
     result = "".join(text_parts)
+    # Clean up excessive newlines (more than 2 consecutive)
     result = re.sub(r'\n{3,}', '\n\n', result)
+    # Remove trailing whitespace from lines
+    result = "\n".join(line.rstrip() for line in result.split("\n"))
 
     return result.strip()
 
@@ -2029,7 +2128,7 @@ class JiraConnector(BaseConnector):
                 parent_external_record_id=parent_record_id,
                 parent_record_type=parent_record_type,
                 version=version,
-                mime_type=MimeTypes.PLAIN_TEXT.value,
+                mime_type=MimeTypes.MARKDOWN.value,
                 weburl=f"{atlassian_domain}/browse/{issue_key}" if atlassian_domain else None,
                 source_created_at=created_at,
                 source_updated_at=updated_at,
@@ -2457,7 +2556,7 @@ class JiraConnector(BaseConnector):
                     connector_name=Connectors.JIRA,
                     origin=OriginTypes.CONNECTOR,
                     version=version,
-                    mime_type=MimeTypes.PLAIN_TEXT.value,
+                    mime_type=MimeTypes.MARKDOWN.value,
                     record_group_type=parent_record_group_type,  # Inherit from parent issue
                     created_at=created_at,
                     updated_at=updated_at,
@@ -3038,7 +3137,7 @@ class JiraConnector(BaseConnector):
                 parent_external_record_id=record.parent_external_record_id if hasattr(record, 'parent_external_record_id') else issue_data.get("parent_external_id"),
                 parent_record_type=record.parent_record_type if hasattr(record, 'parent_record_type') else (RecordType.TICKET if issue_data.get("parent_external_id") else None),
                 version=version,
-                mime_type=MimeTypes.PLAIN_TEXT.value,
+                mime_type=MimeTypes.MARKDOWN.value,
                 weburl=record.weburl if hasattr(record, 'weburl') else None,
                 source_created_at=issue_data["created_at"],
                 source_updated_at=current_updated_at,
@@ -3132,7 +3231,7 @@ class JiraConnector(BaseConnector):
                 connector_name=Connectors.JIRA,
                 origin=OriginTypes.CONNECTOR,
                 version=version,
-                mime_type=MimeTypes.PLAIN_TEXT.value,
+                mime_type=MimeTypes.MARKDOWN.value,
                 record_group_type=record.record_group_type if hasattr(record, 'record_group_type') else RecordGroupType.JIRA_PROJECT,
                 created_at=created_at,
                 updated_at=current_updated_at,
@@ -3312,20 +3411,20 @@ class JiraConnector(BaseConnector):
                 await self.init()
 
             if record.record_type == RecordType.TICKET:
-                # Stream issue content
+                # Stream issue content (markdown format from ADF conversion)
                 issue_id = record.external_record_id
                 content = await self._fetch_issue_content(issue_id)
 
                 return StreamingResponse(
                     iter([content.encode('utf-8')]),
-                    media_type=MimeTypes.PLAIN_TEXT.value,
+                    media_type=MimeTypes.MARKDOWN.value,
                     headers={
-                        "Content-Disposition": f'inline; filename="{record.external_record_id}.txt"'
+                        "Content-Disposition": f'inline; filename="{record.external_record_id}.md"'
                     }
                 )
 
             elif record.record_type == RecordType.COMMENT:
-                # Stream comment content
+                # Stream comment content (markdown format from ADF conversion)
                 comment_id = record.external_record_id.replace("comment_", "")
 
                 # Get parent issue ID from parent_external_record_id
@@ -3338,9 +3437,9 @@ class JiraConnector(BaseConnector):
 
                 return StreamingResponse(
                     iter([content.encode('utf-8')]),
-                    media_type=MimeTypes.PLAIN_TEXT.value,
+                    media_type=MimeTypes.MARKDOWN.value,
                     headers={
-                        "Content-Disposition": f'inline; filename="{record.external_record_id}.txt"'
+                        "Content-Disposition": f'inline; filename="{record.external_record_id}.md"'
                     }
                 )
 
