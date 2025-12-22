@@ -112,7 +112,7 @@ def get_model_config_for_mode(chat_mode: str) -> Dict[str, Any]:
 
 async def get_model_config(config_service: ConfigurationService, model_key: str | None = None, model_name: Optional[str] = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Get model configuration based on user selection or fallback to default
-    
+
     Returns:
         Tuple of (model_config, ai_models_config) where:
         - model_config: The specific LLM configuration for the selected model
@@ -139,7 +139,7 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
     # Get initial config
     ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value)
     llm_configs = ai_models["llm"]
-    
+
     # Search based on provided parameters
     if model_key is None and model_name is None:
         # Return default config
@@ -171,7 +171,7 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
 
 async def get_llm_for_chat(config_service: ConfigurationService, model_key: str = None, model_name: str = None, chat_mode: str = "standard") -> Tuple[BaseChatModel, dict, dict]:
     """Get LLM instance based on user selection or fallback to default
-    
+
     Returns:
         Tuple of (llm, model_config, ai_models_config) where:
         - llm: The initialized LLM instance
@@ -617,7 +617,7 @@ async def askAIStream(
 
                 # Prepare messages
                 mode_config = get_model_config_for_mode(query_info.chatMode)
-                
+
                 custom_system_prompt = ai_models_config.get("custom_system_prompt", "")
                 if custom_system_prompt:
                     logger.info(f"Custom system prompt: {custom_system_prompt}")
