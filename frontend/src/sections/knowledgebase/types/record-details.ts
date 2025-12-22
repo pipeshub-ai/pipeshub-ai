@@ -77,6 +77,7 @@ export interface Record {
   sourceLastModifiedTimestamp: number;
   isDeleted: boolean;
   isArchived: boolean;
+  isVLMOcrProcessed?: boolean;
   indexingStatus: string;
   version: number;
   fileRecord: FileRecord | null;

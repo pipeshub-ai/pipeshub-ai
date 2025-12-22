@@ -45,6 +45,7 @@ class Record(Node):
     summary_document_id: Optional[str] = None
     virtual_record_id: Optional[str] = None
     deleted_by_user_id: Optional[str] = None
+    is_vlmocr_processed: bool = False
     web_url: Optional[str] = None,
     mime_type: Optional[str] = None
 
@@ -78,6 +79,7 @@ class Record(Node):
         record.summary_document_id = data.get("summaryDocumentId", None)
         record.virtual_record_id = data.get("virtualRecordId", None)
         record.deleted_by_user_id = data.get("deletedByUserId", None)
+        record.is_vlmocr_processed = data.get("isVLMOcrProcessed", False)
         record.web_url = data.get("webUrl", None)
         record.mime_type = data.get("mimeType", None)
         return record
@@ -135,6 +137,7 @@ class Record(Node):
             "reason": self.reason,
             "lastSyncTimestamp": self.last_sync_timestamp,
             "deletedByUserId": self.deleted_by_user_id,
+            "isVLMOcrProcessed": self.is_vlmocr_processed,
             "webUrl": self.web_url,
             "mimeType": self.mime_type
         }

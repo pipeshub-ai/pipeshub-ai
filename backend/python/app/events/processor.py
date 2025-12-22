@@ -865,6 +865,17 @@ class Processor:
                     sink_orchestrator=self.sink_orchestrator
                 )
                 await pipeline.apply(ctx)
+                try:
+                    await self.arango_service.update_node(
+                        recordId,
+                        {
+                            "isVLMOcrProcessed": True
+                        },
+                        CollectionNames.RECORDS.value
+                    )
+                except Exception as e:
+                    self.logger.error(f"❌ Error updating record {recordId} in database: {str(e)}")
+                    pass
                 
                 self.logger.info("✅ PDF processing completed successfully using VLM OCR")
                 return

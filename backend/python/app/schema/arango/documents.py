@@ -188,6 +188,7 @@ record_schema = {
             "sourceLastModifiedTimestamp": {"type": ["number", "null"]},
             "isDeleted": {"type": "boolean", "default": False},
             "isArchived": {"type": "boolean", "default": False},
+            "isVLMOcrProcessed": {"type": "boolean", "default": False},
             "deletedByUserId": {"type": ["string", "null"]},
             "indexingStatus": {
                 "type": "string",
