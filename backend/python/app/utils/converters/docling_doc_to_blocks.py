@@ -139,7 +139,7 @@ class DoclingDocToBlocksConverter():
                         page_no = pages[page_index].get("page_no")
                         if page_no:
                                 block.citation_metadata = CitationMetadata(page_number=page_no)
-            
+
             # Fallback: use default_page_number if no citation_metadata was set from prov
             if default_page_number is not None:
                 if block.citation_metadata is None:
