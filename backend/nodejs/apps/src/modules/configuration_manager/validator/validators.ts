@@ -510,7 +510,7 @@ export const aiModelsConfigSchema = z.object({
       custom_system_prompt: z.string().optional().nullable(),
     })
     .strict({
-      message: 'ai models can be ocr, embedding, llm, slm, reasoning, multimodal, custom_system_prompt',
+      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, and custom_system_prompt',
     })
     .refine(
       (data) => {
