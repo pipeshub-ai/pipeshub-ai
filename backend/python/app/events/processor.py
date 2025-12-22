@@ -781,8 +781,8 @@ class Processor:
                 ocr_result = await handler.process_document(pdf_binary)
             except Exception:
                 if provider == OCRProvider.AZURE_DI.value or provider == OCRProvider.VLM_OCR.value:
-                    provider = OCRProvider.OCRMYPDF.value
                     self.logger.info(f"🔄 Switching to OCRmyPDF handler as {provider} failed")
+                    provider = OCRProvider.OCRMYPDF.value
                     handler = OCRHandler(self.logger, provider, config=self.config_service)
                     ocr_result = await handler.process_document(pdf_binary)
                 else:
@@ -1324,8 +1324,6 @@ class Processor:
             filename_without_ext = Path(recordName).stem
 
             block_containers = await processor.load_document(f"{filename_without_ext}.md", md_bytes)
-            if block_containers is False:
-                raise Exception("Failed to process MD document. It might contain scanned pages.")
 
             record = await self.arango_service.get_document(
                 recordId, CollectionNames.RECORDS.value
