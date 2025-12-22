@@ -4841,6 +4841,7 @@ class BaseArangoService:
                     RETURN MERGE(user, {
                         sourceUserId: edge.sourceUserId,
                         appName: UPPER(app.name)
+                        connectorId: app._key
                     })
             """
 
