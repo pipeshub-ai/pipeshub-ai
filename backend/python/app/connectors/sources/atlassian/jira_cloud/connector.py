@@ -482,7 +482,6 @@ class JiraConnector(BaseConnector):
         finally:
             self._sync_in_progress = False
 
-
     async def _get_issues_sync_checkpoint(self) -> Optional[int]:
         """
         Get global sync checkpoint and check for filter changes.
@@ -626,7 +625,6 @@ class JiraConnector(BaseConnector):
 
         stats.updated_count += len(records_with_permissions)
 
-
     async def _update_issues_sync_checkpoint(self, stats: "SyncStats", project_count: int) -> None:
         """
         Update global sync checkpoint with current filter values.
@@ -661,29 +659,6 @@ class JiraConnector(BaseConnector):
                 audit_sync_key,
                 {"last_sync_time": get_epoch_timestamp_in_ms()}
             )
-
-    def _should_set_auto_index_off(self, filter_key: IndexingFilterKey) -> bool:
-        """
-        Determine if a record should have AUTO_INDEX_OFF status.
-
-        Rules:
-        1. If enable_manual_sync = True → always return True (set AUTO_INDEX_OFF, ignore other INDEXING filters)
-        2. If enable_manual_sync = False → check the specific indexing filter using is_enabled()
-
-        """
-        if not self.indexing_filters:
-            return False  # No filters configured, allow auto-indexing
-
-        # Check if manual sync is enabled
-        manual_sync_filter = self.indexing_filters.get(IndexingFilterKey.ENABLE_MANUAL_SYNC)
-        if (manual_sync_filter is not None
-            and not manual_sync_filter.is_empty()
-            and manual_sync_filter.type == FilterType.BOOLEAN
-            and manual_sync_filter.value is True):
-            return True
-
-        # We want AUTO_INDEX_OFF if filter is disabled
-        return not self.indexing_filters.is_enabled(filter_key)
 
     async def _fetch_users(self, org_id: str) -> List[AppUser]:
         """
@@ -868,55 +843,39 @@ class JiraConnector(BaseConnector):
 
             async with self.data_store_provider.transaction() as tx_store:
 
-                all_status_values = [status.value for status in IndexingStatus]
-
-                all_records = await tx_store.get_records_by_status(
-                    org_id=self.data_entities_processor.org_id,
+                # Get issue record by issue key using direct query
+                issue_record = await tx_store.get_record_by_issue_key(
                     connector_name=Connectors.JIRA,
-                    status_filters=all_status_values,
-                    limit=None
+                    issue_key=issue_key
                 )
-
-                # Search for issue in the cached records by webUrl pattern
-                issue_record = None
-                for record in all_records:
-                    if record.record_type == RecordType.TICKET:
-
-                        # Check if weburl contains the issue key
-                        if hasattr(record, 'weburl') and record.weburl and f"/browse/{issue_key}" in record.weburl:
-                            issue_record = record
-                            issue_id = record.external_record_id
-                            break
 
                 if not issue_record:
                     self.logger.warning(f"Issue {issue_key} not found in database (already deleted or never synced?)")
                     return
 
+                issue_id = issue_record.external_record_id
                 record_internal_id = issue_record.id
                 self.logger.info(f"Found issue {issue_key} with internal ID {record_internal_id}, external ID {issue_id}")
 
-                # 1. Delete child Sub-tasks (pass cached records to avoid refetch)
+                # 1. Delete child Sub-tasks
                 subtask_count = await self._delete_issue_children(
                     issue_id,
                     RecordType.TICKET,
-                    tx_store,
-                    all_records
+                    tx_store
                 )
 
-                # 2. Delete child comments (pass cached records to avoid refetch)
+                # 2. Delete child comments
                 comment_count = await self._delete_issue_children(
                     issue_id,
                     RecordType.COMMENT,
-                    tx_store,
-                    all_records
+                    tx_store
                 )
 
-                # 3. Delete child attachments (pass cached records to avoid refetch)
+                # 3. Delete child attachments
                 attachment_count = await self._delete_issue_children(
                     issue_id,
                     RecordType.FILE,
-                    tx_store,
-                    all_records
+                    tx_store
                 )
 
                 # 4. Delete the issue itself and all its edges
@@ -938,8 +897,7 @@ class JiraConnector(BaseConnector):
         self,
         parent_issue_id: str,
         child_type: RecordType,
-        tx_store,
-        cached_records: List[Record] = None
+        tx_store
     ) -> int:
         """
         Delete all child records (sub-tasks, comments, or attachments) for a deleted issue.
@@ -953,48 +911,38 @@ class JiraConnector(BaseConnector):
                 RecordType.FILE: "attachment"
             }.get(child_type, str(child_type))
 
-            # Use cached records if provided, otherwise fetch (for backwards compatibility)
-            if cached_records is None:
-                all_status_values = [status.value for status in IndexingStatus]
-                cached_records = await tx_store.get_records_by_status(
-                    org_id=self.data_entities_processor.org_id,
-                    connector_name=Connectors.JIRA,
-                    status_filters=all_status_values,
-                    limit=None
-                )
+            # Direct query by parent_external_record_id and record_type - efficient
+            child_records = await tx_store.get_records_by_parent(
+                connector_name=Connectors.JIRA,
+                parent_external_record_id=parent_issue_id,
+                record_type=child_type.value
+            )
 
-            for record in cached_records:
-                # Check if this is the right type with matching parent
-                if (record.record_type == child_type and
-                    hasattr(record, 'parent_external_record_id') and
-                    record.parent_external_record_id == parent_issue_id):
-
-                    # If deleting a sub-task (TICKET), recursively delete its children first
-                    if child_type == RecordType.TICKET:
-                        subtask_id = record.external_record_id
-                        # Delete sub-task's comments
-                        await self._delete_issue_children(
-                            subtask_id,
-                            RecordType.COMMENT,
-                            tx_store,
-                            cached_records
-                        )
-                        # Delete sub-task's attachments
-                        await self._delete_issue_children(
-                            subtask_id,
-                            RecordType.FILE,
-                            tx_store,
-                            cached_records
-                        )
-
-                    # Delete record and all its edges (indexer cleanup handled automatically)
-                    await tx_store.arango_service.delete_records_and_relations(
-                        node_key=record.id,
-                        hard_delete=True,
-                        transaction=tx_store.txn
+            for record in child_records:
+                # If deleting a sub-task (TICKET), recursively delete its children first
+                if child_type == RecordType.TICKET:
+                    subtask_id = record.external_record_id
+                    # Delete sub-task's comments
+                    await self._delete_issue_children(
+                        subtask_id,
+                        RecordType.COMMENT,
+                        tx_store
                     )
-                    deleted_count += 1
-                    self.logger.debug(f"  Deleted {child_type_name} {record.external_record_id}")
+                    # Delete sub-task's attachments
+                    await self._delete_issue_children(
+                        subtask_id,
+                        RecordType.FILE,
+                        tx_store
+                    )
+
+                # Delete record and all its edges (indexer cleanup handled automatically)
+                await tx_store.arango_service.delete_records_and_relations(
+                    node_key=record.id,
+                    hard_delete=True,
+                    transaction=tx_store.txn
+                )
+                deleted_count += 1
+                self.logger.debug(f"  Deleted {child_type_name} {record.external_record_id}")
 
             return deleted_count
 
@@ -2091,7 +2039,7 @@ class JiraConnector(BaseConnector):
             )
 
             # Set indexing status based on filters
-            if self._should_set_auto_index_off(IndexingFilterKey.ISSUES):
+            if not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES):
                 issue_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             all_records.append((issue_record, permissions))
@@ -2132,6 +2080,71 @@ class JiraConnector(BaseConnector):
 
         return all_records
 
+    def _extract_attachment_filenames_from_wiki(self, text: str) -> Set[str]:
+        """
+        Extract attachment filenames from Jira wiki markup.
+        Pattern: !filename.ext|...!
+        """
+        filenames = set()
+        for match in re.finditer(r"!([^!]+)!", text):
+            inner = match.group(1)
+            filename_part = inner.split("|", 1)[0].strip()
+            if filename_part:
+                filenames.add(filename_part.lower())
+        return filenames
+
+    async def _delete_attachment_record(
+        self,
+        record: Record,
+        issue_key: str,
+        tx_store,
+        reason: str = "based on changelog event"
+    ) -> None:
+        """
+        Helper method to delete an attachment record and log the action.
+        """
+        await tx_store.arango_service.delete_records_and_relations(
+            node_key=record.id,
+            hard_delete=True,
+            transaction=tx_store.txn,
+        )
+        filename_info = f" (filename: {record.record_name})" if record.record_name else ""
+        self.logger.info(
+            f"Deleted attachment {record.external_record_id}{filename_info} "
+            f"for issue {issue_key} {reason}"
+        )
+
+    async def _find_attachment_record_by_id(
+        self,
+        attachment_id: str,
+        tx_store
+    ) -> Optional[Record]:
+        """
+        Find attachment record by ID, trying both new-style and legacy formats.
+        """
+        external_id = f"attachment_{attachment_id}"
+        
+        # First try new-style external ID (attachment_<id>)
+        record = await tx_store.get_record_by_external_id(
+            connector_name=Connectors.JIRA,
+            external_id=external_id,
+        )
+        
+        # Fallback: some older data might have used the raw Jira ID as external_record_id
+        if not record:
+            legacy_record = await tx_store.get_record_by_external_id(
+                connector_name=Connectors.JIRA,
+                external_id=str(attachment_id),
+            )
+            if legacy_record:
+                record = legacy_record
+                self.logger.debug(
+                    f"Found legacy attachment record for id {attachment_id} "
+                    f"using raw external_record_id {attachment_id}"
+                )
+        
+        return record
+
     async def _handle_attachment_deletions_from_changelog(
         self,
         issue: Dict[str, Any],
@@ -2150,24 +2163,34 @@ class JiraConnector(BaseConnector):
             if not histories:
                 return
 
-            # Map current attachments by filename so we can resolve inline (wiki) references
+            issue_key = issue.get("key")
+            issue_id = issue.get("id")
+            if not issue_id:
+                return
+
+            # Get current attachments once (used in multiple places)
             fields = issue.get("fields", {}) or {}
             attachments = fields.get("attachment", []) or []
+            
+            # Map current attachments by filename for inline attachment resolution
             attachments_by_filename: Dict[str, List[str]] = {}
+            current_attachment_ids: Set[str] = set()
+            
             for att in attachments:
                 att_id = att.get("id")
                 filename = att.get("filename")
-                if not att_id or not filename:
-                    continue
-                key = str(filename).lower()
-                attachments_by_filename.setdefault(key, []).append(str(att_id))
+                if att_id:
+                    current_attachment_ids.add(str(att_id))
+                if att_id and filename:
+                    key = str(filename).lower()
+                    attachments_by_filename.setdefault(key, []).append(str(att_id))
 
             # Collect unique deleted attachment IDs from changelog
             deleted_attachment_ids: Set[str] = set()
-            # Track filenames removed from description that couldn't be matched to current attachments
             unmatched_removed_filenames: Set[str] = set()
             has_description_change = False
 
+            # Parse changelog to find deleted attachments
             for history in histories:
                 items = history.get("items", [])
                 for item in items:
@@ -2180,181 +2203,101 @@ class JiraConnector(BaseConnector):
                         from_str = item.get("fromString") or ""
                         to_str = item.get("toString") or ""
 
-                        # Extract attachment filenames from Jira wiki markup in description.
-                        # Pattern: !filename.ext|...!
-                        from_filenames: Set[str] = set()
-                        to_filenames: Set[str] = set()
-
-                        for match in re.finditer(r"!([^!]+)!", from_str):
-                            inner = match.group(1)
-                            filename_part = inner.split("|", 1)[0].strip()
-                            if filename_part:
-                                from_filenames.add(filename_part.lower())
-
-                        for match in re.finditer(r"!([^!]+)!", to_str):
-                            inner = match.group(1)
-                            filename_part = inner.split("|", 1)[0].strip()
-                            if filename_part:
-                                to_filenames.add(filename_part.lower())
-
+                        # Extract filenames from wiki markup
+                        from_filenames = self._extract_attachment_filenames_from_wiki(from_str)
+                        to_filenames = self._extract_attachment_filenames_from_wiki(to_str)
                         removed_filenames = from_filenames - to_filenames
 
-                        # Map removed filenames to concrete attachment IDs from current issue fields
+                        # Map removed filenames to concrete attachment IDs
                         for filename_key in removed_filenames:
                             matched_ids = attachments_by_filename.get(filename_key, [])
                             if matched_ids:
-                                for att_id in matched_ids:
-                                    deleted_attachment_ids.add(att_id)
+                                deleted_attachment_ids.update(matched_ids)
                             else:
                                 # Filename not found in current attachments - will search DB by filename
                                 unmatched_removed_filenames.add(filename_key)
 
-                    # Only keep scanning for attachment deletions below
-                    if field not in ("Attachment", "attachment") and field_id != "attachment":
-                        continue
+                    # Check for explicit attachment deletion events
+                    if field in ("Attachment", "attachment") or field_id == "attachment":
+                        from_id = item.get("from")
+                        to_id = item.get("to")
+                        # Deletion event: attachment removed from issue
+                        if from_id and (to_id is None or to_id == ""):
+                            deleted_attachment_ids.add(str(from_id))
 
-                    from_id = item.get("from")
-                    to_id = item.get("to")
-
-                    # Deletion event: attachment removed from issue
-                    if from_id and (to_id is None or to_id == ""):
-                        deleted_attachment_ids.add(str(from_id))
-
-            issue_key = issue.get("key")
-
-            # Case 1: explicit attachment deletion events with concrete IDs
-            if deleted_attachment_ids:
-                for attachment_id in deleted_attachment_ids:
-                    external_id = f"attachment_{attachment_id}"
-
-                    # First try new-style external ID (attachment_<id>)
-                    existing_record = await tx_store.get_record_by_external_id(
-                        connector_name=Connectors.JIRA,
-                        external_id=external_id,
+            # Case 1: Delete attachments with explicit IDs from changelog
+            deleted_count = 0
+            for attachment_id in deleted_attachment_ids:
+                record = await self._find_attachment_record_by_id(attachment_id, tx_store)
+                if not record:
+                    self.logger.debug(
+                        f"Attachment attachment_{attachment_id} referenced in changelog for issue {issue_key} "
+                        "but no matching FileRecord found"
                     )
+                    continue
 
-                    # Fallback: some older data might have used the raw Jira ID as external_record_id
-                    if not existing_record:
-                        legacy_record = await tx_store.get_record_by_external_id(
-                            connector_name=Connectors.JIRA,
-                            external_id=str(attachment_id),
-                        )
-                        if legacy_record:
-                            existing_record = legacy_record
-                            self.logger.info(
-                                f"Found legacy attachment record for id {attachment_id} "
-                                f"using raw external_record_id {attachment_id}"
-                            )
+                await self._delete_attachment_record(record, issue_key, tx_store)
+                deleted_count += 1
 
-                    if not existing_record:
-                        # Record may already be deleted or never synced; skip
-                        self.logger.debug(
-                            f"Attachment {external_id} referenced in changelog for issue {issue_key} "
-                            "but no matching FileRecord found"
-                        )
-                        continue
-
-                    await tx_store.arango_service.delete_records_and_relations(
-                        node_key=existing_record.id,
-                        hard_delete=True,
-                        transaction=tx_store.txn,
-                    )
-
+            # Early return if no unmatched filenames to handle
+            if not unmatched_removed_filenames and not has_description_change:
+                if deleted_count > 0:
                     self.logger.info(
-                        f"Deleted attachment {external_id} for issue {issue_key} "
-                        "based on changelog event"
+                        f"Deleted {deleted_count} attachments for issue {issue_key} based on changelog events"
                     )
+                return
 
-                # If we also have unmatched filenames from description changes, handle them in Case 2
-                if not unmatched_removed_filenames:
-                    return
+            # Case 2: Handle unmatched filenames and description changes
+            existing_records = await tx_store.get_records_by_parent(
+                connector_name=Connectors.JIRA,
+                parent_external_record_id=issue_id,
+                record_type=RecordType.FILE.value
+            )
 
-            # Case 2: description changed (e.g., inline attachment removed) but no explicit attachment IDs.
-            # In this case we diff current attachments in issue fields vs DB and delete missing ones.
-            if has_description_change or unmatched_removed_filenames:
-                issue_id = issue.get("id")
-                if not issue_id:
-                    return
-
-                fields = issue.get("fields", {}) or {}
-                attachments = fields.get("attachment", []) or []
-                current_attachment_ids: Set[str] = {
-                    str(att.get("id")) for att in attachments if att.get("id") is not None
-                }
-
-                all_status_values = [status.value for status in IndexingStatus]
-
-                existing_records = await tx_store.get_records_by_status(
-                    org_id=self.data_entities_processor.org_id,
-                    connector_name=Connectors.JIRA,
-                    status_filters=all_status_values,
-                    limit=None,
-                )
-
-                deleted_count = 0
-                deleted_by_filename = 0
-
-                for record in existing_records:
-                    if record.record_type != RecordType.FILE:
-                        continue
-
-                    parent_external_id = getattr(record, "parent_external_record_id", None)
-                    if parent_external_id != issue_id:
-                        continue
-
-                    # Check if this record matches an unmatched removed filename
-                    record_filename_lower = record.record_name.lower() if record.record_name else ""
-                    if unmatched_removed_filenames and record_filename_lower in unmatched_removed_filenames:
-                        # This filename was removed from description and not found in current attachments
-                        # Delete it
-                        await tx_store.arango_service.delete_records_and_relations(
-                            node_key=record.id,
-                            hard_delete=True,
-                            transaction=tx_store.txn,
-                        )
-                        deleted_count += 1
-                        deleted_by_filename += 1
-                        self.logger.info(
-                            f"Deleted attachment {record.external_record_id} (filename: {record.record_name}) "
-                            f"for issue {issue_id} because it was removed from description"
-                        )
-                        continue
-
-                    external_id = record.external_record_id
-                    # external_record_id format: "attachment_<id>"
-                    if external_id.startswith("attachment_"):
-                        attachment_id = external_id.replace("attachment_", "")
-                    else:
-                        attachment_id = external_id
-
-                    if current_attachment_ids and attachment_id in current_attachment_ids:
-                        continue
-
-                    # Attachment no longer exists at source -> delete record and its relations
-                    await tx_store.arango_service.delete_records_and_relations(
-                        node_key=record.id,
-                        hard_delete=True,
-                        transaction=tx_store.txn,
+            deleted_by_filename = 0
+            for record in existing_records:
+                # Check if this record matches an unmatched removed filename
+                record_filename_lower = record.record_name.lower() if record.record_name else ""
+                if unmatched_removed_filenames and record_filename_lower in unmatched_removed_filenames:
+                    await self._delete_attachment_record(
+                        record, 
+                        issue_key, 
+                        tx_store,"because it was removed from description"
                     )
                     deleted_count += 1
+                    deleted_by_filename += 1
+                    continue
+
+                # Check if attachment still exists in Jira
+                # Extract attachment ID from external_record_id (handles both "attachment_<id>" and legacy formats)
+                external_id = record.external_record_id
+                attachment_id = external_id.replace("attachment_", "") if external_id.startswith("attachment_") else external_id
+                if attachment_id in current_attachment_ids:
+                    continue
+
+                # Attachment no longer exists at source -> delete
+                await self._delete_attachment_record(
+                    record,
+                    issue_key,
+                    tx_store,
+                    "because it no longer exists in Jira"
+                )
+                deleted_count += 1
+
+            # Log summary if any deletions occurred
+            if deleted_count > 0:
+                if deleted_by_filename > 0:
                     self.logger.info(
-                        f"Deleted attachment {external_id} for issue {issue_id} "
-                        "because it no longer exists in Jira"
+                        f"Deleted {deleted_count} attachments for issue {issue_key} "
+                        f"({deleted_by_filename} by filename match, {deleted_count - deleted_by_filename} by ID diff)"
+                    )
+                else:
+                    self.logger.info(
+                        f"Deleted {deleted_count} attachments for issue {issue_key} that were removed from Jira"
                     )
 
-                if deleted_count > 0:
-                    if deleted_by_filename > 0:
-                        self.logger.info(
-                            f"Deleted {deleted_count} attachments for issue {issue_id} "
-                            f"({deleted_by_filename} by filename match, {deleted_count - deleted_by_filename} by ID diff)"
-                        )
-                    else:
-                        self.logger.info(
-                            f"Deleted {deleted_count} attachments for issue {issue_id} that were removed from Jira"
-                        )
-
         except Exception as e:
-            issue_key = issue.get("key")
+            issue_key = issue.get("key", "unknown")
             self.logger.error(
                 f"Error handling attachment deletions from changelog for issue {issue_key}: {e}",
                 exc_info=True,
@@ -2524,7 +2467,7 @@ class JiraConnector(BaseConnector):
                 )
 
                 # Set indexing status based on filters
-                if self._should_set_auto_index_off(IndexingFilterKey.ISSUE_COMMENTS):
+                if not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_COMMENTS):
                     comment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
                 # Comments inherit permissions from parent issue
@@ -2561,24 +2504,16 @@ class JiraConnector(BaseConnector):
         Delete CommentRecord entries for this issue that no longer exist in Jira.
         """
         try:
-            all_status_values = [status.value for status in IndexingStatus]
-
-            existing_records = await tx_store.get_records_by_status(
-                org_id=self.data_entities_processor.org_id,
+            # Direct query for comments by parent issue - efficient
+            existing_records = await tx_store.get_records_by_parent(
                 connector_name=Connectors.JIRA,
-                status_filters=all_status_values,
-                limit=None,
+                parent_external_record_id=issue_id,
+                record_type=RecordType.COMMENT.value
             )
 
             deleted_count = 0
 
             for record in existing_records:
-                if record.record_type != RecordType.COMMENT:
-                    continue
-
-                parent_external_id = getattr(record, "parent_external_record_id", None)
-                if parent_external_id != issue_id:
-                    continue
 
                 external_id = record.external_record_id
                 # external_record_id format: "comment_<id>"
@@ -2704,7 +2639,7 @@ class JiraConnector(BaseConnector):
                 )
 
                 # Set indexing status based on filters
-                if self._should_set_auto_index_off(IndexingFilterKey.ISSUE_ATTACHMENTS):
+                if not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_ATTACHMENTS):
                     attachment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
                 # Attachments inherit permissions from parent issue
@@ -2934,9 +2869,8 @@ class JiraConnector(BaseConnector):
         This method:
         1. For each record, checks if it has been updated at the source
         2. If updated, upserts the record in DB
-        3. For parent issues (TicketRecord), also includes child comments and attachments for reindexing
-        4. Publishes reindex events for all records via data_entities_processor
-        5. Skips reindex for records that are not properly typed (base Record class)"""
+        3. Publishes reindex events for all records via data_entities_processor
+        4. Skips reindex for records that are not properly typed (base Record class)"""
         try:
             if not record_results:
                 return
@@ -2951,14 +2885,6 @@ class JiraConnector(BaseConnector):
             org_id = self.data_entities_processor.org_id
             updated_records = []
             non_updated_records = []
-
-            # Fetch child records for parent issues to ensure comments/attachments are reindexed
-            issue_records = [r for r in record_results if r.record_type == RecordType.TICKET]
-            child_records_to_reindex = []
-
-            if issue_records:
-                child_records_to_reindex = await self._fetch_child_records_for_reindex(issue_records)
-                self.logger.info(f"Found {len(child_records_to_reindex)} child records (comments + attachments) to reindex")
 
             for record in record_results:
                 try:
@@ -2978,13 +2904,11 @@ class JiraConnector(BaseConnector):
                 self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
 
             # Publish reindex events for non updated records
-            all_non_updated_records = non_updated_records + child_records_to_reindex
-
-            if all_non_updated_records:
+            if non_updated_records:
                 reindexable_records = []
                 skipped_count = 0
 
-                for record in all_non_updated_records:
+                for record in non_updated_records:
                     # Only reindex properly typed records (TicketRecord, CommentRecord, FileRecord)
                     # Check if it's a subclass of Record but not the base Record class itself
                     record_class_name = type(record).__name__
@@ -3012,49 +2936,6 @@ class JiraConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error during Jira reindex: {e}", exc_info=True)
             raise
-
-    async def _fetch_child_records_for_reindex(self, parent_issues: List[Record]) -> List[Record]:
-        """
-        Fetch child records (comments and attachments) for parent issues to include in reindex.
-        This ensures that when filters change, child records also get marked for manual sync.
-        """
-        child_records = []
-
-        try:
-            if not parent_issues:
-                return []
-
-            # Extract parent issue external IDs
-            parent_issue_ids = {record.external_record_id for record in parent_issues if record.external_record_id}
-
-            if not parent_issue_ids:
-                return []
-
-            self.logger.debug(f"Fetching child records for {len(parent_issue_ids)} parent issues")
-
-            # Fetch all child records from database using transaction
-            async with self.data_store_provider.transaction() as tx_store:
-                all_status_values = [status.value for status in IndexingStatus]
-                all_records = await tx_store.get_records_by_status(
-                    org_id=self.data_entities_processor.org_id,
-                    connector_name=Connectors.JIRA,
-                    status_filters=all_status_values,
-                    limit=None
-                )
-
-                # Filter for child records (comments and attachments) of our parent issues
-                for record in all_records:
-                    if (hasattr(record, 'parent_external_record_id') and
-                        record.parent_external_record_id in parent_issue_ids):
-                        # This is a child of one of our parent issues
-                        if record.record_type in (RecordType.COMMENT, RecordType.FILE):
-                            child_records.append(record)
-
-        except Exception as e:
-            self.logger.error(f"Error fetching child records for reindex: {e}", exc_info=True)
-            # Don't fail the entire reindex if this fails
-
-        return child_records
 
     async def _check_and_fetch_updated_record(
         self, org_id: str, record: Record
@@ -3098,12 +2979,11 @@ class JiraConnector(BaseConnector):
                 self.logger.warning(f"Failed to fetch issue {issue_id}: HTTP {response.status}")
                 return None
 
-            issue_data = response.json()
-            fields = issue_data.get("fields", {})
+            issue = response.json()
+            fields = issue.get("fields", {})
 
             # Check if updated timestamp changed
-            current_updated = fields.get("updated")
-            current_updated_at = self._parse_jira_timestamp(current_updated) if current_updated else 0
+            current_updated_at = self._parse_jira_timestamp(fields.get("updated")) if fields.get("updated") else 0
 
             # Compare with stored timestamp
             if hasattr(record, 'source_updated_at') and record.source_updated_at == current_updated_at:
@@ -3112,29 +2992,19 @@ class JiraConnector(BaseConnector):
 
             self.logger.info(f"Issue {issue_id} has changed at source (timestamp: {record.source_updated_at if hasattr(record, 'source_updated_at') else 'N/A'} -> {current_updated_at})")
 
-            # Transform issue to TicketRecord
-            issue_name = fields.get("summary", "")
-            description = fields.get("description", {})
-            priority = fields.get("priority", {}).get("name", "")
-            status = fields.get("status", {}).get("name", "")
+            # Build user lookup from emailAddress if available (for _extract_issue_data)
+            user_by_account_id = {}
+            for user_field in ["creator", "reporter", "assignee"]:
+                user_obj = fields.get(user_field, {})
+                account_id = user_obj.get("accountId")
+                email = user_obj.get("emailAddress")
+                if account_id and email:
+                    user_by_account_id[account_id] = AppUser(
+                        id="", email=email, source_user_id=account_id
+                    )
 
-            # Get creator info (immutable)
-            creator = fields.get("creator", {})
-            creator_email = creator.get("emailAddress")
-            creator_name = creator.get("displayName", "Unknown")
-
-            # Get reporter info (can be changed)
-            reporter = fields.get("reporter", {})
-            reporter_email = reporter.get("emailAddress")
-            reporter_name = reporter.get("displayName", "Unknown")
-
-            assignee = fields.get("assignee", {})
-            assignee_email = assignee.get("emailAddress")
-            assignee_name = assignee.get("displayName")
-
-            # Parse timestamps
-            created = fields.get("created")
-            created_at = self._parse_jira_timestamp(created) if created else 0
+            # Extract issue data using existing function
+            issue_data = self._extract_issue_data(issue, user_by_account_id)
 
             # Get project info
             project = fields.get("project", {})
@@ -3143,41 +3013,45 @@ class JiraConnector(BaseConnector):
             # Increment version
             version = record.version + 1 if hasattr(record, 'version') else 1
 
-            # Create updated TicketRecord preserving record ID
+            # Create updated TicketRecord preserving record ID and existing relationships
             issue_record = TicketRecord(
                 id=record.id,
                 org_id=org_id,
-                priority=priority,
-                status=status,
-                summary=issue_name,
-                description=adf_to_text(description) if description else "",
-                creator_email=creator_email,
-                creator_name=creator_name,
-                reporter_email=reporter_email,
-                reporter_name=reporter_name,
-                assignee=assignee_name,
-                assignee_email=assignee_email,
+                priority=issue_data["priority"],
+                status=issue_data["status"],
+                summary=issue_data["issue_name"],
+                description=issue_data["description"] or "",
+                creator_email=issue_data["creator_email"],
+                creator_name=issue_data["creator_name"],
+                reporter_email=issue_data["reporter_email"],
+                reporter_name=issue_data["reporter_name"],
+                assignee=issue_data["assignee_name"],
+                assignee_email=issue_data["assignee_email"],
                 external_record_id=issue_id,
                 external_revision_id=str(current_updated_at) if current_updated_at else None,
-                record_name=issue_name,
+                record_name=issue_data["issue_name"],
                 record_type=RecordType.TICKET,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.JIRA,
                 record_group_type=record.record_group_type if hasattr(record, 'record_group_type') else RecordGroupType.JIRA_PROJECT,
                 external_record_group_id=record.external_record_group_id if hasattr(record, 'external_record_group_id') else project_id,
-                parent_external_record_id=record.parent_external_record_id if hasattr(record, 'parent_external_record_id') else None,
-                parent_record_type=record.parent_record_type if hasattr(record, 'parent_record_type') else None,
+                parent_external_record_id=record.parent_external_record_id if hasattr(record, 'parent_external_record_id') else issue_data.get("parent_external_id"),
+                parent_record_type=record.parent_record_type if hasattr(record, 'parent_record_type') else (RecordType.TICKET if issue_data.get("parent_external_id") else None),
                 version=version,
                 mime_type=MimeTypes.PLAIN_TEXT.value,
                 weburl=record.weburl if hasattr(record, 'weburl') else None,
-                source_created_at=created_at,
+                source_created_at=issue_data["created_at"],
                 source_updated_at=current_updated_at,
-                created_at=created_at,
+                created_at=issue_data["created_at"],
                 updated_at=current_updated_at
             )
 
             # Build permissions (creator, reporter, and assignee)
-            permissions = self._build_permissions(reporter_email, assignee_email, creator_email)
+            permissions = self._build_permissions(
+                issue_data["reporter_email"],
+                issue_data["assignee_email"],
+                issue_data["creator_email"]
+            )
 
             return (issue_record, permissions)
 
@@ -3385,7 +3259,7 @@ class JiraConnector(BaseConnector):
 
             # Create updated FileRecord preserving record ID
             attachment_record = FileRecord(
-                id=record.id,  # Preserve existing ID
+                id=record.id,
                 org_id=org_id,
                 record_name=filename,
                 record_type=RecordType.FILE,
