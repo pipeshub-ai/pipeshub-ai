@@ -324,9 +324,7 @@ class OneDriveConnector(BaseConnector):
             )
             if file_record.is_file and file_record.extension is None:
                 return None
-            if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
-
+            
             # Get current permissions
             permission_result = await self.msgraph_client.get_file_permission(
                 item.parent_reference.drive_id if item.parent_reference else None,
@@ -470,6 +468,9 @@ class OneDriveConnector(BaseConnector):
                         # For deleted items, yield with empty permissions
                         yield (None, [], record_update)
                     elif record_update.record:
+                        if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                            record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
                         yield (record_update.record, record_update.new_permissions or [], record_update)
 
                 # Allow other tasks to run
@@ -1120,10 +1121,9 @@ class OneDriveConnector(BaseConnector):
 
             self.logger.info(f"Starting reindex for {len(records)} OneDrive records")
 
-            # Ensure external clients are initialized
-            if not self.external_client or not self.data_source:
-                self.logger.error("External API clients not initialized. Call init() first.")
-                raise Exception("External API clients not initialized. Call init() first.")
+            if not self.msgraph_client:
+                self.logger.error("MS Graph client not initialized. Call init() first.")
+                raise Exception("MS Graph client not initialized. Call init() first.")
 
             # Check records at source for updates
             org_id = self.data_entities_processor.org_id
@@ -1173,8 +1173,6 @@ class OneDriveConnector(BaseConnector):
             if not item:
                 self.logger.warning(f"Item {item_id} not found at source")
                 return None
-            
-            print("!!!!!!!!!!!!!!!!!! item:", item)
 
             # Use existing logic to detect changes and transform to FileRecord
             record_update = await self._process_delta_item(item)
@@ -1213,6 +1211,8 @@ class OneDriveConnector(BaseConnector):
         signed_url = await self.get_signed_url(record)
         if not signed_url:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
+        
+        # raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Manual exception for testing")
 
         return StreamingResponse(
             stream_content(signed_url),
