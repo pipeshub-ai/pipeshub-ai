@@ -1,0 +1,642 @@
+openapi: 3.0.0
+info:
+  title: Query Service API
+  description: |
+    RESTful API for the Query Service - providing semantic search, AI-powered chat
+    with support for multi-model LLM configurations, knowledge base filtering, and real-time streaming responses.
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: support@yourcompany.com
+
+servers:
+  - url: /api/v1
+    description: Base API URL
+
+tags:
+  - name: Search
+    description: Semantic search operations
+  - name: Chat
+    description: AI-powered conversational chat
+  - name: Health
+    description: Service health checks
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    SearchQuery:
+      type: object
+      properties:
+        query:
+          type: string
+          description: Search query text
+        limit:
+          type: integer
+          description: Maximum number of results to return
+          default: 5
+          minimum: 1
+          maximum: 100
+        filters:
+          type: object
+          description: Filter criteria for search
+          properties:
+            kb:
+              type: array
+              items:
+                type: string
+              description: Knowledge base IDs to filter by
+            apps:
+              type: array
+              items:
+                type: string
+              description: Application IDs to filter by
+            vectorDBs:
+              type: array
+              items:
+                type: string
+              description: Vector database IDs to filter by
+      required:
+        - query
+
+    SearchRequest:
+      type: object
+      properties:
+        query:
+          type: string
+          description: Search query text
+        topK:
+          type: integer
+          description: Number of top results to return
+          default: 20
+        filtersV1:
+          type: array
+          items:
+            type: object
+            additionalProperties:
+              type: array
+              items:
+                type: string
+          description: Advanced filter groups
+      required:
+        - query
+
+    SimilarDocumentQuery:
+      type: object
+      properties:
+        document_id:
+          type: string
+          description: Document ID to find similar documents for
+        limit:
+          type: integer
+          description: Maximum number of similar documents to return
+          default: 5
+        filters:
+          type: object
+          description: Filter criteria
+      required:
+        - document_id
+
+    ChatQuery:
+      type: object
+      properties:
+        query:
+          type: string
+          description: User query or question
+        limit:
+          type: integer
+          description: Maximum number of context documents to retrieve
+          default: 50
+        previousConversations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConversationMessage'
+          description: Previous conversation history
+        filters:
+          type: object
+          description: Filter criteria for knowledge retrieval
+          properties:
+            kb:
+              type: array
+              items:
+                type: string
+              description: Knowledge base IDs
+            apps:
+              type: array
+              items:
+                type: string
+              description: Application IDs
+            vectorDBs:
+              type: array
+              items:
+                type: string
+              description: Vector database IDs
+        retrievalMode:
+          type: string
+          enum: [HYBRID, SEMANTIC, KEYWORD]
+          default: HYBRID
+          description: Retrieval mode for search
+        quickMode:
+          type: boolean
+          default: false
+          description: Enable quick mode (faster but less comprehensive)
+        modelKey:
+          type: string
+          description: UUID of the LLM model to use
+        modelName:
+          type: string
+          description: Name of the model (e.g., gpt-4o-mini, claude-3-5-sonnet)
+        chatMode:
+          type: string
+          enum: [standard, quick, analysis, deep_research, creative, precise]
+          default: standard
+          description: Chat mode that affects response style and depth
+        mode:
+          type: string
+          enum: [json, simple]
+          default: json
+          description: Response mode - json for full metadata, simple for answer only
+      required:
+        - query
+
+    ConversationMessage:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [user_query, bot_response]
+          description: Message role
+        content:
+          type: string
+          description: Message content
+      required:
+        - role
+        - content
+
+    
+
+    ShareRequest:
+      type: object
+      properties:
+        userIds:
+          type: array
+          items:
+            type: string
+          description: User IDs to share with
+        teamIds:
+          type: array
+          items:
+            type: string
+          description: Team IDs to share with
+
+    UpdatePermissionRequest:
+      type: object
+      properties:
+        userIds:
+          type: array
+          items:
+            type: string
+          description: User IDs
+        teamIds:
+          type: array
+          items:
+            type: string
+          description: Team IDs
+        role:
+          type: string
+          enum: [OWNER, ORGANIZER, EDITOR, VIEWER]
+          description: Permission role
+      required:
+        - role
+
+    SearchResponse:
+      type: object
+      properties:
+        searchResults:
+          type: array
+          items:
+            type: object
+          description: Search results with relevance scores
+        records:
+          type: array
+          items:
+            type: object
+          description: Retrieved record metadata
+        status:
+          type: string
+          description: Status message
+        status_code:
+          type: integer
+          description: HTTP status code
+        kb_filtering:
+          type: object
+          properties:
+            requested_kbs:
+              type: array
+              items:
+                type: string
+            accessible_kbs:
+              type: array
+              items:
+                type: string
+            inaccessible_kbs:
+              type: array
+              items:
+                type: string
+            total_requested:
+              type: integer
+            total_accessible:
+              type: integer
+          description: Knowledge base access information
+
+    ChatResponse:
+      type: object
+      properties:
+        answer:
+          type: string
+          description: AI-generated answer
+        reason:
+          type: string
+          description: Reasoning behind the answer
+        confidence:
+          type: string
+          enum: [High, Medium, Low]
+          description: Confidence level
+        answerMatchType:
+          type: string
+          description: Type of answer match
+        blockNumbers:
+          type: array
+          items:
+            type: integer
+          description: Block numbers used for answer
+        citations:
+          type: array
+          items:
+            type: object
+          description: Citation metadata
+        searchResults:
+          type: array
+          items:
+            type: object
+          description: Source search results
+        records:
+          type: array
+          items:
+            type: object
+          description: Retrieved records
+
+    StreamEvent:
+      type: object
+      properties:
+        event:
+          type: string
+          enum: [status, chunk, tool_call, tool_result, metadata, error, done]
+          description: Event type
+        data:
+          type: object
+          description: Event data
+
+    Error:
+      type: object
+      properties:
+        detail:
+          type: string
+          description: Error detail message
+        status_code:
+          type: integer
+          description: HTTP status code
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, fail, not healthy]
+          description: Health status
+        timestamp:
+          type: integer
+          format: int64
+          description: Timestamp in milliseconds
+        error:
+          type: string
+          description: Error message if unhealthy
+        message:
+          type: string
+          description: Status message
+
+    ModelConfig:
+      type: object
+      description: Configuration for LLM or embedding model
+      properties:
+        provider:
+          type: string
+          description: Model provider (e.g., openai, anthropic, cohere)
+        configuration:
+          type: object
+          description: Provider-specific configuration
+          additionalProperties: true
+        isMultimodal:
+          type: boolean
+          description: Whether the model supports multimodal inputs
+        isDefault:
+          type: boolean
+          description: Whether this is the default model
+
+security:
+  - bearerAuth: []
+
+paths:
+  /search:
+    post:
+      tags:
+        - Search
+      summary: Semantic search across documents
+      description: |
+        Perform semantic search with query rewriting and expansion.
+        Supports knowledge base filtering and validates user access to requested KBs.
+      operationId: search
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchQuery'
+        required: true
+      responses:
+        '200':
+          description: Search completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Access denied to knowledge bases
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  searchResults:
+                    type: array
+                    items: {}
+                  records:
+                    type: array
+                    items: {}
+                  status:
+                    type: string
+                  status_code:
+                    type: integer
+                  message:
+                    type: string
+                  inaccessible_kbs:
+                    type: array
+                    items:
+                      type: string
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /chat:
+    post:
+      tags:
+        - Chat
+      summary: AI-powered chat (non-streaming)
+      description: |
+        Process chat query with AI model using RAG (Retrieval Augmented Generation).
+        Supports conversation history, multi-model selection, and various chat modes.
+        Includes tool calling capabilities for fetching additional context.
+      operationId: askAI
+      parameters:
+        - name: sendUserInfo
+          in: query
+          description: Include user info in context
+          required: false
+          schema:
+            type: boolean
+            default: true
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatQuery'
+        required: true
+      responses:
+        '200':
+          description: Chat response generated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /chat/stream:
+    post:
+      tags:
+        - Chat
+      summary: AI-powered chat (streaming)
+      description: |
+        Process chat query with real-time streaming response using Server-Sent Events (SSE).
+        Provides status updates during processing stages:
+        - started: Connection established
+        - transforming: Processing conversation context
+        - analyzing: Analyzing question
+        - searching: Searching knowledge base
+        - processing: Processing results
+        - ranking: Ranking information
+        - chunk: Streaming response chunks
+        - metadata: Final metadata
+        - done: Stream complete
+      operationId: askAIStream
+      parameters:
+        - name: sendUserInfo
+          in: query
+          description: Include user info in context
+          required: false
+          schema:
+            type: boolean
+            default: true
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatQuery'
+        required: true
+      responses:
+        '200':
+          description: Streaming response
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: Server-Sent Events stream
+              examples:
+                status_event:
+                  value: |
+                    event: status
+                    data: {"status": "searching", "message": "Searching knowledge base..."}
+                chunk_event:
+                  value: |
+                    event: chunk
+                    data: {"text": "Based on the information..."}
+                done_event:
+                  value: |
+                    event: done
+                    data: {}
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check endpoint
+      description: |
+        Check service health and verify connectivity to dependent services.
+        Validates connector service availability.
+      operationId: healthCheck
+      security: []
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '500':
+          description: Service is unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /llm-health-check:
+    post:
+      tags:
+        - Health
+      summary: LLM model health check
+      description: |
+        Validate user-provided LLM configurations by making a test call to the language model.
+        Returns health status indicating whether the LLM service is responding correctly.
+      operationId: llmHealthCheck
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/ModelConfig'
+        required: true
+      responses:
+        '200':
+          description: LLM service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '500':
+          description: LLM service health check failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /embedding-health-check:
+    post:
+      tags:
+        - Health
+      summary: Embedding model health check
+      description: |
+        Validate embedding model configurations and verify that the embedding service is responding.
+        Tests the embedding model with sample text and validates vector store connectivity.
+      operationId: embeddingHealthCheck
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/ModelConfig'
+        required: true
+      responses:
+        '200':
+          description: Embedding service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '500':
+          description: Embedding service health check failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /health-check/{model_type}:
+    post:
+      tags:
+        - Health
+      summary: Model health check by type
+      description: |
+        Validate health of a specific model type (LLM or embedding).
+        Performs targeted health checks based on the model type provided.
+      operationId: modelTypeHealthCheck
+      parameters:
+        - name: model_type
+          in: path
+          required: true
+          description: Type of model to check (llm or embedding)
+          schema:
+            type: string
+            enum: [llm, embedding]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelConfig'
+        required: true
+      responses:
+        '200':
+          description: Model is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '500':
+          description: Model health check failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
