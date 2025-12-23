@@ -1642,8 +1642,6 @@ class BookStackConnector(BaseConnector):
                 size_in_bytes=0,
                 inherit_permissions=True,
             )
-            if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             # 4. Fetch and parse permissions
             new_permissions = []
@@ -1823,6 +1821,10 @@ class BookStackConnector(BaseConnector):
         if not record_update:
             return
 
+        if record_update.record:
+            if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
         # **This is the logic you requested:**
         # If the record is new, handle it here directly.
         if record_update.is_new:
@@ -1875,10 +1877,138 @@ class BookStackConnector(BaseConnector):
         self.logger.info("Cleaning up BookStack connector resources.")
         self.data_source = None
 
-    async def reindex_records(self, record_results: List[Record]) -> None:
-        """Reindex records - not implemented for BookStack yet."""
-        self.logger.warning("Reindex not implemented for BookStack connector")
-        pass
+    async def reindex_records(self, records: List[Record]) -> None:
+        """
+        Reindex records from BookStack.
+        
+        This method checks each record at the source for updates:
+        - If the record has changed (metadata, content, or permissions), it updates the DB
+        - If the record hasn't changed, it publishes a reindex event for the existing record
+        """
+        try:
+            if not records:
+                self.logger.info("No records to reindex")
+                return
+
+            self.logger.info(f"Starting reindex for {len(records)} BookStack records")
+
+            # Ensure BookStack client is initialized
+            if not self.data_source:
+                self.logger.error("BookStack client not initialized. Call init() first.")
+                raise Exception("BookStack client not initialized. Call init() first.")
+
+            # Fetch roles and users needed for processing pages
+            roles_details = await self.list_roles_with_details()
+            users = await self.get_all_users()
+
+            # Check records at source for updates
+            org_id = self.data_entities_processor.org_id
+            updated_records = []
+            non_updated_records = []
+            
+            for record in records:
+                try:
+                    updated_record_data = await self._check_and_fetch_updated_record(
+                        org_id, record, roles_details, users
+                    )
+                    if updated_record_data:
+                        updated_record, permissions = updated_record_data
+                        updated_records.append((updated_record, permissions))
+                    else:
+                        non_updated_records.append(record)
+                except Exception as e:
+                    self.logger.error(f"Error checking record {record.id} at source: {e}")
+                    continue
+
+            # Update DB only for records that changed at source
+            if updated_records:
+                await self.data_entities_processor.on_new_records(updated_records)
+                self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
+
+            # Publish reindex events for non-updated records
+            if non_updated_records:
+                await self.data_entities_processor.reindex_existing_records(non_updated_records)
+                self.logger.info(f"Published reindex events for {len(non_updated_records)} non-updated records")
+                
+        except Exception as e:
+            self.logger.error(f"Error during BookStack reindex: {e}", exc_info=True)
+            raise
+    
+    async def _check_and_fetch_updated_record(
+        self, org_id: str, record: Record, roles_details: Dict[int, Dict], users: List[AppUser]
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """
+        Fetch record from BookStack and return data for reindexing if changed.
+        
+        Args:
+            org_id: The organization ID
+            record: The record to check for updates
+            roles_details: Dictionary of role details for permission parsing
+            users: List of all users for permission parsing
+            
+        Returns:
+            Tuple of (updated_record, permissions) if the record has changed, None otherwise
+        """
+        try:
+            external_id = record.external_record_id
+
+            if not external_id:
+                self.logger.warning(f"Missing external_record_id for record {record.id}")
+                return None
+
+            # Parse the page ID from external_record_id (format: "page/{page_id}")
+            if not external_id.startswith("page/"):
+                self.logger.warning(f"Invalid external_record_id format for record {record.id}: {external_id}")
+                return None
+            
+            page_id = external_id.split("/")[1]
+
+            # Fetch fresh page data from BookStack
+            page_response = await self.data_source.list_pages(filter={"id": str(page_id)})
+
+            if not page_response.success or not page_response.data:
+                self.logger.warning(f"Could not fetch page data for record {record.id}: {page_response.error if page_response else 'No response'}")
+                return None
+
+            json_content_str = page_response.data.get('content')
+            if not json_content_str:
+                self.logger.warning(f"API response for page ID {page_id} is empty. Skipping.")
+                return None
+
+            try:
+                # Parse the JSON string into a Python dictionary
+                pages_data = json.loads(json_content_str)
+                # Extract the list of pages from the 'data' key
+                pages_list = pages_data.get("data", [])
+                # Check if we actually got a page back
+                if not pages_list:
+                    self.logger.warning(f"No page data found in the response for ID {page_id}. Skipping.")
+                    return None
+                # Get the first (and only) page object from the list
+                page_details = pages_list[0]
+
+            except json.JSONDecodeError:
+                self.logger.error(f"Failed to decode JSON for page ID {page_id}. Content: {json_content_str}")
+                return None
+
+            # Process the page using existing logic
+            record_update = await self._process_bookstack_page(page_details, roles_details, users)
+
+            if not record_update or record_update.is_deleted:
+                return None
+
+            # Only return data if there's an actual update (metadata, content, or permissions)
+            if record_update.is_updated:
+                self.logger.info(f"Record {external_id} has changed at source. Updating.")
+                # Ensure we keep the internal DB ID
+                record_update.record.id = record.id
+                return (record_update.record, record_update.new_permissions or [])
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Error checking BookStack record {record.id} at source: {e}", exc_info=True)
+            return None
 
     @classmethod
     async def create_connector(

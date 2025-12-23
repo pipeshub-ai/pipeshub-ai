@@ -493,8 +493,6 @@ class DropboxConnector(BaseConnector):
                 mime_type=get_mimetype_enum_for_dropbox(entry),
                 sha256_hash=entry.content_hash if is_file and hasattr(entry, 'content_hash') else None,
             )
-            if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             # async with self.data_store_provider.transaction() as tx_store:
             #     user = await tx_store.get_user_by_id(user_id=user_id)
@@ -596,6 +594,9 @@ class DropboxConnector(BaseConnector):
             try:
                 record_update = await self._process_dropbox_entry(entry, user_id, user_email, record_group_id, is_person_folder)
                 if record_update:
+                    if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                        record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                        
                     yield (record_update.record, record_update.new_permissions or [], record_update)
                 await asyncio.sleep(0)
             except Exception as e:
@@ -868,9 +869,6 @@ class DropboxConnector(BaseConnector):
                     for user in batch
                 ]
 
-
-                print("Going to run sync for these users:", batch)
-
                 await asyncio.gather(*sync_tasks, return_exceptions=True)
 
                 # Small delay between batches to prevent overwhelming the API
@@ -967,7 +965,8 @@ class DropboxConnector(BaseConnector):
                                         recursive=True
                                     )
                                 except Exception as e:
-                                    print("error in api call:", e)
+                                    self.logger.error("error in api call:", e)
+                                    
                         if not result.success:
                             self.logger.error(f"[{sync_log_name}] Dropbox API call failed: {result.error}")
                             # Stop syncing this folder on API error
@@ -1597,7 +1596,7 @@ class DropboxConnector(BaseConnector):
                 group_info = participant.get_group()
                 group_id = group_info.group_id
                 group_name = group_info.display_name
-                print(f"Extracted deleted group: {group_name} ({group_id})")
+                self.logger.info(f"Extracted deleted group: {group_name} ({group_id})")
                 break
 
         # Validate we have required information
@@ -2164,11 +2163,11 @@ class DropboxConnector(BaseConnector):
         for user in users:
             # Validate data first
             if not user.full_name or not user.full_name.strip():
-                print(f"⚠️ Skipping user with empty full_name: {user.email}")
+                self.logger.warning(f"⚠️ Skipping user with empty full_name: {user.email}")
                 continue
 
             if not user.source_user_id or not user.source_user_id.strip():
-                print(f"⚠️ Skipping user with empty source_user_id: {user.email}")
+                self.logger.warning(f"⚠️ Skipping user with empty source_user_id: {user.email}")
                 continue
 
             record_group = RecordGroup(
@@ -2648,7 +2647,7 @@ class DropboxConnector(BaseConnector):
         signed_url = await self.get_signed_url(record)
         if not signed_url:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
-
+        
         return StreamingResponse(
             stream_content(signed_url),
             media_type=record.mime_type if record.mime_type else "application/octet-stream",
@@ -2677,11 +2676,161 @@ class DropboxConnector(BaseConnector):
         self.logger.info("Cleaning up Dropbox connector resources.")
         self.data_source = None
 
-    async def reindex_records(self, record_results: List[Record]) -> None:
-        """Reindex records - not implemented for Dropbox yet."""
-        self.logger.warning("Reindex not implemented for Dropbox connector")
-        pass
+    async def reindex_records(self, records: List[Record]) -> None:
+        """
+        Reindex records from Dropbox.
+        
+        This method checks each record at the source for updates:
+        - If the record has changed (metadata, content, or permissions), it updates the DB
+        - If the record hasn't changed, it publishes a reindex event for the existing record
+        """
+        try:
+            if not records:
+                self.logger.info("No records to reindex")
+                return
 
+            self.logger.info(f"Starting reindex for {len(records)} Dropbox records")
+
+            # Ensure Dropbox client is initialized
+            if not self.data_source:
+                self.logger.error("Dropbox client not initialized. Call init() first.")
+                raise Exception("Dropbox client not initialized. Call init() first.")
+
+            # Check records at source for updates
+            org_id = self.data_entities_processor.org_id
+            updated_records = []
+            non_updated_records = []
+            
+            for record in records:
+                try:
+                    updated_record_data = await self._check_and_fetch_updated_record(org_id, record)
+                    if updated_record_data:
+                        updated_record, permissions = updated_record_data
+                        updated_records.append((updated_record, permissions))
+                    else:
+                        non_updated_records.append(record)
+                except Exception as e:
+                    self.logger.error(f"Error checking record {record.id} at source: {e}")
+                    continue
+
+            # Update DB only for records that changed at source
+            if updated_records:
+                await self.data_entities_processor.on_new_records(updated_records)
+                self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
+
+            # Publish reindex events for non-updated records
+            if non_updated_records:
+                await self.data_entities_processor.reindex_existing_records(non_updated_records)
+                self.logger.info(f"Published reindex events for {len(non_updated_records)} non-updated records")
+                
+        except Exception as e:
+            self.logger.error(f"Error during Dropbox reindex: {e}", exc_info=True)
+            raise
+
+    async def _check_and_fetch_updated_record(
+        self, org_id: str, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """
+        Fetch record from Dropbox and return data for reindexing if changed.
+        
+        Args:
+            org_id: The organization ID
+            record: The record to check for updates
+            
+        Returns:
+            Tuple of (updated_record, permissions) if the record has changed, None otherwise
+        """
+        try:
+            external_id = record.external_record_id
+            record_group_id = record.external_record_group_id
+
+            if not external_id:
+                self.logger.warning(f"Missing external_record_id for record {record.id}")
+                return None
+
+            # Get file record for additional info (path, etc.)
+            file_record = None
+            async with self.data_store_provider.transaction() as tx_store:
+                file_record = await tx_store.get_file_record_by_id(record.id)
+            
+            if not file_record:
+                self.logger.warning(f"No file record found for record {record.id}")
+                return None
+
+            # Get a user with permission to access this file
+            user_with_permission = None
+            async with self.data_store_provider.transaction() as tx_store:
+                user_with_permission = await tx_store.get_first_user_with_permission_to_node(
+                    f"{CollectionNames.RECORDS.value}/{record.id}"
+                )
+            
+            if not user_with_permission:
+                self.logger.warning(f"No user found with permission to record: {record.id}")
+                return None
+
+            # Get team member ID for API calls
+            members = [UserSelectorArg("email", user_with_permission.email)]
+            team_member_info = await self.data_source.team_members_get_info_v2(members=members)
+            
+            if not team_member_info.success or not team_member_info.data.members_info:
+                self.logger.warning(f"Could not get team member info for user: {user_with_permission.email}")
+                return None
+                
+            team_member_id = team_member_info.data.members_info[0].get_member_info().profile.team_member_id
+            user_email = user_with_permission.email
+
+            # Determine if this is a personal folder
+            is_person_folder = record_group_id and record_group_id.startswith("dbmid:")
+            
+            # Determine team_folder_id for API call
+            team_folder_id = None
+            if record_group_id and not record_group_id.startswith("dbmid:"):
+                team_folder_id = record_group_id
+
+            # Fetch fresh metadata from Dropbox
+            # Use the file ID (external_id) to get the metadata
+            metadata_result = await self.data_source.files_get_metadata(
+                path=external_id,
+                team_member_id=team_member_id,
+                team_folder_id=team_folder_id
+            )
+
+            if not metadata_result or not metadata_result.success:
+                self.logger.warning(f"Could not fetch metadata for record {record.id}: {metadata_result.error if metadata_result else 'No response'}")
+                return None
+
+            entry = metadata_result.data
+
+            # Check if deleted
+            if isinstance(entry, DeletedMetadata):
+                self.logger.info(f"Record {record.id} has been deleted at source")
+                return None
+
+            # Process the entry using existing logic
+            record_update = await self._process_dropbox_entry(
+                entry=entry,
+                user_id=team_member_id,
+                user_email=user_email,
+                record_group_id=record_group_id,
+                is_person_folder=is_person_folder
+            )
+
+            if not record_update or record_update.is_deleted:
+                return None
+
+            # Only return data if there's an actual update (metadata, content, or permissions)
+            if record_update.is_updated:
+                self.logger.info(f"Record {external_id} has changed at source. Updating.")
+                # Ensure we keep the internal DB ID
+                record_update.record.id = record.id
+                return (record_update.record, record_update.new_permissions or [])
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Error checking Dropbox record {record.id} at source: {e}", exc_info=True)
+            return None
+    
     # @classmethod
     # async def create_connector(
     #     cls, logger, arango_service: BaseArangoService, config_service: ConfigurationService

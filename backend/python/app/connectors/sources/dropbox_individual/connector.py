@@ -507,9 +507,6 @@ class DropboxIndividualConnector(BaseConnector):
                 sha256_hash=entry.content_hash if is_file and hasattr(entry, 'content_hash') else None,
             )
 
-            if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
-
             # 8. Handle Permissions
             new_permissions = []
 
@@ -575,6 +572,10 @@ class DropboxIndividualConnector(BaseConnector):
                     record_group_id
                 )
                 if record_update:
+                    if record_update.record:
+                        if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                            record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
                     yield (record_update.record, record_update.new_permissions or [], record_update)
                 await asyncio.sleep(0)
             except Exception as e:
@@ -792,6 +793,8 @@ class DropboxIndividualConnector(BaseConnector):
         signed_url = await self.get_signed_url(record)
         if not signed_url:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
+        
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Raising Exception for testing")
 
         return StreamingResponse(
             stream_content(signed_url),
@@ -812,10 +815,123 @@ class DropboxIndividualConnector(BaseConnector):
             self.logger.error(f"Dropbox connection test failed: {e}", exc_info=True)
             return False
 
-    async def reindex_records(self, record_results: List[Record]) -> None:
-        """Reindex records - not implemented for Dropbox yet."""
-        self.logger.warning("Reindex not implemented for Dropbox connector")
-        pass
+    async def reindex_records(self, records: List[Record]) -> None:
+        """
+        Reindex records from Dropbox Individual account.
+        
+        This method checks each record at the source for updates:
+        - If the record has changed (metadata, content, or permissions), it updates the DB
+        - If the record hasn't changed, it publishes a reindex event for the existing record
+        """
+        try:
+            if not records:
+                self.logger.info("No records to reindex")
+                return
+
+            self.logger.info(f"Starting reindex for {len(records)} Dropbox Individual records")
+
+            # Ensure Dropbox client is initialized
+            if not self.data_source:
+                self.logger.error("Dropbox client not initialized. Call init() first.")
+                raise Exception("Dropbox client not initialized. Call init() first.")
+
+            # Get current user info (needed for processing entries)
+            user_id, user_email = await self._get_current_user_info()
+
+            # Check records at source for updates
+            org_id = self.data_entities_processor.org_id
+            updated_records = []
+            non_updated_records = []
+            
+            for record in records:
+                try:
+                    updated_record_data = await self._check_and_fetch_updated_record(
+                        org_id, record, user_id, user_email
+                    )
+                    if updated_record_data:
+                        updated_record, permissions = updated_record_data
+                        updated_records.append((updated_record, permissions))
+                    else:
+                        non_updated_records.append(record)
+                except Exception as e:
+                    self.logger.error(f"Error checking record {record.id} at source: {e}")
+                    continue
+
+            # Update DB only for records that changed at source
+            if updated_records:
+                await self.data_entities_processor.on_new_records(updated_records)
+                self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
+
+            # Publish reindex events for non-updated records
+            if non_updated_records:
+                await self.data_entities_processor.reindex_existing_records(non_updated_records)
+                self.logger.info(f"Published reindex events for {len(non_updated_records)} non-updated records")
+                
+        except Exception as e:
+            self.logger.error(f"Error during Dropbox Individual reindex: {e}", exc_info=True)
+            raise
+
+    async def _check_and_fetch_updated_record(
+        self, org_id: str, record: Record, user_id: str, user_email: str
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """
+        Fetch record from Dropbox and return data for reindexing if changed.
+        
+        Args:
+            org_id: The organization ID
+            record: The record to check for updates
+            user_id: The current user's account ID
+            user_email: The current user's email
+            
+        Returns:
+            Tuple of (updated_record, permissions) if the record has changed, None otherwise
+        """
+        try:
+            external_id = record.external_record_id
+            record_group_id = record.external_record_group_id
+
+            if not external_id:
+                self.logger.warning(f"Missing external_record_id for record {record.id}")
+                return None
+
+            # Fetch fresh metadata from Dropbox using the file ID
+            metadata_result = await self.data_source.files_get_metadata(path=external_id)
+
+            if not metadata_result or not metadata_result.success:
+                self.logger.warning(f"Could not fetch metadata for record {record.id}: {metadata_result.error if metadata_result else 'No response'}")
+                return None
+
+            entry = metadata_result.data
+
+            # Check if deleted
+            if isinstance(entry, DeletedMetadata):
+                self.logger.info(f"Record {record.id} has been deleted at source")
+                return None
+
+            # Process the entry using existing logic
+            # For individual accounts, record_group_id is the user's account ID
+            record_update = await self._process_dropbox_entry(
+                entry=entry,
+                user_id=user_id,
+                user_email=user_email,
+                record_group_id=record_group_id or user_id
+            )
+
+            if not record_update or record_update.is_deleted:
+                return None
+
+            # Only return data if there's an actual update (metadata, content, or permissions)
+            if record_update.is_updated:
+                self.logger.info(f"Record {external_id} has changed at source. Updating.")
+                # Ensure we keep the internal DB ID
+                record_update.record.id = record.id
+                return (record_update.record, record_update.new_permissions or [])
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Error checking Dropbox Individual record {record.id} at source: {e}", exc_info=True)
+            return None
 
     def handle_webhook_notification(self, notification: Dict) -> None:
         """Handle webhook notifications by triggering incremental sync."""
@@ -825,11 +941,6 @@ class DropboxIndividualConnector(BaseConnector):
     async def cleanup(self) -> None:
         self.logger.info("Cleaning up Dropbox Individual connector resources.")
         self.data_source = None
-
-    async def reindex_records(self, record_results: List[Record]) -> None:
-        """Reindex records - not implemented for SharePoint yet."""
-        self.logger.warning("Reindex not implemented for SharePoint connector")
-        pass
 
     @classmethod
     async def create_connector(

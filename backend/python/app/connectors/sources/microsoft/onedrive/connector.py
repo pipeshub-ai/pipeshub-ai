@@ -1211,8 +1211,6 @@ class OneDriveConnector(BaseConnector):
         signed_url = await self.get_signed_url(record)
         if not signed_url:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
-        
-        # raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Manual exception for testing")
 
         return StreamingResponse(
             stream_content(signed_url),
