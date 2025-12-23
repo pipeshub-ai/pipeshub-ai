@@ -268,6 +268,7 @@ class ConnectorBuilder:
         self.app_description = ""
         self.app_categories = []
         self.config_builder = ConnectorConfigBuilder()
+        self.resilience_config: Optional[Dict[str, Any]] = None
 
     def in_group(self, app_group: str) -> 'ConnectorBuilder':
         """Set the app group"""
@@ -287,6 +288,36 @@ class ConnectorBuilder:
     def with_categories(self, categories: List[str]) -> 'ConnectorBuilder':
         """Set the app categories"""
         self.app_categories = categories
+        return self
+
+    def with_resilience_config(
+        self,
+        rate_limit: int = 50,
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+        max_delay: float = 32.0,
+        enabled: bool = True
+    ) -> 'ConnectorBuilder':
+        """
+        Configure resilience settings (rate limiting and retry) for the connector.
+
+        Args:
+            rate_limit: Maximum requests per second (default: 50)
+            max_retries: Maximum retry attempts (default: 3)
+            base_delay: Initial delay for exponential backoff in seconds (default: 1.0)
+            max_delay: Maximum delay cap in seconds (default: 32.0)
+            enabled: Whether resilience is enabled (default: True)
+
+        Returns:
+            Self for method chaining
+        """
+        self.resilience_config = {
+            'enabled': enabled,
+            'rate_limit': rate_limit,
+            'max_retries': max_retries,
+            'base_delay': base_delay,
+            'max_delay': max_delay
+        }
         return self
 
     def configure(self, config_func: Callable[[ConnectorConfigBuilder], ConnectorConfigBuilder]) -> 'ConnectorBuilder':
@@ -310,7 +341,8 @@ class ConnectorBuilder:
             auth_type=self.auth_type,
             app_description=self.app_description,
             app_categories=self.app_categories,
-            config=config
+            config=config,
+            resilience_config=self.resilience_config
         )
 
     def _validate_oauth_requirements(self, config: Dict[str, Any]) -> None:
