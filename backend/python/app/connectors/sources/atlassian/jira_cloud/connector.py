@@ -149,7 +149,6 @@ def adf_to_text(adf_content: Dict[str, Any]) -> str:
             para_text = "".join(extract_text(child, in_list) for child in content).strip()
             if para_text:
                 # In lists, paragraphs should contribute text without adding newlines
-                # The list item itself will handle the formatting
                 if in_list:
                     # Just return the text, no newlines - let list item handle spacing
                     text = para_text
@@ -437,11 +436,11 @@ class JiraConnector(BaseConnector):
             data_store_provider,
             config_service
         )
+        self.external_client: Optional[JiraClient] = None
         self.data_source: Optional[JiraDataSource] = None
         self.cloud_id: Optional[str] = None
         self.site_url: Optional[str] = None
         self._sync_in_progress: bool = False
-        self._client_refs: List[Any] = []
 
         # Initialize sync points
         org_id = self.data_entities_processor.org_id
@@ -477,6 +476,9 @@ class JiraConnector(BaseConnector):
                 self.config_service
             )
 
+            # Store client for token updates
+            self.external_client = client
+
             # Create DataSource from client
             self.data_source = JiraDataSource(client)
 
@@ -507,18 +509,45 @@ class JiraConnector(BaseConnector):
     async def _get_fresh_datasource(self) -> JiraDataSource:
         """
         Get JiraDataSource with ALWAYS-FRESH access token.
+
+        This method:
+        1. Fetches current OAuth token from config
+        2. Compares with existing client's token
+        3. Updates client ONLY if token changed (mutation)
+        4. Returns datasource with current token
+
+        Returns:
+            JiraDataSource with current valid token
         """
-        # Rebuild client with fresh token from configuration
-        client = await JiraClient.build_from_services(
-            self.logger,
-            self.config_service
-        )
+        if not self.external_client:
+            raise Exception("Jira client not initialized. Call init() first.")
 
-        # Track client for cleanup (helps reduce connection leaks)
-        self._client_refs.append(client)
+        # Fetch current config from etcd (async I/O)
+        config = await self.config_service.get_config("/services/connectors/jira/config")
 
-        # Return new datasource with fresh client
-        return JiraDataSource(client)
+        if not config:
+            raise Exception("Jira configuration not found")
+
+        # Extract fresh OAuth access token
+        credentials_config = config.get("credentials", {}) or {}
+        fresh_token = credentials_config.get("access_token", "")
+
+        if not fresh_token:
+            raise Exception("No OAuth access token available")
+
+        # Get current token from client
+        internal_client = self.external_client.get_client()
+        # Extract token from Authorization header (format: "Bearer {token}")
+        auth_header = internal_client.headers.get("Authorization", "")
+        current_token = auth_header.replace("Bearer ", "").strip() if auth_header.startswith("Bearer ") else ""
+
+        # Update client's token if it changed (mutation)
+        if current_token != fresh_token:
+            self.logger.debug("🔄 Updating client with refreshed access token")
+            internal_client.headers["Authorization"] = f"Bearer {fresh_token}"
+
+        # Return datasource with updated client
+        return JiraDataSource(self.external_client)
 
     def _parse_jira_timestamp(self, timestamp_str: Optional[str]) -> int:
         """
@@ -2956,38 +2985,30 @@ class JiraConnector(BaseConnector):
         await self.run_sync()
 
     async def cleanup(self) -> None:
-        """Cleanup resources - close HTTP client connections"""
+        """Cleanup resources - close HTTP client connections properly"""
         try:
-            # Close all tracked transient clients
-            closed_count = 0
-            for client_wrapper in self._client_refs:
+            self.logger.info("Cleaning up Jira connector resources")
+            
+            # Close HTTP client properly BEFORE event loop closes
+            # This prevents Windows asyncio "Event loop is closed" errors
+            if self.external_client:
                 try:
-                    if hasattr(client_wrapper, 'client') and client_wrapper.client:
-                        http_client = client_wrapper.client
-                        if hasattr(http_client, 'close'):
-                            await http_client.close()
-                            closed_count += 1
+                    internal_client = self.external_client.get_client()
+                    if internal_client and hasattr(internal_client, 'close'):
+                        await internal_client.close()
+                        self.logger.debug("Closed Jira HTTP client connection")
                 except Exception as e:
-                    self.logger.debug(f"Error closing transient client: {e}")
+                    # Swallow errors during shutdown - client may already be closed
+                    self.logger.debug(f"Error closing Jira client (may be expected during shutdown): {e}")
+                finally:
+                    self.external_client = None
 
-            if closed_count > 0:
-                self.logger.debug(f"Closed {closed_count} transient HTTP client(s)")
-
-            # Clear the list
-            self._client_refs.clear()
-
-            # Close main data source client
-            if self.data_source and hasattr(self.data_source, 'client'):
-                client_wrapper = self.data_source.client
-                if hasattr(client_wrapper, 'client') and client_wrapper.client:
-                    http_client = client_wrapper.client
-                    if hasattr(http_client, 'close'):
-                        await http_client.close()
-                        self.logger.debug("Closed main Jira HTTP client connection")
+            # Clear data source reference
+            self.data_source = None
+            
+            self.logger.info("Jira connector cleanup completed")
         except Exception as e:
             self.logger.warning(f"Error during cleanup: {e}")
-        finally:
-            self.data_source = None
 
     async def reindex_records(self, record_results: List[Record]) -> None:
         """Reindex a list of Jira records.

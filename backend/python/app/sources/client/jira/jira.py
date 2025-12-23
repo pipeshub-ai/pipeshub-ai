@@ -176,6 +176,9 @@ class JiraClient(IClient):
             ]
         except Exception as e:
             raise Exception(f"Failed to fetch accessible resources: {str(e)}") from e
+        finally:
+            # Close HTTP client to prevent connection leaks on Windows
+            await http_client.close()
 
     @staticmethod
     async def get_cloud_id(token: str) -> str:
