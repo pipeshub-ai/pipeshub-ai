@@ -93,7 +93,7 @@ CONTENT_EXPAND_PARAMS = (
     .with_auth_type("OAUTH")\
     .with_description("Sync pages, spaces, and users from Confluence Cloud")\
     .with_categories(["Knowledge Management", "Collaboration"])\
-    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
+    .with_scopes([ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/confluence.svg")
         .with_realtime_support(False)

@@ -202,11 +202,6 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
       }
 
       setInitialized(true);
-      console.log('Initialized selections from agent:', {
-        tools: agent.tools,
-        kb: agent.kb,
-        connectors: agent.connectors,
-      });
     }
   }, [agent, initialized]);
 
@@ -332,12 +327,6 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
         }, 50);
       }
 
-      console.log('Submitting with persistent selections:', {
-        tools: selectedTools,
-        kbs: selectedKBs,
-        apps: selectedApps,
-        chatMode: selectedChatMode?.id,
-      });   
       // Pass the persistent selected items with correct IDs/names for API
       await onSubmit(
         trimmedValue,
@@ -396,7 +385,6 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
 
   const handleChatModeSelect = (mode: ChatMode) => {
     onChatModeChange(mode);
-    console.log('Chat mode changed to:', mode.id);
   };
 
   // Toggle functions - using the correct IDs for API - these are persistent
@@ -405,7 +393,6 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
       const newSelection = prev.includes(toolId)
         ? prev.filter((id) => id !== toolId)
         : [...prev, toolId];
-      console.log('Tools selection updated:', newSelection);
       return newSelection;
     });
   };
@@ -413,7 +400,6 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
   const handleKBToggle = (kbId: string) => {
     setSelectedKBs((prev) => {
       const newSelection = prev.includes(kbId) ? prev.filter((id) => id !== kbId) : [...prev, kbId];
-      console.log('KBs selection updated:', newSelection);
       return newSelection;
     });
   };
@@ -423,7 +409,6 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
       const newSelection = prev.includes(appId)
         ? prev.filter((id) => id !== appId)
         : [...prev, appId];
-      console.log('Apps selection updated:', newSelection);
       return newSelection;
     });
   };
@@ -444,7 +429,6 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
       // Extract connector instance IDs from connectors with category='knowledge'
       const knowledgeConnectorIds = agent.connectors?.filter((ci: any) => ci.category === 'knowledge').map((ci: any) => ci.id) || [];
       setSelectedApps(knowledgeConnectorIds);
-      console.log('Reset selections to agent defaults');
     }
   }, [agent]);
 
@@ -453,7 +437,6 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
     setSelectedTools([]);
     setSelectedKBs([]);
     setSelectedApps([]);
-    console.log('Cleared all selections');
   }, []);
 
   const isInputDisabled = disabled || isSubmitting || isLoading;

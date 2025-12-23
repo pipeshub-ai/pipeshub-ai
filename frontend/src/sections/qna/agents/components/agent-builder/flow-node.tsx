@@ -654,7 +654,6 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 <Box>
                   {connectedNodesByHandle.knowledge.slice(0, 2).map((knowledgeNode, index) => {
                     if (knowledgeNode.type.startsWith('app-group')) {
-                      console.log(knowledgeNode);
                       return (
                         <Box key={`app-group-${index}`}>
                           {knowledgeNode.config.apps.slice(0, 3).map((app: any, appIndex: number) => (

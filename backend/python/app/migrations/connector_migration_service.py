@@ -1190,6 +1190,7 @@ class ConnectorMigrationService:
             org_type = await self._get_organisation_type()
             if not org_type:
                 self.logger.error("No organisation type found")
+                await self._mark_migration_done()
                 return
             self.org_type = org_type
         except Exception as e:

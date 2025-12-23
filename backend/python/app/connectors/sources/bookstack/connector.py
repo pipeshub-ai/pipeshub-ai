@@ -71,7 +71,7 @@ class RecordUpdate:
     .with_auth_type("API_TOKEN")\
     .with_description("Sync content from your BookStack instance")\
     .with_categories(["Knowledge Management"])\
-    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
+    .with_scopes([ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/bookstack.svg")\
         .add_documentation_link(DocumentationLink(

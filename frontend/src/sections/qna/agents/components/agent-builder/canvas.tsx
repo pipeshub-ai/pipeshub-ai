@@ -250,18 +250,6 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
       const toolCount = event.dataTransfer.getData('toolCount');
       
       const template = nodeTemplates.find((t) => t.type === type);
-      console.log(template);
-      console.log(connectorScope);
-      console.log(connectorType);
-      console.log(connectorId);
-      console.log(connectorName);
-      console.log(connectorIconPath);
-      console.log(allToolsStr);
-      console.log(toolCount);
-      console.log(toolAppName);
-      console.log(template);
-      console.log(event.dataTransfer.getData('isConfigured'));
-      console.log(event.dataTransfer.getData('isAgentActive'));
       if (!template) return;
 
       // Validate tools: Check if parent connector is configured and agent-active

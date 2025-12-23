@@ -183,7 +183,7 @@ class SlackClient(IClient):
 
             # Extract configuration values
             auth_config = config.get("auth",{}) or {}
-            auth_type = auth_config.get("authType", "botToken")  # token, username_password, api_key
+            auth_type = auth_config.get("authType", "userOAuthAccessToken")  # token, username_password, api_key
 
             # Create appropriate client based on auth type
             # to be implemented
@@ -202,8 +202,8 @@ class SlackClient(IClient):
                     raise ValueError("Email and API key required for api_key auth type")
                 client = SlackRESTClientViaApiKey(email, api_key)
 
-            elif auth_type == "API_TOKEN" or auth_type == "botToken":  # Default to token auth
-                token = auth_config.get("botToken", "")
+            elif auth_type == "API_TOKEN" or auth_type == "userOAuthAccessToken":  # Default to token auth
+                token = auth_config.get("userOAuthAccessToken", "")
                 if not token:
                     raise ValueError("Token required for token auth type")
                 client = SlackRESTClientViaToken(token)

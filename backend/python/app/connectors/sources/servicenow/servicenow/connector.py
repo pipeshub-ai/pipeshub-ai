@@ -92,7 +92,7 @@ ORGANIZATIONAL_ENTITIES = {
     .with_auth_type("OAUTH")\
     .with_description("Sync knowledge base articles, categories, and permissions from ServiceNow")\
     .with_categories(["Knowledge Management"])\
-    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
+    .with_scopes([ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/servicenow.svg")
         .with_realtime_support(False)

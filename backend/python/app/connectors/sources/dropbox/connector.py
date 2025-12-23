@@ -149,7 +149,7 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
     .with_auth_type("OAUTH")\
     .with_description("Sync files and folders from Dropbox")\
     .with_categories(["Storage"])\
-    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
+    .with_scopes([ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/dropbox.svg")
         .with_realtime_support(True)

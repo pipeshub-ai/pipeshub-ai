@@ -89,7 +89,7 @@ class OutlookCredentials:
     .with_auth_type("OAUTH_ADMIN_CONSENT")\
     .with_description("Sync emails from Outlook")\
     .with_categories(["Email"])\
-    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
+    .with_scopes([ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/outlook.svg")
         .add_documentation_link(DocumentationLink(

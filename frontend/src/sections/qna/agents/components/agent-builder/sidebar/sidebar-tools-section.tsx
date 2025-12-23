@@ -42,10 +42,8 @@ export const SidebarToolsSection: React.FC<SidebarToolsSectionProps> = ({
     <Box sx={{ pl: 0 }}>
       {Object.entries(toolsGroupedByConnectorType).map(([displayName, data]) => {
         const { connectorIcon, tools, activeAgentInstances, isConfigured, isAgentActive } = data;
-        console.log(data); 
         const connectorTypeKey = `tool-type-${displayName}`;
         const isTypeExpanded = expandedApps[connectorTypeKey];
-        console.log(connectorIcon);
         const needsConfiguration = connectorNeedsConfiguration(
           activeAgentInstances,
           isConfigured,

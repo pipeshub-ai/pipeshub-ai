@@ -121,7 +121,7 @@ class SiteMetadata:
     .with_auth_type("OAUTH_ADMIN_CONSENT")\
     .with_description("Sync documents and lists from SharePoint Online")\
     .with_categories(["Storage", "Documentation"])\
-    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
+    .with_scopes([ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/sharepoint.svg")
         .add_documentation_link(DocumentationLink(

@@ -300,7 +300,7 @@ const ConnectorRegistryCard = ({ connector, scope = 'personal' }: ConnectorRegis
             createdAtTimestamp: Date.now(),
             updatedAtTimestamp: Date.now(),
           }}
-          initialInstanceName={`${(connector.name)[0].toUpperCase() + (connector.name).slice(1).toLowerCase()} - Instance`}
+          initialInstanceName={`${(connector.name)[0].toUpperCase() + (connector.name).slice(1).toLowerCase()}`}
           onClose={() => setConfigOpen(false)}
           onSuccess={() => setConfigOpen(false)}
         />

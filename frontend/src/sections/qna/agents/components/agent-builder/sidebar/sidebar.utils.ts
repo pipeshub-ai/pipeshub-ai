@@ -167,6 +167,10 @@ export const groupToolsByConnectorType = (
     const registryEntry = connectorTypeMap.get(normalizedAppName);
     const displayName = normalizeDisplayName(appName);
 
+    if (displayName === 'Calculator') {
+      return;
+    }
+
     if (!grouped[displayName]) {
       grouped[displayName] = {
         connectorType: appName,

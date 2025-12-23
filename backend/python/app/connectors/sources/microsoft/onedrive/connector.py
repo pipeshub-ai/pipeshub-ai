@@ -64,7 +64,7 @@ class OneDriveCredentials:
     .with_auth_type("OAUTH_ADMIN_CONSENT")\
     .with_description("Sync files and folders from OneDrive")\
     .with_categories(["Storage"])\
-    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
+    .with_scopes([ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/onedrive.svg")
         .add_documentation_link(DocumentationLink(
