@@ -858,3 +858,5 @@ export const deletePermissionsSchema = z.object({
     kbId: z.string().uuid(),
   }),
 });
+
+export const getUniqueConnectorsSchema = z.object({});
