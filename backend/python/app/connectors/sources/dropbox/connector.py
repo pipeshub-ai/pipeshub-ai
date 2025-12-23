@@ -692,6 +692,7 @@ class DropboxConnector(BaseConnector):
         return old_set == new_set
 
 
+    #unused function due for cleanup
     async def _process_entry(
         self, entry: Union[FileMetadata, FolderMetadata, DeletedMetadata]
     ) -> Optional[Tuple[FileRecord, List[Permission]]]:
@@ -1688,6 +1689,7 @@ class DropboxConnector(BaseConnector):
         member_permissions = []
         for member in all_members:
             user_permission = AppUser(
+                app_name=self.connector_name,
                 connector_id=self.connector_id,
                 source_user_id=member.profile.team_member_id,
                 email=member.profile.email,

@@ -2437,6 +2437,7 @@ class ServiceNowConnector(BaseConnector):
                 source_updated_at = self._parse_servicenow_datetime(user_data["sys_updated_on"])
 
             app_user = AppUser(
+                app_name=self.connector_name,
                 connector_id=self.connector_id,
                 source_user_id=sys_id,
                 org_id=self.data_entities_processor.org_id,

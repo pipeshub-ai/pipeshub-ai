@@ -163,7 +163,7 @@ class DataSourceEntitiesProcessor:
 
                         # If user doesn't exist (external user), create them as inactive
                         if not user and permission.email:
-                            user = await self._create_external_user(permission.email, record.connector_id, tx_store)
+                            user = await self._create_external_user(permission.email, record.connector_id, record.connector_name, tx_store)
 
                     if user:
                         from_collection = f"{CollectionNames.USERS.value}/{user.id}"
@@ -215,12 +215,13 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self.logger.error("Failed to create permission edge: %s", e)
 
-    async def _create_external_user(self, email: str, connector_id: str, tx_store) -> AppUser:
+    async def _create_external_user(self, email: str, connector_id: str, connector_name: str, tx_store) -> AppUser:
         """Create an external user record."""
         external_source_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, email))
 
         # Create external user record
         external_user = AppUser(
+            app_name=connector_name,
             connector_id=connector_id,
             source_user_id=external_source_id,
             email=email,
