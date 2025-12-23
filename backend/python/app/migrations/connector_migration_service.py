@@ -89,6 +89,7 @@ class ConnectorMigrationService:
         self.config = config_service
         self.logger = logger
         self.org_type : str | None = None
+        self.org_id : str | None = None
 
     async def _is_migration_already_done(self) -> bool:
         """
@@ -122,7 +123,7 @@ class ConnectorMigrationService:
                 "Migration completed but may run again on next startup."
             )
 
-    async def _get_organisation_type(self) -> str | None:
+    async def _get_organisation(self) -> Dict | None:
         """
         Get the organisation type from the database.
         """
@@ -135,12 +136,8 @@ class ConnectorMigrationService:
             org = list(cursor)
             if not org:
                 self.logger.error("No organisation found")
-                return None
-            org_type = org[0].get("accountType", "")
-            if not org_type:
-                self.logger.error("No organisation type found")
                 raise ValueError("No organisation type found")
-            return org_type
+            return org[0]
         except Exception as e:
             self.logger.error(f"Failed to get organisation type: {e}")
             return None
@@ -353,7 +350,7 @@ class ConnectorMigrationService:
             scope = ConnectorScopes.TEAM.value
         else:
             scope = ConnectorScopes.PERSONAL.value
-            user = await self.arango.get_users(org_id=legacy_app.get("orgId"), active=True)
+            user = await self.arango.get_users(org_id=self.org_id, active=True)
             if user:
                 created_by = user[0].get("userId")
 
@@ -1187,12 +1184,15 @@ class ConnectorMigrationService:
         # Fetch the organisation type
 
         try:
-            org_type = await self._get_organisation_type()
-            if not org_type:
-                self.logger.error("No organisation type found")
+            org = await self._get_organisation()
+            org_type = org.get("accountType", "")
+            org_id = org.get("_key")
+            if not org_type or not org_id:
+                self.logger.error(f"No organisation type {org_type} or id {org_id} found")
                 await self._mark_migration_done()
                 return
             self.org_type = org_type
+            self.org_id = org_id
         except Exception as e:
             self.logger.error(f"Failed to get organisation type: {e}")
             return
