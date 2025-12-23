@@ -450,7 +450,6 @@ class CommonFields:
             category=FilterCategory.SYNC,
             description="Select the types of files to sync",
             options=["document", "spreadsheet", "presentation", "pdf", "image", "video"],
-            options_endpoint=options_endpoint
         )
 
     @staticmethod
@@ -462,7 +461,6 @@ class CommonFields:
             filter_type=FilterType.LIST,
             category=FilterCategory.SYNC,
             description="Select folders to sync from",
-            options_endpoint=options_endpoint
         )
 
     @staticmethod
@@ -474,7 +472,6 @@ class CommonFields:
             filter_type=FilterType.LIST,
             category=FilterCategory.SYNC,
             description="Select channels to sync messages from",
-            options_endpoint=options_endpoint
         )
 
     @staticmethod

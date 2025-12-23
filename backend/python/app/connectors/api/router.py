@@ -2072,7 +2072,13 @@ async def reindex_single_record(
     arango_service: BaseArangoService = Depends(get_arango_service),
 ) -> Dict:
     """
-    Reindex a single record with permission validation
+    Reindex a single record with permission validation.
+    If the record is a folder (is_file=False), optionally reindex children up to specified depth.
+
+    Request Body (optional):
+        depth: int - Depth of children to reindex.
+               -1 = unlimited, 0 = only this record (default),
+               1 = direct children, 2 = children + grandchildren, etc.
     """
     try:
         container = request.app.container
@@ -2080,25 +2086,36 @@ async def reindex_single_record(
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
 
-        logger.info(f"🔄 Attempting to reindex record {record_id}")
+        # Parse optional depth from request body
+        depth = 0  # Default: only this record
+        try:
+            request_body = await request.json()
+            depth = request_body.get("depth", 0)
+        except Exception:
+            # No body or invalid JSON - use default depth
+            pass
+
+        logger.info(f"🔄 Attempting to reindex record {record_id} with depth {depth}")
 
         result = await arango_service.reindex_single_record(
             record_id=record_id,
             user_id=user_id,
             org_id=org_id,
+            depth=depth,
             request=request
         )
 
         if result["success"]:
-            logger.info(f"✅ Successfully initiated reindex for record {record_id}")
+            logger.info(f"✅ Successfully initiated reindex for record {record_id} with depth {depth}")
             return {
                 "success": True,
-                "message": f"Reindex initiated for record {record_id}",
+                "message": f"Reindex initiated for record {record_id}" + (f" with depth {depth}" if depth != 0 else ""),
                 "recordId": result.get("recordId"),
                 "recordName": result.get("recordName"),
                 "connector": result.get("connector"),
                 "eventPublished": result.get("eventPublished"),
-                "userRole": result.get("userRole")
+                "userRole": result.get("userRole"),
+                "depth": depth
             }
         else:
             logger.error(f"❌ Failed to reindex record {record_id}: {result.get('reason')}")
@@ -2166,6 +2183,60 @@ async def reindex_failed_records(
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error while reindexing failed records: {str(e)}"
+        )
+
+@router.post("/api/v1/record-groups/{record_group_id}/reindex")
+@inject
+async def reindex_record_group(
+    record_group_id: str,
+    request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service),
+) -> Dict:
+    """
+    Reindex all records in a record group up to a specified depth
+    """
+    try:
+        container = request.app.container
+        logger = container.logger()
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+
+        request_body = await request.json()
+        depth = request_body.get("depth", 0)  # Default to 0 (only direct records)
+
+        logger.info(f"🔄 Attempting to reindex record group {record_group_id} with depth {depth}")
+
+        result = await arango_service.reindex_record_group_records(
+            record_group_id=record_group_id,
+            depth=depth,
+            user_id=user_id,
+            org_id=org_id
+        )
+
+        if result["success"]:
+            logger.info(f"✅ Successfully initiated reindex for record group {record_group_id}")
+            return {
+                "success": True,
+                "message": f"Reindex initiated for record group {record_group_id} with depth {depth}",
+                "recordGroupId": record_group_id,
+                "depth": depth,
+                "connector": result.get("connector"),
+                "eventPublished": result.get("eventPublished")
+            }
+        else:
+            logger.error(f"❌ Failed to reindex record group {record_group_id}: {result.get('reason')}")
+            raise HTTPException(
+                status_code=result.get("code", 500),
+                detail=result.get("reason", "Failed to reindex record group")
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error reindexing record group {record_group_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error while reindexing record group: {str(e)}"
         )
 
 @router.get("/api/v1/stats")
