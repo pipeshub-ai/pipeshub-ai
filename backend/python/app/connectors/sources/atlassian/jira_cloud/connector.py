@@ -148,13 +148,19 @@ def adf_to_text(adf_content: Dict[str, Any]) -> str:
             content = node.get("content", [])
             para_text = "".join(extract_text(child, in_list) for child in content).strip()
             if para_text:
-                # In lists, paragraphs should be on same line or with single newline
+                # In lists, paragraphs should contribute text without adding newlines
+                # The list item itself will handle the formatting
                 if in_list:
-                    # Replace double newlines with single for list items
-                    para_text = para_text.replace("\n\n", "\n")
-                    text = f"{para_text}\n"
+                    # Just return the text, no newlines - let list item handle spacing
+                    text = para_text
                 else:
-                    text = f"{para_text}\n\n"
+                    # Check if paragraph contains only a list - if so, don't add extra spacing
+                    has_list = any(child.get("type") in ["bulletList", "orderedList"] for child in content)
+                    if has_list:
+                        # Lists already have their own spacing, don't add extra
+                        text = para_text
+                    else:
+                        text = f"{para_text}\n\n"
 
         elif node_type == "heading":
             level = node.get("attrs", {}).get("level", 1)
@@ -200,7 +206,7 @@ def adf_to_text(adf_content: Dict[str, Any]) -> str:
 
         elif node_type == "listItem":
             content = node.get("content", [])
-            # Join content without extra spacing (handled by parent list)
+            # Join content - paragraphs within list items should be inline
             # Handle nested lists and paragraphs within list items
             item_parts: List[str] = []
             for child in content:
@@ -208,8 +214,16 @@ def adf_to_text(adf_content: Dict[str, Any]) -> str:
                 if child_text:
                     item_parts.append(child_text)
             text = "".join(item_parts)
-            # Clean up excessive newlines within list items
-            text = re.sub(r'\n{2,}', '\n', text)
+            # Clean up spacing within list items
+            # Multiple paragraphs in a list item should be separated by space, not newlines
+            text = re.sub(r'\n{2,}', ' ', text)  # Replace multiple newlines with space
+            text = text.strip()
+            # If there are nested block elements (lists, code blocks), preserve some structure
+            has_nested_blocks = any(child.get("type") in ["bulletList", "orderedList", "codeBlock", "blockquote"] for child in content)
+            if has_nested_blocks:
+                # For nested blocks, allow single newlines but clean up excessive ones
+                text = re.sub(r'\n{3,}', '\n\n', text)
+            # Don't add trailing newline - parent list handles spacing
 
         elif node_type == "codeBlock":
             content = node.get("content", [])
@@ -234,7 +248,13 @@ def adf_to_text(adf_content: Dict[str, Any]) -> str:
             
             # Just show the image name/alt text, not a full URL
             display_text = alt or title or "attachment"
-            text = f"![{display_text}]\n"
+            # Images should be on their own line with spacing for better markdown rendering
+            if in_list:
+                # In lists, images should be on a new line but without extra spacing
+                text = f"\n![{display_text}]\n"
+            else:
+                # Outside lists, images get proper spacing
+                text = f"\n![{display_text}]\n\n"
 
         elif node_type == "mention":
             attrs = node.get("attrs", {})
@@ -313,6 +333,13 @@ def adf_to_text(adf_content: Dict[str, Any]) -> str:
     result = re.sub(r'\n{3,}', '\n\n', result)
     # Remove trailing whitespace from lines
     result = "\n".join(line.rstrip() for line in result.split("\n"))
+    # Clean up spacing around lists - remove blank lines before lists
+    # This helps when paragraphs contain lists - ensure lists start without extra spacing
+    result = re.sub(r'\n\n+(\d+\. )', r'\n\1', result)  # Remove extra newlines before numbered list items
+    result = re.sub(r'\n\n+(- )', r'\n\1', result)  # Remove extra newlines before bullet list items
+    # Clean up spacing between list items (should be single newline)
+    result = re.sub(r'(\n\d+\. .+)\n\n+(\d+\. )', r'\1\n\2', result)  # Between numbered items
+    result = re.sub(r'(\n- .+)\n\n+(- )', r'\1\n\2', result)  # Between bullet items
 
     return result.strip()
 
@@ -2861,7 +2888,7 @@ class JiraConnector(BaseConnector):
         summary = fields.get("summary", "")
 
         summary_text = f"Title: {summary}" if summary else ""
-        description_text = f"Description: {adf_to_text(description)}" if description else ""
+        description_text = f"Description:\n{adf_to_text(description)}" if description else ""
         combined_text = f"# {summary_text}\n\n{description_text}"
 
         return combined_text

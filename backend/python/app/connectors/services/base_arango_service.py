@@ -4115,10 +4115,6 @@ class BaseArangoService:
                 extension = file_record.get("extension", "")
                 mime_type = file_record.get("mimeType", "")
 
-            # Fallback to record's mimeType for TICKET, COMMENT, and other record types
-            if not mime_type:
-                mime_type = record.get("mimeType", "")
-
             # Fallback: check if mimeType is in the record itself (for WebpageRecord, CommentRecord, etc.)
             if not mime_type:
                 mime_type = record.get("mimeType", "")
