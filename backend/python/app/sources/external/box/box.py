@@ -61,15 +61,52 @@ class BoxDataSource:
             boxClient (BoxClient): Box client instance
         """
         self._box_client = boxClient
+        # Initialize the internal client holder to None
         self._client = None
+        self._current_as_user = None
 
     async def _get_client(self) -> BoxClient:
         """Get or create Box client."""
+        # 1. FIX: If we have a specific client set (e.g., impersonating a user), return it.
+        if self._client:
+            return self._client
+
+        # 2. Otherwise, get the base (Admin) client from the strategy
         strategy = self._box_client.get_client()
         try:
             return strategy.get_box_client()
         except RuntimeError:
             return await strategy.create_client()
+
+    async def set_as_user_context(self, user_id: str) -> None:
+        """
+        Set the As-User context for subsequent API calls.
+        
+        Args:
+            user_id: The Box user ID to impersonate
+        """
+        try:
+            # Get the base client (authenticated as Admin)
+            strategy = self._box_client.get_client()
+            try:
+                base_client = strategy.get_box_client()
+            except RuntimeError:
+                base_client = await strategy.create_client()
+
+            self._client = base_client.with_extra_headers(extra_headers={"As-User": user_id})
+            self._current_as_user = user_id
+            
+        except Exception as e:
+            raise Exception(f"Failed to set As-User context: {e}")
+
+    async def clear_as_user_context(self) -> None:
+        """Clear the As-User context."""
+        try:
+            # 4. FIX: Reset _client to None so _get_client() falls back to the Admin client
+            self._client = None
+            self._current_as_user = None
+        except Exception as e:
+            raise Exception(f"Failed to clear As-User context: {e}")
 
     async def files_get_file_by_id(self, file_id: str, **kwargs) -> BoxResponse:
         """Get file information by ID
@@ -473,10 +510,11 @@ class BoxDataSource:
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    # Replace the folders_get_folder_items method in your box.py file (datasource)
 
     async def folders_get_folder_items(self, folder_id: str, limit: Optional[int] = None, offset: Optional[int] = None, fields: Optional[str] = None, **kwargs) -> BoxResponse:
-        """Get items in a folder
+        """Get items in a folder.
+
+        The As-User context should be set using set_as_user_context() before calling this method.
 
         API Endpoint: folders.get_folder_items
         Namespace: folders
@@ -507,7 +545,7 @@ class BoxDataSource:
             if fields is not None:
                 params['fields'] = fields
 
-            # Call the SDK method with parameters
+            # The As-User header is set at the client level via with_as_user_header()
             response = await loop.run_in_executor(
                 None,
                 lambda: manager.get_folder_items(folder_id, **params)

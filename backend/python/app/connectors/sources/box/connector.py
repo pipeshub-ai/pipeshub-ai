@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
+from aiohttp import ClientSession
 from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -28,6 +29,7 @@ from app.connectors.core.base.sync_point.sync_point import (
     generate_record_sync_point_key,
 )
 from app.connectors.core.registry.connector_builder import (
+    AuthField,
     CommonFields,
     ConnectorBuilder,
     DocumentationLink,
@@ -101,7 +103,7 @@ def get_mimetype_enum_for_box(entry_type: str, filename: str = None) -> MimeType
 
 @ConnectorBuilder("Box")\
     .in_group("Cloud Storage")\
-    .with_auth_type("OAUTH")\
+    .with_auth_type("API_TOKEN")\
     .with_description("Sync files and folders from Box")\
     .with_categories(["Storage"])\
     .configure(lambda builder: builder
@@ -117,7 +119,7 @@ def get_mimetype_enum_for_box(entry_type: str, filename: str = None) -> MimeType
             'https://docs.pipeshub.com/connectors/box',
             'pipeshub'
         ))
-        .with_redirect_uri("connectors/oauth/callback/Box", True)
+        # .with_redirect_uri("connectors/oauth/callback/Box", True)
         .with_oauth_urls(
             "https://account.box.com/api/oauth2/authorize",
             "https://api.box.com/oauth2/token",
@@ -125,6 +127,12 @@ def get_mimetype_enum_for_box(entry_type: str, filename: str = None) -> MimeType
         )
         .add_auth_field(CommonFields.client_id("Box Developer Console"))
         .add_auth_field(CommonFields.client_secret("Box Developer Console"))
+        .add_auth_field(AuthField(
+            name="enterpriseId",
+            display_name="Box Enterprise ID",
+            placeholder="Enter Box Enterprise ID",
+            description="The Enterprise ID from Box Developer Console"
+        ))
         .with_webhook_config(True, ["FILE.UPLOADED", "FILE.DELETED", "FILE.MOVED", "FOLDER.CREATED"])
         .with_scheduled_config(True, 60)
         .add_sync_custom_field(CommonFields.batch_size_field())
@@ -134,6 +142,10 @@ class BoxConnector(BaseConnector):
     """
     Connector for synchronizing data from a Box account.
     """
+
+    # Box API constants
+    BASE_URL = "https://api.box.com"
+    TOKEN_ENDPOINT = "/oauth2/token"
 
     current_user_id: Optional[str] = None
 
@@ -167,6 +179,9 @@ class BoxConnector(BaseConnector):
         self.batch_size = 100
         self.max_concurrent_batches = 5
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
+        
+        # Track the current access token to detect changes
+        self._current_access_token: Optional[str] = None
 
     async def init(self) -> bool:
         """Initializes the Box client using credentials from the config service."""
@@ -177,23 +192,153 @@ class BoxConnector(BaseConnector):
             self.logger.error("Box configuration not found.")
             return False
 
-        credentials_config = config.get("credentials")
-        access_token = credentials_config.get("access_token")
-
         auth_config = config.get("auth")
-        auth_config.get("clientId")
-        auth_config.get("clientSecret")
+        if not auth_config:
+            self.logger.error("Box auth configuration not found.")
+            return False
+
+        client_id = auth_config.get("clientId")
+        client_secret = auth_config.get("clientSecret")
+        # Extract enterprise_id from auth config
+        enterprise_id = auth_config.get("enterpriseId")
+
+        if not client_id or not client_secret or not enterprise_id:
+            self.logger.error("Box client_id, client_secret, or enterprise_id not found in configuration.")
+            return False
 
         try:
+            # Check if we already have credentials (OAuth flow)
+            credentials_config = config.get("credentials", {}) or {}
+            access_token = credentials_config.get("access_token")
+
+            # If no stored access token, attempt to get one via HTTP API call
+            if not access_token:
+                self.logger.info("No stored access token found. Attempting to fetch via HTTP API...")
+                # Pass enterprise_id to the fetch method
+                access_token = await self._fetch_access_token_via_http(client_id, client_secret, enterprise_id)
+                
+                if not access_token:
+                    self.logger.error("Failed to fetch access token via HTTP API.")
+                    return False
+
+            # Initialize Box client with the access token
             config_obj = BoxTokenConfig(token=access_token)
             client = await BoxClient.build_with_config(config_obj)
             await client.get_client().create_client()
             self.data_source = BoxDataSource(client)
+            
+            # Store the initial token
+            self._current_access_token = access_token
+            
             self.logger.info("Box client initialized successfully.")
             return True
         except Exception as e:
             self.logger.error(f"Failed to initialize Box client: {e}", exc_info=True)
             return False
+
+    async def _fetch_access_token_via_http(self, client_id: str, client_secret: str, enterprise_id: str) -> Optional[str]:
+        """
+        Fetch access token from Box API using client credentials.
+        
+        Args:
+            client_id: Box application client ID
+            client_secret: Box application client secret
+            enterprise_id: Box Enterprise ID for subject_id
+            
+        Returns:
+            Access token string or None if failed
+        """
+        token_url = f"{self.BASE_URL}{self.TOKEN_ENDPOINT}"
+        
+        try:
+            async with ClientSession() as session:
+                # Prepare request data for OAuth token exchange
+                data = {
+                    "grant_type": "client_credentials",
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "box_subject_type": "enterprise",
+                    "box_subject_id": enterprise_id
+                }
+                
+                self.logger.info(f"Fetching access token from {token_url}")
+                
+                async with session.post(token_url, data=data) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        self.logger.error(
+                            f"Failed to fetch access token. Status: {response.status}, "
+                            f"Response: {error_text}"
+                        )
+                        return None
+                    
+                    token_data = await response.json()
+                    access_token = token_data.get("access_token")
+                    return access_token                    
+
+                    
+        except Exception as e:
+            self.logger.error(f"Error fetching access token via HTTP: {e}", exc_info=True)
+            return None
+
+    async def _get_fresh_datasource(self) -> None:
+        """
+        Ensures self.data_source is using an ALWAYS-FRESH access token.
+        It checks the central config and rebuilds the client if the token has changed.
+        """
+        try:
+            # 1. Fetch current config from configuration service
+            config = await self.config_service.get_config("/services/connectors/box/config")
+            
+            if not config:
+                self.logger.warning("Could not fetch Box config for token refresh check.")
+                return
+
+            # 2. Extract fresh OAuth access token
+            credentials_config = config.get("credentials", {}) or {}
+            fresh_token = credentials_config.get("access_token", "")
+
+            if not fresh_token:
+                self.logger.warning("No OAuth access token found in config refresh check.")
+                return
+
+            # 3. Compare with existing token
+            if self._current_access_token != fresh_token:
+                self.logger.info("🔄 Detected new Box Access Token. Re-initializing client...")
+                
+                # 4. Re-initialize the client with the new token
+                config_obj = BoxTokenConfig(token=fresh_token)
+                client = await BoxClient.build_with_config(config_obj)
+                
+                # Create the internal client instance
+                await client.get_client().create_client()
+                
+                # 5. Update the datasource and the tracker
+                self.data_source = BoxDataSource(client)
+                self._current_access_token = fresh_token
+                
+                # 6. Clear any cached user ID to force re-fetch with new token
+                self.current_user_id = None
+                
+                self.logger.info("✅ Box client successfully updated with fresh token.")
+            else:
+                self.logger.debug("Token unchanged, skipping client refresh.")
+                
+        except Exception as e:
+            # Log error but don't crash; attempt to proceed with existing token
+            self.logger.error(f"Error checking for fresh datasource: {e}", exc_info=True)
+
+    def _parse_box_timestamp(self, ts_str: Optional[str], field_name: str, entry_name: str) -> int:
+        """Helper to parse Box timestamps safely."""
+        if ts_str:
+            try:
+                # Handle Box's ISO format
+                return int(datetime.fromisoformat(ts_str.replace('Z', '+00:00')).timestamp() * 1000)
+            except Exception as e:
+                self.logger.debug(f"Could not parse {field_name} for {entry_name}: {e}")
+        
+        # Fallback to current time
+        return int(datetime.now(timezone.utc).timestamp() * 1000)
 
     async def _process_box_entry(
         self,
@@ -236,16 +381,8 @@ class BoxConnector(BaseConnector):
             is_file = entry_type == 'file'
             record_type = RecordType.FILE
 
-            def parse_timestamp(ts_str, field_name):
-                if ts_str:
-                    try:
-                        return int(datetime.fromisoformat(ts_str.replace('Z', '+00:00')).timestamp() * 1000)
-                    except Exception as e:
-                        self.logger.debug(f"Could not parse {field_name} for {entry_name}: {e}")
-                return int(datetime.now(timezone.utc).timestamp() * 1000)
-
-            source_created_at = parse_timestamp(entry.get('created_at'), 'created_at')
-            source_updated_at = parse_timestamp(entry.get('modified_at'), 'modified_at')
+            source_created_at = self._parse_box_timestamp(entry.get('created_at'), 'created_at', entry_name)
+            source_updated_at = self._parse_box_timestamp(entry.get('modified_at'), 'modified_at', entry_name)
             current_timestamp = int(datetime.now(timezone.utc).timestamp() * 1000)
 
             mime_type_enum = get_mimetype_enum_for_box(entry_type, entry_name)
@@ -294,23 +431,11 @@ class BoxConnector(BaseConnector):
                 external_revision_id=entry.get('etag')
             )
 
-            # 1. Fetch explicit API permissions (Collaborators)
+            # 1. Fetch explicit API permissions (Collaborators only)
             api_permissions = await self._get_permissions(entry_id, entry_type)
             final_permissions_map = {p.external_id: p for p in api_permissions}
 
-            # 2. Inject Owner
-            # NOTE: This requires 'owned_by' in the fields request!
-            owned_by = entry.get('owned_by')
-            if owned_by and owned_by.get('id'):
-                owner_id = owned_by.get('id')
-                final_permissions_map[owner_id] = Permission(
-                    external_id=owner_id,
-                    email=owned_by.get('login'),
-                    type=PermissionType.OWNER,
-                    entity_type=EntityType.USER
-                )
-
-            # 3. Inject Shared Link Permissions (Organization/Public)
+            # 2. Inject Shared Link Permissions (Organization/Public)
             # This handles files that are "Shared with Company" but users aren't invited explicitly
             shared_link = entry.get('shared_link')
             if shared_link:
@@ -332,15 +457,6 @@ class BoxConnector(BaseConnector):
                         type=PermissionType.READ,
                         entity_type=EntityType.GROUP
                     )
-
-            # 4. Inject Current User (Implicit Access)
-            if user_id and user_id not in final_permissions_map:
-                final_permissions_map[user_id] = Permission(
-                    external_id=user_id,
-                    email=user_email,
-                    type=PermissionType.READ,
-                    entity_type=EntityType.USER
-                )
 
             permissions = list(final_permissions_map.values())
 
@@ -379,13 +495,6 @@ class BoxConnector(BaseConnector):
     async def _get_permissions(self, item_id: str, item_type: str) -> List[Permission]:
         """
         Fetch permissions for a Box item (file or folder).
-
-        Args:
-            item_id: Box item ID
-            item_type: Type of item ('file' or 'folder')
-
-        Returns:
-            List of Permission objects
         """
         permissions = []
         try:
@@ -396,8 +505,12 @@ class BoxConnector(BaseConnector):
                 response = await self.data_source.collaborations_get_folder_collaborations(folder_id=item_id)
 
             if not response.success:
-                # Don't log as warning - many files don't have explicit collaborations
-                self.logger.debug(f"Could not fetch permissions for {item_type} {item_id}: {response.error}")
+                # Handle 404 (Not Found) gracefully - usually means no permission to view collabs
+                if response.status_code == 404:
+                    # Just debug log a short message, don't dump the whole error
+                    self.logger.debug(f"No collaborations found or accessible for {item_type} {item_id} (404).")
+                else:
+                    self.logger.debug(f"Could not fetch permissions for {item_type} {item_id}: {response.error}")
                 return permissions
 
             collaborations = response.data.get('entries', []) if response.data else []
@@ -432,7 +545,6 @@ class BoxConnector(BaseConnector):
                 ))
 
         except Exception as e:
-            # Use debug level since this is expected for non-shared items
             self.logger.debug(f"Error fetching permissions for {item_type} {item_id}: {e}")
 
         return permissions
@@ -660,14 +772,13 @@ class BoxConnector(BaseConnector):
                 root_folder = response.data if response.data else {}
 
                 # Create RecordGroup for user's drive (their "All Files" root storage)
-                # FIX: Ensure all Enums are converted to .value for DB schema compatibility
                 record_group = RecordGroup(
                     org_id=self.data_entities_processor.org_id,
                     name=f"{user.full_name or user.email}'s Box",
-                    external_group_id=user.source_user_id,  # Use user ID as drive ID
+                    external_group_id=user.source_user_id,
                     external_user_id=user.source_user_id,
-                    connector_name=self.connector_name.value, # <--- FIX: Convert Enum to string
-                    group_type=RecordGroupType.DRIVE.value,   # <--- FIX: Convert Enum to string
+                    connector_name=self.connector_name.value,
+                    group_type=RecordGroupType.DRIVE.value,
                     web_url=root_folder.get('shared_link', {}).get('url') if root_folder.get('shared_link') else None,
                     source_created_at=int(datetime.fromisoformat(root_folder.get('created_at', '').replace('Z', '+00:00')).timestamp() * 1000) if root_folder.get('created_at') else None,
                     source_updated_at=int(datetime.fromisoformat(root_folder.get('modified_at', '').replace('Z', '+00:00')).timestamp() * 1000) if root_folder.get('modified_at') else None,
@@ -719,16 +830,53 @@ class BoxConnector(BaseConnector):
         offset = 0
         limit = 1000
 
-        # FIX: Added 'owned_by' so permission logic works
         fields = 'type,id,name,size,created_at,modified_at,path_collection,etag,sha1,shared_link,owned_by'
 
+        if not self.current_user_id:
+            try:
+                current_user_response = await self.data_source.get_current_user()
+                if current_user_response.success:
+                    self.current_user_id = current_user_response.data.id
+                    self.logger.info(f"🔍 Current Token Owner ID: {self.current_user_id}")
+            except Exception as e:
+                self.logger.warning(f"Could not fetch current user ID: {e}")
+
+        # Set As-User context if syncing for a different user
+        try:
+            if self.current_user_id and user.source_user_id != self.current_user_id:
+                self.logger.info(f"🎭 Setting As-User context to: {user.source_user_id} ({user.email})")
+                await self.data_source.set_as_user_context(user.source_user_id)
+            else:
+                # Clear any existing As-User context
+                await self.data_source.clear_as_user_context()
+        except Exception as e:
+            self.logger.error(f"Failed to set As-User context: {e}")
+            # Continue without impersonation
+            pass
+
         while True:
+            # 1. Capture the current datasource instance before checking for updates
+            previous_datasource = self.data_source
+            
+            await self._get_fresh_datasource()
+            
+            # 2. If the datasource was replaced (token refresh), re-apply the user context!
+            if self.data_source != previous_datasource:
+                try:
+                    if self.current_user_id and user.source_user_id != self.current_user_id:
+                        self.logger.info(f"🔄 Token refreshed. Re-applying As-User context for {user.email}")
+                        await self.data_source.set_as_user_context(user.source_user_id)
+                    else:
+                        await self.data_source.clear_as_user_context()
+                except Exception as e:
+                    self.logger.error(f"Failed to re-apply As-User context after refresh: {e}")
+
             async with self.rate_limiter:
                 response = await self.data_source.folders_get_folder_items(
                     folder_id=folder_id,
                     limit=limit,
                     offset=offset,
-                    fields=fields
+                    fields=fields,
                 )
 
             if not response.success:
@@ -765,7 +913,7 @@ class BoxConnector(BaseConnector):
                         batch_records.clear()
                         await asyncio.sleep(0.1)
 
-                # FIX: Check is_file is False instead of mime_type
+                # Check is_file is False instead of mime_type
                 if file_record and not file_record.is_file:
                     sub_folders_to_traverse.append(file_record.external_record_id)
 
@@ -775,12 +923,17 @@ class BoxConnector(BaseConnector):
             offset += len(items)
             if offset >= total_count:
                 break
+        try:
+            await self.data_source.clear_as_user_context()
+        except:
+            pass
 
     async def _process_users_in_batches(self, users: List[AppUser]) -> None:
         """
-        Process users in concurrent batches for improved performance.
+        Process users SEQUENTIALLY to prevent 'As-User' context collisions.
         """
         try:
+            # Filter for active users only
             all_active_users = await self.data_entities_processor.get_all_active_users()
             active_user_emails = {active_user.email.lower() for active_user in all_active_users}
 
@@ -789,19 +942,18 @@ class BoxConnector(BaseConnector):
                 if user.email and user.email.lower() in active_user_emails
             ]
 
-            self.logger.info(f"Processing {len(users_to_sync)} active users out of {len(users)} total users")
+            self.logger.info(f"Processing {len(users_to_sync)} active users SEQUENTIALLY")
 
-            for i in range(0, len(users_to_sync), self.max_concurrent_batches):
-                batch = users_to_sync[i:i + self.max_concurrent_batches]
-
-                sync_tasks = [
-                    self._run_sync_for_user(user)
-                    for user in batch
-                ]
-
-                await asyncio.gather(*sync_tasks, return_exceptions=True)
-                await asyncio.sleep(1)
-
+            # Loop directly, awaiting each user fully before starting the next
+            for i, user in enumerate(users_to_sync):
+                self.logger.info(f"[{i+1}/{len(users_to_sync)}] Syncing user: {user.email}")
+                try:
+                    await self._run_sync_for_user(user)
+                except Exception as e:
+                    self.logger.error(f"Error syncing user {user.email}: {e}")
+                    # Continue to next user even if one fails
+                    continue
+            
             self.logger.info("Completed processing all user batches")
 
         except Exception as e:
@@ -843,29 +995,32 @@ class BoxConnector(BaseConnector):
         pass
 
     async def get_signed_url(self, record: Record) -> Optional[str]:
-        """Get a signed URL with HEAVY DEBUGGING enabled."""
+        """
+        Get a signed URL, ensuring we impersonate the correct user (Record Group Owner).
+        """
         if not self.data_source:
             return None
+            
+        # 1. Determine the user context
+        # In our sync logic, external_record_group_id IS the User ID who owns/sees the file.
+        context_user_id = record.external_record_group_id
+        
         try:
-            self.logger.info(f"🔍 DEBUG: Attempting to get URL for {record.record_name} (ID: {record.external_record_id})")
-
-            # 1. Try to get existing file info
+            # 2. Set As-User Context
+            if context_user_id:
+                # self.logger.info(f"🎭 Impersonating user {context_user_id} to fetch URL for {record.record_name}")
+                await self.data_source.set_as_user_context(context_user_id)
+            
+            # 3. Try to get existing file info
             response = await self.data_source.files_get_file_by_id(
                 file_id=record.external_record_id
             )
 
             download_url = None
 
-            # DEBUG: Log the success status and type of data received
-            self.logger.info(f"🔍 DEBUG: Get File Success: {response.success}")
-            if response.data:
-                self.logger.info(f"🔍 DEBUG: Get File Data Type: {type(response.data)}")
-                # Uncomment the next line if you need to see the full object (can be large)
-                # self.logger.info(f"🔍 DEBUG: Get File Data: {response.data}")
-
             if response.success and response.data:
                 file_data = response.data
-
+                
                 # Check for shared link safely
                 shared_link = None
                 if isinstance(file_data, dict):
@@ -874,34 +1029,24 @@ class BoxConnector(BaseConnector):
                     shared_link = getattr(file_data, 'shared_link', None)
 
                 if shared_link:
-                    self.logger.info("🔍 DEBUG: Found existing shared link object.")
                     if isinstance(shared_link, dict):
                         download_url = shared_link.get('download_url')
                     else:
                         download_url = getattr(shared_link, 'download_url', None)
-                else:
-                    self.logger.info("🔍 DEBUG: No 'shared_link' attribute found on existing file object.")
 
-            # 2. If no URL found, create a temporary shared link
+            # 4. If no URL found, create a temporary shared link
             if not download_url:
-                self.logger.info(f"No existing shared link for {record.record_name}, creating one...")
-
+                # self.logger.info(f"No existing shared link for {record.record_name}, creating one...")
+                
+                # Note: We are still in the 'As-User' context here, so this PUT request 
+                # will now work instead of returning 404
                 link_response = await self.data_source.shared_links_create_shared_link_for_file(
                     file_id=record.external_record_id,
-                    access='open'
+                    access='open' # or 'company' depending on security requirements
                 )
-
-                # DEBUG: Inspect the creation response
-                self.logger.info(f"🔍 DEBUG: Create Link Success: {link_response.success}")
-                if not link_response.success:
-                    self.logger.error(f"❌ DEBUG: Create Link Error: {link_response.error}")
 
                 if link_response.success and link_response.data:
                     file_data = link_response.data
-                    self.logger.info(f"🔍 DEBUG: Create Link Data Type: {type(file_data)}")
-                    # CRITICAL: Print the structure to see where download_url is hiding
-                    self.logger.info(f"🔍 DEBUG: Create Link Raw Data: {file_data}")
-
                     shared_link = None
                     if isinstance(file_data, dict):
                         shared_link = file_data.get('shared_link')
@@ -913,19 +1058,21 @@ class BoxConnector(BaseConnector):
                             download_url = shared_link.get('download_url')
                         else:
                             download_url = getattr(shared_link, 'download_url', None)
-                    else:
-                        self.logger.warning("🔍 DEBUG: Created link successfully, but 'shared_link' attr missing from response.")
+                else:
+                    self.logger.warning(f"Failed to create shared link for {record.record_name}: {link_response.error}")
 
             if download_url:
-                self.logger.info(f"🔗 Generated Download URL for {record.record_name}: {download_url}")
                 return download_url
 
-            self.logger.warning(f"Could not generate download URL for {record.record_name}")
             return None
 
         except Exception as e:
             self.logger.error(f"Error creating signed URL for record {record.id}: {e}", exc_info=True)
             return None
+        finally:
+            # 5. ALWAYS clear context to avoid polluting other requests
+            if context_user_id:
+                await self.data_source.clear_as_user_context()
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         """Stream a Box file."""
