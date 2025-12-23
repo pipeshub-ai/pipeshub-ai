@@ -123,7 +123,7 @@ class ConnectorMigrationService:
                 "Migration completed but may run again on next startup."
             )
 
-    async def _get_organisation(self) -> Dict | None:
+    async def _get_organisation(self) -> Optional[Dict]:
         """
         Get the organisation type from the database.
         """
@@ -136,7 +136,7 @@ class ConnectorMigrationService:
             org = list(cursor)
             if not org:
                 self.logger.error("No organisation found")
-                raise ValueError("No organisation type found")
+                return None
             return org[0]
         except Exception as e:
             self.logger.error(f"Failed to get organisation type: {e}")
@@ -349,7 +349,7 @@ class ConnectorMigrationService:
         if self.org_type.lower() == "enterprise":
             scope = ConnectorScopes.TEAM.value
         else:
-            scope = ConnectorScopes.PERSONAL.value
+            scope = ConnectorScopes.TEAM.value
             user = await self.arango.get_users(org_id=self.org_id, active=True)
             if user:
                 created_by = user[0].get("userId")
@@ -1185,6 +1185,10 @@ class ConnectorMigrationService:
 
         try:
             org = await self._get_organisation()
+            if not org:
+                self.logger.error("No organisation found")
+                await self._mark_migration_done()
+                return
             org_type = org.get("accountType", "")
             org_id = org.get("_key")
             if not org_type or not org_id:

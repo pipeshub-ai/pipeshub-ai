@@ -150,6 +150,12 @@ const Connectors: React.FC = () => {
     if (isBusiness && isAdmin) {
       return selectedScope; // Admins can switch between personal and team
     }
+    if (isBusiness && !isAdmin) {
+      return 'personal'; // Everyone else is locked to personal
+    }
+    if(!isBusiness){
+      return 'team';
+    }
     return 'personal'; // Everyone else is locked to personal
   }, [isBusiness, isAdmin, selectedScope]);
 

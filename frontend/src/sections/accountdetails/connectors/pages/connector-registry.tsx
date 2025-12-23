@@ -87,6 +87,10 @@ const ConnectorRegistry: React.FC = () => {
     if (isBusiness && isAdmin) return urlScope || 'personal';
     // Non-admin business users are locked to personal (ignore URL param for team)
     if (isBusiness && !isAdmin) return 'personal';
+    
+    if(!isBusiness){
+      return 'team';
+    }
     // Individual users are always personal
     return 'personal';
   };
@@ -154,6 +158,13 @@ const ConnectorRegistry: React.FC = () => {
     if (isBusiness && isAdmin) {
       return selectedScope; // Admins can switch between personal and team
     }
+    // Non-admin business users are locked to personal (ignore URL param for team)
+    if (isBusiness && !isAdmin) {
+      return 'personal'; // Everyone else is locked to personal
+    }
+    if(!isBusiness){
+      return 'team';
+    }
     return 'personal'; // Everyone else is locked to personal
   }, [isBusiness, isAdmin, selectedScope]);
 
@@ -217,8 +228,8 @@ const ConnectorRegistry: React.FC = () => {
   // Admins default to personal (but can switch to team)
   // Non-admins are always locked to personal
   useEffect(() => {
-    if (!isBusiness || !isAdmin) {
-      // Non-admin business users and individual users are locked to personal
+    if (isBusiness && !isAdmin) {
+      // Non-admin business users are locked to personal
       setSelectedScope('personal');
     }
     // Admins can keep their selected scope or default to personal on first load

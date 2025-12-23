@@ -2316,6 +2316,7 @@ async def get_connector_registry(
     connector_registry = request.app.state.connector_registry
     container = request.app.container
     logger = container.logger()
+    arango_service = await get_arango_service(request)
 
     try:
         # Validate scope
@@ -2325,13 +2326,25 @@ async def get_connector_registry(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Invalid scope. Must be 'personal' or 'team'"
             )
+
+        # Get account type to filter beta connectors for enterprise accounts
+        account_type = None
+        try:
+            user = getattr(request.state, 'user', None)
+            if user and user.get("orgId"):
+                account_type = await arango_service.get_account_type(user.get("orgId"))
+        except Exception as e:
+            # If we can't get account type, log but don't fail (fail-open)
+            logger.debug(f"Could not get account type: {e}")
+
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
         result = await connector_registry.get_all_registered_connectors(
             is_admin=is_admin,
             scope=scope,
             page=page,
             limit=limit,
-            search=search
+            search=search,
+            account_type=account_type
         )
 
         if not result:
@@ -2632,6 +2645,13 @@ async def create_connector_instance(
                 detail="connector_type and instance_name are required"
             )
 
+        # Get account type for beta connector validation
+        account_type = None
+        try:
+            account_type = await arango_service.get_account_type(org_id)
+        except Exception as e:
+            logger.debug(f"Could not get account type: {e}")
+
         # Verify connector type exists in registry
         metadata = await connector_registry.get_connector_metadata(connector_type)
         if not metadata:
@@ -2639,6 +2659,25 @@ async def create_connector_instance(
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail=f"Connector type '{connector_type}' not found in registry"
+            )
+
+        # Check if this is a beta connector
+        # Use the same normalization logic as the registry
+        normalized_connector_type = connector_registry._normalize_connector_name(connector_type)
+        beta_names = connector_registry._get_beta_connector_names()
+        is_beta_connector = normalized_connector_type in beta_names
+
+        # Validate: Beta connectors cannot be created for team scope in enterprise accounts
+        if is_beta_connector and account_type and account_type.lower() in ['enterprise', 'business'] and scope == ConnectorScope.TEAM.value:
+            logger.error(
+                f"Beta connector '{connector_type}' cannot be created for team scope in enterprise accounts. "
+                f"Beta connectors are only available for personal scope in enterprise accounts or team scope in individual accounts."
+            )
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail=(
+                    f"Beta connector '{connector_type}' cannot be created for team scope in enterprise accounts. "
+                )
             )
 
         await check_beta_connector_access(connector_type, request)

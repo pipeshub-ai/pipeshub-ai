@@ -693,13 +693,15 @@ class ConnectorRegistry:
         scope: Optional[str] = None,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None
+        search: Optional[str] = None,
+        account_type: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Get all registered connectors from the registry (without instance status).
 
         This returns the connector types available for configuration, optionally filtered by scope.
         Beta connectors are filtered based on the ENABLE_BETA_CONNECTORS feature flag.
+        Beta connectors are excluded for enterprise accounts to prevent instability.
 
         Args:
             scope: Optional scope filter (personal/team)
@@ -707,6 +709,7 @@ class ConnectorRegistry:
             page: Page number (1-indexed)
             limit: Number of items per page
             search: Optional search query
+            account_type: Account type ('individual' or 'enterprise'/'business') - used to filter beta connectors
         Returns:
             Dictionary with connectors list and pagination info
         """
@@ -733,6 +736,7 @@ class ConnectorRegistry:
 
         # Check feature flag once and get beta connector names
         # This is done once before the loop for efficiency
+        # We always need beta_names to filter them for enterprise accounts
         try:
             feature_flag_service = await self.container.feature_flag_service()
             try:
@@ -742,7 +746,8 @@ class ConnectorRegistry:
 
             from app.services.featureflag.config.config import CONFIG
             beta_enabled = feature_flag_service.is_feature_enabled(CONFIG.ENABLE_BETA_CONNECTORS)
-            beta_names = self._get_beta_connector_names() if not beta_enabled else []
+            # Always get beta names - needed for enterprise account filtering even when feature flag is enabled
+            beta_names = self._get_beta_connector_names()
         except Exception as e:
             # On any failure, include all connectors (fail-open)
             self.logger.debug(f"Feature flag check failed, including all connectors: {e}")
@@ -755,11 +760,22 @@ class ConnectorRegistry:
             if scope and scope not in connector_scopes:
                 continue
 
+            # Check if this is a beta connector
+            normalized_name = self._normalize_connector_name(connector_type)
+            is_beta_connector = normalized_name in beta_names
+
             # Filter by feature flag (beta connectors)
-            if not beta_enabled:
-                normalized_name = self._normalize_connector_name(connector_type)
-                if normalized_name in beta_names:
-                    continue
+            if not beta_enabled and is_beta_connector:
+                continue
+
+            # Filter out beta connectors for enterprise accounts ONLY when scope is "team"
+            # Beta connectors are allowed for:
+            # - personal scope in enterprise accounts
+            # - team scope in individual accounts
+            # Beta connectors are NOT allowed for:
+            # - team scope in enterprise accounts (to prevent instability)
+            if is_beta_connector and account_type and account_type.lower() in ['enterprise', 'business'] and scope == ConnectorScope.TEAM.value:
+                continue
 
             connector_info = self._build_connector_info(connector_type, metadata, scope=scope)
             if matches_search(connector_info):
@@ -1392,7 +1408,6 @@ class ConnectorRegistry:
                     scope=scope,
                     org_id=org_id,
                     user_id=created_by,
-                    exclude_connector_id=connector_id
                 )
 
                 if not is_unique:
