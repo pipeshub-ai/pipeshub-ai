@@ -133,15 +133,48 @@ const processHighlight = (citation: DocumentContent): HighlightType | null => {
   try {
     // Process from metadata format
     const boundingBox: BoundingBox[] = citation.metadata?.bounding_box;
+    const pageNumber = citation.metadata?.pageNum?.[0];
 
-    if (!boundingBox || boundingBox.length !== 4) {
-      console.warn('Invalid bounding box:', boundingBox);
+    // If no page number is available, we can't create a highlight
+    if (!pageNumber || pageNumber <= 0) {
+      console.warn('Invalid or missing page number:', pageNumber);
       return null;
     }
 
+    // Use citationId as the primary ID, fallback to metadata._id, then citation.id, then generate new ID
+    const highlightId = getCitationId(citation) || getNextId();
     // Convert normalized coordinates to absolute positions
     const PAGE_WIDTH = 967;
     const PAGE_HEIGHT = 747.2272727272727;
+    // If we don't have a valid bounding box but have a page number, create a page-only highlight
+    
+    if (!boundingBox || boundingBox.length !== 4) {
+      const pageTopRect = {
+        x1: 0,
+        y1: 0,
+        x2: PAGE_WIDTH,
+        y2: PAGE_HEIGHT, 
+        width: PAGE_WIDTH,
+        height: PAGE_HEIGHT,
+        pageNumber,
+      };
+
+      return {
+        content: {
+          text: citation.content || '',
+        },
+        position: {
+          boundingRect: pageTopRect,
+          rects: [pageTopRect], // rects array must be populated for the library to scroll
+          pageNumber,
+        },
+        comment: {
+          text: '',
+          emoji: '',
+        },
+        id: highlightId,
+      };
+    }
 
     const mainRect = {
       x1: boundingBox[0].x * PAGE_WIDTH,
@@ -150,11 +183,8 @@ const processHighlight = (citation: DocumentContent): HighlightType | null => {
       y2: boundingBox[2].y * PAGE_HEIGHT,
       width: PAGE_WIDTH,
       height: PAGE_HEIGHT,
-      pageNumber: citation.metadata?.pageNum[0] || 1,
+      pageNumber,
     };
-
-    // Use citationId as the primary ID, fallback to metadata._id, then citation.id, then generate new ID
-    const highlightId = getCitationId(citation) || getNextId();
 
     return {
       content: {

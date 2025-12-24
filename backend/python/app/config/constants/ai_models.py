@@ -6,6 +6,7 @@ DEFAULT_EMBEDDING_MODEL = "BAAI/bge-large-en-v1.5"
 class OCRProvider(Enum):
     AZURE_DI = "azureDI"
     OCRMYPDF = "ocrmypdf"
+    VLM_OCR = "vlmOCR"
 
 class AzureOpenAILLM(Enum):
     AZURE_OPENAI_VERSION = "2025-04-01-preview"
