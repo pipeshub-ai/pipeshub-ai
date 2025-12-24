@@ -40,6 +40,7 @@ from app.connectors.core.base.sync_point.sync_point import (
 from app.connectors.core.registry.connector_builder import (
     CommonFields,
     ConnectorBuilder,
+    ConnectorScope,
     DocumentationLink,
 )
 
@@ -139,6 +140,7 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
     .with_auth_type("OAUTH")\
     .with_description("Sync files and folders from Dropbox Personal account")\
     .with_categories(["Storage"])\
+    .with_scopes([ConnectorScope.PERSONAL.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/dropbox.svg")
         .with_realtime_support(True)
@@ -169,6 +171,8 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
         .with_webhook_config(True, ["file.added", "file.modified", "file.deleted"])
         .with_scheduled_config(True, 60)
         .add_sync_custom_field(CommonFields.batch_size_field())
+        .with_sync_support(True)
+        .with_agent_support(False)
     )\
     .build_decorator()
 class DropboxIndividualConnector(BaseConnector):
@@ -186,24 +190,27 @@ class DropboxIndividualConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
+        connector_id: str
     ) -> None:
 
         """Initialize the Dropbox Individual connector."""
 
         super().__init__(
-            DropboxIndividualApp(),
+            DropboxIndividualApp(connector_id),
             logger,
             data_entities_processor,
             data_store_provider,
-            config_service
+            config_service,
+            connector_id
         )
 
         self.connector_name = Connectors.DROPBOX_PERSONAL
+        self.connector_id = connector_id
 
         # Sync point (Only RECORDS needed for individual)
         # We inline the logic here because we only create one.
         self.dropbox_cursor_sync_point = SyncPoint(
-            connector_name=self.connector_name,
+            connector_id=self.connector_id,
             org_id=self.data_entities_processor.org_id,
             sync_data_point_type=SyncDataPointType.RECORDS,
             data_store_provider=self.data_store_provider
@@ -223,7 +230,7 @@ class DropboxIndividualConnector(BaseConnector):
         Sets up client for individual account (is_team=False).
         """
         config = await self.config_service.get_config(
-            "/services/connectors/dropboxpersonal/config"
+            f"/services/connectors/{self.connector_id}/config"
         )
         if not config:
             self.logger.error("Dropbox Individual access token not found in configuration.")
@@ -328,7 +335,7 @@ class DropboxIndividualConnector(BaseConnector):
             # 2. Get existing record from the database
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
-                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
                     external_id=entry.id
                 )
 
@@ -462,6 +469,7 @@ class DropboxIndividualConnector(BaseConnector):
                 version=0 if is_new else existing_record.version + 1,
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
+                connector_id=self.connector_id,
                 created_at=timestamp_ms,
                 updated_at=timestamp_ms,
                 source_created_at=timestamp_ms,
@@ -708,6 +716,7 @@ class DropboxIndividualConnector(BaseConnector):
             group_type=RecordGroupType.DRIVE.value,
             origin=OriginTypes.CONNECTOR.value,
             connector_name=self.connector_name,
+            connector_id=self.connector_id,
             external_group_id=user_id,
             external_user_id=user_id,
             is_active=True
@@ -797,7 +806,8 @@ class DropboxIndividualConnector(BaseConnector):
         cls,
         logger,
         data_store_provider: DataStoreProvider,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
+        connector_id: str
     ) -> "BaseConnector":
         data_entities_processor = DataSourceEntitiesProcessor(
             logger, data_store_provider, config_service
@@ -807,5 +817,6 @@ class DropboxIndividualConnector(BaseConnector):
             logger,
             data_entities_processor,
             data_store_provider,
-            config_service
+            config_service,
+            connector_id
         )

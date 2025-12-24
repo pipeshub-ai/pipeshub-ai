@@ -35,6 +35,7 @@ import playIcon from '@iconify-icons/mdi/play';
 // Import the enhanced FlowNode component
 import FlowNode from './flow-node';
 import { normalizeDisplayName } from '../../utils/agent';
+import type { NodeTemplate } from '../../types/agent';
  
 interface FlowNodeData extends Record<string, unknown> {
   id: string;
@@ -46,17 +47,6 @@ interface FlowNodeData extends Record<string, unknown> {
   inputs?: string[];
   outputs?: string[];
   isConfigured?: boolean;
-}
-
-interface NodeTemplate {
-  type: string;
-  label: string;
-  description: string;
-  icon: any;
-  defaultConfig: Record<string, any>;
-  inputs: string[];
-  outputs: string[];
-  category: 'inputs' | 'llm' | 'tools' | 'knowledge' | 'outputs' | 'agent';
 }
 
 interface FlowBuilderCanvasProps {
@@ -75,6 +65,7 @@ interface FlowBuilderCanvasProps {
   sidebarWidth: number;
   onNodeEdit?: (nodeId: string, data: any) => void;
   onNodeDelete?: (nodeId: string) => void;
+  onError?: (error: string) => void;
 }
 
 // Enhanced Controls Component that uses ReactFlow context
@@ -208,6 +199,7 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
   sidebarWidth,
   onNodeEdit,
   onNodeDelete,
+  onError,
 }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
@@ -248,15 +240,104 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
 
       const reactFlowBounds = reactFlowWrapper.current.getBoundingClientRect();
       const type = event.dataTransfer.getData('application/reactflow');
+      const connectorId = event.dataTransfer.getData('connectorId');
+      const connectorType = event.dataTransfer.getData('connectorType');
+      const connectorScope = event.dataTransfer.getData('scope');
+      const toolAppName = event.dataTransfer.getData('toolAppName'); // Tool's parent app
+      const connectorName = event.dataTransfer.getData('connectorName');
+      const connectorIconPath = event.dataTransfer.getData('connectorIconPath'); // Connector icon
+      const allToolsStr = event.dataTransfer.getData('allTools');
+      const toolCount = event.dataTransfer.getData('toolCount');
+      
       const template = nodeTemplates.find((t) => t.type === type);
-
       if (!template) return;
+
+      // Validate tools: Check if parent connector is configured and agent-active
+      // Get validation data from drag event
+      const isConnectorConfigured = event.dataTransfer.getData('isConfigured') === 'true';
+      const isConnectorAgentActive = event.dataTransfer.getData('isAgentActive') === 'true';
+      
+      if (template.type.startsWith('tool-') && !template.type.startsWith('tool-group-')) {
+        const appName = template.defaultConfig?.appName || toolAppName;
+        
+        if (!isConnectorConfigured || !isConnectorAgentActive) {
+          if (onError) {
+            onError(
+              `Cannot add tool "${template.label}". The ${appName} connector must be configured and agent-active first. ` +
+              `Click the configure icon (⚙️) next to ${appName} in the Tools section to set it up.`
+            );
+          }
+          return;
+        }
+      }
+
+      // Validate: Only one tool-group (connector instance) per connector type
+      // This ensures we only have one active agent instance per type
+      if (template.type.startsWith('tool-group-')) {
+        const connectorAppType = connectorType || template.defaultConfig?.appName || template.defaultConfig?.connectorType;
+        if (connectorAppType) {
+          // Check if a tool-group with the same connector type already exists
+          const existingToolGroups = nodes.filter(
+            (n) => n.data.type.startsWith('tool-group-') &&
+            (n.data.config?.connectorType === connectorAppType || 
+             n.data.config?.appName === connectorAppType ||
+             n.data.type === template.type)
+          );
+
+          if (existingToolGroups.length > 0) {
+            if (onError) {
+              onError(`Only one ${connectorAppType} connector instance can be added as a Tool. Remove the existing one first.`);
+            }
+            return;
+          }
+        }
+      }
 
       const position = {
         x: event.clientX - reactFlowBounds.left - 130,
         y: event.clientY - reactFlowBounds.top - 40,
       };
 
+      // Handle tool-group drops (connector with all its tools)
+      if (template.type.startsWith('tool-group-') && allToolsStr && connectorId) {
+        try {
+          const allTools = JSON.parse(allToolsStr);
+          const newNode: Node<FlowNodeData> = {
+            id: `${type}-${Date.now()}`,
+            type: 'flowNode',
+            position,
+            data: {
+              id: `${type}-${Date.now()}`,
+              type: template.type,
+              label: normalizeDisplayName(connectorName || template.label),
+              description: `${connectorType} with ${toolCount} tools`,
+              icon: template.icon,
+              config: {
+                ...template.defaultConfig,
+                connectorInstanceId: connectorId,
+                connectorType,
+                connectorName,
+                iconPath: connectorIconPath || template.defaultConfig?.iconPath, // Store connector icon for visual distinction
+                tools: allTools,
+                selectedTools: allTools.map((t: any) => t.toolId), // All tools selected by default
+                appName: connectorType,
+                appDisplayName: connectorName || connectorType,
+                scope: connectorScope,
+              },
+              inputs: template.inputs || ['input'],
+              outputs: template.outputs || ['output'],
+              isConfigured: true, // Tool groups are pre-configured
+            },
+          };
+          setNodes((nds) => [...nds, newNode]);
+          return;
+        } catch (e) {
+          console.error('Failed to parse tools data:', e);
+          return;
+        }
+      }
+
+      // Handle regular node drops
       const newNode: Node<FlowNodeData> = {
         id: `${type}-${Date.now()}`,
         type: 'flowNode',
@@ -269,8 +350,18 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
           icon: template.icon,
           config: {
             ...template.defaultConfig,
-            // Add default approval config for tool nodes
+            // Store the connector ID if this is a connector instance
+            ...(connectorId && { connectorInstanceId: connectorId }),
+            // Store connectorType for app nodes and tools
+            ...(connectorType && { connectorType }),
+            // For individual tools, store connector instance info
             ...(template.type.startsWith('tool-') && !template.type.startsWith('tool-group-') && {
+              // Get connector instance info from drag data or infer from app name
+              connectorInstanceId: connectorId || template.defaultConfig?.connectorInstanceId,
+              connectorType: connectorType || template.defaultConfig?.appName,
+              connectorName: connectorName || connectorType || template.defaultConfig?.appName,
+              iconPath: connectorIconPath || template.defaultConfig?.iconPath,
+              scope: connectorScope || template.defaultConfig?.scope,
               approvalConfig: {
                 requiresApproval: false,
                 approvers: { users: [], groups: [] },
@@ -281,13 +372,13 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
           },
           inputs: template.inputs,
           outputs: template.outputs,
-          isConfigured: false,
+          isConfigured: template.type.startsWith('app-') || template.type.startsWith('tool-group-'),
         },
       };
 
       setNodes((nds) => [...nds, newNode]);
     },
-    [setNodes, nodeTemplates]
+    [setNodes, nodeTemplates, nodes, onError]
   );
 
   return (

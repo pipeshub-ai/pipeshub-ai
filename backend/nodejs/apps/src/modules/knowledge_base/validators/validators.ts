@@ -25,20 +25,22 @@ export const reindexRecordSchema = z.object({
   params: z.object({ recordId: z.string().min(1) }),
 });
 
-export const reindexAllRecordSchema = z.object({
+export const reindexFailedRecordSchema = z.object({
   body: z.object({
     app: z.string().min(1),
+    connectorId: z.string().min(1),
   }),
 });
 
 export const resyncConnectorSchema = z.object({
   body: z.object({
     connectorName: z.string().min(1),
+    connectorId: z.string().min(1),
   }),
 });
 
 export const getConnectorStatsSchema = z.object({
-  params: z.object({ connector: z.string().min(1) }),
+  params: z.object({ connectorId: z.string().min(1) }),
 });
 
 export const uploadRecordsSchema = z.object({

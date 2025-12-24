@@ -74,6 +74,7 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
         mime_type=mime_type,
         external_revision_id=record_dict.get("externalRevisionId"),
         connector_name=connector_name,
+        connector_id=record_dict.get("connectorId"),
     )
     return record
 
