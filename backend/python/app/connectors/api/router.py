@@ -53,7 +53,6 @@ from app.connectors.core.base.token_service.oauth_service import (
 )
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.connector_builder import ConnectorScope
-from app.connectors.core.registry.filters import FilterOptionsResponse
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.sources.google.admin.admin_webhook_handler import (
     AdminWebhookHandler,
