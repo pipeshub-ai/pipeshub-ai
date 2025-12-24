@@ -522,7 +522,7 @@ async def download_file(
                         file_buffer = io.BytesIO()
                         try:
                             logger.info(f"Exporting Google Workspace file ({mime_type}) to {export_mime_type}")
-                            request = request = drive_service.files().export_media(fileId=file_id,mimeType=export_mime_type)
+                            request = drive_service.files().export_media(fileId=file_id,mimeType=export_mime_type)
                             downloader = MediaIoBaseDownload(file_buffer, request)
 
                             done = False
