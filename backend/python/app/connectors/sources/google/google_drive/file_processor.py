@@ -14,7 +14,7 @@ from app.models.records import FileRecord, Record
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
 
-async def process_drive_file(metadata: dict, org_id: str) -> Tuple[FileRecord, Record, dict]:
+async def process_drive_file(metadata: dict, org_id: str, connector_id: str = None) -> Tuple[FileRecord, Record, dict]:
         file_id = metadata.get("id")
 
         # Prepare File, Record and File Metadata
@@ -53,9 +53,11 @@ async def process_drive_file(metadata: dict, org_id: str) -> Tuple[FileRecord, R
                 external_record_id=str(file_id),
                 record_type=RecordTypes.FILE.value,
                 origin=OriginTypes.CONNECTOR.value,
+                connector_id=connector_id,
             )
             .with_external_revision_id(metadata.get("headRevisionId", None))
             .with_connector(Connectors.GOOGLE_DRIVE.value)
+            .with_connector_id(connector_id)
             .with_source_timestamps(
                 created=int(parse_timestamp(metadata.get("createdTime"))),
                 modified=int(parse_timestamp(metadata.get("modifiedTime")))

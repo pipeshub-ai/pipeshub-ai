@@ -76,7 +76,7 @@ async def test_run() -> None:
     }
 
     await key_value_store.create_key("/services/connectors/onedrive/config", config)
-    connector: BaseConnector = await OneDriveConnector.create_connector(logger, data_store_provider, config_service)
+    connector: BaseConnector = await OneDriveConnector.create_connector(logger, data_store_provider, config_service, "onedrive")
     await connector.init()
     await connector.run_sync()
 

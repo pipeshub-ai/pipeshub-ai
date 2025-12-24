@@ -287,6 +287,7 @@ class AirtableClient(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None,
     ) -> "AirtableClient":
         """Build AirtableClient using configuration service
         Args:
@@ -297,7 +298,7 @@ class AirtableClient(IClient):
         """
         try:
             # Get Airtable configuration from the configuration service
-            config = await cls._get_connector_config(logger, config_service)
+            config = await cls._get_connector_config(logger, config_service, connector_instance_id)
 
             if not config:
                 raise ValueError("Failed to get Airtable connector configuration")
@@ -305,8 +306,8 @@ class AirtableClient(IClient):
             # Extract configuration values
             base_url = config.get("base_url", "https://api.airtable.com/v0")
 
-            auth_type = config.get("authType", "token")  # token or oauth
             auth_config = config.get("auth", {})
+            auth_type = auth_config.get("authType", "token")  # token or oauth
 
             # Create appropriate client based on auth type
             if auth_type == "OAUTH":
@@ -343,11 +344,13 @@ class AirtableClient(IClient):
             raise
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:
         """Fetch connector config from etcd for Airtable."""
         try:
-            config = await config_service.get_config("/services/connectors/airtable/config")
-            return config or {}
+            config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")
+            if not config:
+                raise ValueError(f"Failed to get Airtable connector configuration for instance {connector_instance_id}")
+            return config
         except Exception as e:
             logger.error(f"Failed to get Airtable connector config: {e}")
-            return {}
+            raise

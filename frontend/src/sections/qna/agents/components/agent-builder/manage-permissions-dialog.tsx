@@ -272,7 +272,6 @@ const ManageAgentPermissionsDialog: React.FC<ManageAgentPermissionsDialogProps> 
     try {
       const { data } = await axios.get(`/api/v1/users/graph/list`);
       const items: User[] = data?.users || [];
-      console.log(items);
       setUsers(items);
     } finally {
       setLoadingUsers(false);

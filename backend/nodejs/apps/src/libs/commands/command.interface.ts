@@ -50,7 +50,7 @@ export abstract class BaseCommand<T> implements ICommand<T> {
     headers: Record<string, string>,
   ): Record<string, string> {
     // Define allowed headers in lowercase.
-    const allowedHeaders = new Set(['content-type', 'authorization']);
+    const allowedHeaders = new Set(['content-type', 'authorization', 'x-is-admin']);
     // Ensure content-type is set to application/json if not present
     if (!headers['content-type'] && !headers['Content-Type']) {
       headers['content-type'] = 'application/json';

@@ -45,21 +45,13 @@ import {
 } from '@mui/material';
 
 import { KnowledgeBaseAPI } from './services/api';
-import {useConnectors } from '../accountdetails/connectors/context';
 
 import type { Modules } from './types/modules';
 import type { Departments } from './types/departments';
 import type { RecordCategories } from './types/record-categories';
 import type { Filters, KnowledgeSearchSideBarProps } from './types/knowledge-base';
 import type { KnowledgeBase } from './types/kb';
-
-// Local KB definition (hardcoded)
-const localKB = {
-  id: 'local',
-  name: 'KB',
-  iconPath: '/assets/icons/connectors/kb.svg',
-  color: '#34A853'
-};
+import { Connector } from '../accountdetails/connectors/types/types';
 
 // Constants
 const drawerWidth = 280;
@@ -455,21 +447,9 @@ const AppSourcesFilter: React.FC<{
   onFilterChange: (filterType: keyof Filters, value: string) => void;
   expanded: boolean;
   onToggle: () => void;
-}> = ({ filters, onFilterChange, expanded, onToggle }) => {
+  activeConnectors: Connector[];
+}> = ({ filters, onFilterChange, expanded, onToggle, activeConnectors }) => {
   const theme = useTheme();
-  const { activeConnectors, loading: connectorsLoading, error: connectorsError } = useConnectors();
-
-  // Combine local KB with active connectors
-  const allApps = useMemo(() => {
-    const connectorApps = activeConnectors.map(connector => ({
-      id: connector.name.toLowerCase(),
-      name: connector.name,
-      iconPath: connector.iconPath || '/assets/icons/connectors/default.svg',
-    }));
-    
-    return [localKB, ...connectorApps];
-  }, [activeConnectors]);
-
   const activeAppCount = (filters.app || []).length;
 
   return (
@@ -495,39 +475,29 @@ const AppSourcesFilter: React.FC<{
 
       <FilterContent in={expanded}>
         <FormGroup>
-          {connectorsLoading ? (
-            <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
-              <CircularProgress size={20} />
-            </Box>
-          ) : connectorsError ? (
-            <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
-              <Typography variant="caption" color="error">
-                Failed to load connectors
-              </Typography>
-            </Box>
-          ) : allApps.length === 0 ? (
+          {activeConnectors.length === 0 ? (
             <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
               <Typography variant="caption" color="text.secondary">
                 No app sources available
               </Typography>
             </Box>
           ) : (
-            allApps.map((app) => {
-              const isChecked = (filters.app || []).includes(app.id);
+            activeConnectors.map((app) => {
+              const isChecked = (filters.app || []).includes(app._key || '');
 
               return (
                 <FormControlLabelStyled
-                  key={app.id}
+                  key={app._key}
                   control={
                     <FilterCheckbox
                       checked={isChecked}
-                      onClick={() => onFilterChange('app', app.id)}
+                      onClick={() => onFilterChange('app', app._key || '')}
                       size="small"
                       disableRipple
                     />
                   }
                   label={
-                    <Box sx={{ display: 'flex', alignItems: 'center',ml: 1, gap: 1 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', ml: 1, gap: 1 }}>
                       <img
                         src={app.iconPath}
                         alt={app.name}
@@ -860,9 +830,9 @@ export default function KnowledgeSearchSideBar({
   sx = {},
   openSidebar,
   onToggleSidebar,
+  activeConnectors,
 }: KnowledgeSearchSideBarProps) {
   const theme = useTheme();
-  const navigate = useNavigate();
   const [open, setOpen] = useState<boolean>(true);
   const [departments, setDepartments] = useState<Departments[]>([]);
   const [recordCategories, setRecordCategories] = useState<RecordCategories[]>([]);
@@ -877,7 +847,6 @@ export default function KnowledgeSearchSideBar({
     categories: false,
   });
   const [loading, setLoading] = useState<boolean>(true);
-
   // Knowledge base map for name lookup in chips
   const [knowledgeBasesMap, setKnowledgeBasesMap] = useState<Map<string, KnowledgeBase>>(new Map());
 
@@ -1008,13 +977,10 @@ export default function KnowledgeSearchSideBar({
         return modules.find((m) => m._id === id)?.name || id;
       case 'appSpecificRecordType':
         return recordCategories.find((c) => c._id === id)?.name || id;
-      case 'app':
-        // Handle local KB and dynamic connectors
-        if (id === 'local') {
-          return localKB.name;
-        }
-        // For connector names, convert from lowercase back to original case
-        return id.charAt(0).toUpperCase() + id.slice(1).toLowerCase();
+      case 'app': {
+        const connector = activeConnectors.find((c) => c._key === id);
+        return connector ? connector.name : id;
+      }
       case 'kb': {
         // Get KB name from the map, fallback to truncated ID
         const kb = knowledgeBasesMap.get(id);
@@ -1381,6 +1347,7 @@ export default function KnowledgeSearchSideBar({
             onFilterChange={handleFilterChange}
             expanded={expandedSections.apps}
             onToggle={() => toggleSection('apps')}
+            activeConnectors={activeConnectors}
           />
 
           {/* Knowledge Base Filter */}

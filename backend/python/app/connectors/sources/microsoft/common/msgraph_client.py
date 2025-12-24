@@ -126,7 +126,7 @@ class GroupDeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
         writer.write_collection_of_object_values("value", self.value)
 
 class MSGraphClient:
-    def __init__(self, app_name: str, client: GraphServiceClient, logger: Logger, max_requests_per_second: int = 10) -> None:
+    def __init__(self, app_name: str, connector_id: str, client: GraphServiceClient, logger: Logger, max_requests_per_second: int = 10) -> None:
         """
         Initializes the OneDriveSync instance with a rate limiter.
 
@@ -139,6 +139,7 @@ class MSGraphClient:
         self.app_name = app_name
         self.logger = logger
         self.rate_limiter = AsyncLimiter(max_requests_per_second, 1)
+        self.connector_id = connector_id
 
     async def get_all_user_groups(self) -> List[dict]:
         """
@@ -241,9 +242,8 @@ class MSGraphClient:
             for user in users:
                 user_list.append(AppUser(
                     app_name=self.app_name,
+                    connector_id=self.connector_id,
                     source_user_id=user.id,
-                    first_name=user.display_name,
-                    last_name=user.surname,
                     full_name=user.display_name,
                     email=user.mail or user.user_principal_name,
                     is_active=user.account_enabled,
