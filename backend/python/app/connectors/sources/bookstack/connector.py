@@ -206,8 +206,11 @@ class BookStackConnector(BaseConnector):
             token_secret = credentials_config.get("token_secret")
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
-                self.config_service, "bookstack", self.logger
+                self.config_service, "bookstack", self.connector_id, self.logger
             )
+            
+            print("\n\n\n\n\n\n\nBOOKSTACK FILTERS:\n", self.sync_filters, "\n", self.indexing_filters)
+
 
             if not all([base_url, token_id, token_secret]):
                 self.logger.error(
@@ -1536,6 +1539,10 @@ class BookStackConnector(BaseConnector):
                 if not record_update:
                     continue
 
+                if record_update.record:
+                    if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                        record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
                 # Handle deleted records
                 if record_update.is_deleted:
                     await self._handle_record_updates(record_update)
@@ -1820,10 +1827,6 @@ class BookStackConnector(BaseConnector):
 
         if not record_update:
             return
-
-        if record_update.record:
-            if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
         # **This is the logic you requested:**
         # If the record is new, handle it here directly.

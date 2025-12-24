@@ -267,7 +267,7 @@ class DropboxConnector(BaseConnector):
         app_secret = auth_config.get("clientSecret")
 
         self.sync_filters, self.indexing_filters = await load_connector_filters(
-            self.config_service, "dropbox", self.logger
+            self.config_service, "dropbox", self.connector_id, self.logger
         )
 
         print("\n\n\n\n\n\n\nDROPBOX FILTERS:\n", self.sync_filters, "\n", self.indexing_filters)

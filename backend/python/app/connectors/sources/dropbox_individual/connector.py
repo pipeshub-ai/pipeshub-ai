@@ -261,7 +261,7 @@ class DropboxIndividualConnector(BaseConnector):
         app_secret = auth_config.get("clientSecret")
 
         self.sync_filters, self.indexing_filters = await load_connector_filters(
-            self.config_service, "dropboxpersonal", self.logger
+            self.config_service, "dropboxpersonal", self.connector_id, self.logger
         )
 
         print("\n\n\n\n\n\n\nDROPBOX FILTERS:\n", self.sync_filters, "\n", self.indexing_filters)
@@ -793,9 +793,7 @@ class DropboxIndividualConnector(BaseConnector):
         signed_url = await self.get_signed_url(record)
         if not signed_url:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
-        
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Raising Exception for testing")
-
+            
         return StreamingResponse(
             stream_content(signed_url),
             media_type=record.mime_type if record.mime_type else "application/octet-stream",

@@ -295,7 +295,7 @@ class SharePointConnector(BaseConnector):
         self.logger.debug(f"🔍 Client secret present: {bool(client_secret)}")
 
         self.sync_filters, self.indexing_filters = await load_connector_filters(
-            self.config_service, "sharepointonline", self.logger
+            self.config_service, "sharepointonline", self.connector_id, self.logger
         )
 
         print("\n\n\n\n\n\n\nFILTERS:\n", self.sync_filters, "\n", self.indexing_filters)

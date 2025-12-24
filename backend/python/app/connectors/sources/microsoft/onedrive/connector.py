@@ -182,7 +182,7 @@ class OneDriveConnector(BaseConnector):
             raise ValueError("Incomplete OneDrive credentials. Ensure tenantId, clientId, and clientSecret are configured.")
         
         self.sync_filters, self.indexing_filters = await load_connector_filters(
-            self.config_service, "onedrive", self.logger
+            self.config_service, "onedrive", self.connector_id, self.logger
         )
 
         print("\n\n\n\n\n\n\nFILTERS:\n", self.sync_filters, "\n", self.indexing_filters)
