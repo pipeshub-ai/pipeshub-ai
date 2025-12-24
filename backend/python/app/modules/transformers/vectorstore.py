@@ -337,7 +337,9 @@ class VectorStore(Transformer):
                 dense_embeddings = get_default_embedding_model()
                 self.logger.info("Using default embedding model")
             else:
-                config = embedding_configs[0]
+                # Find the default config, or fall back to the first one.
+                config = next((c for c in embedding_configs if c.get("isDefault")), embedding_configs[0])
+
                 provider = config["provider"]
                 configuration = config["configuration"]
                 model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
