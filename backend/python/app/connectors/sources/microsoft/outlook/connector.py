@@ -28,7 +28,9 @@ from app.connectors.core.base.sync_point.sync_point import (
 )
 from app.connectors.core.registry.connector_builder import (
     AuthField,
+    CommonFields,
     ConnectorBuilder,
+    ConnectorScope,
     DocumentationLink,
 )
 from app.connectors.core.registry.filters import (
@@ -87,6 +89,7 @@ class OutlookCredentials:
     .with_auth_type("OAUTH_ADMIN_CONSENT")\
     .with_description("Sync emails from Outlook")\
     .with_categories(["Email"])\
+    .with_scopes([ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/outlook.svg")
         .add_documentation_link(DocumentationLink(
@@ -155,6 +158,7 @@ class OutlookCredentials:
             filter_type=FilterType.DATETIME,
             category=FilterCategory.SYNC
         ))
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
         .add_filter_field(FilterField(
             name="mails",
             display_name="Index Emails",
@@ -181,19 +185,22 @@ class OutlookConnector(BaseConnector):
         logger: Logger,
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
+        connector_id: str
     ) -> None:
         super().__init__(
-            OutlookApp(),
+            OutlookApp(connector_id),
             logger,
             data_entities_processor,
             data_store_provider,
             config_service,
+            connector_id
         )
         self.rate_limiter = AsyncLimiter(50, 1)
         self.external_outlook_client: Optional[OutlookCalendarContactsDataSource] = None
         self.external_users_client: Optional[UsersGroupsDataSource] = None
         self.credentials: Optional[OutlookCredentials] = None
+        self.connector_id = connector_id
 
         # User cache for performance optimization
         self._user_cache: Dict[str, str] = {}  # email -> source_user_id mapping
@@ -201,7 +208,7 @@ class OutlookConnector(BaseConnector):
         self._user_cache_ttl: int = 3600  # 1 hour TTL in seconds
 
         self.email_delta_sync_point = SyncPoint(
-            connector_name=Connectors.OUTLOOK,
+            connector_id=self.connector_id,
             org_id=self.data_entities_processor.org_id,
             sync_data_point_type=SyncDataPointType.RECORDS,
             data_store_provider=self.data_store_provider
@@ -215,10 +222,10 @@ class OutlookConnector(BaseConnector):
         """Initialize the Outlook connector with credentials and Graph client."""
         try:
 
-            org_id = self.data_entities_processor.org_id
+            connector_id = self.connector_id
 
             # Load credentials
-            self.credentials = await self._get_credentials(org_id)
+            self.credentials = await self._get_credentials(connector_id)
 
             # Create shared MSGraph client - store as instance variable for proper cleanup
             self.external_client: ExternalMSGraphClient = ExternalMSGraphClient.build_with_config(
@@ -236,7 +243,7 @@ class OutlookConnector(BaseConnector):
 
             # Load filters from config service
             self.sync_filters, self.indexing_filters = await load_connector_filters(
-                self.config_service, "outlook", self.logger
+                self.config_service, "outlook", connector_id, self.logger
             )
 
             # Test connection
@@ -283,14 +290,14 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Connection test failed: {e}")
             return False
 
-    async def _get_credentials(self, org_id: str) -> OutlookCredentials:
+    async def _get_credentials(self, connector_id: str) -> OutlookCredentials:
         """Load Outlook credentials from configuration."""
         try:
-            config_path = "/services/connectors/outlook/config"
+            config_path = f"/services/connectors/{connector_id}/config"
             config = await self.config_service.get_config(config_path)
 
             if not config:
-                raise ValueError("Outlook configuration not found")
+                raise ValueError(f"Outlook configuration not found for connector {connector_id}")
 
             return OutlookCredentials(
                 tenant_id=config["auth"]["tenantId"],
@@ -299,7 +306,7 @@ class OutlookConnector(BaseConnector):
                 has_admin_consent=config["auth"].get("hasAdminConsent", False),
             )
         except Exception as e:
-            self.logger.error(f"Failed to load Outlook credentials: {e}")
+            self.logger.error(f"Failed to load Outlook credentials for connector {connector_id}: {e}")
             raise
 
     async def _populate_user_cache(self) -> None:
@@ -411,6 +418,7 @@ class OutlookConnector(BaseConnector):
 
                 app_user = AppUser(
                     app_name=Connectors.OUTLOOK,
+                    connector_id=self.connector_id,
                     source_user_id=self._safe_get_attr(user, 'id'),
                     email=self._safe_get_attr(user, 'mail') or self._safe_get_attr(user, 'user_principal_name'),
                     full_name=full_name
@@ -520,7 +528,7 @@ class OutlookConnector(BaseConnector):
             # Search in ArangoDB for parent message
             async with self.data_store_provider.transaction() as tx_store:
                 parent_record = await tx_store.get_record_by_conversation_index(
-                    connector_name=Connectors.OUTLOOK,
+                    connector_id=self.connector_id,
                     conversation_index=parent_index,
                     thread_id=thread_id,
                     org_id=org_id,
@@ -827,7 +835,7 @@ class OutlookConnector(BaseConnector):
             if is_deleted:
                 self.logger.info(f"Deleting message: {message_id} and its attachments from folder {folder_name}")
                 async with self.data_store_provider.transaction() as tx_store:
-                    await tx_store.delete_record_by_external_id(Connectors.OUTLOOK, message_id, user.user_id)
+                    await tx_store.delete_record_by_external_id(self.connector_id, message_id, user.user_id)
                 return updates
 
             # Process email with attachments
@@ -899,6 +907,7 @@ class OutlookConnector(BaseConnector):
                 version=0 if is_new else existing_record.version + 1,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.OUTLOOK,
+                connector_id=self.connector_id,
                 source_created_at=self._parse_datetime(self._safe_get_attr(message, 'created_date_time')),
                 source_updated_at=self._parse_datetime(self._safe_get_attr(message, 'last_modified_date_time')),
                 weburl=self._safe_get_attr(message, 'web_link', ''),
@@ -1035,6 +1044,7 @@ class OutlookConnector(BaseConnector):
             version=0 if is_new else existing_record.version + 1,
             origin=OriginTypes.CONNECTOR,
             connector_name=Connectors.OUTLOOK,
+            connector_id=self.connector_id,
             source_created_at=self._parse_datetime(self._safe_get_attr(attachment, 'last_modified_date_time')),
             source_updated_at=self._parse_datetime(self._safe_get_attr(attachment, 'last_modified_date_time')),
             mime_type=mime_type,
@@ -1137,7 +1147,7 @@ class OutlookConnector(BaseConnector):
         try:
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
-                    connector_name=Connectors.OUTLOOK,
+                    connector_id=self.connector_id,
                     external_id=external_record_id
                 )
                 return existing_record
@@ -1597,9 +1607,9 @@ class OutlookConnector(BaseConnector):
 
 
     @classmethod
-    async def create_connector(cls, logger: Logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> 'OutlookConnector':
+    async def create_connector(cls, logger: Logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> 'OutlookConnector':
         """Factory method to create and initialize OutlookConnector."""
         data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
         await data_entities_processor.initialize()
 
-        return OutlookConnector(logger, data_entities_processor, data_store_provider, config_service)
+        return OutlookConnector(logger, data_entities_processor, data_store_provider, config_service, connector_id)

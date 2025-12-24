@@ -5,7 +5,6 @@ import { UserProvider } from 'src/context/UserContext';
 import { AuthProvider } from 'src/auth/context/jwt';
 
 import { AgentBuilder } from 'src/sections/qna/agents';
-import { GroupsProvider } from 'src/context/GroupsContext';
 import { Agent } from 'src/types/agent';
 
 // ----------------------------------------------------------------------
@@ -36,13 +35,11 @@ export default function Page() {
       </Helmet>
       <AuthProvider>
         <UserProvider>
-          <GroupsProvider>
             <AgentBuilder
               editingAgent={agentKey ? ({ _key: agentKey } as Agent) : null}
               onSuccess={handleSuccess}
               onClose={handleClose}
             />
-          </GroupsProvider>
         </UserProvider>
       </AuthProvider>
     </>

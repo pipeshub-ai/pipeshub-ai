@@ -37,6 +37,7 @@ import { AICommandOptions } from '../../../libs/commands/ai_service/ai.service.c
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
+import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
 
 @injectable()
 export class UserController {
@@ -132,6 +133,9 @@ export class UserController {
     const userId = req.params.id;
     const orgId = req.user?.orgId;
     try {
+      // Check if email should be included based on environment variable
+      const hideEmail = process.env.HIDE_EMAIL === 'true'; 
+
       const user = await Users.findOne({
         _id: userId,
         orgId,
@@ -142,6 +146,10 @@ export class UserController {
 
       if (!user) {
         throw new NotFoundError('User not found');
+      }
+
+      if (hideEmail) {
+        delete (user as any)?.email;
       }
 
       res.json(user);
@@ -307,10 +315,55 @@ export class UserController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const { orgId, _id, slug, ...updateFields } = req.body; // Exclude restricted fields
       if (!req.user) {
         throw new UnauthorizedError('Unauthorized to update the user');
       }
+
+      // Define whitelist of allowed fields that can be updated
+      const ALLOWED_UPDATE_FIELDS = [
+        'firstName',
+        'lastName',
+        'fullName',
+        'middleName',
+        'email',
+        'designation',
+        'mobile',
+        'address',
+        'dataCollectionConsent',
+        'hasLoggedIn',
+      ] as const;
+
+      // List of sensitive system fields that must never be updated via API
+      const RESTRICTED_FIELDS = [
+        '_id',
+        'orgId',
+        'slug',
+        '__v',
+      ];
+
+      // Check for restricted fields in request body
+      const restrictedFieldsFound = RESTRICTED_FIELDS.filter(
+        (field) => field in req.body,
+      );
+      if (restrictedFieldsFound.length > 0) {
+        throw new BadRequestError(
+          `Cannot update restricted fields: ${restrictedFieldsFound.join(', ')}`,
+        );
+      }
+
+      // Extract only allowed fields from request body
+      const updateFields: Partial<Record<typeof ALLOWED_UPDATE_FIELDS[number], any>> = {};
+      for (const field of ALLOWED_UPDATE_FIELDS) {
+        if (field in req.body && req.body[field] !== undefined) {
+          updateFields[field] = req.body[field];
+        }
+      }
+
+      // If no valid fields to update, return error
+      if (Object.keys(updateFields).length === 0) {
+        throw new BadRequestError('No valid fields provided for update');
+      }
+
       const { id } = req.params;
       const user = await Users.findOne({
         orgId: req.user.orgId,
@@ -322,33 +375,34 @@ export class UserController {
         throw new NotFoundError('User not found');
       }
 
-      if (updateFields.firstName) {
-        user.firstName = updateFields.firstName;
+      // Apply updates only for whitelisted fields
+      // Separate email from other fields since it requires special handling (uniqueness check)
+      const { email, ...otherUpdateFields } = updateFields;
+
+      // Apply all other whitelisted fields
+      Object.assign(user, otherUpdateFields);
+
+      // Handle email update separately due to uniqueness check
+      if (email !== undefined) {
+        // Only update email if it's different from the current email
+        const currentEmail = user.email?.toLowerCase().trim();
+        const newEmail = email?.toLowerCase().trim();
+        
+        if (currentEmail !== newEmail) {
+          // Email is being changed - validate uniqueness
+          const existingUser = await Users.findOne({
+            email: email,
+            _id: { $ne: id },
+            orgId: req.user.orgId,
+            isDeleted: false,
+          });
+          if (existingUser) {
+            throw new BadRequestError('Email already exists for another user');
+          }
+          user.email = email;
+        }
       }
-      if (updateFields.lastName) {
-        user.lastName = updateFields.lastName;
-      }
-      if (updateFields.fullName) {
-        user.fullName = updateFields.fullName;
-      }
-      if (updateFields.middleName) {
-        user.middleName = updateFields.middleName;
-      }
-      if (updateFields.email) {
-        user.email = updateFields.email;
-      }
-      if (updateFields.designation) {
-        user.designation = updateFields.designation;
-      }
-      if (updateFields.mobile) {
-        user.mobile = updateFields.mobile;
-      }
-      if (updateFields.address) {
-        user.address = updateFields.address;
-      }
-      if (updateFields.hasLoggedIn) {
-        user.hasLoggedIn = updateFields.hasLoggedIn;
-      }
+    
       await user.save();
 
       await this.eventService.start();
@@ -1202,6 +1256,23 @@ export class UserController {
       }
       
       const { page, limit, search } = req.query;
+      
+      // Validate search parameter for XSS and format specifiers
+      if (search) {
+        try {
+          validateNoXSS(String(search), 'search parameter');
+          validateNoFormatSpecifiers(String(search), 'search parameter');
+          
+          if (String(search).length > 1000) {
+            throw new BadRequestError('Search parameter too long (max 1000 characters)');
+          }
+        } catch (error: any) {
+          throw new BadRequestError(
+            error.message || 'Search parameter contains potentially dangerous content'
+          );
+        }
+      }
+      
       const queryParams = new URLSearchParams();
       if (page) queryParams.append('page', String(page));
       if (limit) queryParams.append('limit', String(limit));

@@ -4,6 +4,7 @@ from io import BytesIO
 from uuid import uuid4
 
 import aiohttp
+import fitz
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -15,6 +16,7 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.utils.jwt import generate_jwt
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -382,14 +384,25 @@ class EventProcessor:
                 return result
 
             if extension == ExtensionTypes.PDF.value or mime_type == MimeTypes.PDF.value:
-                result = await self.processor.process_pdf_with_docling(
-                    recordName=record_name,
-                    recordId=record_id,
-                    pdf_binary=file_content,
-                    virtual_record_id = virtual_record_id
-                )
-                if result is False:
-                    result = await self.processor.process_pdf_document(
+                # Check if document needs OCR before using docling
+
+                self.logger.info("🔍 Checking if PDF needs OCR processing")
+                try:
+                    with fitz.open(stream=file_content, filetype="pdf") as temp_doc:
+
+                        # Check if 50% or more pages need OCR
+                        ocr_pages = [OCRStrategy.needs_ocr(page, self.logger) for page in temp_doc]
+                        needs_ocr = sum(ocr_pages) >= len(ocr_pages) * 0.5 if ocr_pages else False
+
+                    self.logger.info(f"📊 OCR requirement: {'YES - Using OCR handler' if needs_ocr else 'NO - Using Docling'}")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Error checking OCR need: {str(e)}, defaulting to Docling")
+                    needs_ocr = False
+
+                if needs_ocr:
+                    # Skip docling and use OCR handler directly
+                    self.logger.info("🤖 PDF needs OCR, skipping Docling")
+                    result = await self.processor.process_pdf_document_with_ocr(
                         recordName=record_name,
                         recordId=record_id,
                         version=record_version,
@@ -398,6 +411,24 @@ class EventProcessor:
                         pdf_binary=file_content,
                         virtual_record_id = virtual_record_id
                     )
+                else:
+                    # Use docling for PDFs that don't need OCR
+                    result = await self.processor.process_pdf_with_docling(
+                        recordName=record_name,
+                        recordId=record_id,
+                        pdf_binary=file_content,
+                        virtual_record_id = virtual_record_id
+                    )
+                    if result is False:
+                        result = await self.processor.process_pdf_document_with_ocr(
+                            recordName=record_name,
+                            recordId=record_id,
+                            version=record_version,
+                            source=connector,
+                            orgId=org_id,
+                            pdf_binary=file_content,
+                            virtual_record_id = virtual_record_id
+                        )
 
             elif extension == ExtensionTypes.DOCX.value or mime_type == MimeTypes.DOCX.value:
                 result = await self.processor.process_docx_document(
@@ -489,9 +520,6 @@ class EventProcessor:
                 result = await self.processor.process_md_document(
                     recordName=record_name,
                     recordId=record_id,
-                    version=record_version,
-                    source=connector,
-                    orgId=org_id,
                     md_binary=file_content,
                     virtual_record_id = virtual_record_id
                 )

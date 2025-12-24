@@ -175,6 +175,9 @@ class IndexingFilterKey(str, Enum):
     Common indexing filter keys for record types.
     These control what record types get indexed (boolean filters).
     """
+    # Master control for manual sync mode
+    ENABLE_MANUAL_SYNC = "enable_manual_sync"
+
     # Container types
     SPACES = "spaces"
     FOLDERS = "folders"
@@ -676,7 +679,33 @@ class FilterCollection(BaseModel):
             - Strings: True if non-empty
             - Numbers: True if non-zero
         """
+        # Get the filter being checked
         f = self.get(key)
+
+        # Convert key to string for comparison
+        key_str = key.value if isinstance(key, Enum) else key
+
+        # If checking enable_manual_sync itself, return its value directly
+        if key_str == "enable_manual_sync":
+            if f is None:
+                return default
+            if f.is_empty():
+                return default
+            if f.type == FilterType.BOOLEAN:
+                return bool(f.value)
+            return True
+
+        # For other indexing filters, check if manual sync is enabled
+        # Only apply override if enable_manual_sync filter exists and is explicitly enabled
+        manual_sync_filter = self.get("enable_manual_sync")
+        if (manual_sync_filter is not None
+            and not manual_sync_filter.is_empty()
+            and manual_sync_filter.type == FilterType.BOOLEAN
+            and manual_sync_filter.value is True):
+            # Manual sync is explicitly ON: no auto-indexing
+            return False
+
+        # Normal logic: return the specific filter's value
         if f is None:
             return default
         if f.is_empty():
@@ -749,6 +778,7 @@ class FilterCollection(BaseModel):
 async def load_connector_filters(
     config_service: ConfigurationService,
     connector_name: str,
+    connector_id: str,
     logger: Optional[Logger] = None
 ) -> Tuple[FilterCollection, FilterCollection]:
     """
@@ -757,6 +787,7 @@ async def load_connector_filters(
     Args:
         config_service: ConfigurationService instance
         connector_name: Name of connector (e.g., "confluence", "outlook")
+        connector_id: ID of connector (e.g., "confluence_123", "outlook_456")
         logger: Optional logger (uses module logger if not provided)
 
     Returns:
@@ -782,28 +813,28 @@ async def load_connector_filters(
     """
     log = logger or _logger
     empty_filters = (FilterCollection(), FilterCollection())
-    config_path = f"/services/connectors/{connector_name.lower()}/config"
+    config_path = f"/services/connectors/{connector_id}/config"
 
     # Fetch config from service
     try:
         config = await config_service.get_config(config_path)
     except Exception as e:
-        log.error(f"Failed to fetch config for {connector_name}: {e}")
+        log.error(f"Failed to fetch config for {connector_id}: {e}")
         return empty_filters
 
     # Handle missing or disabled config
     if not config:
-        log.debug(f"No config found for {connector_name}")
+        log.debug(f"No config found for {connector_name} {connector_id}")
         return empty_filters
 
     if not config.get("enabled", True):
-        log.debug(f"Connector {connector_name} is disabled")
+        log.debug(f"Connector {connector_name} {connector_id} is disabled")
         return empty_filters
 
     # Extract filter values from config
     filters_config = config.get("filters", {})
     if not filters_config:
-        log.debug(f"No filters configured for {connector_name}")
+        log.debug(f"No filters configured for {connector_name} {connector_id}")
         return empty_filters
 
     sync_values = filters_config.get("sync", {}).get("values", {})
@@ -816,7 +847,7 @@ async def load_connector_filters(
     # Log summary
     if sync_filters or indexing_filters:
         log.info(
-            f"Loaded filters for {connector_name}: "
+            f"Loaded filters for {connector_name} {connector_id}: "
             f"{len(sync_filters)} sync, {len(indexing_filters)} indexing"
         )
 
