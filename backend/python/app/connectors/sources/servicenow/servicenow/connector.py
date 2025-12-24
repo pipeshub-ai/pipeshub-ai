@@ -17,7 +17,7 @@ Synced Entities:
 import uuid
 from collections import defaultdict
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -678,6 +678,17 @@ class ServiceNowConnector(BaseConnector):
         """Reindex records - not implemented for ServiceNow yet."""
         self.logger.warning("Reindex not implemented for ServiceNow connector")
         pass
+
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None
+    ) -> NoReturn:
+        """ServiceNow connector does not support dynamic filter options."""
+        raise NotImplementedError("ServiceNow connector does not support dynamic filter options")
 
     async def _sync_users_and_groups(self) -> None:
         """

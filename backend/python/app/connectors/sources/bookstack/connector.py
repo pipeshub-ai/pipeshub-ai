@@ -4,7 +4,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Awaitable, Callable, Dict, List, NoReturn, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -1855,6 +1855,17 @@ class BookStackConnector(BaseConnector):
         """Reindex records - not implemented for BookStack yet."""
         self.logger.warning("Reindex not implemented for BookStack connector")
         pass
+
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None
+    ) -> NoReturn:
+        """BookStack connector does not support dynamic filter options."""
+        raise NotImplementedError("BookStack connector does not support dynamic filter options")
 
     @classmethod
     async def create_connector(

@@ -46,12 +46,14 @@ from app.config.constants.http_status_code import (
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.api.middleware import WebhookAuthVerifier
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
     OAuthToken,
 )
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.connector_builder import ConnectorScope
+from app.connectors.core.registry.filters import FilterOptionsResponse
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.sources.google.admin.admin_webhook_handler import (
     AdminWebhookHandler,
@@ -2889,7 +2891,10 @@ async def create_connector_instance(
                 "created": True,
                 "scope": scope,
                 "createdBy": user_id,
-            }
+                "isAuthenticated": False,  # Will be set to True when user enables the connector
+                "isConfigured": bool(config)  # True if config was provided during creation
+            },
+            "message": "Connector instance created successfully."
         }
 
     except HTTPException:
@@ -3204,10 +3209,24 @@ async def update_connector_instance_config(
         await config_service.set_config(config_path, new_config)
         logger.info(f"Updated config for instance {connector_id}")
 
-        # Update instance status
+        # Cleanup existing connector instance if it exists (config changed)
+        # User will need to toggle/enable again to re-initialize with new config
+        if hasattr(container, 'connectors_map') and connector_id in container.connectors_map:
+            logger.info(f"Cleaning up existing instance for {connector_id} due to config update")
+            existing_connector = container.connectors_map.pop(connector_id)
+            try:
+                if hasattr(existing_connector, 'cleanup'):
+                    await existing_connector.cleanup()
+                logger.info(f"Cleaned up existing connector instance {connector_id}")
+            except Exception as e:
+                logger.error(f"Error cleaning up existing connector {connector_id}: {e}")
+
+        # Update instance status - mark as configured but not authenticated
+        # Connector will be initialized and authenticated when user clicks Enable
         updates = {
             "isConfigured": True,
-            "isAuthenticated": False,
+            "isAuthenticated": False,  # Will be set to True after successful toggle/enable
+            "isActive": False,  # Disable if config changed - user must re-enable
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             "updatedBy": user_id
         }
@@ -3224,9 +3243,11 @@ async def update_connector_instance_config(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail=f"Failed to update {instance.get('name')} connector instance"
             )
+
         return {
             "success": True,
-            "config": new_config
+            "config": new_config,
+            "message": "Configuration saved successfully."
         }
 
     except HTTPException:
@@ -4282,6 +4303,196 @@ async def get_connector_instance_filters(
             detail=f"Failed to get filter options: {str(e)}"
         )
 
+@router.get("/api/v1/connectors/{connector_id}/filters/{filter_key}/options")
+async def get_filter_field_options(
+    connector_id: str,
+    filter_key: str,
+    request: Request,
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    limit: int = Query(20, ge=1, le=100, description="Items per page"),
+    search: Optional[str] = Query(None, description="Search text to filter options"),
+    cursor: Optional[str] = Query(None, description="Cursor for cursor-based pagination (API-specific)"),
+    arango_service: BaseArangoService = Depends(get_arango_service)
+) -> Dict[str, Any]:
+    """
+    Get dynamic options for a specific filter field with pagination support.
+
+    This endpoint fetches the initialized connector instance from the container
+    and calls its get_filter_options() method.
+
+    Args:
+        connector_id: Unique connector instance key
+        filter_key: Filter field name (e.g., "space_keys", "page_ids")
+        request: FastAPI request object
+        page: Page number for pagination (default: 1)
+        limit: Number of items per page (default: 20, max: 100)
+        search: Optional search text to filter options
+        arango_service: Injected ArangoDB service
+
+    Returns:
+        Dictionary with options and pagination info:
+        {
+            "success": True,
+            "options": [{"id": "...", "value": "...", "label": "..."}],
+            "pagination": {
+                "page": 1,
+                "limit": 20,
+                "hasMore": True
+            }
+        }
+
+    Raises:
+        HTTPException: 400/401/403/404 for various error conditions
+    """
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+
+    try:
+        # Authentication
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+        x_is_admin_header = request.headers.get("X-Is-Admin", "false")
+        is_admin = x_is_admin_header.lower() == "true"
+
+        if not user_id or not org_id:
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
+
+        # Get connector instance from database
+        instance = await connector_registry.get_connector_instance(
+            connector_id=connector_id,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin
+        )
+
+        if not instance:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector instance {connector_id} not found or access denied"
+            )
+
+        # Check if connector is configured (has credentials)
+        if not instance.get("isAuthenticated", False):
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Connector is not authenticated. Please configure the connector with valid credentials first."
+            )
+
+        connector_type = instance.get("type", "")
+        await check_beta_connector_access(connector_type, request)
+
+        # Permission checks
+        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only administrators can access filter options for team connectors"
+            )
+
+        if instance.get("scope") == ConnectorScope.PERSONAL.value:
+            if instance.get("createdBy") != user_id and not is_admin:
+                raise HTTPException(
+                    status_code=HttpStatusCode.FORBIDDEN.value,
+                    detail="Only the creator can access filter options for this connector"
+                )
+
+        # Get connector metadata
+        metadata = await connector_registry.get_connector_metadata(connector_type)
+        if not metadata:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector type {connector_type} not found"
+            )
+
+        # Find filter configuration
+        filter_config = _find_filter_field_config(metadata, filter_key)
+        if not filter_config:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Filter field '{filter_key}' not found for connector {connector_type}"
+            )
+
+        # Check if filter supports dynamic options
+        option_source_type = filter_config.get("optionSourceType", "manual")
+        if option_source_type != "dynamic":
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=f"Filter field '{filter_key}' does not support dynamic options (type: {option_source_type})"
+            )
+
+        # Get initialized connector from container
+        connector = _get_connector_from_container(container, connector_id)
+        if not connector:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=f"Connector instance {connector_id} not found in container. Please configure the connector with valid credentials first."
+            )
+
+        # Call get_filter_options method on initialized connector
+        response = await connector.get_filter_options(
+            filter_key=filter_key,
+            page=page,
+            limit=limit,
+            search=search,
+            cursor=cursor
+        )
+
+        # Return response as dictionary for JSON serialization
+        return response.to_dict()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting filter field options for {filter_key}: {e}", exc_info=True)
+
+        # Return error response
+        response = FilterOptionsResponse(
+            success=False,
+            options=[],
+            page=page,
+            limit=limit,
+            has_more=False,
+            cursor=None,
+            message=str(e)
+        )
+
+        return response.to_dict()
+
+
+def _get_connector_from_container(container, connector_id: str) -> Optional[BaseConnector]:
+    """
+    Get connector instance from app_container.
+    """
+    connector_key = f"{connector_id}_connector"
+
+    if hasattr(container, connector_key):
+        return getattr(container, connector_key)()
+    elif hasattr(container, 'connectors_map'):
+        return container.connectors_map.get(connector_id)
+
+    return None
+
+
+def _find_filter_field_config(
+    metadata: Dict[str, Any],
+    filter_key: str
+) -> Optional[Dict[str, Any]]:
+    """Find filter field configuration in connector metadata."""
+    filters_config = metadata.get("config", {}).get("filters", {})
+
+    for category in ["sync", "indexing"]:
+        schema = filters_config.get(category, {}).get("schema", {})
+        fields = schema.get("fields", [])
+
+        for field in fields:
+            if field.get("name") == filter_key:
+                return field
+
+    return None
+
 
 @router.post("/api/v1/connectors/{connector_id}/filters")
 async def save_connector_instance_filters(
@@ -4554,6 +4765,108 @@ async def toggle_connector_instance(
                         detail="Connector must be configured before enabling"
                     )
 
+            # Initialize connector when enabling (if not already initialized)
+            connector_exists = (
+                hasattr(container, 'connectors_map') and
+                connector_id in container.connectors_map
+            )
+
+            if not connector_exists:
+                logger.info(f"Initializing connector {connector_id} before enabling")
+                try:
+                    data_store_provider = ArangoDataStore(logger, arango_service)
+
+                    # Create connector using factory
+                    connector = await ConnectorFactory.create_connector(
+                        name=connector_type.lower(),
+                        logger=logger,
+                        data_store_provider=data_store_provider,
+                        config_service=config_service,
+                        connector_id=connector_id
+                    )
+
+                    if not connector:
+                        logger.error(f"Failed to create {connector_type} connector")
+                        raise HTTPException(
+                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                            detail="Failed to create connector instance. Please check your configuration."
+                        )
+
+                    # Initialize connector
+                    logger.info(f"Calling init() for connector {connector_id}")
+                    is_initialized = await connector.init()
+
+                    if not is_initialized:
+                        error_msg = "Failed to initialize connector. Please check your credentials and configuration."
+                        logger.error(f"❌ {error_msg}")
+                        # Cleanup on failure
+                        try:
+                            await connector.cleanup()
+                        except Exception:
+                            pass
+                        raise HTTPException(
+                            status_code=HttpStatusCode.BAD_REQUEST.value,
+                            detail=error_msg
+                        )
+
+                    # Test connection
+                    logger.info(f"Testing connection for connector {connector_id}")
+                    try:
+                        connection_ok = connector.test_connection_and_access()
+                        if not connection_ok:
+                            error_msg = "Connection test failed. Please verify your credentials have proper access."
+                            logger.error(f"❌ {error_msg}")
+                            # Cleanup on failure
+                            try:
+                                await connector.cleanup()
+                            except Exception:
+                                pass
+                            raise HTTPException(
+                                status_code=HttpStatusCode.BAD_REQUEST.value,
+                                detail=error_msg
+                            )
+                    except HTTPException:
+                        raise
+                    except Exception as test_error:
+                        error_msg = f"Connection test failed: {str(test_error)}"
+                        logger.error(f"❌ {error_msg}", exc_info=True)
+                        # Cleanup on failure
+                        try:
+                            await connector.cleanup()
+                        except Exception:
+                            pass
+                        raise HTTPException(
+                            status_code=HttpStatusCode.BAD_REQUEST.value,
+                            detail=error_msg
+                        )
+
+                    # Success! Store connector in container
+                    logger.info(f"✅ Successfully initialized and tested {connector_type} connector")
+                    if not hasattr(container, 'connectors_map'):
+                        container.connectors_map = {}
+                    container.connectors_map[connector_id] = connector
+
+                    # Update isAuthenticated flag
+                    await connector_registry.update_connector_instance(
+                        connector_id=connector_id,
+                        updates={"isAuthenticated": True},
+                        user_id=user_id,
+                        org_id=org_id,
+                        is_admin=is_admin
+                    )
+
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    error_msg = f"Failed to initialize connector: {str(e)}"
+                    logger.error(f"❌ {error_msg}", exc_info=True)
+                    raise HTTPException(
+                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                        detail=error_msg
+                    )
+            else:
+                logger.info(f"Connector {connector_id} already initialized and stored in container")
+
         if toggle_type == "agent" and not current_agent_status:
             # Check if connector supports agent functionality
             if not instance.get("supportsAgent", False):
@@ -4570,6 +4883,19 @@ async def toggle_connector_instance(
                     detail="Connector must be configured before enabling"
                 )
 
+
+        # Cleanup connector when disabling
+        if toggle_type == "sync" and current_sync_status and not target_status:
+            # Disabling sync - cleanup connector from container
+            if hasattr(container, 'connectors_map') and connector_id in container.connectors_map:
+                logger.info(f"Cleaning up connector {connector_id} as it's being disabled")
+                existing_connector = container.connectors_map.pop(connector_id)
+                try:
+                    if hasattr(existing_connector, 'cleanup'):
+                        await existing_connector.cleanup()
+                    logger.info(f"Successfully cleaned up connector {connector_id}")
+                except Exception as e:
+                    logger.error(f"Error cleaning up connector {connector_id}: {e}")
 
         # Update connector status
         updates = {

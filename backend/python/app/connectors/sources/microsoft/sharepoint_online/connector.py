@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from http import HTTPStatus
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
 from urllib.parse import quote, unquote, urlparse
 
 import aiohttp
@@ -2955,6 +2955,17 @@ class SharePointConnector(BaseConnector):
         """Reindex records - not implemented for SharePoint yet."""
         self.logger.warning("Reindex not implemented for SharePoint connector")
         pass
+
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None
+    ) -> NoReturn:
+        """SharePoint connector does not support dynamic filter options."""
+        raise NotImplementedError("SharePoint connector does not support dynamic filter options")
 
     @classmethod
     async def create_connector(cls, logger: Logger,

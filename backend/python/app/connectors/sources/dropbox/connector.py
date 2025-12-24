@@ -6,7 +6,7 @@ import uuid
 # from datetime import datetime
 from datetime import datetime, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, Optional, Tuple, Union
+from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple, Union
 
 from aiolimiter import AsyncLimiter
 from dropbox.exceptions import ApiError
@@ -2657,6 +2657,17 @@ class DropboxConnector(BaseConnector):
         """Reindex records - not implemented for Dropbox yet."""
         self.logger.warning("Reindex not implemented for Dropbox connector")
         pass
+
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None
+    ) -> NoReturn:
+        """Dropbox connector does not support dynamic filter options."""
+        raise NotImplementedError("Dropbox connector does not support dynamic filter options")
 
     # @classmethod
     # async def create_connector(

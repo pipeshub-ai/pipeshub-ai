@@ -260,6 +260,44 @@ export class ConnectorApiService {
     return response.data;
   }
 
+  /**
+   * Get dynamic options for a specific filter field with pagination
+   * 
+   * @param connectorId - Connector instance ID
+   * @param filterKey - Filter field name (e.g., "space_keys", "page_ids")
+   * @param page - Page number (1-indexed, default: 1)
+   * @param limit - Items per page (default: 20, max: 100)
+   * @param search - Optional search text to filter options
+   * @returns Filter options with pagination info
+   */
+  static async getFilterFieldOptions(
+    connectorId: string,
+    filterKey: string,
+    page: number = 1,
+    limit: number = 20,
+    search?: string,
+    cursor?: string
+  ): Promise<FilterOptionsResponse> {
+    const params: any = { page, limit };
+    if (search) {
+      params.search = search;
+    }
+    if (cursor) {
+      params.cursor = cursor;
+    }
+    
+    const response = await axios.get(
+      `${BASE_URL}/${connectorId}/filters/${filterKey}/options`,
+      { params }
+    );
+    
+    if (!response.data) {
+      throw new Error('Failed to get filter field options');
+    }
+    
+    return response.data;
+  }
+
   // ============================================================================
   // Toggle API
   // ============================================================================

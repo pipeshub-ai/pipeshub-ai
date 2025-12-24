@@ -438,24 +438,14 @@ class EntityEventService(BaseEventService):
 
                     for app_name in enabled_apps:
                         if app_name in [Connectors.GOOGLE_CALENDAR.value]:
-                            self.logger.info(f"Skipping init for {app_name}")
+                            self.logger.info(f"Skipping sync for {app_name}")
                             continue
 
-                        # Initialize app (this will fetch and create users)
-                        await self.__handle_sync_event(
-                            event_type=f"{app_name.lower()}.init",
-                            value={
-                                "orgId": org_id,
-                                "connector":app_name,
-                                "connectorId":connector_id
-                            },
-                        )
-
-                        # TODO: Remove this sleep
-                        await asyncio.sleep(5)
+                        # NOTE: Init is now handled synchronously in the toggle endpoint
+                        # No need to send init event - connector is already initialized
 
                         if sync_action == "immediate":
-                            # Start sync for all users
+                            # Start sync - connector should already be initialized
                             await self.__handle_sync_event(
                                 event_type=f"{app_name.lower()}.start",
                                 value={
@@ -464,8 +454,6 @@ class EntityEventService(BaseEventService):
                                     "connectorId":connector_id
                                 },
                             )
-                            # TODO: Remove this sleep
-                            await asyncio.sleep(5)
 
                 # For individual accounts, create edges between existing active users and apps
                 else:
@@ -473,15 +461,16 @@ class EntityEventService(BaseEventService):
                         org_id, active=True
                     )
 
-                    # First initialize each app
+                    # NOTE: Init is now handled synchronously in the toggle endpoint
+                    # Start sync for each app (connector already initialized)
                     for app_name in enabled_apps:
                         if app_name in [Connectors.GOOGLE_CALENDAR.value]:
-                            self.logger.info(f"Skipping init for {app_name}")
+                            self.logger.info(f"Skipping sync for {app_name}")
                             continue
 
-                        # Initialize app
+                        # Start sync - connector should already be initialized
                         await self.__handle_sync_event(
-                            event_type=f"{app_name.lower()}.init",
+                            event_type=f"{app_name.lower()}.start",
                             value={
                                 "orgId": org_id,
                                 "connector":app_name,
