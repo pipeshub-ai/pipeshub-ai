@@ -9,14 +9,14 @@ from langchain_core.messages import HumanMessage
 
 from app.config.constants.service import config_node_constants
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
-from app.utils.aimodels import get_generator_model
+from app.utils.aimodels import get_generator_model, is_multimodal_llm
 
 
 class VLMOCRStrategy(OCRStrategy):
     """OCR strategy that uses Vision Language Models to convert PDF pages to markdown"""
 
     # Concurrency limit for processing pages
-    CONCURRENCY_LIMIT = int(os.getenv('CONCURRENCY_LIMIT', '3'))
+    CONCURRENCY_LIMIT = int(os.getenv('CONCURRENCY_LIMIT', '10'))
 
     # Number of retry attempts for page processing (excluding the initial attempt)
     MAX_RETRY_ATTEMPTS = 2
@@ -90,21 +90,6 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         self.llm_config = None
         self.document_analysis_result = None
 
-
-    def _is_multimodal(self, config: Dict[str, Any]) -> bool:
-        """
-        Check if an LLM configuration supports multimodal capabilities
-
-        Args:
-            config: LLM configuration dictionary
-
-        Returns:
-            bool: True if the LLM supports multimodal
-        """
-        return (
-            config.get("isMultimodal", False) or
-            config.get("configuration", {}).get("isMultimodal", False)
-        )
     def _create_llm_from_config(self, config: Dict[str, Any]) -> BaseChatModel:
         """Helper to create an LLM instance from a configuration dictionary."""
         self.llm_config = config
@@ -147,7 +132,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
 
             for config in llm_configs:
                 is_default = config.get("isDefault", False)
-                is_multimodal = self._is_multimodal(config)
+                is_multimodal = is_multimodal_llm(config)
 
                 # If we find a default multimodal LLM, use it immediately
                 if is_default and is_multimodal:

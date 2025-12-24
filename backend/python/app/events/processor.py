@@ -34,6 +34,7 @@ from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
+from app.utils.aimodels import is_multimodal_llm
 from app.utils.llm import get_embedding_model_config, get_llm
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -756,11 +757,7 @@ class Processor:
                 try:
                     llm_configs = ai_models.get("llm", [])
                     for llm_config in llm_configs:
-                        is_multimodal = (
-                            llm_config.get("isMultimodal", False) or
-                            llm_config.get("configuration", {}).get("isMultimodal", False)
-                        )
-                        if is_multimodal:
+                        if is_multimodal_llm(llm_config):
                             has_multimodal_llm = True
                             self.logger.info(f"✅ Found multimodal LLM: {llm_config.get('provider')}")
                             break

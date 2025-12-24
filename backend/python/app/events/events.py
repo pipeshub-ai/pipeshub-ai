@@ -388,12 +388,11 @@ class EventProcessor:
 
                 self.logger.info("🔍 Checking if PDF needs OCR processing")
                 try:
-                    temp_doc = fitz.open(stream=file_content, filetype="pdf")
+                    with fitz.open(stream=file_content, filetype="pdf") as temp_doc:
 
-                    # Check if 50% or more pages need OCR
-                    ocr_pages = [OCRStrategy.needs_ocr(page, self.logger) for page in temp_doc]
-                    needs_ocr = sum(ocr_pages) >= len(ocr_pages) * 0.5 if ocr_pages else False
-                    temp_doc.close()
+                        # Check if 50% or more pages need OCR
+                        ocr_pages = [OCRStrategy.needs_ocr(page, self.logger) for page in temp_doc]
+                        needs_ocr = sum(ocr_pages) >= len(ocr_pages) * 0.5 if ocr_pages else False
 
                     self.logger.info(f"📊 OCR requirement: {'YES - Using OCR handler' if needs_ocr else 'NO - Using Docling'}")
                 except Exception as e:
