@@ -436,8 +436,10 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
 
       // Validation: Check if name has changed
       if (trimmedName === currentName) {
-        // Name hasn't changed, no need to call API
-        return { success: true };
+        // Name hasn't changed, return error
+        const errorMsg = 'Cannot rename to the same name';
+        setRenameError(errorMsg);
+        return { success: false, error: errorMsg };
       }
 
       // Validation: Check maximum length (optional, but good practice)

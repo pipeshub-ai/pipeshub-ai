@@ -88,6 +88,36 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
   const [renameLoading, setRenameLoading] = React.useState(false);
   const [deleteLoading, setDeleteLoading] = React.useState(false);
 
+  // Handle rename dialog close - extracted to avoid duplication
+  const handleRenameClose = React.useCallback(() => {
+    if (!renameLoading) {
+      setRenameOpen(false);
+      setRenameValue('');
+      setRenameError(null);
+    }
+  }, [renameLoading, setRenameError]);
+
+  // Handle rename submit - extracted for reuse
+  const handleRenameSubmit = React.useCallback(async () => {
+    if (!connector) return;
+
+    const newName = renameValue.trim();
+    setRenameLoading(true);
+    try {
+      const result = await handleRenameInstance(newName, connector.name || '');
+
+      if (result.success) {
+        // Only close dialog on actual API success
+        handleRenameClose();
+      } else {
+        // Error - show error in field and keep dialog open
+        setRenameError(result.error || 'Failed to rename connector instance');
+      }
+    } finally {
+      setRenameLoading(false);
+    }
+  }, [connector, renameValue, handleRenameInstance, handleRenameClose, setRenameError]);
+
 
   // Loading state with skeleton
   if (loading) {
@@ -487,13 +517,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
       {/* Rename Dialog */}
       <Dialog
         open={renameOpen}
-        onClose={() => {
-          if (!renameLoading) {
-            setRenameOpen(false);
-            setRenameValue('');
-            setRenameError(null);
-          }
-        }}
+        onClose={handleRenameClose}
         maxWidth="sm"
         fullWidth
         BackdropProps={{
@@ -544,13 +568,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
           </Box>
 
           <IconButton
-            onClick={() => {
-              if (!renameLoading) {
-                setRenameOpen(false);
-                setRenameValue('');
-                setRenameError(null);
-              }
-            }}
+            onClick={handleRenameClose}
             size="small"
             sx={{ color: theme.palette.text.secondary }}
             aria-label="close"
@@ -596,12 +614,9 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
               helperText={renameError || 'Enter a new name for this connector instance'}
               disabled={renameLoading}
               onKeyPress={(e) => {
-                if (e.key === 'Enter' && !renameLoading && renameValue.trim() && renameValue.trim() !== connector?.name) {
+                if (e.key === 'Enter' && !renameLoading) {
                   e.preventDefault();
-                  const saveButton = e.currentTarget.closest('.MuiDialog-root')?.querySelector('button[type="button"]:last-child') as HTMLButtonElement;
-                  if (saveButton && !saveButton.disabled) {
-                    saveButton.click();
-                  }
+                  handleRenameSubmit();
                 }
               }}
               sx={{
@@ -632,13 +647,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
         >
           <Button
             variant="text"
-            onClick={() => {
-              if (!renameLoading) {
-                setRenameOpen(false);
-                setRenameValue('');
-                setRenameError(null);
-              }
-            }}
+            onClick={handleRenameClose}
             disabled={renameLoading}
             sx={{
               color: theme.palette.text.secondary,
@@ -652,36 +661,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
           </Button>
           <Button
             variant="contained"
-            onClick={async () => {
-              if (!connector) return;
-
-              const currentName = connector.name || '';
-              const newName = renameValue.trim();
-
-              // Check if name has changed before calling API
-              if (newName === currentName) {
-                // Name hasn't changed, no need to call API or close dialog
-                setRenameError("Cannot rename to the same name");
-                return;
-              }
-
-              setRenameLoading(true);
-              try {
-                const result = await handleRenameInstance(newName, currentName);
-
-                if (result.success) {
-                  // Only close dialog on actual API success
-                  setRenameOpen(false);
-                  setRenameValue('');
-                  setRenameError(null);
-                } else {
-                  // Error - show error in field and keep dialog open
-                  setRenameError(result.error || 'Failed to rename connector instance');
-                }
-              } finally {
-                setRenameLoading(false);
-              }
-            }}
+            onClick={handleRenameSubmit}
             disabled={renameLoading || !renameValue.trim()}
             sx={{
               bgcolor: theme.palette.primary.main,
@@ -782,33 +762,114 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
           }}
         >
           <Box sx={{ mb: 3 }}>
-            <Typography
-              variant="body1"
-              color="text.primary"
-              sx={{
-                lineHeight: 1.6,
-                '& strong': {
-                  fontWeight: 600,
-                  color: theme.palette.text.primary,
-                },
-              }}
-            >
-              Are you sure you want to delete <strong>&quot;{connector?.name}&quot;</strong>? This action cannot be undone.
-            </Typography>
+            {connector?.isActive ? (
+              <Stack spacing={2}>
+                <Alert
+                  severity="warning"
+                  icon={<Iconify icon={warningIcon} width={20} height={20} />}
+                  sx={{
+                    borderRadius: 1.25,
+                    bgcolor: isDark
+                      ? alpha(theme.palette.warning.main, 0.15)
+                      : alpha(theme.palette.warning.main, 0.08),
+                    border: `1px solid ${alpha(theme.palette.warning.main, isDark ? 0.3 : 0.2)}`,
+                    '& .MuiAlert-icon': {
+                      color: theme.palette.warning.main,
+                      fontSize: '1.25rem',
+                    },
+                  }}
+                >
+                  <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.75, fontSize: '0.875rem' }}>
+                    Sync Must Be Disabled First
+                  </Typography>
+                  <Typography variant="body2" sx={{ fontSize: '0.8125rem', lineHeight: 1.5, mb: 1.5 }}>
+                    The connector <strong>&quot;{connector?.name}&quot;</strong> has sync enabled. Please disable sync before deleting this connector instance.
+                  </Typography>
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    onClick={async () => {
+                      try {
+                        await handleToggleConnector(false, 'sync');
+                        // Dialog will automatically update when connector state changes
+                        // User can then proceed with deletion
+                      } catch (err) {
+                        console.error('Error disabling sync:', err);
+                      }
+                    }}
+                    sx={{
+                      mt: 1,
+                      textTransform: 'none',
+                      borderColor: theme.palette.warning.main,
+                      color: theme.palette.warning.main,
+                      '&:hover': {
+                        borderColor: theme.palette.warning.dark,
+                        bgcolor: alpha(theme.palette.warning.main, 0.08),
+                      },
+                    }}
+                  >
+                    Disable Sync Now
+                  </Button>
+                </Alert>
 
-            <Box
-              sx={{
-                mt: 2,
-                p: 2,
-                borderRadius: 1,
-                bgcolor: alpha(theme.palette.error.main, 0.08),
-                border: `1px solid ${alpha(theme.palette.error.main, 0.2)}`,
-              }}
-            >
-              <Typography variant="body2" color="error.main" sx={{ fontWeight: 500 }}>
-                ⚠️ This action cannot be undone
-              </Typography>
-            </Box>
+                <Typography
+                  variant="body1"
+                  color="text.primary"
+                  sx={{
+                    lineHeight: 1.6,
+                    '& strong': {
+                      fontWeight: 600,
+                      color: theme.palette.text.primary,
+                    },
+                  }}
+                >
+                  Once sync is disabled, you can delete <strong>&quot;{connector?.name}&quot;</strong>. This action cannot be undone.
+                </Typography>
+
+                <Box
+                  sx={{
+                    p: 2,
+                    borderRadius: 1,
+                    bgcolor: alpha(theme.palette.error.main, 0.08),
+                    border: `1px solid ${alpha(theme.palette.error.main, 0.2)}`,
+                  }}
+                >
+                  <Typography variant="body2" color="error.main" sx={{ fontWeight: 500 }}>
+                    ⚠️ This action cannot be undone
+                  </Typography>
+                </Box>
+              </Stack>
+            ) : (
+              <>
+                <Typography
+                  variant="body1"
+                  color="text.primary"
+                  sx={{
+                    lineHeight: 1.6,
+                    '& strong': {
+                      fontWeight: 600,
+                      color: theme.palette.text.primary,
+                    },
+                  }}
+                >
+                  Are you sure you want to delete <strong>&quot;{connector?.name}&quot;</strong>? This action cannot be undone.
+                </Typography>
+
+                <Box
+                  sx={{
+                    mt: 2,
+                    p: 2,
+                    borderRadius: 1,
+                    bgcolor: alpha(theme.palette.error.main, 0.08),
+                    border: `1px solid ${alpha(theme.palette.error.main, 0.2)}`,
+                  }}
+                >
+                  <Typography variant="body2" color="error.main" sx={{ fontWeight: 500 }}>
+                    ⚠️ This action cannot be undone
+                  </Typography>
+                </Box>
+              </>
+            )}
           </Box>
         </DialogContent>
 
@@ -853,7 +914,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
                 setDeleteLoading(false);
               }
             }}
-            disabled={deleteLoading}
+            disabled={deleteLoading || connector?.isActive}
             sx={{
               bgcolor: theme.palette.error.main,
               boxShadow: 'none',
