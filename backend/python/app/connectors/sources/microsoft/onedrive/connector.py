@@ -15,7 +15,7 @@ from msgraph.generated.models.group import Group
 from msgraph.generated.models.subscription import Subscription
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+from app.config.constants.arangodb import MimeTypes, OriginTypes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -30,6 +30,7 @@ from app.connectors.core.base.sync_point.sync_point import (
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     ConnectorBuilder,
+    ConnectorScope,
     DocumentationLink,
 )
 from app.connectors.sources.microsoft.common.apps import OneDriveApp
@@ -63,6 +64,7 @@ class OneDriveCredentials:
     .with_auth_type("OAUTH_ADMIN_CONSENT")\
     .with_description("Sync files and folders from OneDrive")\
     .with_categories(["Storage"])\
+    .with_scopes([ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/onedrive.svg")
         .add_documentation_link(DocumentationLink(
@@ -116,16 +118,18 @@ class OneDriveCredentials:
         .add_conditional_display("redirectUri", "hasAdminConsent", "equals", False)
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class OneDriveConnector(BaseConnector):
     def __init__(self, logger: Logger, data_entities_processor: DataSourceEntitiesProcessor,
-        data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
-        super().__init__(OneDriveApp(), logger, data_entities_processor, data_store_provider, config_service)
+        data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> None:
+        super().__init__(OneDriveApp(connector_id), logger, data_entities_processor, data_store_provider, config_service, connector_id)
 
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
             return SyncPoint(
-                connector_name=self.connector_name,
+                connector_id=self.connector_id,
                 org_id=self.data_entities_processor.org_id,
                 sync_data_point_type=sync_data_point_type,
                 data_store_provider=self.data_store_provider
@@ -134,6 +138,7 @@ class OneDriveConnector(BaseConnector):
         self.drive_delta_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
         self.user_sync_point = _create_sync_point(SyncDataPointType.USERS)
         self.user_group_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
+        self.connector_id = connector_id
 
         # Batch processing configuration
         self.batch_size = 100
@@ -142,7 +147,7 @@ class OneDriveConnector(BaseConnector):
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
 
     async def init(self) -> bool:
-        config = await self.config_service.get_config("/services/connectors/onedrive/config") or await self.config_service.get_config(f"/services/connectors/onedrive/config/{self.data_entities_processor.org_id}")
+        config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
         if not config:
             self.logger.error("OneDrive config not found")
             return False
@@ -186,7 +191,7 @@ class OneDriveConnector(BaseConnector):
             raise ValueError(f"Failed to initialize OneDrive credential: {token_error}")
 
         self.client = GraphServiceClient(self.credential, scopes=["https://graph.microsoft.com/.default"])
-        self.msgraph_client = MSGraphClient(self.connector_name, self.client, self.logger)
+        self.msgraph_client = MSGraphClient(self.connector_name, self.connector_id, self.client, self.logger)
         return True
 
     async def _process_delta_item(self, item: DriveItem) -> Optional[RecordUpdate]:
@@ -217,7 +222,7 @@ class OneDriveConnector(BaseConnector):
             # Get existing record if any
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
-                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
                     external_id=item.id
                 )
                 if existing_record:
@@ -272,6 +277,7 @@ class OneDriveConnector(BaseConnector):
                 version=0 if is_new else existing_record.version + 1,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=self.connector_name,
+                connector_id=self.connector_id,
                 created_at=int(item.created_date_time.timestamp() * 1000),
                 updated_at=int(item.last_modified_date_time.timestamp() * 1000),
                 source_created_at=int(item.created_date_time.timestamp() * 1000),
@@ -480,7 +486,7 @@ class OneDriveConnector(BaseConnector):
                     # Update the child's permissions in database
                     async with self.data_store_provider.transaction() as tx_store:
                         existing_child_record = await tx_store.get_record_by_external_id(
-                            connector_name=self.connector_name,
+                            connector_id=self.connector_id,
                             external_id=child.id
                         )
 
@@ -609,7 +615,7 @@ class OneDriveConnector(BaseConnector):
                             await self.data_entities_processor.on_user_group_member_removed(
                                 external_group_id=group.id,
                                 user_email=email,
-                                connector_name=self.connector_name
+                                connector_id=self.connector_id
                             )
                         else:
                             self.logger.info(f"    -> [ACTION] 👤✨ ADDING member: {email} ({user_id}) to group {group.id}")
@@ -619,8 +625,8 @@ class OneDriveConnector(BaseConnector):
                     # More data available, update URL for next loop iteration
                     url = result.get('next_link')
 
-                    # OPTIONAL: Save intermediate 'nextLink' here if you want resumability during a very long initial sync.
-                    # await self.user_group_sync_point.update_sync_point(sync_point_key, {"nextLink": url, "deltaLink": None})
+                    # Save intermediate 'nextLink' for resumability during a very long initial sync.
+                    await self.user_group_sync_point.update_sync_point(sync_point_key, {"nextLink": url, "deltaLink": None})
 
                 elif result.get('delta_link'):
                     # End of current data stream. Save the delta_link for the NEXT run.
@@ -653,6 +659,7 @@ class OneDriveConnector(BaseConnector):
             user_group = AppUserGroup(
                 source_user_group_id=group.id,
                 app_name=self.connector_name,
+                connector_id=self.connector_id,
                 name=group.display_name,
                 description=group.description,
                 source_created_at=group.created_date_time.timestamp() if group.created_date_time else get_epoch_timestamp_in_ms(),
@@ -662,11 +669,12 @@ class OneDriveConnector(BaseConnector):
             app_users = []
             for member in members:
                 app_user = AppUser(
+                    app_name=self.connector_name,
                     source_user_id=member.id,
                     email=member.mail or member.user_principal_name,
                     full_name=member.display_name,
                     source_created_at=member.created_date_time.timestamp() if member.created_date_time else get_epoch_timestamp_in_ms(),
-                    app_name=self.connector_name,
+                    connector_id=self.connector_id,
                 )
                 app_users.append(app_user)
 
@@ -692,7 +700,7 @@ class OneDriveConnector(BaseConnector):
             # Call the data entities processor to handle the deletion logic
             await self.data_entities_processor.on_user_group_deleted(
                 external_group_id=group_id,
-                connector_name=self.connector_name
+                connector_id=self.connector_id
             )
 
             self.logger.info(f"Successfully processed group deletion for: {group_id}")
@@ -865,7 +873,7 @@ class OneDriveConnector(BaseConnector):
             record = None
             async with self.data_store_provider.transaction() as tx_store:
                 record = await tx_store.get_record_by_external_id(
-                connector_name=Connectors.ONEDRIVE.value,
+                connector_id=self.connector_id,
                 external_id=record_id
             )
 
@@ -1014,7 +1022,7 @@ class OneDriveConnector(BaseConnector):
                 self.credential,
                 scopes=["https://graph.microsoft.com/.default"]
             )
-            self.msgraph_client = MSGraphClient(self.connector_name, self.client, self.logger)
+            self.msgraph_client = MSGraphClient(self.connector_name, self.connector_id, self.client, self.logger)
 
             self.logger.info("✅ Credential successfully reinitialized")
 
@@ -1122,11 +1130,11 @@ class OneDriveConnector(BaseConnector):
 
     @classmethod
     async def create_connector(cls, logger: Logger,
-                               data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> BaseConnector:
+                               data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> BaseConnector:
         data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
         await data_entities_processor.initialize()
 
-        return OneDriveConnector(logger, data_entities_processor, data_store_provider, config_service)
+        return OneDriveConnector(logger, data_entities_processor, data_store_provider, config_service, connector_id)
 
 
 # Additional helper class for managing OneDrive subscriptions

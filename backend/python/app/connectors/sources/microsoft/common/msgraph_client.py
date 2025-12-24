@@ -126,7 +126,7 @@ class GroupDeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
         writer.write_collection_of_object_values("value", self.value)
 
 class MSGraphClient:
-    def __init__(self, app_name: str, client: GraphServiceClient, logger: Logger, max_requests_per_second: int = 10) -> None:
+    def __init__(self, app_name: str, connector_id: str, client: GraphServiceClient, logger: Logger, max_requests_per_second: int = 10) -> None:
         """
         Initializes the OneDriveSync instance with a rate limiter.
 
@@ -139,6 +139,7 @@ class MSGraphClient:
         self.app_name = app_name
         self.logger = logger
         self.rate_limiter = AsyncLimiter(max_requests_per_second, 1)
+        self.connector_id = connector_id
 
     async def get_all_user_groups(self) -> List[dict]:
         """
@@ -149,15 +150,19 @@ class MSGraphClient:
         """
         try:
             groups = []
+
             async with self.rate_limiter:
                 result = await self.client.groups.get()
 
-            groups.extend(result.value)
-            while result.odata_next_link:
-                async with self.rate_limiter:
-                    result = await self.client.groups.get_next_page(result.odata_next_link)
-                groups.extend(result.value)
+            while result:
+                if result.value:
+                    groups.extend(result.value)
 
+                if hasattr(result, 'odata_next_link') and result.odata_next_link:
+                    async with self.rate_limiter:
+                        result = await self.client.groups.with_url(result.odata_next_link).get()
+                else:
+                    break
 
             self.logger.info(f"Retrieved {len(groups)} groups.")
             return groups
@@ -183,11 +188,15 @@ class MSGraphClient:
             async with self.rate_limiter:
                 result = await self.client.groups.by_group_id(group_id).members.get()
 
-            members.extend(result.value)
-            while result.odata_next_link:
-                async with self.rate_limiter:
-                    result = await self.client.groups.by_group_id(group_id).members.get_next_page(result.odata_next_link)
-                members.extend(result.value)
+            while result:
+                if result.value:
+                    members.extend(result.value)
+
+                if hasattr(result, 'odata_next_link') and result.odata_next_link:
+                    async with self.rate_limiter:
+                        result = await self.client.groups.by_group_id(group_id).members.with_url(result.odata_next_link).get()
+                else:
+                    break
 
             return members
 
@@ -211,27 +220,30 @@ class MSGraphClient:
                             'mail', 'jobTitle', 'department', 'surname']
                 )
 
-                # Create request configuration
                 request_configuration = RequestConfiguration(
                     query_parameters=query_params
                 )
 
                 result = await self.client.users.get(request_configuration)
-                users.extend(result.value)
 
-                while result.odata_next_link:
-                    async with self.rate_limiter:
-                        result = await self.client.users.get_next_page(result.odata_next_link)
+            while result:
+                if result.value:
                     users.extend(result.value)
-                self.logger.info(f"Retrieved {len(users)} users.")
+
+                if hasattr(result, 'odata_next_link') and result.odata_next_link:
+                    async with self.rate_limiter:
+                        result = await self.client.users.with_url(result.odata_next_link).get()
+                else:
+                    break
+
+            self.logger.info(f"Retrieved {len(users)} users.")
 
             user_list: List[AppUser] = []
             for user in users:
                 user_list.append(AppUser(
                     app_name=self.app_name,
+                    connector_id=self.connector_id,
                     source_user_id=user.id,
-                    first_name=user.display_name,
-                    last_name=user.surname,
                     full_name=user.display_name,
                     email=user.mail or user.user_principal_name,
                     is_active=user.account_enabled,
@@ -426,14 +438,16 @@ class MSGraphClient:
             async with self.rate_limiter:
                 result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).permissions.get()
 
-            if result and result.value:
-                permissions.extend(result.value)
-
-            while result and hasattr(result, 'odata_next_link') and result.odata_next_link:
-                async with self.rate_limiter:
-                    result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).permissions.get_next_page(result.odata_next_link)
-                if result and result.value:
+            while result:
+                if result.value:
                     permissions.extend(result.value)
+
+                if hasattr(result, 'odata_next_link') and result.odata_next_link:
+                    async with self.rate_limiter:
+                        # Use with_url to handle pagination correctly
+                        result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).permissions.with_url(result.odata_next_link).get()
+                else:
+                    break
 
             self.logger.info(f"Retrieved {len(permissions)} permissions for file ID {item_id}.")
             return permissions
@@ -460,15 +474,15 @@ class MSGraphClient:
             async with self.rate_limiter:
                 result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(folder_id).children.get()
 
-            if result and result.value:
-                children.extend(result.value)
-
-            # Handle pagination
-            while result and hasattr(result, 'odata_next_link') and result.odata_next_link:
-                async with self.rate_limiter:
-                    result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(folder_id).children.with_url(result.odata_next_link).get()
-                if result and result.value:
+            while result:
+                if result.value:
                     children.extend(result.value)
+
+                if hasattr(result, 'odata_next_link') and result.odata_next_link:
+                    async with self.rate_limiter:
+                        result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(folder_id).children.with_url(result.odata_next_link).get()
+                else:
+                    break
 
             self.logger.info(f"Retrieved {len(children)} children for folder {folder_id}")
             return children

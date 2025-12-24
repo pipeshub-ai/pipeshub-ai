@@ -305,24 +305,21 @@ class Arango(Transformer):
                     "🚀 Metadata saved successfully for document"
                 )
 
-                # Update record with extraction status and timestamp
-                update_dict = {
+                # Update extraction status for the record in ArangoDB
+                status_doc = {
+                    "_key": record_id,
                     "extractionStatus": "COMPLETED",
                     "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
                 }
                 
-                # Set isVLMOcrProcessed flag if it was marked
                 if is_vlm_ocr_processed:
-                    update_dict["isVLMOcrProcessed"] = True
-                
-                record.update(update_dict)
-                docs = [record]
+                    status_doc["isVLMOcrProcessed"] = True
 
                 self.logger.info(
-                    "🎯 Upserting domain metadata for document"
+                    "🎯 Upserting extraction status metadata for document"
                 )
                 await tx_store.batch_upsert_nodes(
-                    docs, CollectionNames.RECORDS.value
+                    [status_doc], CollectionNames.RECORDS.value
                 )
                 
 

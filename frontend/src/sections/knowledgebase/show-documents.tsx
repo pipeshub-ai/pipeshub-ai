@@ -20,6 +20,8 @@ import xlsIcon from '@iconify-icons/vscode-icons/file-type-excel';
 import docIcon from '@iconify-icons/vscode-icons/file-type-word';
 import pptIcon from '@iconify-icons/vscode-icons/file-type-powerpoint';
 import txtIcon from '@iconify-icons/vscode-icons/file-type-text';
+import websiteIcon from '@iconify-icons/mdi/web';
+import ticketIcon from '@iconify-icons/mdi/ticket-outline';
 
 import {
   Box,
@@ -68,6 +70,12 @@ const getFileIcon = (extension: string, recordType?: string) => {
   if (recordType === 'MAIL') {
     return emailIcon;
   }
+  if (recordType === 'WEBPAGE') {
+    return websiteIcon;
+  }
+  if (recordType === 'TICKET') {
+    return ticketIcon;
+  }
 
   const ext = extension?.replace('.', '').toLowerCase();
   switch (ext) {
@@ -114,7 +122,7 @@ const getFileIcon = (extension: string, recordType?: string) => {
 
 const getExtensionColor = (extension: string, recordType?: string) => {
   // Handle mail records
-  if (recordType === 'MAIL') {
+  if (recordType === 'MAIL' || recordType === 'WEBPAGE') {
     return '#1976d2'; // Blue for emails
   }
 
@@ -143,11 +151,6 @@ const getExtensionColor = (extension: string, recordType?: string) => {
 };
 
 function getDocumentType(extension: string, recordType?: string) {
-  // Handle mail records - treat as HTML for rendering
-  if (recordType === 'MAIL') {
-    return 'html';
-  }
-
   if (extension === 'pdf') return 'pdf';
   if (['xlsx', 'xls', 'csv'].includes(extension)) return 'excel';
   if (extension === 'docx') return 'docx';
@@ -476,11 +479,12 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
   );
 
   // Fixed early return - check for either fileRecord OR mailRecord
-  if (!record?.fileRecord && !record?.mailRecord) return null;
+  // if (!record?.fileRecord && !record?.mailRecord) return null;
 
   const {
     recordName,
     externalRecordId,
+    createdAtTimestamp,
     sourceCreatedAtTimestamp,
     fileRecord,
     mailRecord,
@@ -805,12 +809,16 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
             style={{ color: getExtensionColor(extension, recordTypeForDisplay) }}
           />
           <Box sx={{ flexGrow: 1 }}>
-            <Typography variant="h6" gutterBottom>
-              {recordName}
-            </Typography>
+          <Tooltip title={recordName} arrow placement="top">
+              <Box>
+                <Typography variant="h6" gutterBottom>
+                  {recordName.length > 60 ? `${recordName.substring(0, 60)}...` : recordName}
+                </Typography>
+              </Box>
+            </Tooltip>
             <Typography variant="body2" color="text.secondary">
               {recordTypeForDisplay === 'MAIL' ? 'Email received' : 'Added'} on{' '}
-              {dayjs(sourceCreatedAtTimestamp).format('MMM DD, YYYY')}
+              {dayjs(sourceCreatedAtTimestamp || createdAtTimestamp).format('MMM DD, YYYY')}
             </Typography>
             {/* Show additional info for email records */}
             {recordTypeForDisplay === 'MAIL' && mailRecord && (

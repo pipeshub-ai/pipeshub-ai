@@ -15,12 +15,12 @@ export type CustomSchedulePayload = {
 };
 
 export class CrawlingManagerApi {
-  static async schedule(connector: string, payload: CustomSchedulePayload): Promise<void> {
-    await axios.post(`${BASE_URL}/${connector}/schedule`, payload);
+  static async schedule(connector: string, connectorId: string, payload: CustomSchedulePayload): Promise<void> {
+    await axios.post(`${BASE_URL}/${connector}/${connectorId}/schedule`, payload);
   }
 
-  static async remove(connector: string): Promise<void> {
-    await axios.delete(`${BASE_URL}/${connector}/schedule`);
+  static async remove(connector: string, connectorId: string): Promise<void> {
+    await axios.delete(`${BASE_URL}/${connector}/${connectorId}/remove`);
   }
 }
 

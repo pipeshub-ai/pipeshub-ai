@@ -50,6 +50,7 @@ from app.connectors.core.base.sync_point.sync_point import (
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     ConnectorBuilder,
+    ConnectorScope,
     DocumentationLink,
 )
 from app.connectors.sources.microsoft.common.apps import SharePointOnlineApp
@@ -120,6 +121,7 @@ class SiteMetadata:
     .with_auth_type("OAUTH_ADMIN_CONSENT")\
     .with_description("Sync documents and lists from SharePoint Online")\
     .with_categories(["Storage", "Documentation"])\
+    .with_scopes([ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/sharepoint.svg")
         .add_documentation_link(DocumentationLink(
@@ -172,6 +174,8 @@ class SiteMetadata:
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
     )\
     .build_decorator()
 class SharePointConnector(BaseConnector):
@@ -187,12 +191,13 @@ class SharePointConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
+        connector_id: str
     ) -> None:
-        super().__init__(SharePointOnlineApp(), logger, data_entities_processor, data_store_provider, config_service)
+        super().__init__(SharePointOnlineApp(connector_id), logger, data_entities_processor, data_store_provider, config_service, connector_id)
 
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
             return SyncPoint(
-                connector_name=self.connector_name,
+                connector_id=self.connector_id,
                 org_id=self.data_entities_processor.org_id,
                 sync_data_point_type=sync_data_point_type,
                 data_store_provider=self.data_store_provider
@@ -204,6 +209,7 @@ class SharePointConnector(BaseConnector):
         self.page_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
         self.user_sync_point = _create_sync_point(SyncDataPointType.USERS)
         self.user_group_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
+        self.connector_id = connector_id
 
         self.filters = {"exclude_onedrive_sites": True, "exclude_pages": True, "exclude_lists": True, "exclude_document_libraries": False}
         # Batch processing configuration
@@ -227,13 +233,8 @@ class SharePointConnector(BaseConnector):
             'errors_encountered': 0
         }
 
-    async def init(self) -> None:
-        """Initialize SharePoint connector with certificate or client secret authentication."""
-
-        # Load configuration from service
-        config = await self.config_service.get_config("/services/connectors/sharepointonline/config") or \
-                            await self.config_service.get_config(f"/services/connectors/sharepointonline/config/{self.data_entities_processor.org_id}")
-
+    async def init(self) -> bool:
+        config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
         if not config:
             self.logger.error("❌ SharePoint Online credentials not found")
             raise ValueError("SharePoint Online credentials not found")
@@ -409,7 +410,8 @@ class SharePointConnector(BaseConnector):
             self.credential,
             scopes=["https://graph.microsoft.com/.default"]
         )
-        self.msgraph_client = MSGraphClient(self.connector_name, self.client, self.logger)
+        self.msgraph_client = MSGraphClient(self.connector_name, self.connector_id, self.client, self.logger)
+        return True
 
 
     def _construct_site_url(self, site_id: str) -> str:
@@ -921,7 +923,7 @@ class SharePointConnector(BaseConnector):
             # Get existing record for change detection
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
-                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
                     external_id=item_id
                 )
 
@@ -1048,6 +1050,7 @@ class SharePointConnector(BaseConnector):
                 version=0 if not existing_record else existing_record.version + 1,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=self.connector_name,
+                connector_id=self.connector_id,
                 created_at=created_at,
                 updated_at=updated_at,
                 source_created_at=created_at,
@@ -1212,6 +1215,7 @@ class SharePointConnector(BaseConnector):
                 version=0,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=self.connector_name,
+                connector_id=self.connector_id,
                 created_at=created_at,
                 updated_at=updated_at,
                 source_created_at=created_at,
@@ -1364,6 +1368,7 @@ class SharePointConnector(BaseConnector):
                 version=0,
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
+                connector_id=self.connector_id,
                 created_at=created_at,
                 updated_at=updated_at,
                 source_created_at=created_at,
@@ -1435,7 +1440,7 @@ class SharePointConnector(BaseConnector):
                     # Get existing record for change detection
                     async with self.data_store_provider.transaction() as tx_store:
                         existing_record = await tx_store.get_record_by_external_id(
-                            connector_name=self.connector_name,
+                            connector_id=self.connector_id,
                             external_id=page_id
                         )
 
@@ -1513,6 +1518,7 @@ class SharePointConnector(BaseConnector):
                 version=0 if not existing_record else existing_record.version + 1,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=self.connector_name,
+                connector_id=self.connector_id,
                 created_at=created_at,
                 updated_at=updated_at,
                 source_created_at=created_at,
@@ -1556,6 +1562,7 @@ class SharePointConnector(BaseConnector):
                 parent_external_group_id=site_id,
                 parent_record_group_id=internal_site_record_group_id,
                 connector_name=self.connector_name,
+                connector_id=self.connector_id,
                 web_url=getattr(drive, 'web_url', None),
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
@@ -2147,6 +2154,7 @@ class SharePointConnector(BaseConnector):
                                             id=str(uuid.uuid4()),
                                             source_user_group_id=unique_source_id,
                                             app_name=self.connector_name,
+                                            connector_id=self.connector_id,
                                             name=group_title,
                                             description=description if description != 'N/A' else None,
                                         )
@@ -2189,7 +2197,8 @@ class SharePointConnector(BaseConnector):
                                                                         source_user_id=exp_u['id'],
                                                                         email=exp_u['email'],
                                                                         full_name=exp_u['name'],
-                                                                        app_name=self.connector_name
+                                                                        app_name=self.connector_name,
+                                                                        connector_id=self.connector_id,
                                                                     ))
 
                                                         # CASE B: AD Security Group (PrincipalType == 4)
@@ -2214,7 +2223,8 @@ class SharePointConnector(BaseConnector):
                                                                         source_user_id=exp_u['id'],
                                                                         email=exp_u['email'],
                                                                         full_name=exp_u['name'],
-                                                                        app_name=self.connector_name
+                                                                        app_name=self.connector_name,
+                                                                        connector_id=self.connector_id,
                                                                     ))
 
                                                         # CASE C: Standard Individual User
@@ -2229,6 +2239,7 @@ class SharePointConnector(BaseConnector):
                                                                     email=user_email or user.get('UserPrincipalName'),
                                                                     full_name=user_title if user_title != 'N/A' else None,
                                                                     app_name=self.connector_name,
+                                                                    connector_id=self.connector_id,
                                                                 ))
 
                                                 else:
@@ -2333,7 +2344,7 @@ class SharePointConnector(BaseConnector):
                                 await self.data_entities_processor.on_user_group_member_removed(
                                     external_group_id=group.id,
                                     user_email=email,
-                                    connector_name=self.connector_name
+                                    connector_id=self.connector_id,
                                 )
                             else:
                                 self.logger.info(f"    -> [ACTION] 👤✨ ADDING member: {email} ({user_id}) to group {group.id}")
@@ -2379,6 +2390,7 @@ class SharePointConnector(BaseConnector):
             user_group = AppUserGroup(
                 source_user_group_id=group.id,
                 app_name=self.connector_name,
+                connector_id=self.connector_id,
                 name=group.display_name,
                 description=group.description,
                 source_created_at=group.created_date_time.timestamp() if group.created_date_time else get_epoch_timestamp_in_ms(),
@@ -2393,6 +2405,7 @@ class SharePointConnector(BaseConnector):
                     full_name=member.display_name,
                     source_created_at=member.created_date_time.timestamp() if member.created_date_time else get_epoch_timestamp_in_ms(),
                     app_name=self.connector_name,
+                    connector_id=self.connector_id,
                 )
                 app_users.append(app_user)
 
@@ -2418,7 +2431,7 @@ class SharePointConnector(BaseConnector):
             # Call the data entities processor to handle the deletion logic
             await self.data_entities_processor.on_user_group_deleted(
                 external_group_id=group_id,
-                connector_name=self.connector_name
+                connector_id=self.connector_id,
             )
 
             self.logger.info(f"Successfully processed group deletion for: {group_id}")
@@ -2514,7 +2527,7 @@ class SharePointConnector(BaseConnector):
                 self.credential,
                 scopes=["https://graph.microsoft.com/.default"]
             )
-            self.msgraph_client = MSGraphClient(self.connector_name, self.client, self.logger)
+            self.msgraph_client = MSGraphClient(self.connector_name, self.connector_id, self.client, self.logger)
 
             self.logger.info("✅ Credential successfully reinitialized")
 
@@ -2578,6 +2591,7 @@ class SharePointConnector(BaseConnector):
                     description=getattr(site, 'description', None),
                     external_group_id=site_id,
                     connector_name=self.connector_name,
+                    connector_id=self.connector_id,
                     web_url=site.web_url,
                     group_type=RecordGroupType.SHAREPOINT_SITE,
                     source_created_at=source_created_at,
@@ -2944,11 +2958,11 @@ class SharePointConnector(BaseConnector):
 
     @classmethod
     async def create_connector(cls, logger: Logger,
-        data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> BaseConnector:
+        data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> BaseConnector:
         data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
         await data_entities_processor.initialize()
 
-        return SharePointConnector(logger, data_entities_processor, data_store_provider, config_service)
+        return SharePointConnector(logger, data_entities_processor, data_store_provider, config_service, connector_id)
 
 # Subscription manager for webhook handling
 class SharePointSubscriptionManager:

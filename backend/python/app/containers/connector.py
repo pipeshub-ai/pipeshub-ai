@@ -57,6 +57,7 @@ from app.containers.utils.utils import ContainerUtils
 from app.core.celery_app import CeleryApp
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
 from app.health.health import Health
+from app.migrations.connector_migration_service import ConnectorMigrationService
 from app.migrations.permission_edge_migration import (
     run_permissions_edge_migration,
     run_permissions_to_kb_migration,
@@ -68,17 +69,17 @@ from app.modules.parsers.google_files.parser_user_service import ParserUserServi
 from app.utils.logger import create_logger
 
 
-async def initialize_individual_google_account_services_fn(org_id, container, app_names: list[str]) -> None:
+async def initialize_individual_google_account_services_fn(org_id, container, connector_id: str, app_names: list[str]) -> None:
     """Initialize services for an individual account type."""
     try:
         logger = container.logger()
         arango_service = await container.arango_service()
 
         if "drive" in app_names:
-            await initialize_individual_drive_account_services_fn(org_id, container)
+            await initialize_individual_drive_account_services_fn(org_id, container,connector_id)
 
         if "gmail" in app_names:
-            await initialize_individual_gmail_account_services_fn(org_id, container)
+            await initialize_individual_gmail_account_services_fn(org_id, container,connector_id)
 
         container.parser_user_service.override(
             providers.Singleton(
@@ -87,6 +88,7 @@ async def initialize_individual_google_account_services_fn(org_id, container, ap
                 config_service=container.config_service,
                 rate_limiter=container.rate_limiter,
                 google_token_handler=await container.google_token_handler(),
+                connector_id=connector_id,
             )
         )
 
@@ -98,6 +100,7 @@ async def initialize_individual_google_account_services_fn(org_id, container, ap
                 GoogleDocsParser,
                 logger=logger,
                 user_service=container.parser_user_service(),
+                connector_id=connector_id,
             )
         )
         google_docs_parser = container.google_docs_parser()
@@ -108,6 +111,7 @@ async def initialize_individual_google_account_services_fn(org_id, container, ap
                 GoogleSheetsParser,
                 logger=logger,
                 user_service=container.parser_user_service(),
+                connector_id=connector_id,
             )
         )
         google_sheets_parser = container.google_sheets_parser()
@@ -118,6 +122,7 @@ async def initialize_individual_google_account_services_fn(org_id, container, ap
                 GoogleSlidesParser,
                 logger=logger,
                 user_service=container.parser_user_service(),
+                connector_id=connector_id,
             )
         )
         google_slides_parser = container.google_slides_parser()
@@ -128,10 +133,7 @@ async def initialize_individual_google_account_services_fn(org_id, container, ap
         for app in org_apps:
             if app["appGroup"].replace(" ", "").lower() == AppGroups.GOOGLE_WORKSPACE.value.replace(" ", "").lower():
                 logger.info("Refreshing Google Workspace user credentials")
-                if "drive" == app["name"].lower() and "drive" in app_names:
-                    asyncio.create_task(refresh_google_workspace_user_credentials(org_id, arango_service,logger, container,app_name="drive"))
-                elif "gmail" == app["name"].lower() and "gmail" in app_names:
-                    asyncio.create_task(refresh_google_workspace_user_credentials(org_id, arango_service,logger, container,app_name="gmail"))
+                asyncio.create_task(refresh_google_workspace_user_credentials(org_id, arango_service,logger, container,connector_id=connector_id))
                 break
 
     except Exception as e:
@@ -152,7 +154,7 @@ async def initialize_individual_google_account_services_fn(org_id, container, ap
 
     logger.info("✅ Successfully initialized services for individual account")
 
-async def initialize_individual_drive_account_services_fn(org_id, container) -> None:
+async def initialize_individual_drive_account_services_fn(org_id, container,connector_id: str) -> None:
     """Initialize services for an drive individual account type."""
     try:
         logger = container.logger()
@@ -166,6 +168,7 @@ async def initialize_individual_drive_account_services_fn(org_id, container) -> 
                 config_service=container.config_service,
                 rate_limiter=container.rate_limiter,
                 google_token_handler=await container.google_token_handler(),
+                connector_id=connector_id,
             )
         )
         drive_service = container.drive_service()
@@ -180,6 +183,7 @@ async def initialize_individual_drive_account_services_fn(org_id, container) -> 
                 drive_user_service=container.drive_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.drive_change_handler(),
+                connector_id=connector_id,
             )
         )
         drive_webhook_handler = container.drive_webhook_handler()
@@ -196,6 +200,7 @@ async def initialize_individual_drive_account_services_fn(org_id, container) -> 
                 change_handler=await container.drive_change_handler(),
                 kafka_service=container.kafka_service,
                 celery_app=container.celery_app,
+                connector_id=connector_id,
             )
         )
         drive_sync_service = container.drive_sync_service()
@@ -212,14 +217,14 @@ async def initialize_individual_drive_account_services_fn(org_id, container) -> 
         if not hasattr(container, 'sync_tasks_registry'):
             container.sync_tasks_registry = {}
 
-        container.sync_tasks_registry['drive'] = drive_sync_task
+        container.sync_tasks_registry[connector_id] = drive_sync_task
 
         # Pre-fetch service account credentials for this org
         org_apps = await arango_service.get_org_apps(org_id)
         for app in org_apps:
             if app["appGroup"].replace(" ", "").lower() == AppGroups.GOOGLE_WORKSPACE.value.replace(" ", "").lower():
                 logger.info("Refreshing Google Workspace user credentials")
-                asyncio.create_task(refresh_google_workspace_user_credentials(org_id, arango_service,logger, container,app_name="drive"))
+                asyncio.create_task(refresh_google_workspace_user_credentials(org_id, arango_service,logger, container,connector_id=connector_id))
                 break
 
     except Exception as e:
@@ -240,7 +245,7 @@ async def initialize_individual_drive_account_services_fn(org_id, container) -> 
 
     logger.info("✅ Successfully initialized services for drive individual account")
 
-async def initialize_individual_gmail_account_services_fn(org_id, container) -> None:
+async def initialize_individual_gmail_account_services_fn(org_id, container,connector_id: str) -> None:
     """Initialize services for an gmail individual account type."""
     try:
         logger = container.logger()
@@ -253,6 +258,7 @@ async def initialize_individual_gmail_account_services_fn(org_id, container) -> 
                 config_service=container.config_service,
                 rate_limiter=container.rate_limiter,
                 google_token_handler=await container.google_token_handler(),
+                connector_id=connector_id,
             )
         )
         gmail_service = container.gmail_service()
@@ -266,6 +272,7 @@ async def initialize_individual_gmail_account_services_fn(org_id, container) -> 
                 gmail_user_service=container.gmail_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.gmail_change_handler(),
+                connector_id=connector_id,
             )
         )
         gmail_webhook_handler = container.gmail_webhook_handler()
@@ -282,6 +289,7 @@ async def initialize_individual_gmail_account_services_fn(org_id, container) -> 
                 change_handler=await container.gmail_change_handler(),
                 kafka_service=container.kafka_service,
                 celery_app=container.celery_app,
+                connector_id=connector_id,
             )
         )
         gmail_sync_service = container.gmail_sync_service()
@@ -299,14 +307,14 @@ async def initialize_individual_gmail_account_services_fn(org_id, container) -> 
         if not hasattr(container, 'sync_tasks_registry'):
             container.sync_tasks_registry = {}
 
-        container.sync_tasks_registry['gmail'] = gmail_sync_task
+        container.sync_tasks_registry[connector_id] = gmail_sync_task
 
         # Pre-fetch service account credentials for this org
         org_apps = await arango_service.get_org_apps(org_id)
         for app in org_apps:
             if app["appGroup"].replace(" ", "").lower() == AppGroups.GOOGLE_WORKSPACE.value.replace(" ", "").lower():
                 logger.info("Refreshing Google Workspace gmail user credentials")
-                asyncio.create_task(refresh_google_workspace_user_credentials(org_id, arango_service,logger, container,app_name="gmail"))
+                asyncio.create_task(refresh_google_workspace_user_credentials(org_id, arango_service,logger, container,connector_id=connector_id))
                 break
 
     except Exception as e:
@@ -328,7 +336,7 @@ async def initialize_individual_gmail_account_services_fn(org_id, container) -> 
     logger.info("✅ Successfully initialized services for gmail individual account")
 
 
-async def initialize_enterprise_google_account_services_fn(org_id, container, app_names: list[str] = ["drive", "gmail"]) -> None:
+async def initialize_enterprise_google_account_services_fn(org_id, container,connector_id: str, app_names: list[str] = ["drive", "gmail"]) -> None:
     """Initialize services for an enterprise account type."""
 
     try:
@@ -336,10 +344,10 @@ async def initialize_enterprise_google_account_services_fn(org_id, container, ap
         arango_service = await container.arango_service()
 
         if "drive" in app_names:
-            await initialize_enterprise_drive_account_services_fn(org_id, container)
+            await initialize_enterprise_drive_account_services_fn(org_id, container,connector_id)
 
         if "gmail" in app_names:
-            await initialize_enterprise_gmail_account_services_fn(org_id, container)
+            await initialize_enterprise_gmail_account_services_fn(org_id, container,connector_id)
 
         container.google_admin_service.override(
             providers.Singleton(
@@ -367,6 +375,7 @@ async def initialize_enterprise_google_account_services_fn(org_id, container, ap
                 GoogleDocsParser,
                 logger=logger,
                 admin_service=container.google_admin_service(),
+                connector_id=connector_id,
             )
         )
         google_docs_parser = container.google_docs_parser()
@@ -377,6 +386,7 @@ async def initialize_enterprise_google_account_services_fn(org_id, container, ap
                 GoogleSheetsParser,
                 logger=logger,
                 admin_service=container.google_admin_service(),
+                connector_id=connector_id,
             )
         )
         google_sheets_parser = container.google_sheets_parser()
@@ -387,6 +397,7 @@ async def initialize_enterprise_google_account_services_fn(org_id, container, ap
                 GoogleSlidesParser,
                 logger=logger,
                 admin_service=container.google_admin_service(),
+                connector_id=connector_id,
             )
         )
         google_slides_parser = container.google_slides_parser()
@@ -402,14 +413,10 @@ async def initialize_enterprise_google_account_services_fn(org_id, container, ap
         for app in org_apps:
             if app["appGroup"].replace(" ", "").lower() == AppGroups.GOOGLE_WORKSPACE.value.replace(" ", "").lower():
                 logger.info("Caching Google Workspace service credentials")
-                if "drive" == app["name"].lower() and "drive" in app_names:
-                    await cache_google_workspace_service_credentials(org_id, arango_service, logger, container,app_name="drive")
-                    await google_admin_service.connect_admin(org_id, app_name=app['name'])
-                    await google_admin_service.create_admin_watch(org_id, app_name=app['name'])
-                elif "gmail" == app["name"].lower() and "gmail" in app_names:
-                    await cache_google_workspace_service_credentials(org_id, arango_service, logger, container,app_name="gmail")
-                    await google_admin_service.connect_admin(org_id, app_name=app['name'])
-                    await google_admin_service.create_admin_watch(org_id, app_name=app['name'])
+                logger.info(f"Connector ID: {connector_id}")
+                await cache_google_workspace_service_credentials(org_id, arango_service, logger, container,connector_id)
+                await google_admin_service.connect_admin(org_id, connector_id)
+                await google_admin_service.create_admin_watch(org_id, connector_id)
 
                 logger.info("✅ Google Workspace service credentials cached")
                 # Initialize admin service with a generic app context (Drive by default)
@@ -433,7 +440,7 @@ async def initialize_enterprise_google_account_services_fn(org_id, container, ap
 
     logger.info("✅ Successfully initialized services for enterprise google account")
 
-async def initialize_enterprise_drive_account_services_fn(org_id, container) -> None:
+async def initialize_enterprise_drive_account_services_fn(org_id, container,connector_id: str) -> None:
     """Initialize services for an enterprise drive account type."""
 
     try:
@@ -460,6 +467,7 @@ async def initialize_enterprise_drive_account_services_fn(org_id, container) -> 
                 drive_admin_service=container.drive_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.drive_change_handler(),
+                connector_id=connector_id,
             )
         )
         drive_webhook_handler = container.drive_webhook_handler()
@@ -478,6 +486,7 @@ async def initialize_enterprise_drive_account_services_fn(org_id, container) -> 
                 change_handler=await container.drive_change_handler(),
                 kafka_service=container.kafka_service,
                 celery_app=container.celery_app,
+                connector_id=connector_id,
             )
         )
         drive_sync_service = container.drive_sync_service()
@@ -494,7 +503,7 @@ async def initialize_enterprise_drive_account_services_fn(org_id, container) -> 
         if not hasattr(container, 'sync_tasks_registry'):
             container.sync_tasks_registry = {}
 
-        container.sync_tasks_registry['drive'] = drive_sync_task
+        container.sync_tasks_registry[connector_id] = drive_sync_task
 
     except Exception as e:
         logger.error(
@@ -514,7 +523,7 @@ async def initialize_enterprise_drive_account_services_fn(org_id, container) -> 
 
     logger.info("✅ Successfully initialized services for enterprise drive account")
 
-async def initialize_enterprise_gmail_account_services_fn(org_id, container) -> None:
+async def initialize_enterprise_gmail_account_services_fn(org_id, container,connector_id: str) -> None:
     """Initialize services for an enterprise gmail account type."""
 
     try:
@@ -540,6 +549,7 @@ async def initialize_enterprise_gmail_account_services_fn(org_id, container) -> 
                 gmail_admin_service=container.gmail_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.gmail_change_handler(),
+                connector_id=connector_id,
             )
         )
         gmail_webhook_handler = container.gmail_webhook_handler()
@@ -555,6 +565,7 @@ async def initialize_enterprise_gmail_account_services_fn(org_id, container) -> 
                 change_handler=await container.gmail_change_handler(),
                 kafka_service=container.kafka_service,
                 celery_app=container.celery_app,
+                connector_id=connector_id,
             )
         )
         gmail_sync_service = container.gmail_sync_service()
@@ -573,7 +584,7 @@ async def initialize_enterprise_gmail_account_services_fn(org_id, container) -> 
         if not hasattr(container, 'sync_tasks_registry'):
             container.sync_tasks_registry = {}
 
-        container.sync_tasks_registry['gmail'] = gmail_sync_task
+        container.sync_tasks_registry[connector_id] = gmail_sync_task
 
 
     except Exception as e:
@@ -594,7 +605,7 @@ async def initialize_enterprise_gmail_account_services_fn(org_id, container) -> 
 
     logger.info("✅ Successfully initialized services for enterprise gmail account")
 
-async def cache_google_workspace_service_credentials(org_id, arango_service, logger, container,app_name: str) -> None:
+async def cache_google_workspace_service_credentials(org_id, arango_service, logger, container,connector_id: str) -> None:
     """Get Google Workspace service credentials for an organization."""
     try:
         google_token_handler = await container.google_token_handler()
@@ -617,7 +628,7 @@ async def cache_google_workspace_service_credentials(org_id, arango_service, log
 
                     # Fetch and cache credentials
                     SCOPES = GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
-                    credentials_json = await google_token_handler.get_enterprise_token(org_id,app_name=app_name)
+                    credentials_json = await google_token_handler.get_enterprise_token(connector_id=connector_id)
                     credentials = service_account.Credentials.from_service_account_info(
                         credentials_json, scopes=SCOPES
                     )
@@ -635,7 +646,7 @@ async def cache_google_workspace_service_credentials(org_id, arango_service, log
         logger.error(f"Error initializing service credentials cache: {str(e)}")
         raise
 
-async def refresh_google_workspace_user_credentials(org_id, arango_service, logger, container,app_name: str) -> None:
+async def refresh_google_workspace_user_credentials(org_id, arango_service, logger, container,connector_id: str) -> None:
     """Background task to refresh user credentials before they expire"""
     logger.debug("🔄 Checking refresh status of credentials for user")
     user_creds_lock = container.user_creds_lock()
@@ -679,12 +690,12 @@ async def refresh_google_workspace_user_credentials(org_id, arango_service, logg
             if needs_refresh:
                 logger.info(f"User credentials cache miss: {cache_key}. Creating new credentials.")
                 google_token_handler = await container.google_token_handler()
-                SCOPES = await google_token_handler.get_account_scopes(app_name=app_name)
+                SCOPES = await google_token_handler.get_account_scopes(connector_id=connector_id)
 
                 # Refresh token
                 # Refresh Gmail tokens (primary for individual flows)
-                await google_token_handler.refresh_token(org_id, user_id, app_name=app_name)
-                creds_data = await google_token_handler.get_individual_token(org_id, user_id,app_name=app_name)
+                await google_token_handler.refresh_token(connector_id=connector_id)
+                creds_data = await google_token_handler.get_individual_token(connector_id=connector_id)
 
                 if not creds_data.get("access_token"):
                     raise Exception("Invalid credentials. Access token not found")
@@ -837,6 +848,41 @@ class ConnectorAppContainer(BaseAppContainer):
         ]
     )
 
+async def run_connector_migration(container) -> bool:
+    """
+    Run connector migration from name-based to UUID-based system.
+    This should be called once during system initialization.
+
+    Returns:
+        bool: True if migration completed successfully or was not needed, False on error
+    """
+    logger = container.logger()
+
+    try:
+        logger.info("🔍 Checking if Connector UUID migration is needed...")
+
+        # Get required services
+        arango_service = await container.arango_service()
+        config_service = container.config_service()
+
+        # Create migration service instance
+        migration_service = ConnectorMigrationService(
+            arango_service=arango_service,
+            config_service=config_service,
+            logger=logger
+        )
+
+        # Run the migration
+        await migration_service.migrate_all()
+
+        logger.info("✅ Connector UUID migration completed successfully")
+        return True
+
+    except Exception as e:
+        logger.error(f"❌ Connector UUID migration error: {str(e)}")
+        # Don't fail startup - log error and continue
+        # Migration is idempotent and can be retried
+        return False
 
 async def run_knowledge_base_migration(container) -> bool:
     """
@@ -908,6 +954,15 @@ async def initialize_container(container) -> bool:
                 await mark_migration_completed("knowledgeBase", {})
             else:
                 logger.warning("⚠️ Knowledge Base migration had issues but continuing initialization")
+        logger.info("🔄 Running Connector UUID migration...")
+        connector_migration_success = await run_connector_migration(container)
+        if not connector_migration_success:
+            logger.warning("⚠️ Connector UUID migration had issues but continuing initialization")
+
+        logger.info("🔄 Running Knowledge Base migration...")
+        migration_success = await run_knowledge_base_migration(container)
+        if not migration_success:
+            logger.warning("⚠️ Knowledge Base migration had issues but continuing initialization")
 
         migration_state = await get_migration_state()
 
