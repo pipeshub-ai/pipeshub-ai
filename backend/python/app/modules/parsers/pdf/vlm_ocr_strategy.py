@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import os
 from typing import Any, Dict
 
 import fitz
@@ -15,13 +16,13 @@ class VLMOCRStrategy(OCRStrategy):
     """OCR strategy that uses Vision Language Models to convert PDF pages to markdown"""
 
     # Concurrency limit for processing pages
-    CONCURRENCY_LIMIT = 3
+    CONCURRENCY_LIMIT = int(os.getenv('CONCURRENCY_LIMIT', '3'))
 
     # Number of retry attempts for page processing (excluding the initial attempt)
     MAX_RETRY_ATTEMPTS = 2
 
-    # Default DPI for rendering pages
-    RENDER_DPI = 200
+    # Default DPI for rendering pages (configurable via RENDER_DPI env var)
+    RENDER_DPI = int(os.getenv('RENDER_DPI', '200'))
     # Default prompt template
     DEFAULT_PROMPT = """# Role
 You are a precise document OCR specialist. Convert the provided document image to clean, accurate markdown.

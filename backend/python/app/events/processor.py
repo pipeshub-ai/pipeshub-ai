@@ -75,6 +75,7 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
         mime_type=mime_type,
         external_revision_id=record_dict.get("externalRevisionId"),
         connector_name=connector_name,
+        is_vlm_ocr_processed=record_dict.get("isVLMOcrProcessed", False),
     )
     return record
 
@@ -858,6 +859,7 @@ class Processor:
                 record = convert_record_dict_to_record(record)
                 record.block_containers = combined_block_containers
                 record.virtual_record_id = virtual_record_id
+                record.is_vlm_ocr_processed = True
 
                 ctx = TransformContext(record=record)
                 pipeline = IndexingPipeline(
@@ -865,17 +867,6 @@ class Processor:
                     sink_orchestrator=self.sink_orchestrator
                 )
                 await pipeline.apply(ctx)
-                try:
-                    await self.arango_service.update_node(
-                        recordId,
-                        {
-                            "isVLMOcrProcessed": True
-                        },
-                        CollectionNames.RECORDS.value
-                    )
-                except Exception as e:
-                    self.logger.error(f"❌ Error updating record {recordId} in database: {str(e)}")
-                    pass
 
                 self.logger.info("✅ PDF processing completed successfully using VLM OCR")
                 return

@@ -23,10 +23,11 @@ class Arango(Transformer):
             return
         record_id = record.id
         virtual_record_id = record.virtual_record_id
-        await self.save_metadata_to_db( record_id, metadata, virtual_record_id)
+        is_vlm_ocr_processed = getattr(record, 'is_vlm_ocr_processed', False)
+        await self.save_metadata_to_db(record_id, metadata, virtual_record_id, is_vlm_ocr_processed)
 
     async def save_metadata_to_db(
-        self,  record_id: str, metadata: SemanticMetadata, virtual_record_id: str
+        self,  record_id: str, metadata: SemanticMetadata, virtual_record_id: str, is_vlm_ocr_processed: bool = False
     ) -> None:
         """
         Extract metadata from a document in ArangoDB and create department relationships
@@ -304,12 +305,17 @@ class Arango(Transformer):
                     "🚀 Metadata saved successfully for document"
                 )
 
-                record.update(
-                    {
-                        "extractionStatus": "COMPLETED",
-                        "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
-                    }
-                )
+                # Update record with extraction status and timestamp
+                update_dict = {
+                    "extractionStatus": "COMPLETED",
+                    "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
+                }
+                
+                # Set isVLMOcrProcessed flag if it was marked
+                if is_vlm_ocr_processed:
+                    update_dict["isVLMOcrProcessed"] = True
+                
+                record.update(update_dict)
                 docs = [record]
 
                 self.logger.info(
@@ -318,6 +324,7 @@ class Arango(Transformer):
                 await tx_store.batch_upsert_nodes(
                     docs, CollectionNames.RECORDS.value
                 )
+                
 
             except Exception as e:
                 self.logger.error(f"❌ Error saving metadata to ArangoDB: {str(e)}")

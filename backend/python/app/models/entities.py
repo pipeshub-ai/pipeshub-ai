@@ -90,6 +90,10 @@ class Record(BaseModel):
     fetch_signed_url: Optional[str] = None
     preview_renderable: Optional[bool] = True
     is_shared: Optional[bool] = False
+    
+    # Processing flags
+    is_vlm_ocr_processed: Optional[bool] = Field(default=False, description="Flag indicating if VLM OCR processing has been used to process the record")
+    
     # Content blocks
     block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
     semantic_metadata: Optional[SemanticMetadata] = None
@@ -123,6 +127,7 @@ class Record(BaseModel):
             "deletedByUserId": None,
             "previewRenderable": self.preview_renderable,
             "isShared": self.is_shared,
+            "isVLMOcrProcessed": self.is_vlm_ocr_processed,
         }
 
     @staticmethod
@@ -160,6 +165,7 @@ class Record(BaseModel):
             virtual_record_id=arango_base_record.get("virtualRecordId", None),
             preview_renderable=arango_base_record.get("previewRenderable", True),
             is_shared=arango_base_record.get("isShared", False),
+            is_vlm_ocr_processed=arango_base_record.get("isVLMOcrProcessed", False),
         )
 
     def to_kafka_record(self) -> Dict:
