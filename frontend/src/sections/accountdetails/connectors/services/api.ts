@@ -8,6 +8,7 @@
 
 import axios from "src/utils/axios";
 import { Connector, ConnectorConfig, ConnectorRegistry, ConnectorToggleType } from "../types/types";
+import { trimConnectorConfig } from "../utils/trim-config";
 
 const BASE_URL = '/api/v1/connectors';
 
@@ -99,11 +100,14 @@ export class ConnectorApiService {
     config?: any
   ): Promise<{ connectorId: string; connectorType: string; instanceName: string; scope: string }> {
     const baseUrl = window.location.origin;
+    // Trim whitespace from instance name and config
+    const trimmedInstanceName = instanceName.trim();
+    const trimmedConfig = config ? trimConnectorConfig(config) : config;
     const response = await axios.post(`${BASE_URL}`, {
       connectorType,
-      instanceName,
+      instanceName: trimmedInstanceName,
       scope,
-      config,
+      config: trimmedConfig,
       baseUrl,
     });
     if (!response.data) throw new Error('Failed to create connector instance');
@@ -201,8 +205,10 @@ export class ConnectorApiService {
    * Update configuration for a connector instance
    */
   static async updateConnectorInstanceConfig(connectorId: string, config: any): Promise<any> {
+    // Trim whitespace from config before sending
+    const trimmedConfig = trimConnectorConfig(config);
     const response = await axios.put(`${BASE_URL}/${connectorId}/config`, {
-      ...config,
+      ...trimmedConfig,
       baseUrl: window.location.origin,
     });
     if (!response.data) throw new Error('Failed to update connector instance config');
