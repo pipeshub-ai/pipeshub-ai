@@ -4448,18 +4448,11 @@ async def get_filter_field_options(
     except Exception as e:
         logger.error(f"Error getting filter field options for {filter_key}: {e}", exc_info=True)
 
-        # Return error response
-        response = FilterOptionsResponse(
-            success=False,
-            options=[],
-            page=page,
-            limit=limit,
-            has_more=False,
-            cursor=None,
-            message=str(e)
+        # Raise as HTTP 500 for proper error tracking and monitoring
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to get filter options: {str(e)}"
         )
-
-        return response.to_dict()
 
 
 def _get_connector_from_container(container, connector_id: str) -> Optional[BaseConnector]:
