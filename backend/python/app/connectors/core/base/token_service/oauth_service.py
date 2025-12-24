@@ -187,6 +187,18 @@ class OAuthProvider:
                     f"Response: {error_text}"
                 )
                 raise Exception(error_msg)
+            if response.status >= HttpStatusCode.BAD_REQUEST.value:
+                # Get detailed error information
+                try:
+                    error_data = await response.json()
+                    error_detail = f"HTTP {response.status}: {error_data}"
+                except Exception:
+                    error_text = await response.text()
+                    error_detail = f"HTTP {response.status}: {error_text}"
+
+                raise Exception(f"Token exchange failed: {error_detail}")
+
+            response.raise_for_status()
             token_data = await response.json()
 
         token = OAuthToken.from_dict(token_data)
@@ -299,6 +311,13 @@ class OAuthProvider:
         oauth_data = config.get('oauth', {}) or {}
         stored_state = oauth_data.get("state")
 
+        # Check if we already have valid credentials (duplicate callback protection)
+        existing_credentials = config.get('credentials')
+        if existing_credentials and existing_credentials.get('access_token'):
+            # We already processed this callback successfully, return existing token
+            self.token = OAuthToken.from_dict(existing_credentials)
+            return self.token
+
         # Validate state
         if not stored_state or stored_state != state:
             # Idempotent handling: if credentials already exist, treat as success
@@ -314,14 +333,31 @@ class OAuthProvider:
             # No existing credentials -> genuine invalid/expired state
             raise ValueError("Invalid or expired state")
 
-        token = await self.exchange_code_for_token(code=code, state=state, code_verifier=oauth_data.get("code_verifier"))
-        self.token = token
+        # Check if this code has already been used (prevent duplicate usage)
+        used_codes = oauth_data.get("used_codes", [])
+        if code in used_codes:
+            raise ValueError("Authorization code has already been used")
 
-        # Clean up OAuth state and store credentials
-        config['oauth'] = None  # remove transient state after successful exchange
+        try:
+            token = await self.exchange_code_for_token(code=code, state=state, code_verifier=oauth_data.get("code_verifier"))
+            self.token = token
 
-        # Store the new token (use the refresh_token from the response if available)
-        config['credentials'] = token.to_dict()
-        await self.key_value_store.create_key(self.credentials_path, config)
+            # Mark this code as used
+            used_codes.append(code)
+            oauth_data["used_codes"] = used_codes
 
-        return token
+            # Clean up OAuth state and store credentials
+            config['oauth'] = None  # remove transient state after successful exchange
+
+            # Store the new token (use the refresh_token from the response if available)
+            config['credentials'] = token.to_dict()
+            await self.key_value_store.create_key(self.credentials_path, config)
+
+            return token
+        except Exception:
+            # If token exchange fails, still mark the code as used to prevent retry loops
+            used_codes.append(code)
+            oauth_data["used_codes"] = used_codes
+            config['oauth'] = oauth_data
+            await self.key_value_store.create_key(self.credentials_path, config)
+            raise

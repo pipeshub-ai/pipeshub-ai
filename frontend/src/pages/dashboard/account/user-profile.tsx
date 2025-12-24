@@ -6,6 +6,7 @@ import { CONFIG } from 'src/config-global';
 
 import Sidebar from 'src/sections/accountdetails/Sidebar';
 import UserProfile from 'src/sections/accountdetails/user-profile';
+import { UserProvider } from 'src/context/UserContext';
 
 // ----------------------------------------------------------------------
 
@@ -14,6 +15,7 @@ const metadata = { title: `User Profile | Dashboard - ${CONFIG.appName}` };
 export default function Page() {
   return (
     <>
+    <UserProvider>
       <Helmet>
         <title> {metadata.title}</title>
       </Helmet>
@@ -22,6 +24,7 @@ export default function Page() {
         <Sidebar />
         <UserProfile />
       </Box>
+      </UserProvider>
     </>
   );
 }

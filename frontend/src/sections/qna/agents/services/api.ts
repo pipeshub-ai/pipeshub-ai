@@ -8,6 +8,7 @@ import type {
   AgentConversation,
   AgentFilterOptions,
   AgentStats,
+  ConnectorInstance,
 } from 'src/types/agent';
 import { KBPermission } from 'src/sections/knowledgebase/types/kb';
 
@@ -338,6 +339,7 @@ class AgentApiService {
    * Transform form data to match backend expectations
    * - Tools: Convert to app_name.tool_name format if not already
    * - KB: Ensure we're sending IDs not names
+   * - Connector Instances: Ensure proper format with required fields
    */
   private static transformAgentFormData(data: Partial<AgentFormData>): Partial<AgentFormData> {
     const transformed = { ...data };
@@ -365,6 +367,42 @@ class AgentApiService {
       );
     }
 
+    // Transform connector instances to ensure proper format
+    if (transformed.connectors && Array.isArray(transformed.connectors)) {
+      // Validate: No duplicate connector instances with same id and category
+      const connectorKeyMap = new Map<string, ConnectorInstance>();
+      const duplicates: string[] = [];
+
+      transformed.connectors
+        .filter((instance) => instance && typeof instance === 'object' && instance.id && instance.name && instance.type)
+        .forEach((instance) => {
+          const connectorKey = `${instance.id}:${instance.category || 'action'}`;
+          if (connectorKeyMap.has(connectorKey)) {
+            if (!duplicates.includes(connectorKey)) {
+              duplicates.push(connectorKey);
+            }
+          } else {
+            connectorKeyMap.set(connectorKey, instance);
+          }
+        });
+
+      if (duplicates.length > 0) {
+        throw new Error(
+          `Duplicate connector instances found. Each connector ID can only appear once per category. Duplicates: ${duplicates.join(', ')}`
+        );
+      }
+
+      transformed.connectors = transformed.connectors
+        .filter((instance) => instance && typeof instance === 'object' && instance.id && instance.name && instance.type)
+        .map((instance) => ({
+          id: instance.id,
+          name: instance.name,
+          type: instance.type,
+          scope: instance.scope || 'personal',
+          category: instance.category || 'action',
+        }));
+    }
+
     // Clean up empty arrays - handle each property type specifically
     if (transformed.tools && Array.isArray(transformed.tools) && transformed.tools.length === 0) {
       transformed.tools = [] as string[];
@@ -378,12 +416,18 @@ class AgentApiService {
       transformed.models = [] as { provider: string; modelName: string; isReasoning: boolean; modelKey: string }[];
     }
 
-    if (transformed.apps && Array.isArray(transformed.apps) && transformed.apps.length === 0) {
-      transformed.apps = [] as string[];
-    }
+
 
     if (transformed.kb && Array.isArray(transformed.kb) && transformed.kb.length === 0) {
       transformed.kb = [] as string[];
+    }
+
+    if (
+      transformed.connectors &&
+      Array.isArray(transformed.connectors) &&
+      transformed.connectors.length === 0
+    ) {
+      transformed.connectors = [];
     }
 
     if (

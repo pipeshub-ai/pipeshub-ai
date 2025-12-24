@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import dayjs from 'dayjs';
+import {useNavigate} from 'react-router-dom';
 import { useAccountType } from 'src/hooks/use-account-type';
 import { 
   Connector, 
@@ -40,6 +40,7 @@ interface UseConnectorConfigProps {
   connector: Connector;
   onClose: () => void;
   onSuccess?: () => void;
+  initialInstanceName?: string;
 }
 
 interface UseConnectorConfigReturn {
@@ -71,6 +72,11 @@ interface UseConnectorConfigReturn {
   privateKeyError: string | null;
   privateKeyData: string | null;
 
+  // Create mode state
+  isCreateMode: boolean;
+  instanceName: string;
+  instanceNameError: string | null;
+
   // Actions
   handleFieldChange: (section: string, fieldName: string, value: any) => void;
   handleNext: () => void;
@@ -84,6 +90,8 @@ interface UseConnectorConfigReturn {
   isBusinessGoogleOAuthValid: () => boolean;
   fileInputRef: React.RefObject<HTMLInputElement>;
 
+  setInstanceName: (name: string) => void;
+
   // SharePoint Certificate actions
   handleCertificateUpload: () => void;
   handleCertificateChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
@@ -94,13 +102,23 @@ interface UseConnectorConfigReturn {
   isSharePointCertificateAuthValid: () => boolean;
 }
 
+// Constants
+const MIN_INSTANCE_NAME_LENGTH = 3;
+const REQUIRED_SERVICE_ACCOUNT_FIELDS = ['client_id', 'project_id', 'type'];
+const SERVICE_ACCOUNT_TYPE = 'service_account';
+
 export const useConnectorConfig = ({
   connector,
   onClose,
   onSuccess,
+  initialInstanceName = '',
 }: UseConnectorConfigProps): UseConnectorConfigReturn => {
   const { isBusiness, isIndividual, loading: accountTypeLoading } = useAccountType();
+  const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Determine if we're in create mode (no _key means new instance)
+  const isCreateMode = connector?._key === 'new' || connector?._key === null || connector?._key === undefined;
 
   // SharePoint certificate refs
   const certificateInputRef = useRef<HTMLInputElement>(null);
@@ -123,6 +141,10 @@ export const useConnectorConfig = ({
   });
   const [saveError, setSaveError] = useState<string | null>(null);
   const [conditionalDisplay, setConditionalDisplay] = useState<Record<string, boolean>>({});
+
+  // Create mode state
+  const [instanceName, setInstanceName] = useState(initialInstanceName);
+  const [instanceNameError, setInstanceNameError] = useState<string | null>(null);
 
   // Business OAuth specific state (Google Workspace)
   const [adminEmail, setAdminEmail] = useState('');
@@ -149,16 +171,18 @@ export const useConnectorConfig = ({
     () =>
       isBusiness &&
       connector.appGroup === 'Google Workspace' &&
-      connector.authType === 'OAUTH',
-    [isBusiness, connector.appGroup, connector.authType]
+      connector.authType === 'OAUTH' &&
+      connector.scope === 'team',
+    [isBusiness, connector.appGroup, connector.authType, connector.scope]
   );
 
   // Memoized helper to check if this is SharePoint certificate auth
   const isSharePointCertificateAuth = useMemo(
     () =>
       connector.name === 'SharePoint Online' &&
-      (connector.authType === 'OAUTH_CERTIFICATE' || connector.authType === 'OAUTH_ADMIN_CONSENT'),
-    [connector.name, connector.authType]
+      (connector.authType === 'OAUTH_CERTIFICATE' || connector.authType === 'OAUTH_ADMIN_CONSENT') &&
+      connector.scope === 'team',
+    [connector.name, connector.authType, connector.scope]
   );
 
   // Memoized helper functions
@@ -167,11 +191,11 @@ export const useConnectorConfig = ({
     return {
       adminEmail: authValues.adminEmail || '',
       jsonData:
-        authValues.client_id && authValues.project_id && authValues.type === 'service_account'
+        authValues.client_id && authValues.project_id && authValues.type === SERVICE_ACCOUNT_TYPE
           ? authValues
           : null,
       fileName:
-        authValues.client_id && authValues.project_id && authValues.type === 'service_account'
+        authValues.client_id && authValues.project_id && authValues.type === SERVICE_ACCOUNT_TYPE
           ? 'existing-credentials.json'
           : null,
     };
@@ -674,15 +698,45 @@ export const useConnectorConfig = ({
     const fetchConnectorConfig = async () => {
       try {
         setLoading(true);
+        let mergedConfig: any = null;
+        console.log('create mode', isCreateMode);
 
-        // Fetch both config and schema in a single API call
-        const { config: configResponse, schema: schemaResponse } =
-          await ConnectorApiService.getConnectorConfigAndSchema(connector.name);
+        if (isCreateMode) {
+          // Create mode: load schema only
+          const schemaResponse = await ConnectorApiService.getConnectorSchema(connector.type);
+
+          const emptyConfigResponse = {
+            name: connector.name,
+            type: connector.type,
+            appGroup: connector.appGroup,
+            appGroupId: connector.appGroupId || '',
+            authType: connector.authType,
+            isActive: false,
+            isConfigured: false,
+            supportsRealtime: !!connector.supportsRealtime,
+            appDescription: connector.appDescription || '',
+            appCategories: connector.appCategories || [],
+            iconPath: connector.iconPath,
+            config: {
+              auth: {},
+              sync: {},
+              filters: {},
+            },
+          };
+
+          mergedConfig = mergeConfigWithSchema(emptyConfigResponse, schemaResponse);
+        } else {
+          // Edit mode: load both config and schema
+          const [configResponse, schemaResponse] = await Promise.all([
+            ConnectorApiService.getConnectorInstanceConfig(connector._key),
+            ConnectorApiService.getConnectorSchema(connector.type),
+          ]);
+
+          mergedConfig = mergeConfigWithSchema(configResponse, schemaResponse);
+        }
 
         if (!isMounted) return;
 
-        // Merge config with schema
-        const mergedConfig = mergeConfigWithSchema(configResponse, schemaResponse);
         setConnectorConfig(mergedConfig);
 
         // Initialize form data
@@ -747,6 +801,16 @@ export const useConnectorConfig = ({
     };
   }, [
     connector.name,
+    connector.type,
+    connector.appGroup,
+    connector.appGroupId,
+    connector.authType,
+    connector.supportsRealtime,
+    connector.appDescription,
+    connector.appCategories,
+    connector.iconPath,
+    connector._key,
+    isCreateMode,
     accountTypeLoading,
     isCustomGoogleBusinessOAuth,
     isSharePointCertificateAuth,
@@ -965,6 +1029,22 @@ export const useConnectorConfig = ({
       setSaveError(null);
 
       const isNoAuthType = isNoneAuthType(connector.authType);
+
+      // Validate instance name in create mode
+      if (isCreateMode) {
+        const trimmedName = instanceName.trim();
+        if (!trimmedName) {
+          setInstanceNameError('Instance name is required');
+          return;
+        }
+        if (trimmedName.length < MIN_INSTANCE_NAME_LENGTH) {
+          setInstanceNameError(
+            `Instance name must be at least ${MIN_INSTANCE_NAME_LENGTH} characters`
+          );
+          return;
+        }
+        setInstanceNameError(null);
+      }
 
       // For business OAuth, validate admin email and JSON file
       if (isCustomGoogleBusinessOAuth) {
@@ -1195,7 +1275,30 @@ export const useConnectorConfig = ({
         };
       }
 
-      await ConnectorApiService.updateConnectorConfig(connector.name, configToSave as any);
+      if (isCreateMode) {
+        // Create new instance
+        const scope = connector.scope || 'personal';
+        const created = await ConnectorApiService.createConnectorInstance(
+          connector.type,
+          instanceName.trim(),
+          scope,
+          configToSave
+        );
+
+        onSuccess?.();
+        onClose();
+
+        // Navigate to the new connector
+        const basePath = isBusiness
+          ? '/account/company-settings/settings/connector'
+          : '/account/individual/settings/connector';
+        navigate(`${basePath}/${created.connectorId}`);
+        return;
+      }
+
+      // Update existing instance
+      await ConnectorApiService.updateConnectorInstanceConfig(connector._key, configToSave);
+
 
       // Update scheduling if connector is already active
       const wasActive = !!connector.isActive;
@@ -1225,7 +1328,7 @@ export const useConnectorConfig = ({
           if (strategyChanged) {
             if (prevStrategy === 'SCHEDULED' && newStrategy !== 'SCHEDULED') {
               // Turn off existing schedule
-              await CrawlingManagerApi.remove(connector.name.toLowerCase());
+              await CrawlingManagerApi.remove(connector.type, connector._key);
             } else if (newStrategy === 'SCHEDULED') {
               // Apply schedule with new settings
               const cron = buildCronFromSchedule({
@@ -1233,7 +1336,7 @@ export const useConnectorConfig = ({
                 intervalMinutes: newScheduled.intervalMinutes,
                 timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
               });
-              await CrawlingManagerApi.schedule(connector.name.toLowerCase(), {
+              await CrawlingManagerApi.schedule(connector.type, connector._key, {
                 scheduleConfig: {
                   scheduleType: 'custom',
                   isEnabled: true,
@@ -1252,7 +1355,7 @@ export const useConnectorConfig = ({
               intervalMinutes: newScheduled.intervalMinutes,
               timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
             });
-            await CrawlingManagerApi.schedule(connector.name.toLowerCase(), {
+            await CrawlingManagerApi.schedule(connector.type, connector._key, {
               scheduleConfig: {
                 scheduleType: 'custom',
                 isEnabled: true,
@@ -1294,6 +1397,10 @@ export const useConnectorConfig = ({
     isSharePointCertificateAuthValid,
     certificateContent,
     privateKeyData,
+    isCreateMode,
+    instanceName,
+    isBusiness,
+    navigate,
   ]);
 
   // Admin email change handler
@@ -1323,6 +1430,12 @@ export const useConnectorConfig = ({
     fileName,
     fileError,
     jsonData,
+
+    // Create mode state
+    isCreateMode,
+    instanceName,
+    instanceNameError,
+    setInstanceName,
 
     // SharePoint Certificate OAuth state
     certificateFile,

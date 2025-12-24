@@ -28,6 +28,7 @@ class Record(Node):
     version: int = 0
     origin: str = ""  # UPLOAD or CONNECTOR
     connector_name: Optional[str] = None
+    connector_id: Optional[str] = None
     created_at_timestamp: Optional[float] = None
     updated_at_timestamp: Optional[float] = None
     last_sync_timestamp: Optional[float] = None
@@ -45,6 +46,7 @@ class Record(Node):
     summary_document_id: Optional[str] = None
     virtual_record_id: Optional[str] = None
     deleted_by_user_id: Optional[str] = None
+    is_vlm_ocr_processed: bool = False
     web_url: Optional[str] = None,
     mime_type: Optional[str] = None
 
@@ -61,6 +63,7 @@ class Record(Node):
         record.version = data.get("version", 0)
         record.origin = data.get("origin", "UPLOAD")
         record.connector_name = data.get("connectorName", None)
+        record.connector_id = data.get("connectorId", None)
         record.created_at_timestamp = data.get("createdAtTimestamp", None)
         record.updated_at_timestamp = data.get("updatedAtTimestamp", None)
         record.last_sync_timestamp = data.get("lastSyncTimestamp", None)
@@ -78,6 +81,7 @@ class Record(Node):
         record.summary_document_id = data.get("summaryDocumentId", None)
         record.virtual_record_id = data.get("virtualRecordId", None)
         record.deleted_by_user_id = data.get("deletedByUserId", None)
+        record.is_vlm_ocr_processed = data.get("isVLMOcrProcessed", False)
         record.web_url = data.get("webUrl", None)
         record.mime_type = data.get("mimeType", None)
         return record
@@ -118,6 +122,7 @@ class Record(Node):
             "version": self.version,
             "origin": self.origin,
             "connectorName": self.connector_name,
+            "connectorId": self.connector_id,
             "createdAtTimestamp": self.created_at_timestamp,
             "updatedAtTimestamp": self.updated_at_timestamp,
             "indexingStatus": self.indexing_status,
@@ -135,6 +140,7 @@ class Record(Node):
             "reason": self.reason,
             "lastSyncTimestamp": self.last_sync_timestamp,
             "deletedByUserId": self.deleted_by_user_id,
+            "isVLMOcrProcessed": self.is_vlm_ocr_processed,
             "webUrl": self.web_url,
             "mimeType": self.mime_type
         }

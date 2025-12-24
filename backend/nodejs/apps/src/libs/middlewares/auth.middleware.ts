@@ -5,6 +5,10 @@ import { Logger } from '../services/logger.service';
 import { AuthenticatedServiceRequest, AuthenticatedUserRequest } from './types';
 import { AuthTokenService } from '../services/authtoken.service';
 import { inject, injectable } from 'inversify';
+import { UserActivities } from '../../modules/auth/schema/userActivities.schema';
+import { userActivitiesType } from '../utils/userActivities.utils';
+
+const { LOGOUT } = userActivitiesType;
 
 @injectable()
 export class AuthMiddleware {
@@ -28,6 +32,37 @@ export class AuthMiddleware {
 
       const decoded = await this.tokenService.verifyToken(token);
       req.user = decoded;
+
+      // Search for user activities for this user
+      const userId = decoded?.userId;
+      const orgId = decoded?.orgId;
+
+      if (userId && orgId) {
+        let userActivity: any;
+        try {
+          userActivity = await UserActivities.findOne({
+            userId: userId,
+            orgId: orgId,
+            isDeleted: false,
+            activityType: LOGOUT,
+          })
+            .sort({ createdAt: -1 }) // Sort by most recent first
+            .lean()
+            .exec();
+          
+        } catch (activityError) {
+          this.logger.error('Failed to fetch user activity', activityError);
+        }
+
+        if(userActivity) {
+          const tokenIssuedAt = decoded.iat ? decoded.iat * 1000 : 0;
+          const logoutTimestamp = (userActivity?.createdAt).getTime() 
+          if (logoutTimestamp > tokenIssuedAt ) {
+            this.logger.error('Need to send session expired notification to user');
+            throw new UnauthorizedError('Session expired, please login again');
+          }
+        }
+      }
 
       this.logger.debug('User authenticated', decoded);
       next();
