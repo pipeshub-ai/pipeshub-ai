@@ -19,6 +19,7 @@ interface UseConnectorManagerReturn {
   showFilterDialog: boolean;
   isEnablingWithFilters: boolean;
   configDialogOpen: boolean;
+  renameError: string | null;
 
   // Actions
   handleToggleConnector: (enabled: boolean, type: ConnectorToggleType) => Promise<void>;
@@ -28,12 +29,13 @@ interface UseConnectorManagerReturn {
   handleConfigSuccess: () => void;
   handleRefresh: () => void;
   handleDeleteInstance: () => Promise<void>;
-  handleRenameInstance: (newName: string) => Promise<void>;
+  handleRenameInstance: (newName: string, currentName: string) => Promise<{ success: boolean; error?: string }>;
   handleFilterSelection: (selectedFilters: any) => Promise<void>;
   handleFilterDialogClose: () => void;
   setError: (error: string | null) => void;
   setSuccess: (success: boolean) => void;
   setSuccessMessage: (message: string) => void;
+  setRenameError: (error: string | null) => void;
 }
 
 export const useConnectorManager = (): UseConnectorManagerReturn => {
@@ -51,6 +53,7 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
   const [showFilterDialog, setShowFilterDialog] = useState(false);
   const [isEnablingWithFilters, setIsEnablingWithFilters] = useState(false);
   const [configDialogOpen, setConfigDialogOpen] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
 
   // Track fetch state to prevent duplicate calls
   const fetchInProgressRef = useRef(false);
@@ -418,23 +421,71 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
 
   // Handle rename instance
   const handleRenameInstance = useCallback(
-    async (newName: string) => {
-      if (!connectorId || !newName.trim()) return;
+    async (newName: string, currentName: string): Promise<{ success: boolean; error?: string }> => {
+      // Clear previous rename errors
+      setRenameError(null);
+
+      // Validation: Check if name is provided
+      if (!newName || !newName.trim()) {
+        const errorMsg = 'Instance name cannot be empty';
+        setRenameError(errorMsg);
+        return { success: false, error: errorMsg };
+      }
+
+      const trimmedName = newName.trim();
+
+      // Validation: Check if name has changed
+      if (trimmedName === currentName) {
+        // Name hasn't changed, return error
+        const errorMsg = 'Cannot rename to the same name';
+        setRenameError(errorMsg);
+        return { success: false, error: errorMsg };
+      }
+
+      // Validation: Check maximum length (optional, but good practice)
+      if (trimmedName.length > 100) {
+        const errorMsg = 'Instance name must be less than 100 characters';
+        setRenameError(errorMsg);
+        return { success: false, error: errorMsg };
+      }
+
+      if (!connectorId) {
+        const errorMsg = 'Connector ID is missing';
+        setRenameError(errorMsg);
+        return { success: false, error: errorMsg };
+      }
+
       try {
-        setLoading(true);
+        // Don't set global loading - just update state directly after success
         const { connector: updated } = await ConnectorApiService.updateConnectorInstanceName(
           connectorId,
-          newName.trim()
+          trimmedName
         );
+        // Update state directly without triggering full page refresh
         setConnector((prev) => (prev ? { ...prev, name: updated.name } : prev));
-        setSuccessMessage('Instance name updated');
+        setSuccessMessage('Instance name updated successfully');
         setSuccess(true);
         setTimeout(() => setSuccess(false), 3000);
-      } catch (err) {
+        return { success: true };
+      } catch (err: any) {
         console.error('Error renaming connector instance:', err);
-        setError('Failed to update instance name');
-      } finally {
-        setLoading(false);
+        
+        // Extract error message from various possible formats
+        let errorMessage = 'Failed to update instance name';
+        
+        if (err?.message) {
+          errorMessage = err.message;
+        } else if (err?.response?.data?.message) {
+          errorMessage = err.response.data.message;
+        } else if (err?.response?.data?.error?.message) {
+          errorMessage = err.response.data.error.message;
+        } else if (typeof err === 'string') {
+          errorMessage = err;
+        }
+
+        // Don't set global error - only set rename-specific error
+        setRenameError(errorMessage);
+        return { success: false, error: errorMessage };
       }
     },
     [connectorId]
@@ -497,6 +548,7 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
     showFilterDialog,
     isEnablingWithFilters,
     configDialogOpen,
+    renameError,
 
     // Actions
     handleToggleConnector,
@@ -512,5 +564,6 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
     setError,
     setSuccess,
     setSuccessMessage,
+    setRenameError,
   };
 };
