@@ -21,7 +21,7 @@ class AuthField:
     description: str = ""
     required: bool = True
     default_value: Any = ""
-    min_length: int = 10
+    min_length: int = 1
     max_length: int = 1000
     is_secret: bool = False
 
