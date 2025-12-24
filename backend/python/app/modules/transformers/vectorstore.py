@@ -816,13 +816,9 @@ class VectorStore(Transformer):
                 )
 
     async def _update_record_status(
-        self, chunks: List[Document], record_id: str
+        self, record_id: str,virtual_record_id: str
     ) -> None:
         """Update record indexing status in the database."""
-        if not chunks:
-            return
-
-        meta = chunks[0].metadata if isinstance(chunks[0], Document) else chunks[0].get("metadata", {})
         record = await self.arango_service.get_document(
             record_id, CollectionNames.RECORDS.value
         )
@@ -838,7 +834,7 @@ class VectorStore(Transformer):
                 "indexingStatus": "COMPLETED",
                 "isDirty": False,
                 "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
-                "virtualRecordId": meta.get("virtualRecordId"),
+                "virtualRecordId": virtual_record_id,
             }
         )
 
@@ -905,7 +901,7 @@ class VectorStore(Transformer):
                     )
 
             # Update record status
-            await self._update_record_status(chunks, record_id)
+            await self._update_record_status(record_id, virtual_record_id)
             self.logger.info(f"✅ Embeddings created and stored for record: {record_id}")
 
         except (
@@ -1147,6 +1143,7 @@ class VectorStore(Transformer):
                 self.logger.warning(
                     "⚠️ No documents to embed after filtering by block type"
                 )
+                await self._update_record_status(record_id, virtual_record_id)
                 return True
 
             # Create and store embeddings
