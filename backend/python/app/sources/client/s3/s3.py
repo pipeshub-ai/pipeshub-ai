@@ -166,7 +166,8 @@ class S3Client(IClient):
     async def build_from_services(
         cls,
         logger: logging.Logger,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None,
     ) -> "S3Client":
         """Build S3Client using configuration service
         Args:
@@ -180,13 +181,13 @@ class S3Client(IClient):
         """
         try:
             # Get S3 configuration from the configuration service
-            config = await cls._get_connector_config(logger, config_service)
+            config = await cls._get_connector_config(logger, config_service, connector_instance_id)
 
             if not config:
                 raise ValueError("Failed to get S3 connector configuration")
 
-            auth_type = config.get("authType", "ACCESS_KEY")  # ACCESS_KEY or OAUTH
             auth_config = config.get("auth", {})
+            auth_type = auth_config.get("authType", "ACCESS_KEY")  # ACCESS_KEY or OAUTH
             if auth_type == "ACCESS_KEY":  # Default to access key auth
                 # Extract configuration values
                 access_key_id = auth_config.get("accessKey", "")
@@ -214,11 +215,13 @@ class S3Client(IClient):
             raise
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:
         """Fetch connector config from etcd for S3."""
         try:
-            config = await config_service.get_config("/services/connectors/s3/config")
-            return config or {}
+            config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")
+            if not config:
+                raise ValueError(f"Failed to get S3 connector configuration for instance {connector_instance_id}")
+            return config
         except Exception as e:
             logger.error(f"Failed to get S3 connector config: {e}")
-            return {}
+            raise ValueError(f"Failed to get S3 connector configuration for instance {connector_instance_id}")
