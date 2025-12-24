@@ -391,13 +391,6 @@ class DataSourceEntitiesProcessor:
                 return
 
             for record in records:
-                # Skip records with AUTO_INDEX_OFF status - they should only be indexed manually via UI
-                if hasattr(record, 'indexing_status') and record.indexing_status == IndexingStatus.AUTO_INDEX_OFF.value:
-                    self.logger.debug(
-                        f"Skipping reindex for record {record.id} with AUTO_INDEX_OFF status"
-                    )
-                    continue
-
                 payload = record.to_kafka_record()
 
                 await self.messaging_producer.send_message(

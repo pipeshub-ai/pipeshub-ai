@@ -161,14 +161,6 @@ class RecordEventHandler(BaseEventService):
                 self.logger.error(f"❌ Record {record_id} not found in database")
                 return False
 
-            # Safety check: Skip processing for records with AUTO_INDEX_OFF status
-            # These records should only be indexed via manual trigger from UI
-            if record.get("indexingStatus") == ProgressStatus.AUTO_INDEX_OFF.value:
-                self.logger.debug(
-                    f"⏭️ Skipping processing for record {record_id} with AUTO_INDEX_OFF status"
-                )
-                return True
-
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
 

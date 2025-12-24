@@ -2,13 +2,15 @@
 import re
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Tuple
+from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Set, Tuple
+import base64
 from uuid import uuid4
 
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+from app.config.constants.arangodb import AppGroups, Connectors, MimeTypes, OriginTypes
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -68,11 +70,6 @@ ISSUE_SEARCH_FIELDS: List[str] = [
     "issuetype", "project", "parent", "attachment"
 ]
 
-# HTTP status codes
-HTTP_STATUS_OK: int = 200
-HTTP_STATUS_BAD_REQUEST: int = 400
-HTTP_STATUS_NOT_FOUND: int = 404
-HTTP_STATUS_GONE: int = 410
 
 
 class SyncStats:
@@ -93,15 +90,76 @@ class SyncStats:
         return f"Total: {self.total_synced} issues (New: {self.new_count}, Updated: {self.updated_count})"
 
 
-def adf_to_text(adf_content: Dict[str, Any]) -> str:
+def extract_media_from_adf(adf_content: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Extract all media nodes from ADF content.
+    
+    Returns list of media info dicts with:
+        - id: Media ID/token
+        - alt: Alt text (usually filename)
+        - type: Media type (file, image, etc.)
+        - width: Image width (if available)
+        - height: Image height (if available)
+        - collection: Media collection (if available)
+    """
+    if not adf_content or not isinstance(adf_content, dict):
+        return []
+    
+    media_nodes: List[Dict[str, Any]] = []
+    
+    def traverse(node: Dict[str, Any]) -> None:
+        """Recursively traverse ADF nodes to find media."""
+        if not isinstance(node, dict):
+            return
+        
+        node_type = node.get("type", "")
+        
+        # Check if this is a media node
+        if node_type == "media":
+            attrs = node.get("attrs", {})
+            media_info = {
+                "id": attrs.get("id", ""),
+                "alt": attrs.get("alt", ""),
+                "type": attrs.get("type", "file"),
+                "width": attrs.get("width"),
+                "height": attrs.get("height"),
+                "collection": attrs.get("collection", ""),
+            }
+            if media_info["id"]:  # Only add if we have an ID
+                media_nodes.append(media_info)
+        
+        # Recurse into content
+        if "content" in node:
+            for child in node.get("content", []):
+                traverse(child)
+    
+    # Start traversal from root
+    if "content" in adf_content:
+        for node in adf_content.get("content", []):
+            traverse(node)
+    else:
+        traverse(adf_content)
+    
+    return media_nodes
+
+
+def adf_to_text(
+    adf_content: Dict[str, Any],
+    media_cache: Optional[Dict[str, str]] = None
+) -> str:
     """
     Convert Atlassian Document Format (ADF) to Markdown.
     Returns markdown-formatted text with headers, lists, code blocks, tables, etc.
+    
+    Args:
+        adf_content: The ADF document to convert
+        media_cache: Optional dict mapping media_id -> base64 data URI for embedding images
     """
     if not adf_content or not isinstance(adf_content, dict):
         return ""
 
     text_parts: List[str] = []
+    _media_cache = media_cache or {}
 
     def apply_text_marks(text: str, marks: List[Dict[str, Any]]) -> str:
         """Apply markdown formatting based on text marks (bold, italic, link, etc.)."""
@@ -131,30 +189,72 @@ def adf_to_text(adf_content: Dict[str, Any]) -> str:
         
         return text
 
-    def extract_text(node: Dict[str, Any], in_list: bool = False) -> str:
-        """Recursively extract text from ADF nodes and convert to markdown."""
+    def extract_list_item_content(list_item: Dict[str, Any], depth: int) -> Dict[str, str]:
+        """Extract text content and nested lists from a list item.
+        
+        Returns dict with:
+            - text: The main text content of the list item
+            - nested: Any nested lists formatted with proper indentation
+        """
+        content = list_item.get("content", [])
+        text_parts: List[str] = []
+        nested_parts: List[str] = []
+        
+        for child in content:
+            child_type = child.get("type", "")
+            if child_type in ["bulletList", "orderedList", "taskList"]:
+                # Nested list - extract with current depth
+                nested_text = extract_text(child, depth)
+                if nested_text:
+                    nested_parts.append(nested_text)
+            else:
+                # Regular content (paragraph, text, etc.)
+                child_text = extract_text(child, depth)
+                if child_text:
+                    text_parts.append(child_text)
+        
+        # Join text parts, clean up excessive whitespace
+        main_text = " ".join(text_parts).strip()
+        main_text = re.sub(r'\s+', ' ', main_text)  # Normalize whitespace
+        
+        # Join nested lists
+        nested_text = "\n".join(nested_parts) if nested_parts else ""
+        
+        return {"text": main_text, "nested": nested_text}
+
+    def extract_text(node: Dict[str, Any], list_depth: int = 0, strip_marks: bool = False) -> str:
+        """Recursively extract text from ADF nodes and convert to markdown.
+        
+        Args:
+            node: The ADF node to process
+            list_depth: Current nesting level for lists (0 = not in list, 1+ = nested depth)
+            strip_marks: If True, ignore text formatting marks (for table cells)
+        """
         if not isinstance(node, dict):
             return ""
 
         node_type = node.get("type", "")
         text = ""
+        indent = "  " * list_depth  # 2 spaces per nesting level
 
         if node_type == "text":
             text = node.get("text", "")
-            marks = node.get("marks", [])
-            text = apply_text_marks(text, marks)
+            # Skip formatting marks for table cells (they don't render well in markdown tables)
+            if not strip_marks:
+                marks = node.get("marks", [])
+                text = apply_text_marks(text, marks)
 
         elif node_type == "paragraph":
             content = node.get("content", [])
-            para_text = "".join(extract_text(child, in_list) for child in content).strip()
+            para_text = "".join(extract_text(child, list_depth, strip_marks) for child in content).strip()
             if para_text:
-                # In lists, paragraphs should contribute text without adding newlines
-                if in_list:
-                    # Just return the text, no newlines - let list item handle spacing
+                # In lists or tables, paragraphs should contribute text without adding newlines
+                if list_depth > 0 or strip_marks:
+                    # Just return the text, no newlines - let list item/table cell handle spacing
                     text = para_text
                 else:
                     # Check if paragraph contains only a list - if so, don't add extra spacing
-                    has_list = any(child.get("type") in ["bulletList", "orderedList"] for child in content)
+                    has_list = any(child.get("type") in ["bulletList", "orderedList", "taskList"] for child in content)
                     if has_list:
                         # Lists already have their own spacing, don't add extra
                         text = para_text
@@ -164,69 +264,99 @@ def adf_to_text(adf_content: Dict[str, Any]) -> str:
         elif node_type == "heading":
             level = node.get("attrs", {}).get("level", 1)
             content = node.get("content", [])
-            heading_text = "".join(extract_text(child, in_list) for child in content).strip()
+            heading_text = "".join(extract_text(child, list_depth, strip_marks) for child in content).strip()
             if heading_text:
-                text = f"{'#' * level} {heading_text}\n\n"
+                if strip_marks:
+                    # In tables, just return heading text without # markers
+                    text = heading_text
+                else:
+                    text = f"{'#' * level} {heading_text}\n\n"
 
         elif node_type == "blockquote":
             content = node.get("content", [])
-            quote_text = "".join(extract_text(child, in_list) for child in content).strip()
+            quote_text = "".join(extract_text(child, list_depth, strip_marks) for child in content).strip()
             if quote_text:
-                # Add > to each line for proper markdown blockquote
-                quoted_lines = quote_text.split("\n")
-                quoted_lines = [f"> {line}" if line.strip() else ">" for line in quoted_lines]
-                text = "\n".join(quoted_lines) + "\n\n"
+                if strip_marks:
+                    # In tables, just return the quote text
+                    text = quote_text
+                else:
+                    # Add > to each line for proper markdown blockquote
+                    quoted_lines = quote_text.split("\n")
+                    quoted_lines = [f"> {line}" if line.strip() else ">" for line in quoted_lines]
+                    text = "\n".join(quoted_lines) + "\n\n"
 
-        elif node_type == "bulletList":
+        # Handle both "bulletList" and "unorderedList" (some Jira versions use different names)
+        elif node_type in ["bulletList", "unorderedList"]:
             content = node.get("content", [])
-            items: List[str] = []
+            bullet_lines: List[str] = []
+            
             for child in content:
-                if child.get("type") == "listItem":
-                    item_text = extract_text(child, in_list=True).strip()
-                    if item_text:
-                        # Remove leading/trailing newlines and indent
-                        item_text = re.sub(r'^\n+|\n+$', '', item_text)
-                        items.append(f"- {item_text}")
-            if items:
-                text = "\n".join(items) + "\n\n"
+                child_type = child.get("type", "")
+                
+                # Extract the text content from the list item
+                if child_type == "listItem":
+                    # Standard structure: listItem > paragraph > text
+                    item_content = extract_list_item_content(child, list_depth + 1)
+                    item_text = item_content.get("text", "").strip()
+                    nested_content = item_content.get("nested", "")
+                else:
+                    # Fallback: directly extract text from whatever node this is
+                    item_text = extract_text(child, list_depth + 1, strip_marks).strip()
+                    nested_content = ""
+                
+                # Add bullet marker if we have text
+                if item_text:
+                    bullet_line = f"{indent}- {item_text}"
+                    bullet_lines.append(bullet_line)
+                    if nested_content:
+                        bullet_lines.append(nested_content)
+            
+            # Join all bullet items with newlines
+            if bullet_lines:
+                text = "\n".join(bullet_lines)
+                if list_depth == 0:
+                    text += "\n\n"
 
-        elif node_type == "orderedList":
+        # Handle both "orderedList" and "numberedList" (some variations exist)
+        elif node_type in ["orderedList", "numberedList"]:
             content = node.get("content", [])
-            items: List[str] = []
+            numbered_lines: List[str] = []
+            
             for i, child in enumerate(content, start=1):
-                if child.get("type") == "listItem":
-                    item_text = extract_text(child, in_list=True).strip()
-                    if item_text:
-                        # Remove leading/trailing newlines and indent
-                        item_text = re.sub(r'^\n+|\n+$', '', item_text)
-                        items.append(f"{i}. {item_text}")
-            if items:
-                text = "\n".join(items) + "\n\n"
+                child_type = child.get("type", "")
+                
+                # Extract the text content from the list item
+                if child_type == "listItem":
+                    # Standard structure: listItem > paragraph > text
+                    item_content = extract_list_item_content(child, list_depth + 1)
+                    item_text = item_content.get("text", "").strip()
+                    nested_content = item_content.get("nested", "")
+                else:
+                    # Fallback: directly extract text from whatever node this is
+                    item_text = extract_text(child, list_depth + 1, strip_marks).strip()
+                    nested_content = ""
+                
+                # Add number marker if we have text
+                if item_text:
+                    numbered_line = f"{indent}{i}. {item_text}"
+                    numbered_lines.append(numbered_line)
+                    if nested_content:
+                        numbered_lines.append(nested_content)
+            
+            # Join all numbered items with newlines
+            if numbered_lines:
+                text = "\n".join(numbered_lines)
+                if list_depth == 0:
+                    text += "\n\n"
 
         elif node_type == "listItem":
+            # This is handled by extract_list_item_content, but provide fallback
             content = node.get("content", [])
-            # Join content - paragraphs within list items should be inline
-            # Handle nested lists and paragraphs within list items
-            item_parts: List[str] = []
-            for child in content:
-                child_text = extract_text(child, in_list=True)
-                if child_text:
-                    item_parts.append(child_text)
-            text = "".join(item_parts)
-            # Clean up spacing within list items
-            # Multiple paragraphs in a list item should be separated by space, not newlines
-            text = re.sub(r'\n{2,}', ' ', text)  # Replace multiple newlines with space
-            text = text.strip()
-            # If there are nested block elements (lists, code blocks), preserve some structure
-            has_nested_blocks = any(child.get("type") in ["bulletList", "orderedList", "codeBlock", "blockquote"] for child in content)
-            if has_nested_blocks:
-                # For nested blocks, allow single newlines but clean up excessive ones
-                text = re.sub(r'\n{3,}', '\n\n', text)
-            # Don't add trailing newline - parent list handles spacing
+            text = "".join(extract_text(child, list_depth) for child in content).strip()
 
         elif node_type == "codeBlock":
             content = node.get("content", [])
-            code_text = "".join(extract_text(child, in_list) for child in content)
+            code_text = "".join(extract_text(child, list_depth) for child in content)
             language = node.get("attrs", {}).get("language", "")
             # Preserve code formatting - don't strip, but ensure proper code block
             text = f"```{language}\n{code_text}\n```\n\n"
@@ -242,18 +372,25 @@ def adf_to_text(adf_content: Dict[str, Any]) -> str:
 
         elif node_type == "media":
             attrs = node.get("attrs", {})
+            media_id = attrs.get("id", "")
             alt = attrs.get("alt", "")
             title = attrs.get("title", "")
             
-            # Just show the image name/alt text, not a full URL
             display_text = alt or title or "attachment"
-            # Images should be on their own line with spacing for better markdown rendering
-            if in_list:
-                # In lists, images should be on a new line but without extra spacing
-                text = f"\n![{display_text}]\n"
+            
+            # Check if we have base64 data for this media in cache
+            if media_id and media_id in _media_cache:
+                data_uri = _media_cache[media_id]
+                if list_depth > 0:
+                    text = f"\n![{display_text}]({data_uri})\n"
+                else:
+                    text = f"\n![{display_text}]({data_uri})\n\n"
             else:
-                # Outside lists, images get proper spacing
-                text = f"\n![{display_text}]\n\n"
+                # Fallback: just show the image name/alt text
+                if list_depth > 0:
+                    text = f"\n![{display_text}]\n"
+                else:
+                    text = f"\n![{display_text}]\n\n"
 
         elif node_type == "mention":
             attrs = node.get("attrs", {})
@@ -279,17 +416,20 @@ def adf_to_text(adf_content: Dict[str, Any]) -> str:
                     for cell in row.get("content", []):
                         cell_type = cell.get("type", "")
                         if cell_type in ["tableCell", "tableHeader"]:
-                            cell_text = extract_text(cell, in_list).strip()
+                            # Strip marks (bold, italic, etc.) - they don't render in markdown tables
+                            cell_text = extract_text(cell, list_depth, strip_marks=True).strip()
                             # Escape pipe characters in cell content
                             cell_text = cell_text.replace("|", "\\|")
+                            # Replace newlines with space for markdown table compatibility
+                            cell_text = cell_text.replace("\n", " ")
                             cells.append(cell_text)
                     
                     if cells:
-                        rows.append(" | ".join(cells))
+                        rows.append("| " + " | ".join(cells) + " |")
                         
                         # Add header separator after first row
                         if is_first_row:
-                            separator = " | ".join(["---"] * len(cells))
+                            separator = "| " + " | ".join(["---"] * len(cells)) + " |"
                             rows.append(separator)
                             is_first_row = False
             
@@ -298,22 +438,126 @@ def adf_to_text(adf_content: Dict[str, Any]) -> str:
 
         elif node_type in ["tableCell", "tableHeader"]:
             content = node.get("content", [])
-            text = "".join(extract_text(child, in_list) for child in content)
+            # Pass strip_marks through to children
+            text = "".join(extract_text(child, list_depth, strip_marks) for child in content)
 
         elif node_type == "panel":
             attrs = node.get("attrs", {})
             panel_type = attrs.get("panelType", "info")
             content = node.get("content", [])
-            panel_text = "".join(extract_text(child, in_list) for child in content).strip()
+            panel_text = "".join(extract_text(child, list_depth) for child in content).strip()
             if panel_text:
                 # Use blockquote style for panels
                 panel_lines = panel_text.split("\n")
                 panel_lines = [f"> **{panel_type.upper()}**: {line}" if line.strip() else ">" for line in panel_lines]
                 text = "\n".join(panel_lines) + "\n\n"
 
+        # Media wrappers - just extract the media content
+        elif node_type in ["mediaSingle", "mediaGroup"]:
+            content = node.get("content", [])
+            text = "".join(extract_text(child, list_depth) for child in content)
+
+        # Smart links / inline cards
+        elif node_type == "inlineCard":
+            attrs = node.get("attrs", {})
+            url = attrs.get("url", "")
+            if url:
+                text = f"[{url}]({url})"
+
+        # Task lists (checkboxes)
+        elif node_type == "taskList":
+            content = node.get("content", [])
+            items: List[str] = []
+            for child in content:
+                if child.get("type") == "taskItem":
+                    item_text = extract_text(child, list_depth + 1).strip()
+                    if item_text:
+                        items.append(item_text)
+            if items:
+                text = "\n".join(items) + "\n\n"
+
+        elif node_type == "taskItem":
+            attrs = node.get("attrs", {})
+            state = attrs.get("state", "TODO")
+            content = node.get("content", [])
+            item_text = "".join(extract_text(child, list_depth) for child in content).strip()
+            checkbox = "[x]" if state == "DONE" else "[ ]"
+            task_indent = "  " * (list_depth - 1) if list_depth > 0 else ""
+            text = f"{task_indent}- {checkbox} {item_text}"
+
+        # Decision lists
+        elif node_type == "decisionList":
+            content = node.get("content", [])
+            items: List[str] = []
+            for child in content:
+                if child.get("type") == "decisionItem":
+                    item_text = extract_text(child, list_depth + 1).strip()
+                    if item_text:
+                        items.append(item_text)
+            if items:
+                text = "\n".join(items) + "\n\n"
+
+        elif node_type == "decisionItem":
+            attrs = node.get("attrs", {})
+            state = attrs.get("state", "DECIDED")
+            content = node.get("content", [])
+            item_text = "".join(extract_text(child, list_depth) for child in content).strip()
+            marker = "✓" if state == "DECIDED" else "◇"
+            decision_indent = "  " * (list_depth - 1) if list_depth > 0 else ""
+            text = f"{decision_indent}{marker} {item_text}"
+
+        # Status badges
+        elif node_type == "status":
+            attrs = node.get("attrs", {})
+            status_text = attrs.get("text", "")
+            if status_text:
+                text = f"[{status_text}]"
+
+        # Date nodes
+        elif node_type == "date":
+            attrs = node.get("attrs", {})
+            timestamp = attrs.get("timestamp", "")
+            if timestamp:
+                try:
+                    # Convert timestamp to readable date
+                    dt = datetime.fromtimestamp(int(timestamp) / 1000, tz=timezone.utc)
+                    text = dt.strftime("%Y-%m-%d")
+                except (ValueError, TypeError):
+                    text = timestamp
+
+        # Expand/collapsible sections
+        elif node_type in ["expand", "nestedExpand"]:
+            attrs = node.get("attrs", {})
+            title = attrs.get("title", "Details")
+            content = node.get("content", [])
+            expand_text = "".join(extract_text(child, list_depth) for child in content).strip()
+            if expand_text:
+                text = f"**{title}**\n{expand_text}\n\n"
+
+        # Layout containers - just extract content
+        elif node_type == "layoutSection":
+            content = node.get("content", [])
+            column_texts: List[str] = []
+            for child in content:
+                child_text = extract_text(child, list_depth).strip()
+                if child_text:
+                    column_texts.append(child_text)
+            if column_texts:
+                text = "\n\n".join(column_texts) + "\n\n"
+
+        elif node_type == "layoutColumn":
+            content = node.get("content", [])
+            text = "".join(extract_text(child, list_depth) for child in content)
+
+        # Placeholder nodes - just show placeholder text
+        elif node_type == "placeholder":
+            attrs = node.get("attrs", {})
+            text = attrs.get("text", "")
+
+        # Generic fallback for any node with content
         elif "content" in node:
             content = node.get("content", [])
-            text = "".join(extract_text(child, in_list) for child in content)
+            text = "".join(extract_text(child, list_depth, strip_marks) for child in content)
 
         return text
 
@@ -342,8 +586,51 @@ def adf_to_text(adf_content: Dict[str, Any]) -> str:
 
     return result.strip()
 
+
+async def adf_to_text_with_images(
+    adf_content: Dict[str, Any],
+    media_fetcher: Callable[[str, str], Awaitable[Optional[str]]]
+) -> str:
+    """
+    Convert Atlassian Document Format (ADF) to Markdown with embedded images.
+    
+    This async version fetches media content and embeds it as base64 data URIs.
+    Used for streaming content that needs to be indexed by multimodal models.
+    
+    Args:
+        adf_content: The ADF document to convert
+        media_fetcher: Async callback that takes (media_id, alt_text) and returns
+                      base64 data URI string or None if fetch fails
+    
+    Returns:
+        Markdown text with images embedded as base64 data URIs
+    """
+    if not adf_content or not isinstance(adf_content, dict):
+        return ""
+    
+    # Extract all media nodes and fetch their content
+    media_nodes = extract_media_from_adf(adf_content)
+    media_cache: Dict[str, str] = {}
+    
+    # Fetch all media (sequentially to avoid rate limits)
+    for media_info in media_nodes:
+        media_id = media_info.get("id", "")
+        alt_text = media_info.get("alt", "")
+        if media_id:
+            try:
+                data_uri = await media_fetcher(media_id, alt_text)
+                if data_uri:
+                    media_cache[media_id] = data_uri
+            except Exception:
+                # If fetch fails, we'll just use the alt text
+                pass
+    
+    # Reuse the main adf_to_text function with the media cache
+    return adf_to_text(adf_content, media_cache)
+
+
 @ConnectorBuilder("Jira")\
-    .in_group("Atlassian")\
+    .in_group(AppGroups.ATLASSIAN.value)\
     .with_auth_type("OAUTH")\
     .with_description("Sync issues from Jira Cloud")\
     .with_categories(["Storage"])\
@@ -613,9 +900,8 @@ class JiraConnector(BaseConnector):
             # Sync project lead roles BEFORE RecordGroups (using raw project data)
             await self._sync_project_lead_roles(raw_projects, jira_users)
 
-            # Create RecordGroups without permissions first (permissions added at END of sync)
-            projects_without_permissions = [(record_group, []) for record_group, _ in projects]
-            await self.data_entities_processor.on_new_record_groups(projects_without_permissions)
+            # Create RecordGroups and its permissions
+            await self.data_entities_processor.on_new_record_groups(projects)
 
             # Sync issues for all projects
             last_sync_time = await self._get_issues_sync_checkpoint()
@@ -624,10 +910,6 @@ class JiraConnector(BaseConnector):
             # Update sync checkpoint and handle deletions
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
             await self._handle_issue_deletions(last_sync_time)
-
-            # Add permissions to RecordGroups at the END of sync (ensures all entities exist)
-            self.logger.info("Adding permissions to RecordGroups (after issue sync)...")
-            await self.data_entities_processor.on_new_record_groups(projects)
 
             self.logger.info(f"Jira sync completed. {sync_stats}")
 
@@ -835,7 +1117,7 @@ class JiraConnector(BaseConnector):
                 startAt=start_at
             )
 
-            if response.status != HTTP_STATUS_OK:
+            if response.status != HttpStatusCode.OK.value:
                 raise Exception(f"Failed to fetch users: {response.text()}")
 
             users_batch = response.json()
@@ -942,7 +1224,7 @@ class JiraConnector(BaseConnector):
                     to=to_date
                 )
 
-                if response.status != HTTP_STATUS_OK:
+                if response.status != HttpStatusCode.OK.value:
                     self.logger.warning(f"Failed to fetch audit records: {response.text()}")
                     break
 
@@ -989,7 +1271,7 @@ class JiraConnector(BaseConnector):
                 datasource = await self._get_fresh_datasource()
                 response = await datasource.get_issue(issueIdOrKey=issue_key)
 
-                if response.status == HTTP_STATUS_OK:
+                if response.status == HttpStatusCode.OK.value:
                     self.logger.warning(f"Issue {issue_key} still exists in Jira (not deleted, maybe moved?)")
                     return
 
@@ -1118,7 +1400,7 @@ class JiraConnector(BaseConnector):
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_all_application_roles()
 
-            if response.status != HTTP_STATUS_OK:
+            if response.status != HttpStatusCode.OK.value:
                 self.logger.warning(f"Failed to fetch application roles: {response.text()}")
                 return {}
 
@@ -1175,7 +1457,7 @@ class JiraConnector(BaseConnector):
                 expand="all"
             )
 
-            if scheme_response.status != HTTP_STATUS_OK:
+            if scheme_response.status != HttpStatusCode.OK.value:
                 self.logger.warning(f"Failed to fetch permission scheme for {project_key}: {scheme_response.text()}")
                 return []
 
@@ -1188,7 +1470,7 @@ class JiraConnector(BaseConnector):
                 expand="all"
             )
 
-            if grants_response.status != HTTP_STATUS_OK:
+            if grants_response.status != HttpStatusCode.OK.value:
                 self.logger.warning(f"Failed to fetch permission grants for scheme {scheme_id}: {grants_response.text()}")
                 return []
 
@@ -1365,7 +1647,7 @@ class JiraConnector(BaseConnector):
                             if user:
                                 app_users.append(user)
                             else:
-                                self.logger.debug(f"Member email {email} not found in synced users")
+                                self.logger.warning(f"⚠️️ Member email {email} not found in synced users")
 
                     # Store mapping by both group_id and group_name for flexible lookup
                     groups_members_map[group_id] = app_users
@@ -1380,7 +1662,7 @@ class JiraConnector(BaseConnector):
                         self.logger.debug(f"Group {group_name}: no members with email")
 
                 except Exception as group_error:
-                    self.logger.error(f"Failed to process group {group.get('name')}: {group_error}")
+                    self.logger.error(f"❌ Failed to process group {group.get('name')}: {group_error}")
                     continue
 
             # Save all groups in one batch
@@ -1392,7 +1674,7 @@ class JiraConnector(BaseConnector):
             return groups_members_map
 
         except Exception as e:
-            self.logger.error(f"Error syncing user groups: {e}")
+            self.logger.error(f"❌ Error syncing user groups: {e}")
             return {}
 
     async def _fetch_groups(self) -> List[Dict[str, Any]]:
@@ -1414,7 +1696,7 @@ class JiraConnector(BaseConnector):
                     maxResults=max_results
                 )
 
-                if response.status != HTTP_STATUS_OK:
+                if response.status != HttpStatusCode.OK.value:
                     self.logger.error(f"Failed to fetch groups: {response.text()}")
                     break
 
@@ -1465,7 +1747,7 @@ class JiraConnector(BaseConnector):
                     maxResults=max_results
                 )
 
-                if response.status != HTTP_STATUS_OK:
+                if response.status != HttpStatusCode.OK.value:
                     self.logger.warning(f"Failed to fetch members for group {group_name}: {response.text()}")
                     break
 
@@ -1540,7 +1822,7 @@ class JiraConnector(BaseConnector):
                 datasource = await self._get_fresh_datasource()
                 response = await datasource.get_project_roles(projectIdOrKey=project_key)
 
-                if response.status != HTTP_STATUS_OK:
+                if response.status != HttpStatusCode.OK.value:
                     self.logger.warning(f"Failed to fetch roles for project {project_key}: {response.status}")
                     continue
 
@@ -1568,7 +1850,7 @@ class JiraConnector(BaseConnector):
                             excludeInactiveUsers=True
                         )
 
-                        if role_response.status != HTTP_STATUS_OK:
+                        if role_response.status != HttpStatusCode.OK.value:
                             self.logger.warning(f"  {project_key}: Failed to fetch role {role_name}: {role_response.status}")
                             continue
 
@@ -1744,11 +2026,11 @@ class JiraConnector(BaseConnector):
                         expand="description,url,permissions,issueTypes,lead"
                     )
 
-                    if response.status == HTTP_STATUS_OK:
+                    if response.status == HttpStatusCode.OK.value:
                         project = response.json()
                         projects.append(project)
                         self.logger.debug(f"Successfully fetched project: {project_key}")
-                    elif response.status == HTTP_STATUS_NOT_FOUND:
+                    elif response.status == HttpStatusCode.NOT_FOUND.value:
                         self.logger.warning(f"Project {project_key} not found, skipping")
                     else:
                         self.logger.warning(f"Failed to fetch project {project_key}: HTTP {response.status}")
@@ -1769,7 +2051,7 @@ class JiraConnector(BaseConnector):
                     expand=["description", "url", "permissions", "issueTypes", "lead"]
                 )
 
-                if response.status != HTTP_STATUS_OK:
+                if response.status != HttpStatusCode.OK.value:
                     raise Exception(f"Failed to fetch projects: {response.text()}")
 
                 projects_batch = response.json()
@@ -1914,35 +2196,14 @@ class JiraConnector(BaseConnector):
                     expand="renderedFields,changelog"
                 )
 
-                if response.status != HTTP_STATUS_OK:
+                if response.status != HttpStatusCode.OK.value:
                     raise Exception(f"Failed to fetch issues: {response.text()}")
 
                 issues_batch = response.json()
 
             except Exception as e:
-                if "400" in str(e):
-                    self.logger.warning(f"Got 400 with project key, trying with project ID {project_id}")
-                    jql = f'project = {project_id}'
-                    try:
-                        datasource = await self._get_fresh_datasource()
-                        response = await datasource.search_and_reconsile_issues_using_jql_post(
-                            jql=jql,
-                            maxResults=DEFAULT_MAX_RESULTS,
-                            nextPageToken=next_page_token,
-                            fields=ISSUE_SEARCH_FIELDS,
-                            expand="renderedFields,changelog"
-                        )
-                        if response.status == HTTP_STATUS_OK:
-                            issues_batch = response.json()
-                            self.logger.info("Successfully fetched issues using project ID")
-                        else:
-                            self.logger.error(f"Failed to fetch issues with project ID {project_id}: {response.text()}")
-                            break
-                    except Exception as id_e:
-                        self.logger.error(f"Failed to fetch issues with project ID {project_id}: {id_e}")
-                        break
-                else:
-                    raise
+                self.logger.error(f"Failed to fetch issues for project {project_key}: {e}")
+                raise
 
             batch_issues = issues_batch.get("issues", [])
             if not batch_issues:
@@ -2284,20 +2545,7 @@ class JiraConnector(BaseConnector):
             connector_name=Connectors.JIRA,
             external_id=external_id,
         )
-        
-        # Fallback: some older data might have used the raw Jira ID as external_record_id
-        if not record:
-            legacy_record = await tx_store.get_record_by_external_id(
-                connector_name=Connectors.JIRA,
-                external_id=str(attachment_id),
-            )
-            if legacy_record:
-                record = legacy_record
-                self.logger.debug(
-                    f"Found legacy attachment record for id {attachment_id} "
-                    f"using raw external_record_id {attachment_id}"
-                )
-        
+
         return record
 
     async def _handle_attachment_deletions_from_changelog(
@@ -2417,7 +2665,8 @@ class JiraConnector(BaseConnector):
                     await self._delete_attachment_record(
                         record, 
                         issue_key, 
-                        tx_store,"because it was removed from description"
+                        tx_store,
+                        "because it was removed from description"
                     )
                     deleted_count += 1
                     deleted_by_filename += 1
@@ -2512,7 +2761,7 @@ class JiraConnector(BaseConnector):
                     startAt=start_at
                 )
 
-                if response.status != HTTP_STATUS_OK:
+                if response.status != HttpStatusCode.OK.value:
                     raise Exception(f"Failed to fetch comments: {response.text()}")
 
                 comment_data = response.json()
@@ -2896,8 +3145,100 @@ class JiraConnector(BaseConnector):
 
         return permissions
 
+    async def _fetch_media_as_base64(
+        self,
+        issue_id: str,
+        media_id: str,
+        media_alt: str
+    ) -> Optional[str]:
+        """
+        Fetch attachment content by filename and return as base64 data URI.
+        
+        Jira inline media (images in description/comments) reference attachments
+        on the issue. We find the attachment by filename (media alt text) and
+        fetch its content.
+        
+        Args:
+            issue_id: The issue ID/key containing the attachment
+            media_id: The media ID from ADF (not always useful for fetching)
+            media_alt: The alt text, usually the filename
+            
+        Returns:
+            Base64 data URI string like "data:image/png;base64,..." or None
+        """
+        try:
+            datasource = await self._get_fresh_datasource()
+            
+            # Get issue to find attachments
+            response = await datasource.get_issue(
+                issueIdOrKey=issue_id,
+                fields=["attachment"]
+            )
+            
+            if response.status != HttpStatusCode.OK.value:
+                self.logger.warning(f"Failed to fetch issue {issue_id} for media: {response.status}")
+                return None
+            
+            issue_details = response.json()
+            attachments = issue_details.get("fields", {}).get("attachment", [])
+            
+            if not attachments:
+                self.logger.debug(f"No attachments found for issue {issue_id}")
+                return None
+            
+            # Find attachment matching the filename (alt text)
+            target_attachment = None
+            for attachment in attachments:
+                filename = attachment.get("filename", "")
+                if filename == media_alt:
+                    target_attachment = attachment
+                    break
+            
+            if not target_attachment:
+                # Try partial match if exact match fails
+                for attachment in attachments:
+                    filename = attachment.get("filename", "")
+                    if media_alt in filename or filename in media_alt:
+                        target_attachment = attachment
+                        break
+            
+            if not target_attachment:
+                self.logger.debug(f"No attachment found matching '{media_alt}' in issue {issue_id}")
+                return None
+            
+            # Fetch attachment content
+            attachment_id = target_attachment.get("id")
+            mime_type = target_attachment.get("mimeType", "application/octet-stream")
+            
+            content_response = await datasource.get_attachment_content(
+                id=attachment_id,
+                redirect=False
+            )
+            
+            if content_response.status != HttpStatusCode.OK.value:
+                self.logger.warning(f"Failed to fetch attachment content {attachment_id}: {content_response.status}")
+                return None
+            
+            # Convert to base64
+            content_bytes = content_response.bytes()
+            base64_data = base64.b64encode(content_bytes).decode('utf-8')
+            
+            # Create data URI
+            data_uri = f"data:{mime_type};base64,{base64_data}"
+            
+            self.logger.debug(f"Successfully converted attachment '{media_alt}' to base64 ({len(base64_data)} chars)")
+            return data_uri
+            
+        except Exception as e:
+            self.logger.warning(f"Error fetching media '{media_alt}' for issue {issue_id}: {e}")
+            return None
+
     async def _fetch_issue_content(self, issue_id: str) -> str:
-        """Fetch full issue content for streaming using DataSource"""
+        """Fetch full issue content for streaming using DataSource.
+        
+        Fetches images from attachments and embeds them as base64 data URIs
+        for multimodal indexing.
+        """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
 
@@ -2908,7 +3249,7 @@ class JiraConnector(BaseConnector):
             expand=["renderedFields"]
         )
 
-        if response.status != HTTP_STATUS_OK:
+        if response.status != HttpStatusCode.OK.value:
             raise Exception(f"Failed to fetch issue content: {response.text()}")
 
         issue_details = response.json()
@@ -2917,13 +3258,28 @@ class JiraConnector(BaseConnector):
         summary = fields.get("summary", "")
 
         summary_text = f"Title: {summary}" if summary else ""
-        description_text = f"Description:\n{adf_to_text(description)}" if description else ""
+        
+        # Create media fetcher callback for this issue
+        async def media_fetcher(media_id: str, alt_text: str) -> Optional[str]:
+            return await self._fetch_media_as_base64(issue_id, media_id, alt_text)
+        
+        # Convert description with embedded images
+        if description:
+            description_md = await adf_to_text_with_images(description, media_fetcher)
+            description_text = f"Description:\n{description_md}"
+        else:
+            description_text = ""
+        
         combined_text = f"# {summary_text}\n\n{description_text}"
 
         return combined_text
 
     async def _fetch_comment_content(self, comment_id: str, issue_id: str) -> str:
-        """Fetch comment content for streaming using DataSource"""
+        """Fetch comment content for streaming using DataSource.
+        
+        Fetches images from attachments and embeds them as base64 data URIs
+        for multimodal indexing.
+        """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
 
@@ -2934,14 +3290,23 @@ class JiraConnector(BaseConnector):
             id=comment_id
         )
 
-        if response.status != HTTP_STATUS_OK:
+        if response.status != HttpStatusCode.OK.value:
             raise Exception(f"Failed to fetch comment content: {response.text()}")
 
         comment_details = response.json()
 
         # Extract comment body (ADF format)
         body_adf = comment_details.get("body")
-        comment_text = adf_to_text(body_adf) if body_adf else ""
+        
+        # Create media fetcher callback for the parent issue
+        async def media_fetcher(media_id: str, alt_text: str) -> Optional[str]:
+            return await self._fetch_media_as_base64(issue_id, media_id, alt_text)
+        
+        # Convert comment body with embedded images
+        if body_adf:
+            comment_text = await adf_to_text_with_images(body_adf, media_fetcher)
+        else:
+            comment_text = ""
 
         # Extract author info
         author = comment_details.get("author", {})
@@ -2975,7 +3340,7 @@ class JiraConnector(BaseConnector):
             # Test by fetching user info (simple API call)
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_current_user()
-            return response.status == HTTP_STATUS_OK
+            return response.status == HttpStatusCode.OK.value
         except Exception as e:
             self.logger.error(f"Connection test failed: {e}")
             return False
@@ -3118,11 +3483,11 @@ class JiraConnector(BaseConnector):
                 expand=[]
             )
 
-            if response.status == HTTP_STATUS_GONE or response.status == HTTP_STATUS_BAD_REQUEST:
+            if response.status == HttpStatusCode.GONE.value or response.status == HttpStatusCode.BAD_REQUEST.value:
                 self.logger.warning(f"Issue {issue_id} not found at source, may have been deleted")
                 return None
 
-            if response.status != HTTP_STATUS_OK:
+            if response.status != HttpStatusCode.OK.value:
                 self.logger.warning(f"Failed to fetch issue {issue_id}: HTTP {response.status}")
                 return None
 
@@ -3231,11 +3596,11 @@ class JiraConnector(BaseConnector):
                 id=comment_id
             )
 
-            if response.status == HTTP_STATUS_GONE or response.status == HTTP_STATUS_BAD_REQUEST:
+            if response.status == HttpStatusCode.GONE.value or response.status == HttpStatusCode.BAD_REQUEST.value:
                 self.logger.warning(f"Comment {comment_id} not found at source, may have been deleted")
                 return None
 
-            if response.status != HTTP_STATUS_OK:
+            if response.status != HttpStatusCode.OK.value:
                 self.logger.warning(f"Failed to fetch comment {comment_id}: HTTP {response.status}")
                 return None
 
@@ -3297,7 +3662,7 @@ class JiraConnector(BaseConnector):
 
             # Build parent issue permissions (creator, reporter, and assignee)
             parent_permissions = []
-            if parent_response.status == HTTP_STATUS_OK:
+            if parent_response.status == HttpStatusCode.OK.value:
                 parent_data = parent_response.json()
                 parent_fields = parent_data.get("fields", {})
                 parent_creator = parent_fields.get("creator", {})
@@ -3352,11 +3717,11 @@ class JiraConnector(BaseConnector):
                 expand=[]
             )
 
-            if response.status == HTTP_STATUS_GONE or response.status == HTTP_STATUS_BAD_REQUEST:
+            if response.status == HttpStatusCode.GONE.value or response.status == HttpStatusCode.BAD_REQUEST.value:
                 self.logger.warning(f"Parent issue {issue_id} not found at source")
                 return None
 
-            if response.status != HTTP_STATUS_OK:
+            if response.status != HttpStatusCode.OK.value:
                 self.logger.warning(f"Failed to fetch parent issue {issue_id}: HTTP {response.status}")
                 return None
 
@@ -3502,7 +3867,7 @@ class JiraConnector(BaseConnector):
                     redirect=False
                 )
 
-                if response.status != HTTP_STATUS_OK:
+                if response.status != HttpStatusCode.OK.value:
                     raise Exception(f"Failed to fetch attachment content: {response.text()}")
 
                 # Stream the attachment content
