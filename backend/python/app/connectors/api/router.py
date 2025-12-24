@@ -1765,20 +1765,29 @@ async def get_service_account_credentials(org_id: str, user_id: str, logger, ara
                 container.service_creds_cache = {}
                 logger.info("Created service credentials cache")
 
+            # Get user email
+            user = await arango_service.get_user_by_user_id(user_id)
+            if not user:
+                raise Exception(f"User not found: {user_id}")
+
             cache_key = f"{org_id}_{user_id}_{connector_id}"
             logger.info(f"Service account cache key: {cache_key}")
 
             if cache_key in container.service_creds_cache:
                 logger.info(f"Service account cache hit: {cache_key}")
-                return container.service_creds_cache[cache_key]
+                credentials = container.service_creds_cache[cache_key]
+                cached_email = credentials._subject
+
+                if cached_email == user["email"]:
+                    logger.info(f"Cached credentials are valid for {cache_key}")
+                    return container.service_creds_cache[cache_key]
+                else:
+                    # Remove expired credentials from cache
+                    logger.info(f"Removing expired credentials from cache: {cache_key}")
+                    container.service_creds_cache.pop(cache_key, None)
 
             # Cache miss - create new credentials
             logger.info(f"Service account cache miss: {cache_key}. Creating new credentials.")
-
-            # Get user email
-            user = await arango_service.get_user_by_user_id(user_id)
-            if not user:
-                raise Exception(f"User not found: {user_id}")
 
             # Create new credentials
             SCOPES = GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
