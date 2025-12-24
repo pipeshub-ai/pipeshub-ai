@@ -311,7 +311,7 @@ class Arango(Transformer):
                     "extractionStatus": "COMPLETED",
                     "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
                 }
-                
+
                 if is_vlm_ocr_processed:
                     status_doc["isVLMOcrProcessed"] = True
 
@@ -321,7 +321,7 @@ class Arango(Transformer):
                 await tx_store.batch_upsert_nodes(
                     [status_doc], CollectionNames.RECORDS.value
                 )
-                
+
 
             except Exception as e:
                 self.logger.error(f"❌ Error saving metadata to ArangoDB: {str(e)}")

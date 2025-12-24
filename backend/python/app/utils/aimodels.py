@@ -81,10 +81,10 @@ logger = create_logger("aimodels")
 def is_multimodal_llm(config: Dict[str, Any]) -> bool:
     """
     Check if an LLM configuration supports multimodal capabilities.
-    
+
     Args:
         config: LLM configuration dictionary
-        
+
     Returns:
         bool: True if the LLM supports multimodal capabilities
     """

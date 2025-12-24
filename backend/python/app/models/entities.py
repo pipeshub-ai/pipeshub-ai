@@ -91,10 +91,10 @@ class Record(BaseModel):
     fetch_signed_url: Optional[str] = None
     preview_renderable: Optional[bool] = True
     is_shared: Optional[bool] = False
-    
+
     # Processing flags
     is_vlm_ocr_processed: Optional[bool] = Field(default=False, description="Flag indicating if VLM OCR processing has been used to process the record")
-    
+
     # Content blocks
     block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
     semantic_metadata: Optional[SemanticMetadata] = None
