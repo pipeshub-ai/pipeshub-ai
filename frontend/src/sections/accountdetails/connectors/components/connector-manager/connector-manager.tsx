@@ -11,6 +11,12 @@ import {
   useTheme,
   Stack,
   Grid,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  TextField,
+  Button as MuiButton,
   Button,
   Paper,
 } from '@mui/material';
@@ -35,9 +41,7 @@ interface ConnectorManagerProps {
   showStats?: boolean;
 }
 
-const ConnectorManager: React.FC<ConnectorManagerProps> = ({ 
-  showStats = true 
-}) => {
+const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
 
@@ -62,6 +66,8 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({
     handleConfigClose,
     handleConfigSuccess,
     handleRefresh,
+    handleDeleteInstance,
+    handleRenameInstance,
     handleFilterSelection,
     handleFilterDialogClose,
     setError,
@@ -70,6 +76,9 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({
 
   const { isBusiness } = useAccountType();
   const navigate = useNavigate();
+  const [renameOpen, setRenameOpen] = React.useState(false);
+  const [renameValue, setRenameValue] = React.useState('');
+  const [deleteOpen, setDeleteOpen] = React.useState(false);
 
   // Loading state with skeleton
   if (loading) {
@@ -207,11 +216,11 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({
                         color: 'text.secondary',
                       }}
                     >
-                      {error}
+          {error}
                     </Typography>
                   </Box>
                 )}
-              </Alert>
+        </Alert>
 
               {/* Beta Information Box */}
               {isBetaAccessError && (
@@ -306,13 +315,13 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({
   const isActive = connector.isActive || false;
   const authType = (connector.authType || '').toUpperCase();
   const isOauth = authType === 'OAUTH';
-  const canEnable = isActive ? true : (isOauth ? isAuthenticated : isConfigured);
+  const canEnable = isActive ? true : isOauth ? isAuthenticated : isConfigured;
+  const supportsSync = connector.supportsSync || false;
 
   // Determine whether to show Authenticate button
   const isGoogleWorkspace = connector.appGroup === 'Google Workspace';
   const hideAuthenticate =
-    authType === 'OAUTH_ADMIN_CONSENT' ||
-    (isOauth && isBusiness && isGoogleWorkspace);
+    authType === 'OAUTH_ADMIN_CONSENT' || (isOauth && isBusiness && isGoogleWorkspace && connector.scope === 'team');
 
   return (
     <Container maxWidth="xl" sx={{ py: 2 }}>
@@ -326,11 +335,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({
         }}
       >
         {/* Header */}
-        <ConnectorHeader
-          connector={connector}
-          loading={loading}
-          onRefresh={handleRefresh}
-        />
+        <ConnectorHeader connector={connector} loading={loading} onRefresh={handleRefresh} />
 
         {/* Content */}
         <Box sx={{ p: 2 }}>
@@ -375,8 +380,12 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({
                   loading={loading}
                   onAuthenticate={handleAuthenticate}
                   onConfigure={handleConfigureClick}
-                  onRefresh={handleRefresh}
                   onToggle={handleToggleConnector}
+                  onDelete={() => setDeleteOpen(true)}
+                  onRename={() => {
+                    setRenameValue(connector.name);
+                    setRenameOpen(true);
+                  }}
                   hideAuthenticate={hideAuthenticate}
                 />
               </Grid>
@@ -397,20 +406,24 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({
               }}
             >
               <Typography variant="body2" sx={{ fontWeight: 500, fontSize: '0.8125rem' }}>
-                {!isConfigured
-                  ? `Configure this connector to set up authentication and sync preferences.`
-                  : isActive
-                    ? `This connector is active and syncing data. Use the toggle to disable it.`
-                    : `This connector is configured but inactive. Use the toggle to enable it.`}
+                {!supportsSync
+                  ? !isConfigured
+                    ? `Configure this connector for agent use. Sync is not supported.`
+                    : `This connector can be configured for agent use. Sync is not supported.`
+                  : !isConfigured
+                    ? `Configure this connector to set up authentication and sync preferences.`
+                    : isActive
+                      ? `This connector is active and syncing data. Use the toggle to disable it.`
+                      : `This connector is configured but inactive. Use the toggle to enable it.`}
               </Typography>
             </Alert>
 
             {/* Statistics Section */}
-            {showStats && (
+            {showStats && supportsSync && (
               <Box>
                 <ConnectorStatistics
                   title="Performance Statistics"
-                  connectorNames={[connector.name]}
+                  connector={connector}
                   showUploadTab={false}
                   showActions={isActive}
                 />
@@ -460,6 +473,57 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({
           </Alert>
         </Snackbar>
       </Box>
+
+      {/* Rename Dialog */}
+      <Dialog open={renameOpen} onClose={() => setRenameOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Rename Connector Instance</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            margin="dense"
+            label="Instance name"
+            fullWidth
+            value={renameValue}
+            onChange={(e) => setRenameValue(e.target.value)}
+          />
+        </DialogContent>
+        <DialogActions>
+          <MuiButton onClick={() => setRenameOpen(false)}>Cancel</MuiButton>
+          <MuiButton
+            variant="contained"
+            onClick={async () => {
+              await handleRenameInstance(renameValue);
+              setRenameOpen(false);
+            }}
+          >
+            Save
+          </MuiButton>
+        </DialogActions>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteOpen} onClose={() => setDeleteOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Delete Connector Instance</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2">
+            Are you sure you want to delete &quot;{connector.name}&quot;? This action cannot be
+            undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <MuiButton onClick={() => setDeleteOpen(false)}>Cancel</MuiButton>
+          <MuiButton
+            color="error"
+            variant="contained"
+            onClick={async () => {
+              await handleDeleteInstance();
+              setDeleteOpen(false);
+            }}
+          >
+            Delete
+          </MuiButton>
+        </DialogActions>
+      </Dialog>
     </Container>
   );
 };

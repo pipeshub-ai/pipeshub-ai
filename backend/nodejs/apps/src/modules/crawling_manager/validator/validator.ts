@@ -61,6 +61,7 @@ const ScheduleConfigSchema = z.discriminatedUnion('scheduleType', [
 export const ConnectorTypeSchema = z.object({
   params: z.object({
     connector: z.string(),
+    connectorId: z.string(),
   }),
 });
 
@@ -68,6 +69,7 @@ export const ConnectorTypeSchema = z.object({
 export const CrawlingScheduleRequestSchema = z.object({
   params: z.object({
     connector: z.string(),
+    connectorId: z.string(),
   }),
   body: z.object({
     scheduleConfig: ScheduleConfigSchema,
@@ -84,6 +86,7 @@ export const CrawlingScheduleRequestSchema = z.object({
 export const JobStatusRequestSchema = z.object({
   params: z.object({
     connector: z.string(),
+    connectorId: z.string(),
   }),
   headers: z.object({
     authorization: z.string(),

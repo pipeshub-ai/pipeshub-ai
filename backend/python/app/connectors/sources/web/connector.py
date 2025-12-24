@@ -21,6 +21,7 @@ from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.interfaces.connector.apps import App
 from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
+    ConnectorScope,
     CustomField,
     DocumentationLink,
 )
@@ -57,14 +58,15 @@ FILE_MIME_TYPES = {
 }
 
 class WebApp(App):
-    def __init__(self) -> None:
-        super().__init__(Connectors.WEB, AppGroups.WEB)
+    def __init__(self, connector_id: str) -> None:
+        super().__init__(Connectors.WEB, AppGroups.WEB, connector_id)
 
 @ConnectorBuilder("Web")\
     .in_group("Web")\
     .with_auth_type("NONE")\
     .with_description("Crawl and sync data from web pages")\
     .with_categories(["Web"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/web.svg")
         .with_realtime_support(False)
@@ -114,6 +116,8 @@ class WebApp(App):
             default_value="false",
             description="Follow links to external domains"
         ))
+        .with_sync_support(True)
+        .with_agent_support(False)
     )\
     .build_decorator()
 class WebConnector(BaseConnector):
@@ -135,11 +139,13 @@ class WebConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
+        connector_id: str
     ) -> None:
         super().__init__(
-            WebApp(), logger, data_entities_processor, data_store_provider, config_service
+            WebApp(connector_id), logger, data_entities_processor, data_store_provider, config_service, connector_id
         )
         self.connector_name = Connectors.WEB
+        self.connector_id = connector_id
 
         # Configuration
         self.url: Optional[str] = None
@@ -161,9 +167,7 @@ class WebConnector(BaseConnector):
         try:
             # Try to get config from different paths
             config = await self.config_service.get_config(
-                "/services/connectors/web/config"
-            ) or await self.config_service.get_config(
-                f"/services/connectors/web/config/{self.data_entities_processor.org_id}"
+                f"/services/connectors/{self.connector_id}/config"
             )
 
             if not config:
@@ -421,6 +425,7 @@ class WebConnector(BaseConnector):
                     version=0,
                     origin=OriginTypes.CONNECTOR.value,
                     connector_name=self.connector_name,
+                    connector_id=self.connector_id,
                     created_at=timestamp,
                     updated_at=timestamp,
                     source_created_at=timestamp,
@@ -608,7 +613,8 @@ class WebConnector(BaseConnector):
     @classmethod
     async def create_connector(
         cls, logger: Logger, data_store_provider: DataStoreProvider,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
+        connector_id: str
     ) -> BaseConnector:
         """Factory method to create a WebConnector instance."""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -616,7 +622,7 @@ class WebConnector(BaseConnector):
         )
         await data_entities_processor.initialize()
         return WebConnector(
-            logger, data_entities_processor, data_store_provider, config_service
+            logger, data_entities_processor, data_store_provider, config_service, connector_id
         )
 
     async def cleanup(self) -> None:

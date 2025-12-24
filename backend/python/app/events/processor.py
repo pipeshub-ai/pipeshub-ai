@@ -76,6 +76,7 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
         external_revision_id=record_dict.get("externalRevisionId"),
         connector_name=connector_name,
         is_vlm_ocr_processed=record_dict.get("isVLMOcrProcessed", False),
+        connector_id=record_dict.get("connectorId"),
     )
     return record
 
