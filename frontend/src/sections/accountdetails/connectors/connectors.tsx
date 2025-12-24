@@ -119,8 +119,14 @@ const Connectors: React.FC = () => {
   // Filter State
   const [searchInput, setSearchInput] = useState('');
   const [activeSearchQuery, setActiveSearchQuery] = useState(''); // What's actually being searched
-  // Initial scope will be set by useEffect when admin status is determined
-  const [selectedScope, setSelectedScope] = useState<'personal' | 'team'>('personal');
+  // Initialize scope: admins default to 'team', others to 'personal'
+  const [selectedScope, setSelectedScope] = useState<'personal' | 'team'>(() => {
+    // Use lazy initializer to check admin status immediately
+    if (isAdmin) {
+      return 'team'; // Admins default to team
+    }
+    return 'personal'; // Everyone else defaults to personal
+  });
   const [selectedFilter, setSelectedFilter] = useState<FilterType>('all');
   const [pageByScope, setPageByScope] = useState<PageState>({
     personal: INITIAL_PAGE,
@@ -140,6 +146,7 @@ const Connectors: React.FC = () => {
   const requestIdRef = useRef(0);
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isRequestInProgressRef = useRef(false);
+  const scopeInitializedRef = useRef(false);
 
   // ============================================================================
   // COMPUTED VALUES
@@ -258,12 +265,19 @@ const Connectors: React.FC = () => {
   // Admins default to personal (but can switch to team)
   // Non-admins are always locked to personal
   useEffect(() => {
-    if (!isBusiness || !isAdmin) {
-      // Non-admin business users and individual users are locked to personal
-      setSelectedScope('personal');
+    // Only initialize once to avoid overriding user selections or causing duplicate API calls
+    if (scopeInitializedRef.current) {
+      return;
     }
-    // Admins can keep their selected scope or default to personal on first load
-    // (selectedScope state will persist if already set)
+
+    if (isAdmin) {
+      // Admins default to team (already set in initializer, but ensure it's set)
+      setSelectedScope('team');
+      scopeInitializedRef.current = true;
+    } else if (!isBusiness || !isAdmin) {
+      setSelectedScope('personal');
+      scopeInitializedRef.current = true;
+    }
   }, [isBusiness, isAdmin]);
 
   // ============================================================================
