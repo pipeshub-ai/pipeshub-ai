@@ -241,26 +241,13 @@ def _trim_connector_config(config: Dict[str, Any]) -> Dict[str, Any]:
     if not config or not isinstance(config, dict):
         return config
 
-    trimmed = {}
+    trimmed_config = config.copy()
 
-    # Trim auth section
-    if "auth" in config and isinstance(config["auth"], dict):
-        trimmed["auth"] = _trim_config_values(config["auth"], "auth")
+    for section in ["auth", "sync", "filters"]:
+        if section in trimmed_config and isinstance(trimmed_config[section], dict):
+            trimmed_config[section] = _trim_config_values(trimmed_config[section], section)
 
-    # Trim sync section
-    if "sync" in config and isinstance(config["sync"], dict):
-        trimmed["sync"] = _trim_config_values(config["sync"], "sync")
-
-    # Trim filters section (nested structure)
-    if "filters" in config and isinstance(config["filters"], dict):
-        trimmed["filters"] = _trim_config_values(config["filters"], "filters")
-
-    # Preserve other properties as-is
-    for key, value in config.items():
-        if key not in ["auth", "sync", "filters"]:
-            trimmed[key] = value
-
-    return trimmed
+    return trimmed_config
 
 @router.post("/drive/webhook")
 @inject
@@ -2730,7 +2717,7 @@ async def create_connector_instance(
 
         body = await request.json()
         connector_type = body.get("connectorType")
-        instance_name = body.get("instanceName", "").strip() if body.get("instanceName") else ""
+        instance_name = (body.get("instanceName") or "").strip()
         config = body.get("config", {})
         # Trim whitespace from config values
         if config:
@@ -3124,9 +3111,7 @@ async def update_connector_instance_config(
         base_url = body.get("baseUrl", "")
 
         # Trim whitespace from config values before processing
-        for section in ["auth", "sync", "filters"]:
-            if section in body and isinstance(body[section], dict):
-                body[section] = _trim_config_values(body[section], section)
+        body = _trim_connector_config(body)
 
         # Verify instance exists
         instance = await connector_registry.get_connector_instance(

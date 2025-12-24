@@ -94,30 +94,15 @@ export function trimConnectorConfig(config: any): any {
     return config;
   }
 
-  const trimmed: any = {};
+  const trimmedConfig = { ...config };
+  const sectionsToTrim = ['auth', 'sync', 'filters'];
 
-  // Trim auth section
-  if (config.auth && typeof config.auth === 'object') {
-    trimmed.auth = trimConfigValues(config.auth, 'auth');
-  }
-
-  // Trim sync section
-  if (config.sync && typeof config.sync === 'object') {
-    trimmed.sync = trimConfigValues(config.sync, 'sync');
-  }
-
-  // Trim filters section (nested structure)
-  if (config.filters && typeof config.filters === 'object') {
-    trimmed.filters = trimConfigValues(config.filters, 'filters');
-  }
-
-  // Preserve other properties as-is
-  Object.keys(config).forEach((key) => {
-    if (!['auth', 'sync', 'filters'].includes(key)) {
-      trimmed[key] = config[key];
+  sectionsToTrim.forEach((section) => {
+    if (trimmedConfig[section] && typeof trimmedConfig[section] === 'object') {
+      trimmedConfig[section] = trimConfigValues(trimmedConfig[section], section);
     }
   });
 
-  return trimmed;
+  return trimmedConfig;
 }
 
