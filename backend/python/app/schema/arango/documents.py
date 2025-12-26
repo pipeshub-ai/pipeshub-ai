@@ -411,8 +411,7 @@ record_group_schema = {
             # "externalGroupId",
             "groupType",
             "connectorName",
-            "createdAtTimestamp",
-            "connectorId"
+            "createdAtTimestamp"
         ],
         "additionalProperties": False,
     },
