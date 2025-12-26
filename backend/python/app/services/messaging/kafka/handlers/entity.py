@@ -441,8 +441,21 @@ class EntityEventService(BaseEventService):
                             self.logger.info(f"Skipping sync for {app_name}")
                             continue
 
-                        # NOTE: Init is now handled synchronously in the toggle endpoint
-                        # No need to send init event - connector is already initialized
+                        # Gmail and Google Drive need both init and start events
+                        # They have specialized event handlers that require init to call initialize()
+                        # Use case-insensitive comparison since app_name comes as lowercase from payload
+                        if app_name.upper() in [Connectors.GOOGLE_MAIL.value, Connectors.GOOGLE_DRIVE.value]:
+                            # Initialize app (this will fetch and create users)
+                            await self.__handle_sync_event(
+                                event_type=f"{app_name.lower()}.init",
+                                value={
+                                    "orgId": org_id,
+                                    "connector":app_name,
+                                    "connectorId":connector_id
+                                },
+                            )
+                            # TODO: Remove this sleep
+                            await asyncio.sleep(5)
 
                         if sync_action == "immediate":
                             # Start sync - connector should already be initialized
@@ -454,6 +467,8 @@ class EntityEventService(BaseEventService):
                                     "connectorId":connector_id
                                 },
                             )
+                            # TODO: Remove this sleep
+                            await asyncio.sleep(5)
 
                 # For individual accounts, create edges between existing active users and apps
                 else:
@@ -461,14 +476,29 @@ class EntityEventService(BaseEventService):
                         org_id, active=True
                     )
 
-                    # NOTE: Init is now handled synchronously in the toggle endpoint
-                    # Start sync for each app (connector already initialized)
+                    # First initialize each app
                     for app_name in enabled_apps:
                         if app_name in [Connectors.GOOGLE_CALENDAR.value]:
                             self.logger.info(f"Skipping sync for {app_name}")
                             continue
 
-                        # Start sync - connector should already be initialized
+                        # Gmail and Google Drive need both init and start events
+                        # They have specialized event handlers that require init to call initialize()
+                        # Use case-insensitive comparison since app_name comes as lowercase from payload
+                        if app_name.upper() in [Connectors.GOOGLE_MAIL.value, Connectors.GOOGLE_DRIVE.value]:
+                            # Initialize app
+                            await self.__handle_sync_event(
+                                event_type=f"{app_name.lower()}.init",
+                                value={
+                                    "orgId": org_id,
+                                    "connector":app_name,
+                                    "connectorId":connector_id
+                                },
+                            )
+                            # TODO: Remove this sleep
+                            await asyncio.sleep(5)
+
+                        # Start sync for each app (connector already initialized for standard connectors)
                         await self.__handle_sync_event(
                             event_type=f"{app_name.lower()}.start",
                             value={

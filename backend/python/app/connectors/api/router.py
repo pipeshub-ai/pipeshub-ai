@@ -4422,13 +4422,29 @@ async def get_filter_field_options(
                 detail=f"Filter field '{filter_key}' does not support dynamic options (type: {option_source_type})"
             )
 
-        # Get initialized connector from container
+        # Get or initialize connector from container
+        # get connector from container, if not found, initialize it
         connector = _get_connector_from_container(container, connector_id)
         if not connector:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=f"Connector instance {connector_id} not found in container. Please configure the connector with valid credentials first."
+            # Connector not in container, try to initialize it
+            connector = await _ensure_connector_initialized(
+                container=container,
+                connector_id=connector_id,
+                connector_type=connector_type,
+                connector_registry=connector_registry,
+                arango_service=arango_service,
+                user_id=user_id,
+                org_id=org_id,
+                is_admin=is_admin,
+                logger=logger
             )
+
+            # If still None, it means Gmail/Drive which don't support filter options via this endpoint
+            if not connector:
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail=f"Connector instance {connector_id} ({connector_type}) does not support filter options via this endpoint."
+                )
 
         # Call get_filter_options method on initialized connector
         response = await connector.get_filter_options(
@@ -4600,6 +4616,153 @@ async def save_connector_instance_filters(
         )
 
 
+async def _ensure_connector_initialized(
+    container: ConnectorAppContainer,
+    connector_id: str,
+    connector_type: str,
+    connector_registry,
+    arango_service: BaseArangoService,
+    user_id: str,
+    org_id: str,
+    is_admin: bool,
+    logger
+) -> Optional[BaseConnector]:
+    """
+    Ensure connector is initialized in container. If not, initialize it.
+
+    Args:
+        container: App container
+        connector_id: Connector instance ID
+        connector_type: Connector type (e.g., "ONEDRIVE", "SHAREPOINT ONLINE")
+        connector_registry: Connector registry instance
+        arango_service: ArangoDB service
+        user_id: User ID
+        org_id: Organization ID
+        is_admin: Whether user is admin
+        logger: Logger instance
+
+    Returns:
+        BaseConnector instance if successful, None if Gmail/Drive (they use event-based init)
+
+    Raises:
+        HTTPException: If initialization fails
+    """
+    # Skip synchronous initialization for Gmail and Google Drive - they use event-based initialization
+    # via specialized sync services and don't extend BaseConnector
+    is_gmail_or_drive = connector_type in [Connectors.GOOGLE_MAIL.value, Connectors.GOOGLE_DRIVE.value]
+
+    if is_gmail_or_drive:
+        logger.info(f"Skipping synchronous initialization for {connector_type} - will be initialized via event handlers")
+        return None
+
+    # Check if connector already exists in container
+    connector_exists = (
+        hasattr(container, 'connectors_map') and
+        connector_id in container.connectors_map
+    )
+
+    if connector_exists:
+        logger.info(f"Connector {connector_id} already initialized and stored in container")
+        return container.connectors_map.get(connector_id)
+
+    # Initialize connector
+    logger.info(f"Initializing connector {connector_id} before use")
+    try:
+        config_service = container.config_service()
+        data_store_provider = ArangoDataStore(logger, arango_service)
+
+        # Create connector using factory
+        connector = await ConnectorFactory.create_connector(
+            name=connector_type.lower(),
+            logger=logger,
+            data_store_provider=data_store_provider,
+            config_service=config_service,
+            connector_id=connector_id
+        )
+
+        if not connector:
+            logger.error(f"Failed to create {connector_type} connector")
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail="Failed to create connector instance. Please check your configuration."
+            )
+
+        # Initialize connector
+        logger.info(f"Calling init() for connector {connector_id}")
+        is_initialized = await connector.init()
+
+        if not is_initialized:
+            error_msg = "Failed to initialize connector. Please check your credentials and configuration."
+            logger.error(f"❌ {error_msg}")
+            # Cleanup on failure
+            try:
+                await connector.cleanup()
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=error_msg
+            )
+
+        # Test connection
+        logger.info(f"Testing connection for connector {connector_id}")
+        try:
+            connection_ok = connector.test_connection_and_access()
+            if not connection_ok:
+                error_msg = "Connection test failed. Please verify your credentials have proper access."
+                logger.error(f"❌ {error_msg}")
+                # Cleanup on failure
+                try:
+                    await connector.cleanup()
+                except Exception:
+                    pass
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail=error_msg
+                )
+        except HTTPException:
+            raise
+        except Exception as test_error:
+            error_msg = f"Connection test failed: {str(test_error)}"
+            logger.error(f"❌ {error_msg}", exc_info=True)
+            # Cleanup on failure
+            try:
+                await connector.cleanup()
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail=error_msg
+            )
+
+        # Success! Store connector in container
+        logger.info(f"✅ Successfully initialized and tested {connector_type} connector")
+        if not hasattr(container, 'connectors_map'):
+            container.connectors_map = {}
+        container.connectors_map[connector_id] = connector
+
+        # Update isAuthenticated flag
+        await connector_registry.update_connector_instance(
+            connector_id=connector_id,
+            updates={"isAuthenticated": True},
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin
+        )
+
+        return connector
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = f"Failed to initialize connector: {str(e)}"
+        logger.error(f"❌ {error_msg}", exc_info=True)
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=error_msg
+        )
+
+
 # ============================================================================
 # Connector Toggle Endpoint
 # ============================================================================
@@ -4758,106 +4921,17 @@ async def toggle_connector_instance(
                     )
 
             # Initialize connector when enabling (if not already initialized)
-            connector_exists = (
-                hasattr(container, 'connectors_map') and
-                connector_id in container.connectors_map
+            await _ensure_connector_initialized(
+                container=container,
+                connector_id=connector_id,
+                connector_type=connector_type,
+                connector_registry=connector_registry,
+                arango_service=arango_service,
+                user_id=user_id,
+                org_id=org_id,
+                is_admin=is_admin,
+                logger=logger
             )
-
-            if not connector_exists:
-                logger.info(f"Initializing connector {connector_id} before enabling")
-                try:
-                    data_store_provider = ArangoDataStore(logger, arango_service)
-
-                    # Create connector using factory
-                    connector = await ConnectorFactory.create_connector(
-                        name=connector_type.lower(),
-                        logger=logger,
-                        data_store_provider=data_store_provider,
-                        config_service=config_service,
-                        connector_id=connector_id
-                    )
-
-                    if not connector:
-                        logger.error(f"Failed to create {connector_type} connector")
-                        raise HTTPException(
-                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                            detail="Failed to create connector instance. Please check your configuration."
-                        )
-
-                    # Initialize connector
-                    logger.info(f"Calling init() for connector {connector_id}")
-                    is_initialized = await connector.init()
-
-                    if not is_initialized:
-                        error_msg = "Failed to initialize connector. Please check your credentials and configuration."
-                        logger.error(f"❌ {error_msg}")
-                        # Cleanup on failure
-                        try:
-                            await connector.cleanup()
-                        except Exception:
-                            pass
-                        raise HTTPException(
-                            status_code=HttpStatusCode.BAD_REQUEST.value,
-                            detail=error_msg
-                        )
-
-                    # Test connection
-                    logger.info(f"Testing connection for connector {connector_id}")
-                    try:
-                        connection_ok = connector.test_connection_and_access()
-                        if not connection_ok:
-                            error_msg = "Connection test failed. Please verify your credentials have proper access."
-                            logger.error(f"❌ {error_msg}")
-                            # Cleanup on failure
-                            try:
-                                await connector.cleanup()
-                            except Exception:
-                                pass
-                            raise HTTPException(
-                                status_code=HttpStatusCode.BAD_REQUEST.value,
-                                detail=error_msg
-                            )
-                    except HTTPException:
-                        raise
-                    except Exception as test_error:
-                        error_msg = f"Connection test failed: {str(test_error)}"
-                        logger.error(f"❌ {error_msg}", exc_info=True)
-                        # Cleanup on failure
-                        try:
-                            await connector.cleanup()
-                        except Exception:
-                            pass
-                        raise HTTPException(
-                            status_code=HttpStatusCode.BAD_REQUEST.value,
-                            detail=error_msg
-                        )
-
-                    # Success! Store connector in container
-                    logger.info(f"✅ Successfully initialized and tested {connector_type} connector")
-                    if not hasattr(container, 'connectors_map'):
-                        container.connectors_map = {}
-                    container.connectors_map[connector_id] = connector
-
-                    # Update isAuthenticated flag
-                    await connector_registry.update_connector_instance(
-                        connector_id=connector_id,
-                        updates={"isAuthenticated": True},
-                        user_id=user_id,
-                        org_id=org_id,
-                        is_admin=is_admin
-                    )
-
-                except HTTPException:
-                    raise
-                except Exception as e:
-                    error_msg = f"Failed to initialize connector: {str(e)}"
-                    logger.error(f"❌ {error_msg}", exc_info=True)
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail=error_msg
-                    )
-            else:
-                logger.info(f"Connector {connector_id} already initialized and stored in container")
 
         if toggle_type == "agent" and not current_agent_status:
             # Check if connector supports agent functionality
