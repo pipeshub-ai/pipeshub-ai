@@ -1,7 +1,7 @@
 from typing import List
 
 from langchain_core.prompts import ChatPromptTemplate
-from typing_extensions import TypedDict
+from pydantic import BaseModel
 
 # Prompt for summarizing an entire sheet with multiple tables
 sheet_summary_prompt = ChatPromptTemplate.from_messages(
@@ -34,11 +34,11 @@ table_summary_prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
-class RowDescriptions(TypedDict):
+class RowDescriptions(BaseModel):
     descriptions: List[str]
 
 
-class TableHeaders(TypedDict):
+class TableHeaders(BaseModel):
     headers: List[str]
 
 

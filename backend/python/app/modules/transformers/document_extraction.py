@@ -1,9 +1,7 @@
-import json
-from typing import List, Literal
+from typing import List, Literal, Optional
 
-from langchain_core.messages import AIMessage, HumanMessage
-from pydantic import TypeAdapter
-from typing_extensions import TypedDict
+from langchain_core.messages import HumanMessage
+from pydantic import BaseModel, Field
 
 from app.config.constants.arangodb import DepartmentNames
 from app.models.blocks import Block, SemanticMetadata
@@ -12,28 +10,36 @@ from app.modules.extraction.prompt_template import (
 )
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.utils.llm import get_llm
-from app.utils.streaming import _apply_structured_output, cleanup_content
+from app.utils.streaming import invoke_with_structured_output_and_reflection
 
 DEFAULT_CONTEXT_LENGTH = 128000
 CONTENT_TOKEN_RATIO = 0.85
 SentimentType = Literal["Positive", "Neutral", "Negative"]
 
-class SubCategories(TypedDict):
-    level1: str
-    level2: str
-    level3: str
+class SubCategories(BaseModel):
+    level1: str = Field(description="Level 1 subcategory")
+    level2: str = Field(description="Level 2 subcategory")
+    level3: str = Field(description="Level 3 subcategory")
 
-class DocumentClassification(TypedDict):
-    departments: List[str]
-    category: str
-    subcategories: SubCategories
-    languages: List[str]
-    sentiment: SentimentType
-    confidence_score: float
-    topics: List[str]
-    summary: str
-
-document_classification_adapter = TypeAdapter(DocumentClassification)
+class DocumentClassification(BaseModel):
+    departments: List[str] = Field(
+        description="The list of departments this document belongs to", max_items=3
+    )
+    category: str = Field(description="Main category this document belongs to")
+    subcategories: SubCategories = Field(
+        description="Nested subcategories for the document"
+    )
+    languages: List[str] = Field(
+        description="List of languages detected in the document"
+    )
+    sentiment: SentimentType = Field(description="Overall sentiment of the document")
+    confidence_score: float = Field(
+        description="Confidence score of the classification", ge=0, le=1
+    )
+    topics: List[str] = Field(
+        description="List of key topics/themes extracted from the document"
+    )
+    summary: str = Field(description="Summary of the document")
 
 class DocumentExtraction(Transformer):
     def __init__(self, logger, base_arango_service, config_service) -> None:
@@ -51,14 +57,14 @@ class DocumentExtraction(Transformer):
             record.semantic_metadata = None
             return
         record.semantic_metadata = SemanticMetadata(
-            departments=document_classification.get("departments", []),
-            languages=document_classification.get("languages", []),
-            topics=document_classification.get("topics", []),
-            summary=document_classification.get("summary", ""),
-            categories=[document_classification.get("category", "")],
-            sub_category_level_1=document_classification.get("subcategories", {}).get("level1", ""),
-            sub_category_level_2=document_classification.get("subcategories", {}).get("level2", ""),
-            sub_category_level_3=document_classification.get("subcategories", {}).get("level3", ""),
+            departments=document_classification.departments,
+            languages=document_classification.languages,
+            topics=document_classification.topics,
+            summary=document_classification.summary,
+            categories=[document_classification.category],
+            sub_category_level_1=document_classification.subcategories.level1,
+            sub_category_level_2=document_classification.subcategories.level2,
+            sub_category_level_3=document_classification.subcategories.level3,
         )
         self.logger.info("🎯 Document extraction completed successfully")
 
@@ -162,12 +168,12 @@ class DocumentExtraction(Transformer):
 
     async def extract_metadata(
         self, blocks: List[Block], org_id: str
-    ) -> DocumentClassification:
+    ) -> Optional[DocumentClassification]:
         """
         Extract metadata from document content.
         """
         self.logger.info("🎯 Extracting domain metadata")
-        self.llm, config= await get_llm(self.config_service)
+        self.llm, config = await get_llm(self.config_service)
         is_multimodal_llm = config.get("isMultimodal")
         context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
 
@@ -213,80 +219,21 @@ class DocumentExtraction(Transformer):
             # Create the message for VLM
             messages = [HumanMessage(content=message_content)]
 
-            # Use retry wrapper for LLM call
-            response = await self._call_llm(messages)
+            # Use centralized utility with reflection
+            parsed_response = await invoke_with_structured_output_and_reflection(
+                self.llm, messages, DocumentClassification
+            )
 
-            try:
-                if isinstance(response, dict):
-                    self.logger.info(f"Response is structured output (dict): {response}")
-                    parsed_response = document_classification_adapter.validate_python(response)
-                else:
-                    self.logger.info("Response is non-structured output (AIMessage)")
-                    response = response.content
-                    response_text = cleanup_content(response)
-                    parsed_response = document_classification_adapter.validate_json(response_text)
-
+            if parsed_response is not None:
+                self.logger.info("✅ Document classification parsed successfully")
                 return parsed_response
+            else:
+                self.logger.error("❌ Failed to parse document classification after all attempts")
+                raise ValueError("Failed to parse document classification after all attempts")
 
-            except Exception as parse_error:
-                self.logger.error(f"❌ Failed to parse response: {str(parse_error)}")
-
-                # Reflection: attempt to fix the validation issue by providing feedback to the LLM
-                try:
-                    self.logger.info(
-                        "🔄 Attempting reflection to fix validation issues"
-                    )
-                    reflection_prompt = f"""
-                    The previous response failed validation with the following error:
-                    {str(parse_error)}
-
-                    Please correct your response to match the expected schema.
-                    Ensure all fields are properly formatted and all required fields are present.
-                    Respond only with valid JSON that matches the schema.
-                    """
-
-                    reflection_messages = [
-                        HumanMessage(content=message_content),
-                        AIMessage(content=json.dumps(response)),
-                        HumanMessage(content=reflection_prompt),
-                    ]
-
-                    # Use retry wrapper for reflection LLM call
-                    reflection_response = await self._call_llm(reflection_messages)
-
-                    # Check if reflection response is already structured (dict) or needs parsing (AIMessage)
-                    if isinstance(reflection_response, dict):
-                        # Structured output - response is already parsed
-                        self.logger.info("Reflection response is structured output (dict)")
-                        parsed_reflection = document_classification_adapter.validate_python(reflection_response)
-                    else:
-                        # Non-structured output - need to parse from response.content
-                        reflection_text = reflection_response.content
-                        reflection_text = cleanup_content(reflection_text)
-
-                        self.logger.info(f"🎯 Reflection response: {reflection_text}")
-
-                        parsed_reflection = document_classification_adapter.validate_json(reflection_text)
-
-                    self.logger.info(
-                        "✅ Reflection successful - validation passed on second attempt"
-                    )
-                    return parsed_reflection
-                except Exception as reflection_error:
-                    self.logger.error(
-                        f"❌ Reflection attempt failed: {str(reflection_error)}"
-                    )
-                    raise ValueError(
-                        f"Failed to parse LLM response and reflection attempt failed: {str(parse_error)}"
-                    )
         except Exception as e:
             self.logger.error(f"❌ Error during metadata extraction: {str(e)}")
             raise
-
-    async def _call_llm(self, messages) -> dict | AIMessage:
-        """Wrapper for LLM calls with retry logic. Returns dict when structured output is used, AIMessage otherwise."""
-        llm_with_structured_output = _apply_structured_output(self.llm, schema=DocumentClassification)
-        return await llm_with_structured_output.ainvoke(messages)
 
     async def process_document(self, blocks: List[Block], org_id: str) -> DocumentClassification:
             self.logger.info("🖼️ Processing blocks for semantic metadata extraction")

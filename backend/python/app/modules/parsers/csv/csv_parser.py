@@ -7,8 +7,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, TextIO, Union
 
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage
-from pydantic import TypeAdapter
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -30,9 +28,7 @@ from app.modules.parsers.excel.prompt_template import (
     row_text_prompt,
     table_summary_prompt,
 )
-from app.utils.streaming import _apply_structured_output, cleanup_content
-
-adapter = TypeAdapter(RowDescriptions)
+from app.utils.streaming import invoke_with_structured_output_and_reflection
 
 class CSVParser:
     def __init__(
@@ -274,41 +270,16 @@ class CSVParser:
                 rows_data=json.dumps(rows_data, indent=2),
             )
 
-            llm_with_structured_output = _apply_structured_output(llm, schema=RowDescriptions)
-            response = await self._call_llm(llm_with_structured_output, messages)
+            # Default to string representations of rows
             descriptions = [str(row) for row in rows_data]
-            parsed_response = None
-            try:
-                if isinstance(response, dict):
-                    parsed_response = adapter.validate_python(response)
-                else:
-                    response = cleanup_content(response.content)
-                    parsed_response = adapter.validate_json(response)
 
-            except Exception as e:
-                # Attempt reflection: ask LLM to correct its response
-                try:
-                    reflection_prompt = f"""Your previous response could not be parsed correctly.
-Error: {str(e)}
+            # Use centralized utility with reflection
+            parsed_response = await invoke_with_structured_output_and_reflection(
+                llm, messages, RowDescriptions
+            )
 
-Please provide the row descriptions in the correct JSON format."""
-
-                    messages.append(AIMessage(content=json.dumps(response)))
-                    messages.append(HumanMessage(content=reflection_prompt))
-
-                    # Use structured output for reflection attempt
-                    reflection_response = await self._call_llm(llm_with_structured_output, messages)
-                    if isinstance(reflection_response, dict):
-                        parsed_response = adapter.validate_python(reflection_response)
-                    else:
-                        response = cleanup_content(reflection_response.content)
-                        parsed_response = adapter.validate_json(response)
-
-                except Exception:
-                    pass
-
-            if parsed_response is not None and parsed_response.get("descriptions"):
-                descriptions = parsed_response.get("descriptions")
+            if parsed_response is not None and parsed_response.descriptions:
+                descriptions = parsed_response.descriptions
 
             processed_texts.extend(descriptions)
 

@@ -219,7 +219,7 @@ async def execute_tool_calls(
     llm_to_pass = bind_tools_for_llm(llm, tools)
     if not llm_to_pass:
         logger.warning("Failed to bind tools for LLM, so using structured output")
-        llm_to_pass = _apply_structured_output(llm)
+        llm_to_pass = _apply_structured_output(llm,schema=AnswerWithMetadataDict)
 
     hops = 0
     tools_executed = False
@@ -921,7 +921,7 @@ async def handle_json_mode(
 
     try:
         logger.debug("handle_json_mode: Starting LLM stream")
-        llm_with_structured_output = _apply_structured_output(llm)
+        llm_with_structured_output = _apply_structured_output(llm,schema=AnswerWithMetadataDict)
 
         async for token in call_aiter_llm_stream(llm_with_structured_output, messages,final_results,records,target_words_per_chunk):
             yield token
@@ -1373,7 +1373,7 @@ async def call_aiter_llm_stream(
                 updated_messages.append(reflection_message)
 
                 if original_llm:
-                    llm = _apply_structured_output(original_llm)
+                    llm = _apply_structured_output(original_llm,schema=AnswerWithMetadataDict)
                 async for event in call_aiter_llm_stream(
                     llm,
                     updated_messages,
@@ -1467,7 +1467,7 @@ def bind_tools_for_llm(llm, tools: List[object]) -> BaseChatModel|bool:
     except Exception:
         return False
 
-def _apply_structured_output(llm: BaseChatModel,schema=None) -> BaseChatModel:
+def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
     if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI)):
 
         additional_kwargs = {}
@@ -1486,8 +1486,6 @@ def _apply_structured_output(llm: BaseChatModel,schema=None) -> BaseChatModel:
         additional_kwargs["method"] = "json_schema"
 
         try:
-            if not schema:
-                schema = AnswerWithMetadataDict
             model_with_structure = llm.with_structured_output(
                 schema,
                 **additional_kwargs
@@ -1512,3 +1510,123 @@ def cleanup_content(response_text: str) -> str:
         response_text = response_text.rsplit("```", 1)[0]
     response_text = response_text.strip()
     return response_text
+
+
+async def invoke_with_structured_output_and_reflection(
+    llm: BaseChatModel,
+    messages: List,
+    schema: type,
+    max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
+) -> Optional[Any]:
+    """
+    Invoke LLM with structured output and automatic reflection on parse failure.
+
+    Args:
+        llm: The LangChain chat model to use
+        messages: List of messages to send to the LLM
+        schema: Pydantic model class to validate the response against
+        max_retries: Maximum number of reflection retries on parse failure
+
+    Returns:
+        Validated Pydantic model instance, or None if parsing fails after all retries
+    """
+    llm_with_structured_output = _apply_structured_output(llm, schema=schema)
+
+    try:
+        response = await llm_with_structured_output.ainvoke(messages)
+    except Exception as e:
+        logger.error(f"LLM invocation failed: {e}")
+        return None
+
+    # Try to parse the response
+    parsed_response = None
+    try:
+        
+        if isinstance(response, dict):
+            if 'content' in response:
+                # Response is a dict with 'content' key (e.g., Bedrock non-structured response)
+                logger.debug("Response is a dict with 'content' key, extracting content for parsing")
+                response_content = response['content']
+                response_text = cleanup_content(response_content)
+                logger.debug(f"Cleaned response content length: {len(response_text)} chars")
+                parsed_response = schema.model_validate_json(response_text)
+                logger.debug("Dict with content response validated successfully")
+            else:
+                logger.debug("Response is a dict, validating directly")
+                response_content = json.dumps(response)
+                parsed_response = schema.model_validate(response)
+                logger.debug("Dict response validated successfully")
+        else:
+            if hasattr(response, 'content'):
+                # Response is an AIMessage or string
+                logger.debug(f"Response is AIMessage, extracting content for parsing")
+                response_content = response.content
+                response_text = cleanup_content(response_content)
+                logger.debug(f"Cleaned response content length: {len(response_text)} chars")
+                parsed_response = schema.model_validate_json(response_text)
+                logger.debug("AIMessage/string response validated successfully")
+            else:
+                # Response is already a Pydantic model
+                logger.debug("Response is a Pydantic model, extracting and validating")
+                response_content = response.model_dump_json()
+                parsed_response = schema.model_validate(response.model_dump())
+                logger.debug("Pydantic model response validated successfully")
+            
+        return parsed_response
+
+    except Exception as parse_error:
+        # Attempt reflection: ask LLM to correct its response
+        logger.warning(f"Initial parse failed: {parse_error}. Attempting reflection...")
+
+        reflection_messages = list(messages)  # Copy the original messages
+
+        # Add the failed response to context
+        reflection_messages.append(AIMessage(content=response_content))
+
+        reflection_prompt = f"""Your previous response could not be parsed correctly.
+Error: {str(parse_error)}
+
+Please correct your response to match the expected JSON schema. Ensure all fields are properly formatted and all required fields are present.
+Respond only with valid JSON that matches the schema."""
+
+        reflection_messages.append(HumanMessage(content=reflection_prompt))
+
+        for attempt in range(max_retries):
+            try:
+                reflection_response = await llm_with_structured_output.ainvoke(reflection_messages)
+                if isinstance(reflection_response, dict):
+                    if 'content' in reflection_response:
+                        # Response is a dict with 'content' key (e.g., Bedrock non-structured response)
+                        logger.debug("Reflection response is a dict with 'content' key, extracting content for parsing")
+                        reflection_content = reflection_response['content']
+                        reflection_text = cleanup_content(reflection_content)
+                        logger.debug(f"Cleaned reflection content length: {len(reflection_text)} chars")
+                        parsed_response = schema.model_validate_json(reflection_text)
+                    else:
+                        logger.debug("Reflection response is a dict, validating directly")
+                        reflection_content = json.dumps(reflection_response)
+                        parsed_response = schema.model_validate(reflection_response)
+                else:
+                    if hasattr(reflection_response, 'content'):
+                        logger.debug("Reflection response is AIMessage, extracting content")
+                        reflection_content = reflection_response.content
+                        reflection_text = cleanup_content(reflection_content)
+                        logger.debug(f"Cleaned reflection content length: {len(reflection_text)} chars")
+                        parsed_response = schema.model_validate_json(reflection_text)
+                    else:
+                        logger.debug("Reflection response is a Pydantic model, extracting and validating")
+                        reflection_content = reflection_response.model_dump_json()
+                        parsed_response = schema.model_validate(reflection_response.model_dump())
+
+                logger.info(f"Reflection successful on attempt {attempt + 1}")
+                return parsed_response
+
+            except Exception as reflection_error:
+                logger.warning(f"Reflection attempt {attempt + 1} failed: {reflection_error}")
+                if attempt < max_retries - 1:
+                    # Update messages for next retry
+                    reflection_messages.append(AIMessage(content=reflection_content))
+                    reflection_messages.append(HumanMessage(content=f"Still incorrect. Error: {str(reflection_error)}. Please try again."))
+
+        logger.error("All reflection attempts failed")
+        return None
