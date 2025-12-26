@@ -86,7 +86,6 @@ user_group_schema = {
             "externalGroupId",
             "connectorName",
             "createdAtTimestamp",
-            "connectorId"
         ],
         "additionalProperties": False,
     },
