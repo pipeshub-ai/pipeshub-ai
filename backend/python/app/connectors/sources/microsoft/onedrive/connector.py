@@ -185,8 +185,6 @@ class OneDriveConnector(BaseConnector):
             self.config_service, "onedrive", self.connector_id, self.logger
         )
 
-        print("\n\n\n\n\n\n\nFILTERS:\n", self.sync_filters, "\n", self.indexing_filters)
-
         has_admin_consent = auth_config.get("hasAdminConsent", False)
         credentials = OneDriveCredentials(
             tenant_id=tenant_id,
@@ -226,7 +224,7 @@ class OneDriveConnector(BaseConnector):
         """
         try:
             # Apply Date Filters
-            if not self._passes_date_filters(item):
+            if not self._pass_date_filters(item):
                 self.logger.debug(f"Skipping item {item.name} (ID: {item.id}) due to date filters.")
                 return # Skip this item
 
@@ -456,7 +454,7 @@ class OneDriveConnector(BaseConnector):
 
         return old_set == new_set
     
-    def _passes_date_filters(self, item: DriveItem) -> bool:
+    def _pass_date_filters(self, item: DriveItem) -> bool:
         """
         Checks if the DriveItem passes the configured CREATED and MODIFIED date filters.
         Relies on client-side filtering since OneDrive Delta API does not support $filter.

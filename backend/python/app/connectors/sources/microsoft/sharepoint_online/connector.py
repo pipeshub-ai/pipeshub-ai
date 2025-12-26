@@ -200,9 +200,9 @@ class SiteMetadata:
             category=FilterCategory.SYNC,
             default_value=[]
         ))
-        .add_filter_field(CommonFields.modified_date_filter("Filter pages and blogposts by modification date."))
-        .add_filter_field(CommonFields.created_date_filter("Filter pages and blogposts by creation date."))
-        .add_filter_field(CommonFields.enable_manual_sync_filter())
+        # .add_filter_field(CommonFields.modified_date_filter("Filter pages and blogposts by modification date."))
+        # .add_filter_field(CommonFields.created_date_filter("Filter pages and blogposts by creation date."))
+        # .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
@@ -266,8 +266,8 @@ class SharePointConnector(BaseConnector):
 
     async def init(self) -> bool:
         config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
-        self.sync_filters: FilterCollection = FilterCollection()
-        self.indexing_filters: FilterCollection = FilterCollection()
+        # self.sync_filters: FilterCollection = FilterCollection()
+        # self.indexing_filters: FilterCollection = FilterCollection()
 
         if not config:
             self.logger.error("❌ SharePoint Online credentials not found")
@@ -294,11 +294,9 @@ class SharePointConnector(BaseConnector):
         self.logger.debug(f"🔍 Private key data present: {bool(private_key_data)}")
         self.logger.debug(f"🔍 Client secret present: {bool(client_secret)}")
 
-        self.sync_filters, self.indexing_filters = await load_connector_filters(
-            self.config_service, "sharepointonline", self.connector_id, self.logger
-        )
-
-        print("\n\n\n\n\n\n\nFILTERS:\n", self.sync_filters, "\n", self.indexing_filters)
+        # self.sync_filters, self.indexing_filters = await load_connector_filters(
+        #     self.config_service, "sharepointonline", self.connector_id, self.logger
+        # )
 
         # Normalize SharePoint domain to scheme+host (no path)
         try:
@@ -896,6 +894,10 @@ class SharePointConnector(BaseConnector):
                             if record_update.is_deleted:
                                 yield (None, [], record_update)
                             elif record_update.record:
+
+                                # if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                                #     record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
                                 yield (record_update.record, record_update.new_permissions or [], record_update)
                                 self.stats['items_processed'] += 1
                     except Exception as item_error:
@@ -989,9 +991,6 @@ class SharePointConnector(BaseConnector):
             file_record = await self._create_file_record(item, drive_id, existing_record)
             if not file_record:
                 return None
-            
-            if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             # Get permissions currently fetching permissions via site record group
             permissions = await self._get_item_permissions(site_id, drive_id, item_id)
@@ -1432,7 +1431,7 @@ class SharePointConnector(BaseConnector):
         try:
             encoded_site_id = self._construct_site_url(site_id)
 
-            content_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.PAGES)
+            # content_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.PAGES)
 
             async with self.rate_limiter:
                 try:
