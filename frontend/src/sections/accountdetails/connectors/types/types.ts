@@ -76,7 +76,6 @@ type OptionSourceType = 'manual' | 'static' | 'dynamic';
 // Filter option for dynamic/static options
 interface FilterOption {
   id: string;
-  key: string;
   label: string;
 }
 

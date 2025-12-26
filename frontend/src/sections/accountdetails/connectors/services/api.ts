@@ -7,7 +7,7 @@
  */
 
 import axios from "src/utils/axios";
-import { Connector, ConnectorConfig, ConnectorRegistry, ConnectorToggleType } from "../types/types";
+import { Connector, ConnectorConfig, ConnectorRegistry, ConnectorToggleType, FilterOptionsResponse } from "../types/types";
 import { trimConnectorConfig } from "../utils/trim-config";
 
 const BASE_URL = '/api/v1/connectors';

@@ -71,7 +71,6 @@ class FilterOption:
         """Convert to dictionary for JSON serialization"""
         return {
             "id": self.id,
-            "key": self.key,
             "label": self.label
         }
 
@@ -478,6 +477,7 @@ class Filter(BaseModel):
                             pass
 
             # Convert datetime value to tuple of epoch integers
+            # Also extract id from {id, label} objects for LIST and MULTISELECT filters
             if 'value' in data and 'type' in data:
                 filter_type_str = data['type']
                 if isinstance(filter_type_str, str):
@@ -500,6 +500,22 @@ class Filter(BaseModel):
                         data['value'] = (start, end)
                     else:
                         data['value'] = None
+                elif filter_type in (FilterType.LIST, FilterType.MULTISELECT) and data['value'] is not None:
+                    value = data['value']
+                    # Extract id from {id, label} objects if present
+                    if isinstance(value, list):
+                        extracted_ids = []
+                        for item in value:
+                            if isinstance(item, dict) and 'id' in item:
+                                # New format: {id, label} object - extract id
+                                extracted_ids.append(item['id'])
+                            elif isinstance(item, str):
+                                # Old format: string id (backward compatibility)
+                                extracted_ids.append(item)
+                            else:
+                                # Fallback: convert to string
+                                extracted_ids.append(str(item))
+                        data['value'] = extracted_ids
 
         return data
 

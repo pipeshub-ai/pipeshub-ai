@@ -3159,76 +3159,129 @@ async def update_connector_instance_config(
                 detail="Only the creator can update this connector"
             )
 
+        # Prevent saving configuration when connector is active
+        # Only allow filter/sync updates when connector is active (these don't require re-initialization)
+        if instance.get("isActive"):
+            logger.error("Cannot update configuration while connector is active. Please disable the connector first.")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Cannot update configuration while connector is active. Please disable the connector first."
+            )
+
         config_service = container.config_service()
         config_path = _get_config_path_for_instance(connector_id)
 
-        # Build new configuration from request
-        new_config = {}
+        # Get existing config to merge with new values
+        existing_config = await config_service.get_config(config_path)
+        if not existing_config:
+            existing_config = {}
+
+        # Merge new configuration with existing config
+        # Only update sections that are provided in the request
+        new_config = existing_config.copy() if existing_config else {}
+
+        # Determine which sections are being updated
+        auth_updated = "auth" in body
 
         for section in ["auth", "sync", "filters"]:
             if section in body and isinstance(body[section], dict):
-                new_config[section] = body[section]
+                # For filters section, we need special handling to preserve sync/indexing separately
+                if section == "filters":
+                    # Initialize filters section if it doesn't exist
+                    if section not in new_config:
+                        new_config[section] = {}
 
-        # Clear credentials and OAuth state on config updates
-        new_config["credentials"] = None
-        new_config["oauth"] = None
+                    # Merge filters section: preserve sync and indexing separately
+                    # If body has filters.sync, update only filters.sync (preserve filters.indexing)
+                    # If body has filters.indexing, update only filters.indexing (preserve filters.sync)
+                    for key in ["sync", "indexing"]:
+                        if key in body[section]:
+                            # Replace the entire sync or indexing subsection
+                            new_config[section][key] = body[section][key]
+                elif section in new_config and isinstance(new_config[section], dict):
+                    # For auth and sync sections, merge at top level (preserve existing values)
+                    new_config[section] = {**new_config[section], **body[section]}
+                else:
+                    # Section doesn't exist, add it
+                    new_config[section] = body[section]
 
-        # Add OAuth metadata from registry if applicable
-        auth_type = instance.get("authType", "").upper()
-        if auth_type in ["OAUTH", "OAUTH_ADMIN_CONSENT"]:
-            metadata = await connector_registry.get_connector_metadata(connector_type)
-            auth_metadata = metadata.get("config", {}).get("auth", {})
 
-            if "auth" not in new_config:
-                new_config["auth"] = {}
+        # Clear credentials and OAuth state only if auth config is being updated
+        # Filters and sync updates don't require re-authentication
+        if auth_updated:
+            new_config["credentials"] = None
+            new_config["oauth"] = None
 
-            # Determine redirect URI
-            redirect_uri = auth_metadata.get("redirectUri", "")
-            if base_url:
-                redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
-            else:
-                endpoints = await config_service.get_config(
-                    "/services/endpoints",
-                    use_cache=False
-                )
-                base_url = endpoints.get(
-                    "frontendPublicUrl",
-                    "http://localhost:3001"
-                )
-                redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
-            new_config["auth"].update({
-                "authorizeUrl": auth_metadata.get("authorizeUrl", ""),
-                "tokenUrl": auth_metadata.get("tokenUrl", ""),
-                "scopes": auth_metadata.get("scopes", []),
-                "redirectUri": redirect_uri
-            })
+        # Add OAuth metadata from registry if applicable (only if auth is being updated)
+        if auth_updated:
+            auth_type = instance.get("authType", "").upper()
+            if auth_type in ["OAUTH", "OAUTH_ADMIN_CONSENT"]:
+                metadata = await connector_registry.get_connector_metadata(connector_type)
+                auth_metadata = metadata.get("config", {}).get("auth", {})
+
+                if "auth" not in new_config:
+                    new_config["auth"] = {}
+
+                # Determine redirect URI
+                redirect_uri = auth_metadata.get("redirectUri", "")
+                if base_url:
+                    redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+                else:
+                    endpoints = await config_service.get_config(
+                        "/services/endpoints",
+                        use_cache=False
+                    )
+                    base_url = endpoints.get(
+                        "frontendPublicUrl",
+                        "http://localhost:3001"
+                    )
+                    redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+
+                new_config["auth"].update({
+                    "authorizeUrl": auth_metadata.get("authorizeUrl", ""),
+                    "tokenUrl": auth_metadata.get("tokenUrl", ""),
+                    "scopes": auth_metadata.get("scopes", []),
+                    "redirectUri": redirect_uri,
+                    "authType": auth_type,
+                })
 
         # Save configuration
         await config_service.set_config(config_path, new_config)
         logger.info(f"Updated config for instance {connector_id}")
 
-        # Cleanup existing connector instance if it exists (config changed)
-        # User will need to toggle/enable again to re-initialize with new config
-        if hasattr(container, 'connectors_map') and connector_id in container.connectors_map:
-            logger.info(f"Cleaning up existing instance for {connector_id} due to config update")
-            existing_connector = container.connectors_map.pop(connector_id)
-            try:
-                if hasattr(existing_connector, 'cleanup'):
-                    await existing_connector.cleanup()
-                logger.info(f"Cleaned up existing connector instance {connector_id}")
-            except Exception as e:
-                logger.error(f"Error cleaning up existing connector {connector_id}: {e}")
+        # Only cleanup and disable connector if auth config is being updated
+        # Filters and sync updates don't require re-authentication, so connector can stay active
+        if auth_updated:
+            # Cleanup existing connector instance if it exists (auth config changed)
+            # User will need to toggle/enable again to re-initialize with new auth config
+            if hasattr(container, 'connectors_map') and connector_id in container.connectors_map:
+                logger.info(f"Cleaning up existing instance for {connector_id} due to auth config update")
+                existing_connector = container.connectors_map.pop(connector_id)
+                try:
+                    if hasattr(existing_connector, 'cleanup'):
+                        await existing_connector.cleanup()
+                    logger.info(f"Cleaned up existing connector instance {connector_id}")
+                except Exception as e:
+                    logger.error(f"Error cleaning up existing connector {connector_id}: {e}")
 
-        # Update instance status - mark as configured but not authenticated
-        # Connector will be initialized and authenticated when user clicks Enable
-        updates = {
-            "isConfigured": True,
-            "isAuthenticated": False,  # Will be set to True after successful toggle/enable
-            "isActive": False,  # Disable if config changed - user must re-enable
-            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-            "updatedBy": user_id
-        }
+            # Update instance status - mark as configured but not authenticated
+            # Connector will be initialized and authenticated when user clicks Enable
+            updates = {
+                "isConfigured": True,
+                "isAuthenticated": False,  # Will be set to True after successful toggle/enable
+                "isActive": False,  # Disable if auth config changed - user must re-enable
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedBy": user_id
+            }
+        else:
+            # For filters/sync updates, keep connector active and authenticated
+            # Only update the timestamp and preserve all other status fields
+            updates = {
+                "isConfigured": True,
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedBy": user_id
+            }
         updated_instance = await connector_registry.update_connector_instance(
             connector_id=connector_id,
             updates=updates,
