@@ -1,6 +1,7 @@
 from typing import List, Literal
 
 from pydantic import BaseModel
+from typing_extensions import TypedDict
 
 
 class AnswerWithMetadata(BaseModel):
@@ -10,6 +11,15 @@ class AnswerWithMetadata(BaseModel):
     confidence: Literal["Very High", "High", "Medium", "Low"]
     answerMatchType: Literal["Derived From Blocks", "Exact Match", "Fuzzy Match", "Inferred", "Other"]
     blockNumbers: List[int]
+
+
+class AnswerWithMetadataDict(TypedDict):
+    """Schema for the answer with metadata"""
+    answer: str
+    reason: str
+    confidence: Literal["Very High", "High", "Medium", "Low"]
+    answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record"]
+    blockNumbers: List[str]
 
 class AnswerWithMetadataJSON(BaseModel):
     """Schema for the answer with metadata"""

@@ -1,6 +1,6 @@
 from typing import Tuple
 
-from langchain.chat_models.base import BaseChatModel
+from langchain_core.language_models.chat_models import BaseChatModel
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
