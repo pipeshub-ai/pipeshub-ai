@@ -6,15 +6,17 @@ This replaces the synchronous python-arango SDK with async HTTP calls.
 
 All operations are non-blocking and use aiohttp for async I/O.
 """
-
+import hashlib
+import uuid
 from logging import Logger
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
     CollectionNames,
     Connectors,
+    GraphNames,
     OriginTypes,
 )
 from app.config.constants.service import config_node_constants
@@ -369,6 +371,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> bool:
         """
         Batch create edges - FULLY ASYNC.
+        
+        Uses UPSERT to avoid duplicates - matches on _from and _to.
 
         Args:
             edges: List of edge documents (must have _from and _to)
@@ -382,14 +386,31 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if not edges:
                 return True
 
-            result = await self.http_client.batch_insert_documents(
-                collection, edges, txn_id=transaction, overwrite=True
-            )
+            self.logger.info(f"🚀 Batch creating edges: {collection}")
 
-            return result.get("errors", 0) == 0
+            batch_query = """
+            FOR edge IN @edges
+                UPSERT { _from: edge._from, _to: edge._to }
+                INSERT edge
+                UPDATE edge
+                IN @@collection
+                RETURN NEW
+            """
+            bind_vars = {"edges": edges, "@collection": collection}
+
+            results = await self.http_client.execute_aql(
+                batch_query, 
+                bind_vars,
+                txn_id=transaction
+            )
+            
+            self.logger.info(
+                f"✅ Successfully created {len(results)} edges in collection '{collection}'."
+            )
+            return True
 
         except Exception as e:
-            self.logger.error(f"❌ Batch create edges failed: {str(e)}")
+            self.logger.error(f"❌ Batch edge creation failed: {str(e)}")
             raise
 
     async def get_edge(
@@ -867,29 +888,49 @@ class ArangoHTTPProvider(IGraphDBProvider):
         path: str,
         transaction: Optional[str] = None
     ) -> Optional[Dict]:
-        """Get record by path"""
-        try:
-            query = """
-            FOR file IN @@file_collection
-                FILTER file.path == @path
-                FOR record IN @@record_collection
-                    FILTER record._key == file._key
-                    AND record.connectorName == @connector_name
-                    LIMIT 1
-                    RETURN record
-            """
-            bind_vars = {
-                "@file_collection": CollectionNames.FILES.value,
-                "@record_collection": CollectionNames.RECORDS.value,
-                "path": path,
-                "connector_name": connector_name.value
-            }
+        """
+        Get a record from the FILES collection using its path.
 
-            results = await self.http_client.execute_aql(query, bind_vars, transaction)
-            return results[0] if results else None
+        Args:
+            connector_name (Connectors): The name of the connector.
+            path (str): The path of the file to look up.
+            transaction (Optional[str]): Optional transaction ID.
+
+        Returns:
+            Optional[Dict]: The file record if found, otherwise None.
+        """
+        try:
+            self.logger.info(
+                f"🚀 Retrieving record by path for connector {connector_name.value} and path {path}"
+            )
+
+            query = f"""
+            FOR fileRecord IN {CollectionNames.FILES.value}
+                FILTER fileRecord.path == @path
+                RETURN fileRecord
+            """
+
+            results = await self.http_client.execute_aql(
+                query, 
+                bind_vars={"path": path},
+                txn_id=transaction
+            )
+
+            if results:
+                self.logger.info(
+                    f"✅ Successfully retrieved file record for path: {path}"
+                )
+                return results[0]
+            else:
+                self.logger.warning(
+                    f"⚠️ No record found for path: {path}"
+                )
+                return None
 
         except Exception as e:
-            self.logger.error(f"❌ Get record by path failed: {str(e)}")
+            self.logger.error(
+                f"❌ Failed to retrieve record for path {path}: {str(e)}"
+            )
             return None
 
     async def get_records_by_status(
@@ -1047,20 +1088,27 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> Optional[Record]:
         """Get record by conversation index"""
         try:
-            query = """
-            FOR mail IN @@mail_collection
-                FILTER mail.conversationIndex == @conversation_index
-                AND mail.threadId == @thread_id
-                FOR record IN @@record_collection
-                    FILTER record._key == mail._key
-                    AND record.connectorName == @connector_name
+
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.connectorName == @connector_name
                     AND record.orgId == @org_id
-                    LIMIT 1
+                FOR mail IN {CollectionNames.MAILS.value}
+                    FILTER mail._key == record._key
+                        AND mail.conversationIndex == @conversation_index
+                        AND mail.threadId == @thread_id
+                    FOR edge IN {CollectionNames.PERMISSION.value}
+                        FILTER edge._to == record._id
+                            AND edge.role == 'OWNER'
+                            AND edge.type == 'USER'
+                        LET user_key = SPLIT(edge._to, '/')[1]
+                        LET user = DOCUMENT('{CollectionNames.USERS.value}', user_key)
+                        FILTER user.userId == @user_id
+                        LIMIT 1
                     RETURN record
             """
+
             bind_vars = {
-                "@mail_collection": CollectionNames.MAILS.value,
-                "@record_collection": CollectionNames.RECORDS.value,
                 "conversation_index": conversation_index,
                 "thread_id": thread_id,
                 "connector_name": connector_name.value,
@@ -1163,12 +1211,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> Optional[User]:
         """
         Get user by email.
-
-        Generic implementation using query.
         """
         query = f"""
         FOR user IN {CollectionNames.USERS.value}
-            FILTER user.email == @email
+            FILTER LOWER(user.email) == LOWER(@email)
             LIMIT 1
             RETURN user
         """
@@ -1195,27 +1241,61 @@ class ArangoHTTPProvider(IGraphDBProvider):
         source_user_id: str,
         connector_name: Connectors,
         transaction: Optional[str] = None
-    ) -> Optional[Dict]:
-        """Get user by source ID"""
+    ) -> Optional[User]:
+        """
+        Get a user by their source system ID (sourceUserId field in userAppRelation edge).
+
+        Args:
+            source_user_id: The user ID from the source system
+            connector_name: Connector enum for scoped lookup
+            transaction: Optional transaction ID
+
+        Returns:
+            User object if found, None otherwise
+        """
         try:
-            query = """
-            FOR user IN @@collection
-                FILTER user.sourceUserId == @source_user_id
-                AND user.connectorName == @connector_name
+            self.logger.info(
+                f"🚀 Retrieving user by source_id {source_user_id} for connector {connector_name.value}"
+            )
+
+            user_query = f"""
+            // First find the app
+            LET app = FIRST(
+                FOR a IN {CollectionNames.APPS.value}
+                    FILTER LOWER(a.name) == LOWER(@app_name)
+                    RETURN a
+            )
+
+            // Then find user connected via userAppRelation with matching sourceUserId
+            FOR edge IN {CollectionNames.USER_APP_RELATION.value}
+                FILTER edge._to == app._id
+                FILTER edge.sourceUserId == @source_user_id
+                LET user = DOCUMENT(edge._from)
+                FILTER user != null
                 LIMIT 1
                 RETURN user
             """
-            bind_vars = {
-                "@collection": CollectionNames.USERS.value,
-                "source_user_id": source_user_id,
-                "connector_name": connector_name.value
-            }
 
-            results = await self.http_client.execute_aql(query, bind_vars, transaction)
-            return results[0] if results else None
+            results = await self.http_client.execute_aql(
+                user_query,
+                bind_vars={
+                    "app_name": connector_name.value,
+                    "source_user_id": source_user_id,
+                },
+                txn_id=transaction
+            )
+
+            if results:
+                self.logger.info(f"✅ Successfully retrieved user by source_id {source_user_id}")
+                return User.from_arango_user(results[0])
+            else:
+                self.logger.warning(f"⚠️ No user found for source_id {source_user_id}")
+                return None
 
         except Exception as e:
-            self.logger.error(f"❌ Get user by source ID failed: {str(e)}")
+            self.logger.error(
+                f"❌ Failed to get user by source_id {source_user_id}: {str(e)}"
+            )
             return None
 
     async def get_user_by_user_id(
@@ -1248,47 +1328,109 @@ class ArangoHTTPProvider(IGraphDBProvider):
         active: bool = True
     ) -> List[Dict]:
         """
-        Get users by organization.
+        Fetch all active users from the database who belong to the organization.
 
-        Generic method using filters.
+        Args:
+            org_id (str): Organization ID
+            active (bool): Filter for active users only if True
+
+        Returns:
+            List[Dict]: List of user documents with their details
         """
-        filters = {"orgId": org_id}
-        if active:
-            filters["isActive"] = True
-        else:
-            filters["isActive"] = False
+        try:
+            self.logger.info("🚀 Fetching all users from database")
 
-        return await self.get_nodes_by_filters(
-            collection=CollectionNames.USERS.value,
-            filters=filters
-        )
+            query = f"""
+                FOR edge IN {CollectionNames.BELONGS_TO.value}
+                    FILTER edge._to == CONCAT('organizations/', @org_id)
+                    AND edge.entityType == 'ORGANIZATION'
+                    LET user = DOCUMENT(edge._from)
+                    FILTER @active == false OR user.isActive == true
+                    RETURN user
+                """
+
+            # Execute query with organization parameter
+            results = await self.http_client.execute_aql(
+                query, 
+                bind_vars={"org_id": org_id, "active": active}
+            )
+
+            self.logger.info(f"✅ Successfully fetched {len(results)} users")
+            return results if results else []
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch users: {str(e)}")
+            return []
 
     async def get_app_user_by_email(
         self,
         email: str,
         app_name: Connectors,
         transaction: Optional[str] = None
-    ) -> Optional[Dict]:
-        """Get app user by email"""
-        try:
-            query = """
-            FOR user IN @@collection
-                FILTER user.email == @email
-                AND user.appName == @app_name
-                LIMIT 1
-                RETURN user
-            """
-            bind_vars = {
-                "@collection": CollectionNames.USERS.value,
-                "email": email,
-                "app_name": app_name.value
-            }
+    ) -> Optional[AppUser]:
+        """
+        Get app user by email and app name, including sourceUserId from edge.
 
-            results = await self.http_client.execute_aql(query, bind_vars, transaction)
-            return results[0] if results else None
+        Args:
+            email: User email address
+            app_name: Connector name
+            transaction: Optional transaction ID
+
+        Returns:
+            AppUser object if found, None otherwise
+        """
+        try:
+            self.logger.info(
+                f"🚀 Retrieving user for email {email} and app {app_name.value}"
+            )
+
+            query = f"""
+                // First find the app
+                LET app = FIRST(
+                    FOR a IN {CollectionNames.APPS.value}
+                        FILTER LOWER(a.name) == LOWER(@app_name)
+                        RETURN a
+                )
+
+                // Then find the user by email
+                LET user = FIRST(
+                    FOR u IN {CollectionNames.USERS.value}
+                        FILTER LOWER(u.email) == LOWER(@email)
+                        RETURN u
+                )
+
+                // Find the edge connecting user to app
+                LET edge = FIRST(
+                    FOR e IN {CollectionNames.USER_APP_RELATION.value}
+                        FILTER e._from == user._id
+                        FILTER e._to == app._id
+                        RETURN e
+                )
+
+                // Return user merged with sourceUserId if edge exists
+                RETURN edge != null ? MERGE(user, {{
+                    sourceUserId: edge.sourceUserId
+                }}) : null
+            """
+
+            results = await self.http_client.execute_aql(
+                query, 
+                bind_vars={
+                    "email": email,
+                    "app_name": app_name.value
+                },
+                txn_id=transaction
+            )
+
+            if results and results[0]:
+                self.logger.info(f"✅ Successfully retrieved user for email {email} and app {app_name.value}")
+                return AppUser.from_arango_user(results[0])
+            else:
+                self.logger.warning(f"⚠️ No user found for email {email} and app {app_name.value}")
+                return None
 
         except Exception as e:
-            self.logger.error(f"❌ Get app user by email failed: {str(e)}")
+            self.logger.error(f"❌ Failed to retrieve user for email {email} and app {app_name.value}: {str(e)}")
             return None
 
     async def get_app_users(
@@ -1697,72 +1839,115 @@ class ArangoHTTPProvider(IGraphDBProvider):
             transaction=transaction
         )
 
+    async def get_all_documents(
+        self,
+        collection: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Get all documents from a collection.
+
+        Args:
+            collection: Collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            List[Dict]: List of all documents in the collection
+        """
+        try:
+            self.logger.info(f"🚀 Getting all documents from collection: {collection}")
+            query = """
+            FOR doc IN @@collection
+                RETURN doc
+            """
+            results = await self.http_client.execute_aql(
+                query, 
+                bind_vars={"@collection": collection},
+                txn_id=transaction
+            )
+            return results if results else []
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get all documents from collection: {collection}: {str(e)}")
+            return []
+
     async def get_or_create_app_by_name(
         self,
         app_name: str,
-        org_id: str
+        app_group: str,
+        auth_type: Optional[str] = None,
+        app_type: Optional[str] = None
     ) -> Optional[Dict]:
         """
-        Get app by name, create if doesn't exist.
+        Get an existing app by name or create it if it doesn't exist.
 
-        If creating, also creates ORG_APP_RELATION edge.
+        Args:
+            app_name: Name of the application
+            app_group: Group the app belongs to (e.g., "Google Workspace")
+            auth_type: Authentication type (e.g., "oauth", "api_token")
+            app_type: Optional type override (defaults to uppercased app_name)
+
+        Returns:
+            App document if successful
         """
         try:
-            # First try to get the app
+            # First try to get existing app
             existing_app = await self.get_app_by_name(app_name)
-
             if existing_app:
                 return existing_app
 
-            # App doesn't exist, create it
-            self.logger.info(f"📝 Creating new app: {app_name} for org {org_id}")
+            # If not found, create new app
+            orgs = await self.get_all_documents(CollectionNames.ORGS.value)
 
-            import hashlib
+            if not orgs or not isinstance(orgs, list):
+                self.logger.warning(f"No organizations found in DB; skipping app creation for {app_name}")
+                return None
 
-            # Generate app key and group
-            app_key = f"{org_id}_{app_name.replace(' ', '_').upper()}"
-            app_group = app_name  # Can be customized per connector
+            org_id = orgs[0].get("_key")
+            if not org_id:
+                self.logger.warning(f"First organization document missing _key; skipping app creation for {app_name}")
+                return None
+
+            # Generate consistent app group ID
             app_group_id = hashlib.sha256(app_group.encode()).hexdigest()
 
-            app_doc = {
-                "_key": app_key,
-                "name": app_name,
-                "type": app_name.upper().replace(' ', '_'),
-                "appGroup": app_group,
-                "appGroupId": app_group_id,
-                "authType": "oauth",
-                "isActive": False,
-                "isConfigured": False,
-                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-            }
-
             # Create app document
-            await self.batch_upsert_nodes(
-                [app_doc],
-                collection=CollectionNames.APPS.value
-            )
+            doc = {
+                '_key': f"{org_id}_{app_name.replace(' ', '_').upper()}",
+                'name': app_name,
+                'type': app_type or app_name.upper().replace(' ', '_'),
+                'appGroup': app_group,
+                'appGroupId': app_group_id,
+                'authType': auth_type or 'oauth',
+                'isActive': False,
+                'isConfigured': False,
+                'createdAtTimestamp': get_epoch_timestamp_in_ms(),
+                'updatedAtTimestamp': get_epoch_timestamp_in_ms()
+            }
 
-            # Create ORG_APP_RELATION edge
-            org_app_edge = {
+            # Insert app document
+            app_doc = await self.batch_upsert_nodes([doc], CollectionNames.APPS.value)
+            if not app_doc:
+                raise Exception(f"Failed to create app {app_name} in database")
+
+            # Create org-app edge
+            edge_data = {
                 "_from": f"{CollectionNames.ORGS.value}/{org_id}",
-                "_to": f"{CollectionNames.APPS.value}/{app_key}",
+                "_to": f"{CollectionNames.APPS.value}/{doc['_key']}",
                 "createdAtTimestamp": get_epoch_timestamp_in_ms(),
             }
 
-            await self.batch_create_edges(
-                [org_app_edge],
-                collection=CollectionNames.ORG_APP_RELATION.value
+            edge_doc = await self.batch_create_edges(
+                [edge_data],
+                CollectionNames.ORG_APP_RELATION.value,
             )
+            if not edge_doc:
+                raise Exception(f"Failed to create edge for {app_name} in database")
 
-            # Return app with _id
-            app_doc["_id"] = f"{CollectionNames.APPS.value}/{app_key}"
-
-            self.logger.info(f"✅ Created new app: {app_name}")
+            self.logger.info(f"Created database entry for {app_name}")
             return app_doc
 
         except Exception as e:
-            self.logger.error(f"❌ Get or create app by name failed: {str(e)}")
+            self.logger.error(f"Error in get_or_create_app_by_name for {app_name}: {e}")
             return None
 
     async def get_org_apps(
@@ -1771,13 +1956,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> List[Dict]:
         """
         Get organization apps.
-
-        Generic method using filters.
         """
-        return await self.get_nodes_by_filters(
-            collection=CollectionNames.APPS.value,
-            filters={"orgId": org_id}
-        )
+        try:
+            query = f"""
+            FOR app IN OUTBOUND
+                '{CollectionNames.ORGS.value}/{org_id}'
+                {CollectionNames.ORG_APP_RELATION.value}
+            FILTER app.isActive == true
+            RETURN app
+            """
+
+            results = await self.http_client.execute_aql(query)
+            return results if results else []
+        except Exception as e:
+            self.logger.error(f"❌ Get org apps failed: {str(e)}")
+            return []
 
     async def batch_upsert_record_permissions(
         self,
@@ -1826,6 +2019,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_first_user_with_permission_to_node(
         self,
         node_key: str,
+        collection: str = CollectionNames.PERMISSION.value,
         transaction: Optional[str] = None
     ) -> Optional[User]:
         """Get first user with permission to node"""
@@ -1854,6 +2048,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_users_with_permission_to_node(
         self,
         node_key: str,
+        collection: str =  CollectionNames.PERMISSION.value,
         transaction: Optional[str] = None
     ) -> List[User]:
         """Get users with permission to node"""
@@ -1889,10 +2084,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR edge IN @@edge_collection
                 FILTER edge._to == @record_key
                 AND edge.role == "OWNER"
-                FOR user IN @@user_collection
-                    FILTER user._id == edge._from
-                    LIMIT 1
-                    RETURN user.email
+                AND edge.type == "USER"
+                LET user_key = SPLIT(edge._from, '/')[1]
+                LET user = DOCUMENT('{CollectionNames.USERS.value}', user_key)
+                LIMIT 1
+                RETURN user.email
             """
             bind_vars = {
                 "@edge_collection": CollectionNames.PERMISSION.value,
@@ -1911,23 +2107,85 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         file_key: str,
         transaction: Optional[str] = None
-    ) -> List[str]:
-        """Get file parents"""
+    ) -> List[Dict]:
+        """
+        Get parent file external IDs for a given file.
+
+        Args:
+            file_key: File key
+            transaction: Optional transaction ID
+
+        Returns:
+            List[Dict]: List of parent files
+        """
         try:
-            query = """
-            FOR edge IN @@edge_collection
-                FILTER edge._from == @file_key
-                RETURN edge._to
+            if not file_key:
+                raise ValueError("File ID is required")
+
+            self.logger.info(f"🚀 Getting parents for record {file_key}")
+
+            query = f"""
+            LET relations = (
+                FOR rel IN {CollectionNames.RECORD_RELATIONS.value}
+                    FILTER rel._to == @record_id
+                    RETURN rel._from
+            )
+            LET parent_keys = (
+                FOR rel IN relations
+                    LET key = PARSE_IDENTIFIER(rel).key
+                    RETURN {{
+                        original_id: rel,
+                        parsed_key: key
+                    }}
+            )
+            LET parent_files = (
+                FOR parent IN parent_keys
+                    FOR record IN {CollectionNames.RECORDS.value}
+                        FILTER record._key == parent.parsed_key
+                        RETURN {{
+                            key: record._key,
+                            externalRecordId: record.externalRecordId
+                        }}
+            )
+            RETURN {{
+                input_file_key: @file_key,
+                found_relations: relations,
+                parsed_parent_keys: parent_keys,
+                found_parent_files: parent_files
+            }}
             """
+
             bind_vars = {
-                "@edge_collection": CollectionNames.PARENT.value,
-                "file_key": f"{CollectionNames.FILES.value}/{file_key}"
+                "file_key": file_key,
+                "record_id": CollectionNames.RECORDS.value + "/" + file_key,
             }
 
-            return await self.http_client.execute_aql(query, bind_vars, transaction)
+            results = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
 
+            if not results or not results[0]["found_relations"]:
+                self.logger.warning(f"⚠️ No relations found for record {file_key}")
+            if not results or not results[0]["parsed_parent_keys"]:
+                self.logger.warning(f"⚠️ No parent keys parsed for record {file_key}")
+            if not results or not results[0]["found_parent_files"]:
+                self.logger.warning(f"⚠️ No parent files found for record {file_key}")
+
+            # Return just the external file IDs if everything worked
+            return (
+                [
+                    record["externalRecordId"]
+                    for record in results[0]["found_parent_files"]
+                ]
+                if results
+                else []
+            )
+
+        except ValueError as ve:
+            self.logger.error(f"❌ Validation error: {str(ve)}")
+            return []
         except Exception as e:
-            self.logger.error(f"❌ Get file parents failed: {str(e)}")
+            self.logger.error(
+                f"❌ Error getting parents for record {file_key}: {str(e)}"
+            )
             return []
 
     async def get_sync_point(
@@ -1985,6 +2243,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "key": sync_point_key,
                     "data": {
                         **sync_point_data,
+                        "syncPointKey": sync_point_key,
                         "updatedAtTimestamp": get_epoch_timestamp_in_ms()
                     }
                 }
@@ -1998,6 +2257,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "@collection": collection,
                     "doc": {
                         **sync_point_data,
+                        "syncPointKey": sync_point_key,
                         "updatedAtTimestamp": get_epoch_timestamp_in_ms()
                     }
                 }
@@ -2011,22 +2271,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def remove_sync_point(
         self,
-        key: List[str],
+        key: str,
         collection: str,
         transaction: Optional[str] = None
     ) -> None:
         """
-        Remove sync points by syncPointKey field.
+        Remove sync point by syncPointKey field.
         """
         try:
             query = """
             FOR doc IN @@collection
-                FILTER doc.syncPointKey IN @keys
+                FILTER doc.syncPointKey == @key
                 REMOVE doc IN @@collection
             """
             bind_vars = {
                 "@collection": collection,
-                "keys": key
+                "key": key
             }
 
             await self.http_client.execute_aql(query, bind_vars, transaction)
@@ -2322,8 +2582,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars={"email": email},
                 txn_id=transaction
             )
-            return results[0] if results else None
+            if results:
+                return results[0]
 
+            query = """
+            FOR doc IN {CollectionNames.PEOPLE.value}
+                FILTER doc.email == @email
+                LIMIT 1
+                RETURN doc._key
+            """
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={"email": email},
+                txn_id=transaction
+            )
+            if results:
+                return results[0]
+
+            return None
         except Exception as e:
             self.logger.error(f"❌ Get entity ID by email failed: {str(e)}")
             return None
@@ -2332,291 +2609,515 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         emails: List[str],
         transaction: Optional[str] = None
-    ) -> Dict[str, Optional[str]]:
-        """Bulk get entity IDs by email"""
-        try:
-            if not emails:
-                return {}
+    ) -> Dict[str, Tuple[str, str, str]]:
+        """
+        Bulk get entity IDs for multiple emails across users, groups, and people collections.
 
-            query = """
-            LET result = (
-                FOR email IN @emails
-                    LET user = FIRST(
-                        FOR u IN @@user_collection
-                            FILTER u.email == email
-                            LIMIT 1
-                            RETURN u._key
-                    )
-                    RETURN {[email]: user}
-            )
-            RETURN MERGE(result)
-            """
-            bind_vars = {
-                "@user_collection": CollectionNames.USERS.value,
-                "emails": emails
+        Args:
+            emails (List[str]): List of email addresses to look up
+            transaction: Optional transaction ID
+
+        Returns:
+            Dict[email, (entity_id, collection_name, permission_type)]
+
+            Example:
+            {
+                "user@example.com": ("123abc", "users", "USER"),
+                "group@example.com": ("456def", "groups", "GROUP"),
+                "external@example.com": ("789ghi", "people", "USER")
             }
+        """
+        if not emails:
+            return {}
 
-            results = await self.http_client.execute_aql(query, bind_vars, transaction)
-            return results[0] if results else {}
+        try:
+            self.logger.info(f"🚀 Bulk getting Entity Keys for {len(emails)} emails")
+
+            result_map = {}
+
+            # Deduplicate emails to avoid redundant queries
+            unique_emails = list(set(emails))
+
+            # QUERY 1: Check users collection
+            user_query = f"""
+            FOR doc IN {CollectionNames.USERS.value}
+                FILTER doc.email IN @emails
+                RETURN {{email: doc.email, id: doc._key}}
+            """
+            try:
+                users = await self.http_client.execute_aql(
+                    user_query, 
+                    bind_vars={"emails": unique_emails},
+                    txn_id=transaction
+                )
+                for user in users:
+                    result_map[user["email"]] = (
+                        user["id"],
+                        CollectionNames.USERS.value,
+                        "USER"
+                    )
+                self.logger.info(f"✅ Found {len(users)} users")
+            except Exception as e:
+                self.logger.error(f"❌ Error querying users: {str(e)}")
+
+            # QUERY 2: Check groups collection (only for remaining emails)
+            remaining_emails = [e for e in unique_emails if e not in result_map]
+            if remaining_emails:
+                group_query = f"""
+                FOR doc IN {CollectionNames.GROUPS.value}
+                    FILTER doc.email IN @emails
+                    RETURN {{email: doc.email, id: doc._key}}
+                """
+                try:
+                    groups = await self.http_client.execute_aql(
+                        group_query,
+                        bind_vars={"emails": remaining_emails},
+                        txn_id=transaction
+                    )
+                    for group in groups:
+                        result_map[group["email"]] = (
+                            group["id"],
+                            CollectionNames.GROUPS.value,
+                            "GROUP"
+                        )
+                    self.logger.info(f"✅ Found {len(groups)} groups")
+                except Exception as e:
+                    self.logger.error(f"❌ Error querying groups: {str(e)}")
+
+            # QUERY 3: Check people collection (only for remaining emails)
+            remaining_emails = [e for e in unique_emails if e not in result_map]
+            if remaining_emails:
+                people_query = f"""
+                FOR doc IN {CollectionNames.PEOPLE.value}
+                    FILTER doc.email IN @emails
+                    RETURN {{email: doc.email, id: doc._key}}
+                """
+                try:
+                    people = await self.http_client.execute_aql(
+                        people_query,
+                        bind_vars={"emails": remaining_emails},
+                        txn_id=transaction
+                    )
+                    for person in people:
+                        result_map[person["email"]] = (
+                            person["id"],
+                            CollectionNames.PEOPLE.value,
+                            "USER"
+                        )
+                    self.logger.info(f"✅ Found {len(people)} people")
+                except Exception as e:
+                    self.logger.error(f"❌ Error querying people: {str(e)}")
+
+            self.logger.info(
+                f"✅ Bulk lookup complete: found {len(result_map)}/{len(unique_emails)} entities"
+            )
+
+            return result_map
 
         except Exception as e:
-            self.logger.error(f"❌ Bulk get entity IDs by email failed: {str(e)}")
+            self.logger.error(f"❌ Failed to bulk get entity IDs: {str(e)}")
             return {}
+
+    async def store_permission(
+        self,
+        file_key: str,
+        entity_key: str,
+        permission_data: Dict,
+        transaction: Optional[str] = None,
+    ) -> bool:
+        """Store or update permission relationship with change detection."""
+        try:
+            self.logger.info(
+                f"🚀 Storing permission for file {file_key} and entity {entity_key}"
+            )
+
+            if not entity_key:
+                self.logger.warning("⚠️ Cannot store permission - missing entity_key")
+                return False
+
+            timestamp = get_epoch_timestamp_in_ms()
+
+            # Determine the correct collection for the _from field (User/Group/Org)
+            entityType = permission_data.get("type", "user").lower()
+            if entityType == "domain":
+                from_collection = CollectionNames.ORGS.value
+            else:
+                from_collection = f"{entityType}s"
+
+            existing_permissions = await self.get_file_permissions(file_key, transaction)
+            if existing_permissions:
+                # With reversed direction: User/Group/Org → Record, so check _from
+                existing_perm = next((p for p in existing_permissions if p.get("_from") == f"{from_collection}/{entity_key}"), None)
+                if existing_perm:
+                    edge_key = existing_perm.get("_key")
+                else:
+                    edge_key = str(uuid.uuid4())
+            else:
+                edge_key = str(uuid.uuid4())
+
+            self.logger.info(f"Permission data is {permission_data}")
+            
+            # Create edge document with proper formatting
+            # Direction: User/Group/Org → Record (reversed from old direction)
+            edge = {
+                "_key": edge_key,
+                "_from": f"{from_collection}/{entity_key}",
+                "_to": f"{CollectionNames.RECORDS.value}/{file_key}",
+                "type": permission_data.get("type").upper(),
+                "role": permission_data.get("role", "READER").upper(),
+                "externalPermissionId": permission_data.get("id"),
+                "createdAtTimestamp": timestamp,
+                "updatedAtTimestamp": timestamp,
+                "lastUpdatedTimestampAtSource": timestamp,
+            }
+
+            # Log the edge document for debugging
+            self.logger.debug(f"Creating edge document: {edge}")
+
+            # Check if permission edge exists using AQL (works with transactions)
+            try:
+                # Use AQL query to get existing edge instead of direct collection access
+                get_edge_query = f"""
+                    FOR edge IN {CollectionNames.PERMISSION.value}
+                        FILTER edge._key == @edge_key
+                        RETURN edge
+                """
+                existing_edge_results = await self.http_client.execute_aql(
+                    get_edge_query,
+                    bind_vars={"edge_key": edge_key},
+                    txn_id=transaction
+                )
+                existing_edge = existing_edge_results[0] if existing_edge_results else None
+
+                if not existing_edge:
+                    # New permission - use batch_upsert_nodes which handles transactions properly
+                    self.logger.info(f"✅ Creating new permission edge: {edge_key}")
+                    await self.batch_upsert_nodes(
+                        [edge],
+                        collection=CollectionNames.PERMISSION.value,
+                        transaction=transaction
+                    )
+                    self.logger.info(f"✅ Created new permission edge: {edge_key}")
+                elif self._permission_needs_update(existing_edge, permission_data):
+                    # Update existing permission
+                    self.logger.info(f"✅ Updating permission edge: {edge_key}")
+                    await self.batch_upsert_nodes(
+                        [edge],
+                        collection=CollectionNames.PERMISSION.value,
+                        transaction=transaction
+                    )
+                    self.logger.info(f"✅ Updated permission edge: {edge_key}")
+                else:
+                    self.logger.info(
+                        f"✅ No update needed for permission edge: {edge_key}"
+                    )
+
+                return True
+
+            except Exception as e:
+                self.logger.error(
+                    f"❌ Failed to access permissions collection: {str(e)}"
+                )
+                if transaction:
+                    raise
+                return False
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to store permission: {str(e)}")
+            if transaction:
+                raise
+            return False
+
+    def _permission_needs_update(self, existing: Dict, new: Dict) -> bool:
+        """Check if permission data needs to be updated"""
+        self.logger.info("🚀 Checking if permission data needs to be updated")
+        relevant_fields = ["role", "permissionDetails", "active"]
+
+        for field in relevant_fields:
+            if field in new:
+                if field == "permissionDetails":
+                    import json
+                    if json.dumps(new[field], sort_keys=True) != json.dumps(
+                        existing.get(field, {}), sort_keys=True
+                    ):
+                        self.logger.info(f"✅ Permission data needs to be updated. Field {field}")
+                        return True
+                elif new[field] != existing.get(field):
+                    self.logger.info(f"✅ Permission data needs to be updated. Field {field}")
+                    return True
+
+        self.logger.info("✅ Permission data does not need to be updated")
+        return False
 
     async def process_file_permissions(
         self,
         org_id: str,
         file_key: str,
-        permissions: List[Dict],
-        transaction: Optional[str] = None
-    ) -> None:
+        permissions_data: List[Dict],
+        transaction: Optional[str] = None,
+    ) -> bool:
         """
-        Process file permissions by comparing new with existing.
-
-        Generic implementation that:
-        1. Removes 'anyone' permissions for this file
-        2. Removes obsolete permission edges
-        3. Creates/updates permission edges for users/groups
-        4. Creates 'anyone' nodes if needed
-
-        Args:
-            org_id: Organization ID
-            file_key: File key
-            permissions: List of permission dictionaries from source
-            transaction: Optional transaction ID
+        Process file permissions by comparing new permissions with existing ones.
+        Assumes all entities and files already exist in the database.
         """
         try:
             self.logger.info(f"🚀 Processing permissions for file {file_key}")
             timestamp = get_epoch_timestamp_in_ms()
 
-            # 1. Remove 'anyone' permissions for this file using generic method
-            removed = await self.remove_nodes_by_field(
-                collection=CollectionNames.ANYONE.value,
-                field="file_key",
-                value=file_key,
-                transaction=transaction
+            # Remove 'anyone' permission for this file if it exists
+            query = f"""
+            FOR a IN {CollectionNames.ANYONE.value}
+                FILTER a.file_key == @file_key
+                FILTER a.organization == @org_id
+                REMOVE a IN {CollectionNames.ANYONE.value}
+            """
+            await self.http_client.execute_aql(
+                query, 
+                bind_vars={"file_key": file_key, "org_id": org_id},
+                txn_id=transaction
             )
-            self.logger.info(f"🗑️ Removed {removed} 'anyone' permissions")
+            self.logger.info(f"🗑️ Removed 'anyone' permission for file {file_key}")
 
-            # 2. Get existing permissions using generic method
-            node_id = f"{CollectionNames.RECORDS.value}/{file_key}"
-            existing_permissions = await self.get_edges_to_node(
-                node_id=node_id,
-                edge_collection=CollectionNames.PERMISSION.value,
-                transaction=transaction
+            existing_permissions = await self.get_file_permissions(
+                file_key, transaction=transaction
             )
+            self.logger.info(f"🚀 Existing permissions: {existing_permissions}")
 
-            # 3. Find obsolete permissions
-            new_permission_ids = {p.get("id") for p in permissions}
-
+            # Get all permission IDs from new permissions
+            new_permission_ids = list({p.get("id") for p in permissions_data})
+            self.logger.info(f"🚀 New permission IDs: {new_permission_ids}")
+            
+            # Find permissions that exist but are not in new permissions
             permissions_to_remove = [
-                perm for perm in existing_permissions
+                perm
+                for perm in existing_permissions
                 if perm.get("externalPermissionId") not in new_permission_ids
             ]
 
-            # 4. Remove obsolete permissions using generic method
+            # Remove permissions that no longer exist
             if permissions_to_remove:
-                self.logger.info(f"🗑️ Removing {len(permissions_to_remove)} obsolete permissions")
-                keys_to_remove = [perm["_key"] for perm in permissions_to_remove]
-                await self.delete_nodes(
-                    keys=keys_to_remove,
-                    collection=CollectionNames.PERMISSION.value,
-                    transaction=transaction
+                self.logger.info(
+                    f"🗑️ Removing {len(permissions_to_remove)} obsolete permissions"
                 )
+                for perm in permissions_to_remove:
+                    query = f"""
+                    FOR p IN {CollectionNames.PERMISSION.value}
+                        FILTER p._key == @perm_key
+                        REMOVE p IN {CollectionNames.PERMISSION.value}
+                    """
+                    await self.http_client.execute_aql(
+                        query,
+                        bind_vars={"perm_key": perm["_key"]},
+                        txn_id=transaction
+                    )
 
-            # 5. Process new permissions by type
+            # Process permissions by type
             for perm_type in ["user", "group", "domain", "anyone"]:
                 # Filter new permissions for current type
                 new_perms = [
-                    p for p in permissions
+                    p
+                    for p in permissions_data
                     if p.get("type", "").lower() == perm_type
                 ]
-
                 # Filter existing permissions for current type
                 existing_perms = [
-                    p for p in existing_permissions
-                    if p.get("type", "").lower() == perm_type
+                    p
+                    for p in existing_permissions
+                    if p.get("type").lower() == perm_type
                 ]
 
-                # Process user, group, domain permissions
-                if perm_type in ["user", "group", "domain"]:
+                # Compare and update permissions
+                if perm_type == "user" or perm_type == "group" or perm_type == "domain":
                     for new_perm in new_perms:
                         perm_id = new_perm.get("id")
-
-                        # Check if permission already exists
-                        existing_perm = next(
-                            (p for p in existing_perms if p.get("externalPermissionId") == perm_id),
-                            None
-                        )
-
-                        if existing_perm:
-                            # Update existing permission edge
-                            edge_key = existing_perm.get("_key")
-                            await self.update_node(
-                                key=edge_key,
-                                collection=CollectionNames.PERMISSION.value,
-                                updates={
-                                    "role": new_perm.get("role", "READER").upper(),
-                                    "updatedAtTimestamp": timestamp,
-                                    "lastUpdatedTimestampAtSource": timestamp,
-                                },
-                                transaction=transaction
+                        if existing_perms:
+                            existing_perm = next(
+                                (
+                                    p
+                                    for p in existing_perms
+                                    if p.get("externalPermissionId") == perm_id
+                                ),
+                                None,
                             )
                         else:
-                            # Create new permission edge
-                            if perm_type in ["user", "group"]:
-                                email = new_perm.get("emailAddress")
-                                if not email:
-                                    continue
+                            existing_perm = None
 
-                                entity_id = await self.get_entity_id_by_email(email, transaction)
-                                if not entity_id:
-                                    self.logger.warning(f"⚠️ Entity not found for email: {email}")
-                                    continue
-
-                                collection = CollectionNames.USERS.value if perm_type == "user" else CollectionNames.GROUPS.value
-                                from_id = f"{collection}/{entity_id}"
-                            elif perm_type == "domain":
-                                from_id = f"{CollectionNames.ORGS.value}/{org_id}"
-                            else:
-                                continue
-
-                            # Create permission edge
-                            await self.batch_create_edges(
-                                edges=[{
-                                    "_from": from_id,
-                                    "_to": node_id,
-                                    "role": new_perm.get("role", "READER").upper(),
-                                    "type": perm_type.upper(),
-                                    "externalPermissionId": new_perm.get("id"),
-                                    "createdAtTimestamp": timestamp,
-                                    "updatedAtTimestamp": timestamp,
-                                    "lastUpdatedTimestampAtSource": timestamp,
-                                }],
-                                collection=CollectionNames.PERMISSION.value,
-                                transaction=transaction
+                        if existing_perm:
+                            entity_key = existing_perm.get("_from")
+                            entity_key = entity_key.split("/")[1]
+                            # Update existing permission
+                            await self.store_permission(
+                                file_key,
+                                entity_key,
+                                new_perm,
+                                transaction,
                             )
+                        else:
+                            # Get entity key from email for user/group
+                            # Create new permission
+                            if perm_type == "user" or perm_type == "group":
+                                entity_key = await self.get_entity_id_by_email(
+                                    new_perm.get("emailAddress"), transaction
+                                )
+                                if not entity_key:
+                                    self.logger.warning(
+                                        f"⚠️ Skipping permission for non-existent user or group: {new_perm.get('emailAddress')}"
+                                    )
+                                    continue
+                            elif perm_type == "domain":
+                                entity_key = org_id
+                                if not entity_key:
+                                    self.logger.warning(
+                                        f"⚠️ Skipping permission for non-existent domain: {entity_key}"
+                                    )
+                                    continue
+                            else:
+                                entity_key = None
+                                # Skip if entity doesn't exist
+                                if not entity_key:
+                                    self.logger.warning(
+                                        f"⚠️ Skipping permission for non-existent entity: {entity_key}"
+                                    )
+                                    continue
+                            if entity_key != "anyone" and entity_key:
+                                self.logger.info(
+                                    f"🚀 Storing permission for file {file_key} and entity {entity_key}: {new_perm}"
+                                )
+                                await self.store_permission(
+                                    file_key, entity_key, new_perm, transaction
+                                )
 
-                elif perm_type == "anyone":
-                    # Create 'anyone' nodes
-                    anyone_nodes = []
+                if perm_type == "anyone":
+                    # For anyone type, add permission directly to anyone collection
                     for new_perm in new_perms:
-                        anyone_nodes.append({
+                        permission_data = {
                             "type": "anyone",
                             "file_key": file_key,
                             "organization": org_id,
-                            "role": new_perm.get("role", "READER").upper(),
+                            "role": new_perm.get("role", "READER"),
                             "externalPermissionId": new_perm.get("id"),
                             "lastUpdatedTimestampAtSource": timestamp,
                             "active": True,
-                        })
-
-                    if anyone_nodes:
+                        }
+                        # Store/update permission
                         await self.batch_upsert_nodes(
-                            nodes=anyone_nodes,
+                            [permission_data], 
                             collection=CollectionNames.ANYONE.value,
                             transaction=transaction
                         )
 
-            self.logger.info(f"✅ Processed {len(permissions)} permissions for file {file_key}")
+            self.logger.info(
+                f"✅ Successfully processed all permissions for file {file_key}"
+            )
+            return True
 
         except Exception as e:
-            self.logger.error(f"❌ Process file permissions failed: {str(e)}")
-            raise
+            self.logger.error(f"❌ Failed to process permissions: {str(e)}")
+            if transaction:
+                raise
+            return False
 
     async def delete_records_and_relations(
         self,
-        record_key: str,
+        node_key: str,
         hard_delete: bool = False,
-        transaction: Optional[str] = None
-    ) -> None:
-        """
-        Delete a record and all its relations.
-
-        Generic implementation that:
-        1. Deletes all edges from the record
-        2. Deletes all edges to the record
-        3. Deletes the IS_OF_TYPE edge
-        4. Deletes the specific type node (e.g., files/{key})
-        5. Optionally hard deletes the record node
-
-        Args:
-            record_key: Record key to delete
-            hard_delete: If True, deletes the record node; if False, marks as deleted
-            transaction: Optional transaction ID
-        """
+        transaction: Optional[str] = None,
+    ) -> bool:
+        """Delete a node and its edges from all edge collections (Records, Files)."""
         try:
-            self.logger.info(f"🚀 Deleting record and relations for {record_key}")
-
-            record_id = f"{CollectionNames.RECORDS.value}/{record_key}"
-
-            # 1. Delete all edges FROM this record using generic method
-            deleted_from = await self.delete_edges_from(
-                from_key=record_id,
-                collection=CollectionNames.RECORD_RELATIONS.value,
-                transaction=transaction
+            self.logger.info(
+                f"🚀 Deleting node {node_key} from collection Records, Files (hard_delete={hard_delete})"
             )
-            self.logger.info(f"🗑️ Deleted {deleted_from} edges from record")
 
-            # 2. Delete all edges TO this record using generic method
-            deleted_to = await self.delete_edges_to(
-                to_key=record_id,
-                collection=CollectionNames.RECORD_RELATIONS.value,
-                transaction=transaction
+            record = await self.http_client.get_document(
+                CollectionNames.RECORDS.value,
+                node_key,
+                txn_id=transaction
             )
-            self.logger.info(f"🗑️ Deleted {deleted_to} edges to record")
+            if not record:
+                self.logger.warning(
+                    f"⚠️ Record {node_key} not found in Records collection"
+                )
+                return False
 
-            # 3. Delete permission edges using generic method
-            perm_deleted = await self.delete_edges_to(
-                to_key=record_id,
-                collection=CollectionNames.PERMISSION.value,
-                transaction=transaction
-            )
-            self.logger.info(f"🗑️ Deleted {perm_deleted} permission edges")
+            # Define all edge collections used in the graph
+            EDGE_COLLECTIONS = [
+                CollectionNames.RECORD_RELATIONS.value,
+                CollectionNames.BELONGS_TO.value,
+                CollectionNames.BELONGS_TO_DEPARTMENT.value,
+                CollectionNames.BELONGS_TO_CATEGORY.value,
+                CollectionNames.BELONGS_TO_LANGUAGE.value,
+                CollectionNames.BELONGS_TO_TOPIC.value,
+                CollectionNames.IS_OF_TYPE.value,
+            ]
 
-            # 4. Delete IS_OF_TYPE edges using generic method
-            type_deleted = await self.delete_edges_from(
-                from_key=record_id,
-                collection=CollectionNames.IS_OF_TYPE.value,
-                transaction=transaction
-            )
-            self.logger.info(f"🗑️ Deleted {type_deleted} IS_OF_TYPE edges")
-
-            # 5. Delete from specific type collections (files, emails, etc.)
-            for collection in [CollectionNames.FILES.value, CollectionNames.MAILS.value]:
+            # Step 1: Remove edges from all edge collections
+            for edge_collection in EDGE_COLLECTIONS:
                 try:
-                    await self.delete_nodes(
-                        keys=[record_key],
-                        collection=collection,
-                        transaction=transaction
+                    edge_removal_query = """
+                    LET record_id_full = CONCAT('records/', @node_key)
+                    FOR edge IN @@edge_collection
+                        FILTER edge._from == record_id_full OR edge._to == record_id_full
+                        REMOVE edge IN @@edge_collection
+                    """
+                    bind_vars = {
+                        "node_key": node_key,
+                        "@edge_collection": edge_collection,
+                    }
+                    await self.http_client.execute_aql(edge_removal_query, bind_vars, txn_id=transaction)
+                    self.logger.info(
+                        f"✅ Edges from {edge_collection} deleted for node {node_key}"
                     )
-                except Exception:
-                    pass  # Collection might not have this document
+                except Exception as e:
+                    self.logger.warning(
+                        f"⚠️ Could not delete edges from {edge_collection} for node {node_key}: {str(e)}"
+                    )
 
-            # 6. Delete or mark the record node
-            if hard_delete:
-                # Hard delete the record node
-                await self.delete_nodes(
-                    keys=[record_key],
-                    collection=CollectionNames.RECORDS.value,
-                    transaction=transaction
-                )
-                self.logger.info(f"🗑️ Hard deleted record {record_key}")
-            else:
-                # Soft delete - mark as deleted
-                await self.update_node(
-                    key=record_key,
-                    collection=CollectionNames.RECORDS.value,
-                    updates={"isDeleted": True, "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
-                    transaction=transaction
-                )
-                self.logger.info(f"🗑️ Soft deleted record {record_key}")
+            # Step 2: Delete node from `records`, `files`, and `mails` collections
+            delete_query = f"""
+            LET removed_record = (
+                FOR doc IN {CollectionNames.RECORDS.value}
+                    FILTER doc._key == @node_key
+                    REMOVE doc IN {CollectionNames.RECORDS.value}
+                    RETURN OLD
+            )
 
-            self.logger.info(f"✅ Successfully deleted record and relations for {record_key}")
+            LET removed_file = (
+                FOR doc IN {CollectionNames.FILES.value}
+                    FILTER doc._key == @node_key
+                    REMOVE doc IN {CollectionNames.FILES.value}
+                    RETURN OLD
+            )
+
+            LET removed_mail = (
+                FOR doc IN {CollectionNames.MAILS.value}
+                    FILTER doc._key == @node_key
+                    REMOVE doc IN {CollectionNames.MAILS.value}
+                    RETURN OLD
+            )
+
+            RETURN {{
+                record_removed: LENGTH(removed_record) > 0,
+                file_removed: LENGTH(removed_file) > 0,
+                mail_removed: LENGTH(removed_mail) > 0
+            }}
+            """
+            bind_vars = {
+                "node_key": node_key,
+            }
+
+            result = await self.http_client.execute_aql(delete_query, bind_vars, txn_id=transaction)
+
+            self.logger.info(
+                f"✅ Node {node_key} and its edges {'hard' if hard_delete else 'soft'} deleted: {result}"
+            )
+            return True
 
         except Exception as e:
-            self.logger.error(f"❌ Delete records and relations failed: {str(e)}")
-            raise
+            self.logger.error(f"❌ Failed to delete node {node_key}: {str(e)}")
+            if transaction:
+                raise
+            return False
 
     async def delete_record(
         self,
@@ -2966,16 +3467,48 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: Optional[str] = None
     ) -> Optional[str]:
         """
-        Get key by external file ID.
+        Get internal file key using the external file ID.
 
-        Uses get_record_by_external_id internally.
+        Args:
+            external_file_id (str): External file ID to look up
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Optional[str]: Internal file key if found, None otherwise
         """
-        record = await self.get_record_by_external_id(
-            connector_name=Connectors.GOOGLE_DRIVE,
-            external_id=external_file_id,
-            transaction=transaction
-        )
-        return record.get("_key") if record else None
+        try:
+            self.logger.info(
+                f"🚀 Retrieving internal key for external file ID {external_file_id}"
+            )
+
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.externalRecordId == @external_file_id
+                RETURN record._key
+            """
+
+            results = await self.http_client.execute_aql(
+                query, 
+                bind_vars={"external_file_id": external_file_id},
+                txn_id=transaction
+            )
+
+            if results:
+                self.logger.info(
+                    f"✅ Successfully retrieved internal key for external file ID {external_file_id}"
+                )
+                return results[0]
+            else:
+                self.logger.warning(
+                    f"⚠️ No internal key found for external file ID {external_file_id}"
+                )
+                return None
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to retrieve internal key for external file ID {external_file_id}: {str(e)}"
+            )
+            return None
 
     async def get_app_by_name(
         self,
@@ -2989,7 +3522,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         query = f"""
         FOR app IN {CollectionNames.APPS.value}
-            FILTER LOWER(app.name) == LOWER(@app_name)
+            FILTER LOWER(SUBSTITUTE(app.name, ' ', '')) == LOWER(SUBSTITUTE(@app_name, ' ', ''))
             LIMIT 1
             RETURN app
         """
@@ -3048,43 +3581,77 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def update_user_sync_state(
         self,
         user_email: str,
-        sync_state: str,
-        service_type: str = "drive"
-    ) -> None:
+        state: str,
+        service_type: str = Connectors.GOOGLE_DRIVE.value
+    ) -> Optional[Dict]:
         """
-        Update user's sync state for a specific service.
+        Update user's sync state in USER_APP_RELATION collection for specific service.
 
-        Updates the user-app relation edge.
+        Args:
+            user_email (str): Email of the user
+            state (str): Sync state (NOT_STARTED, RUNNING, PAUSED, COMPLETED)
+            service_type (str): Type of service (defaults to "DRIVE")
+
+        Returns:
+            Optional[Dict]: Updated relation document if successful, None otherwise
         """
         try:
+            self.logger.info(
+                f"🚀 Updating {service_type} sync state for user {user_email} to {state}"
+            )
+
             user_key = await self.get_entity_id_by_email(user_email)
             if not user_key:
-                return
+                self.logger.warning(f"⚠️ User not found for email {user_email}")
+                return None
 
+            # Get user key and app key based on service type and update the sync state
             query = f"""
             LET app = FIRST(FOR a IN {CollectionNames.APPS.value}
                           FILTER LOWER(a.name) == LOWER(@service_type)
-                          RETURN {{ _key: a._key }})
+                          RETURN {{
+                              _key: a._key,
+                              name: a.name
+                          }})
 
-            FOR rel in {CollectionNames.USER_APP_RELATION.value}
-                FILTER rel._from == CONCAT('users/', @user_key)
-                FILTER rel._to == CONCAT('apps/', app._key)
-                UPDATE rel WITH {{ syncState: @state, lastSyncUpdate: @lastSyncUpdate }}
-                IN {CollectionNames.USER_APP_RELATION.value}
-                RETURN NEW
+            LET edge = FIRST(
+                FOR rel in {CollectionNames.USER_APP_RELATION.value}
+                    FILTER rel._from == CONCAT('users/', @user_key)
+                    FILTER rel._to == CONCAT('apps/', app._key)
+                    UPDATE rel WITH {{ syncState: @state, lastSyncUpdate: @lastSyncUpdate }} IN {CollectionNames.USER_APP_RELATION.value}
+                    RETURN NEW
+            )
+
+            RETURN edge
             """
 
-            await self.http_client.execute_aql(
+            results = await self.http_client.execute_aql(
                 query,
                 bind_vars={
                     "user_key": user_key,
                     "service_type": service_type,
-                    "state": sync_state,
-                    "lastSyncUpdate": get_epoch_timestamp_in_ms()
+                    "state": state,
+                    "lastSyncUpdate": get_epoch_timestamp_in_ms(),
                 }
             )
+
+            result = results[0] if results else None
+            if result:
+                self.logger.info(
+                    f"✅ Successfully updated {service_type} sync state for user {user_email} to {state}"
+                )
+                return result
+
+            self.logger.warning(
+                f"⚠️ UPDATE:No user-app relation found for email {user_email} and service {service_type}"
+            )
+            return None
+
         except Exception as e:
-            self.logger.error(f"❌ Update user sync state failed: {str(e)}")
+            self.logger.error(
+                f"❌ Failed to update user {service_type} sync state: {str(e)}"
+            )
+            return None
 
     async def get_drive_sync_state(
         self,
@@ -3102,7 +3669,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         if drives:
             return drives[0].get("sync_state")
-        return None
+        return "NOT_STARTED"
 
     async def update_drive_sync_state(
         self,
@@ -3145,16 +3712,28 @@ class ArangoHTTPProvider(IGraphDBProvider):
         resource_id: str,
         user_email: str,
         token: str,
-        expiration: str
-    ) -> None:
-        """
-        Store page token for a channel/resource.
-
-        Uses generic batch_upsert_nodes.
-        """
+        expiration: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Store page token with user channel information."""
         try:
+            self.logger.info(
+                """
+            🚀 Storing page token:
+
+            - Channel: %s
+            - Resource: %s
+            - User Email: %s
+            - Token: %s
+            - Expiration: %s
+            """,
+                channel_id,
+                resource_id,
+                user_email,
+                token,
+                expiration,
+            )
+
             token_doc = {
-                "_key": user_email.replace("@", "_at_").replace(".", "_"),
                 "channelId": channel_id,
                 "resourceId": resource_id,
                 "userEmail": user_email,
@@ -3163,49 +3742,88 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "expiration": expiration,
             }
 
-            await self.batch_upsert_nodes(
-                nodes=[token_doc],
-                collection=CollectionNames.PAGE_TOKENS.value
+            # Upsert to handle updates to existing channel tokens
+            query = f"""
+            UPSERT {{ userEmail: @userEmail }}
+            INSERT @token_doc
+            UPDATE @token_doc
+            IN {CollectionNames.PAGE_TOKENS.value}
+            RETURN NEW
+            """
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "userEmail": user_email,
+                    "token_doc": token_doc,
+                }
             )
+
+            self.logger.info("✅ Page token stored successfully")
+            return results[0] if results else None
+
         except Exception as e:
-            self.logger.error(f"❌ Store page token failed: {str(e)}")
+            self.logger.error(f"❌ Error storing page token: {str(e)}")
+            return None
 
     async def get_page_token_db(
         self,
-        channel_id: Optional[str] = None,
-        resource_id: Optional[str] = None,
-        user_email: Optional[str] = None
+        channel_id: str = None,
+        resource_id: str = None,
+        user_email: str = None
     ) -> Optional[Dict]:
-        """
-        Get page token from database.
-
-        Uses generic get_nodes_by_filters.
-        """
+        """Get page token for specific channel."""
         try:
-            filters = {}
-            if channel_id is not None:
-                filters["channelId"] = channel_id
-            if resource_id is not None:
-                filters["resourceId"] = resource_id
-            if user_email is not None:
-                filters["userEmail"] = user_email
-
-            if not filters:
-                return None
-
-            tokens = await self.get_nodes_by_filters(
-                collection=CollectionNames.PAGE_TOKENS.value,
-                filters=filters
+            self.logger.info(
+                """
+            🔍 Getting page token for:
+            - Channel: %s
+            - Resource: %s
+            - User Email: %s
+            """,
+                channel_id,
+                resource_id,
+                user_email,
             )
 
-            if tokens:
-                # Sort by timestamp descending and return first
-                tokens.sort(key=lambda x: x.get("createdAtTimestamp", 0), reverse=True)
-                return tokens[0]
+            filters = []
+            bind_vars = {}
 
+            if channel_id is not None:
+                filters.append("token.channelId == @channel_id")
+                bind_vars["channel_id"] = channel_id
+            if resource_id is not None:
+                filters.append("token.resourceId == @resource_id")
+                bind_vars["resource_id"] = resource_id
+            if user_email is not None:
+                filters.append("token.userEmail == @user_email")
+                bind_vars["user_email"] = user_email
+
+            if not filters:
+                self.logger.warning("⚠️ No filter params provided for page token query")
+                return None
+
+            filter_clause = " OR ".join(filters)
+
+            query = f"""
+            FOR token IN {CollectionNames.PAGE_TOKENS.value}
+            FILTER {filter_clause}
+            SORT token.createdAtTimestamp DESC
+            LIMIT 1
+            RETURN token
+            """
+
+            results = await self.http_client.execute_aql(query, bind_vars)
+
+            if results:
+                self.logger.info("✅ Found token for channel")
+                return results[0]
+
+            self.logger.warning("⚠️ No token found for channel")
             return None
+
         except Exception as e:
-            self.logger.error(f"❌ Get page token failed: {str(e)}")
+            self.logger.error(f"❌ Error getting page token: {str(e)}")
             return None
 
     async def check_collection_has_document(
@@ -3346,28 +3964,49 @@ class ArangoHTTPProvider(IGraphDBProvider):
         collection: str,
         transaction: Optional[str] = None
     ) -> int:
-        """Delete edges to groups"""
-        try:
-            query = """
-            FOR edge IN @@edge_collection
-                FILTER edge._from == @from_key
-                FOR group IN @@group_collection
-                    FILTER group._id == edge._to
-                    REMOVE edge IN @@edge_collection
-                    RETURN OLD
-            """
-            bind_vars = {
-                "@edge_collection": collection,
-                "@group_collection": CollectionNames.GROUPS.value,
-                "from_key": from_key
-            }
+        """
+        Delete all edges from the given node if those edges are pointing to nodes in the groups collection.
 
-            results = await self.http_client.execute_aql(query, bind_vars, transaction)
-            return len(results)
+        Args:
+            from_key: The source node key (e.g., "users/12345")
+            collection: The edge collection name to search in
+            transaction: Optional transaction ID
+
+        Returns:
+            int: Number of edges deleted
+        """
+        try:
+            self.logger.info(f"🚀 Deleting edges from {from_key} to groups collection in {collection}")
+
+            query = """
+            FOR edge IN @@collection
+                FILTER edge._from == @from_key
+                FILTER IS_SAME_COLLECTION("groups", edge._to)
+                REMOVE edge IN @@collection
+                RETURN OLD
+            """
+
+            results = await self.http_client.execute_aql(
+                query, 
+                bind_vars={
+                    "from_key": from_key,
+                    "@collection": collection
+                },
+                txn_id=transaction
+            )
+
+            count = len(results) if results else 0
+
+            if count > 0:
+                self.logger.info(f"✅ Successfully deleted {count} edges from {from_key} to groups")
+            else:
+                self.logger.warning(f"⚠️ No edges found from {from_key} to groups in collection: {collection}")
+
+            return count
 
         except Exception as e:
-            self.logger.error(f"❌ Delete edges to groups failed: {str(e)}")
-            raise
+            self.logger.error(f"❌ Failed to delete edges from {from_key} to groups in {collection}: {str(e)}")
+            return 0
 
     async def delete_edges_between_collections(
         self,
@@ -3375,32 +4014,66 @@ class ArangoHTTPProvider(IGraphDBProvider):
         edge_collection: str,
         to_collection: str,
         transaction: Optional[str] = None
-    ) -> None:
-        """Delete edges between collections"""
+    ) -> int:
+        """
+        Delete all edges from a specific node to any nodes in the target collection.
+
+        Args:
+            from_key: The source node key (e.g., "users/12345")
+            edge_collection: The edge collection name to search in
+            to_collection: The target collection name (edges pointing to nodes in this collection will be deleted)
+            transaction: Optional transaction ID
+
+        Returns:
+            int: Number of edges deleted
+        """
         try:
+            self.logger.info(
+                f"🚀 Deleting edges from {from_key} to {to_collection} collection in {edge_collection}"
+            )
+
             query = """
             FOR edge IN @@edge_collection
                 FILTER edge._from == @from_key
-                AND STARTS_WITH(edge._to, @to_collection)
+                FILTER IS_SAME_COLLECTION(@to_collection, edge._to)
                 REMOVE edge IN @@edge_collection
+                RETURN OLD
             """
-            bind_vars = {
-                "@edge_collection": edge_collection,
-                "from_key": from_key,
-                "to_collection": f"{to_collection}/"
-            }
 
-            await self.http_client.execute_aql(query, bind_vars, transaction)
+            results = await self.http_client.execute_aql(
+                query, 
+                bind_vars={
+                    "from_key": from_key,
+                    "@edge_collection": edge_collection,
+                    "to_collection": to_collection
+                },
+                txn_id=transaction
+            )
+
+            count = len(results) if results else 0
+
+            if count > 0:
+                self.logger.info(
+                    f"✅ Successfully deleted {count} edges from {from_key} to {to_collection}"
+                )
+            else:
+                self.logger.warning(
+                    f"⚠️ No edges found from {from_key} to {to_collection} in collection: {edge_collection}"
+                )
+
+            return count
 
         except Exception as e:
-            self.logger.error(f"❌ Delete edges between collections failed: {str(e)}")
-            raise
+            self.logger.error(
+                f"❌ Failed to delete edges from {from_key} to {to_collection} in {edge_collection}: {str(e)}"
+            )
+            return 0
 
     async def delete_nodes_and_edges(
         self,
         keys: List[str],
         collection: str,
-        graph_name: str = "knowledgeGraph",
+        graph_name: str = GraphNames.KNOWLEDGE_GRAPH.value,
         transaction: Optional[str] = None
     ) -> None:
         """

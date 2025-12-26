@@ -15,6 +15,7 @@ from app.config.constants.arangodb import Connectors
 if TYPE_CHECKING:
     from app.models.entities import (
         AppRole,
+        AppUser,
         AppUserGroup,
         FileRecord,
         Record,
@@ -724,7 +725,7 @@ class IGraphDBProvider(ABC):
         source_user_id: str,
         connector_name: Connectors,
         transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+    ) -> Optional['User']:
         """
         Get a user by their source system ID.
 
@@ -778,7 +779,7 @@ class IGraphDBProvider(ABC):
         email: str,
         app_name: Connectors,
         transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+    ) -> Optional['AppUser']:
         """
         Get an app-specific user by email.
 
@@ -1127,7 +1128,7 @@ class IGraphDBProvider(ABC):
         self,
         file_key: str,
         transaction: Optional[str] = None
-    ) -> List[str]:
+    ) -> List[Dict]:
         """
         Get all parent IDs for a file.
 
@@ -1136,7 +1137,7 @@ class IGraphDBProvider(ABC):
             transaction (Optional[Any]): Optional transaction context
 
         Returns:
-            List[str]: List of parent external IDs
+            List[Dict]: List of parent files
         """
         pass
 
@@ -1187,15 +1188,15 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def remove_sync_point(
         self,
-        key: List[str],
+        key: str,
         collection: str,
         transaction: Optional[str] = None
     ) -> bool:
         """
-        Remove sync points by keys.
+        Remove sync point by syncPointKey field.
 
         Args:
-            key (List[str]): List of sync point keys to remove
+            key (str): Sync point key
             collection (str): Collection name
             transaction (Optional[Any]): Optional transaction context
 
