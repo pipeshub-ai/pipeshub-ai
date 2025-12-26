@@ -24,6 +24,7 @@ All operations within a single app migration are atomic via transactions.
 """
 
 import asyncio
+import traceback
 from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 
@@ -1167,7 +1168,7 @@ class ConnectorMigrationService:
         to be the KB's _key (record group ID).
 
         This migration is idempotent - it only updates records where connectorId is
-        null, empty, or already equals the KB's _key.
+        null, empty, or does not equal the KB's _key.
 
         Processes records in batches to handle large KBs efficiently and avoid
         transaction timeouts. Each batch is processed atomically.
@@ -1384,7 +1385,6 @@ class ConnectorMigrationService:
         except Exception as e:
             error_msg = f"Knowledge base records migration failed: {str(e)}"
             self.logger.error(error_msg)
-            import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             return {
                 "success": False,
