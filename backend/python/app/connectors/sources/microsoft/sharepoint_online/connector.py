@@ -2996,29 +2996,7 @@ class SharePointConnector(BaseConnector):
         """Reindex records - not implemented for SharePoint yet."""
         # self.logger.warning("Reindex not implemented for SharePoint connector")
 
-        try:
-            if not records:
-                self.logger.info("No records to reindex")
-                return
-
-            self.logger.info(f"Starting reindex for {len(records)} Confluence records")
-
-            # Ensure external clients are initialized
-            if not self.external_client or not self.data_source:
-                self.logger.error("External API clients not initialized. Call init() first.")
-                raise Exception("External API clients not initialized. Call init() first.")
-
-            # org_id = self.data_entities_processor.org_id
-            # updated_records = []
-            # non_updated_records = []
-
-            await self.data_entities_processor.reindex_existing_records(records)
-            self.logger.info(f"Published reindex event for {len(records)} records")
-
-
-        except Exception as e:
-            self.logger.error(f"Error during SharePoint reindex: {e}", exc_info=True)
-            raise
+        self.logger.info("reindex records method not implemented for SharePoint as of yet please check again later")
 
     @classmethod
     async def create_connector(cls, logger: Logger,
