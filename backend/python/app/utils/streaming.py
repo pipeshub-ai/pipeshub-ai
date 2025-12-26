@@ -1265,20 +1265,35 @@ async def call_aiter_llm_stream(
             answer = token.get("answer", "")
             if answer:
                 state.answer_buf = answer
+
+                                # Check for incomplete citations at the end of the answer
+                safe_answer = answer
+                if incomplete_match := incomplete_cite_re.search(answer):
+                    # Only process up to the incomplete citation
+                    safe_answer = answer[:incomplete_match.start()]
+
+                # Only process if we have new content beyond what we've already emitted
+                if len(safe_answer) <= state.emit_upto:
+                    # Nothing safe to emit yet, wait for more content
+                    continue
+
+                state.emit_upto = len(safe_answer)
                 normalized, cites = normalize_citations_and_chunks(
-                            answer, final_results,records
+                            safe_answer, final_results, records
                         )
 
                 chunk_text = normalized[state.prev_norm_len:]
                 state.prev_norm_len = len(normalized)
-                yield {
-                    "event": "answer_chunk",
-                    "data": {
-                        "chunk": chunk_text,
-                        "accumulated": normalized,
-                        "citations": cites,
-                    },
-                }
+
+                if chunk_text:  # Only yield if there's actual content to emit
+                    yield {
+                        "event": "answer_chunk",
+                        "data": {
+                            "chunk": chunk_text,
+                            "accumulated": normalized,
+                            "citations": cites,
+                        },
+                    }
 
             continue
 
