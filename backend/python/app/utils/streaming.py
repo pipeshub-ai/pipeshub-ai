@@ -3,7 +3,17 @@ import json
 import logging
 import os
 import re
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
+from typing import (
+    Any,
+    AsyncGenerator,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+)
 
 import aiohttp
 from fastapi import HTTPException
@@ -14,6 +24,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_mistralai import ChatMistralAI
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
+from pydantic import BaseModel
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.modules.qna.prompt_templates import (
@@ -53,6 +64,9 @@ else:
 MAX_TOKENS_THRESHOLD = 80000
 TOOL_EXECUTION_TOKEN_RATIO = 0.5
 MAX_REFLECTION_RETRIES_DEFAULT = 2
+
+# TypeVar for generic schema types in structured output functions
+SchemaT = TypeVar('SchemaT', bound=BaseModel)
 
 # Legacy Anthropic models that don't support structured output
 # New models (claude-4+) support it by default, so only list older ones here
@@ -1510,9 +1524,9 @@ def cleanup_content(response_text: str) -> str:
 async def invoke_with_structured_output_and_reflection(
     llm: BaseChatModel,
     messages: List,
-    schema: type,
+    schema: Type[SchemaT],
     max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
-) -> Any:
+) -> Optional[SchemaT]:
     """
     Invoke LLM with structured output and automatic reflection on parse failure.
 
