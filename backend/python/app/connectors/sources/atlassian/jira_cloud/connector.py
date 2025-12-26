@@ -31,6 +31,7 @@ from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
     ConnectorBuilder,
+    ConnectorScope,
     DocumentationLink,
 )
 from app.connectors.core.registry.filters import (
@@ -642,6 +643,7 @@ async def adf_to_text_with_images(
     .with_auth_type("OAUTH")\
     .with_description("Sync issues from Jira Cloud")\
     .with_categories(["Storage"])\
+    .with_scopes([ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/jira.svg")
         .add_documentation_link(DocumentationLink(

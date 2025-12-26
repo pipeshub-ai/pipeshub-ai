@@ -160,6 +160,7 @@ async def test_run() -> None:
             logger,
             data_store_provider,
             config_service,
+            "dropboxpersonal"
         )
 
         # Temporary workaround: connector expects url_identifier for config path

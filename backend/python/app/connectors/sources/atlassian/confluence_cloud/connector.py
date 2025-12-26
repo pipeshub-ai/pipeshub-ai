@@ -33,6 +33,7 @@ from app.connectors.core.base.sync_point.sync_point import (
 from app.connectors.core.registry.connector_builder import (
     CommonFields,
     ConnectorBuilder,
+    ConnectorScope,
     DocumentationLink,
 )
 from app.connectors.core.registry.filters import (
@@ -92,6 +93,7 @@ CONTENT_EXPAND_PARAMS = (
     .with_auth_type("OAUTH")\
     .with_description("Sync pages, spaces, and users from Confluence Cloud")\
     .with_categories(["Knowledge Management", "Collaboration"])\
+    .with_scopes([ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/confluence.svg")
         .with_realtime_support(False)
@@ -111,6 +113,8 @@ CONTENT_EXPAND_PARAMS = (
         .add_auth_field(CommonFields.client_secret("Atlassian OAuth App"))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
         .add_filter_field(FilterField(
             name="space_keys",
             display_name="Space Keys",
@@ -208,24 +212,27 @@ class ConfluenceConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
+        connector_id: str
     ) -> None:
         """Initialize the Confluence connector."""
         super().__init__(
-            ConfluenceApp(),
+            ConfluenceApp(connector_id),
             logger,
             data_entities_processor,
             data_store_provider,
-            config_service
+            config_service,
+            connector_id
         )
 
         # Client instances
         self.external_client: Optional[ExternalConfluenceClient] = None
         self.data_source: Optional[ConfluenceDataSource] = None
+        self.connector_id: str = connector_id
 
         # Initialize sync points for incremental sync
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
             return SyncPoint(
-                connector_name=self.connector_name,
+                connector_id=self.connector_id,
                 org_id=self.data_entities_processor.org_id,
                 sync_data_point_type=sync_data_point_type,
                 data_store_provider=self.data_store_provider,
@@ -246,13 +253,14 @@ class ConfluenceConnector(BaseConnector):
             self.external_client = await ExternalConfluenceClient.build_from_services(
                 logger=self.logger,
                 config_service=self.config_service,
+                connector_instance_id=self.connector_id
             )
 
             # Initialize data source
             self.data_source = ConfluenceDataSource(self.external_client)
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
-                self.config_service, "confluence", self.logger
+                self.config_service, "confluence", self.connector_id, self.logger
             )
 
             # Test connection
@@ -284,7 +292,7 @@ class ConfluenceConnector(BaseConnector):
             raise Exception("Confluence client not initialized. Call init() first.")
 
         # Fetch current config from etcd (async I/O)
-        config = await self.config_service.get_config("/services/connectors/confluence/config")
+        config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
 
         if not config:
             raise Exception("Confluence configuration not found")
@@ -1626,6 +1634,7 @@ class ConfluenceConnector(BaseConnector):
                 version=0,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.CONFLUENCE,
+                connector_id=self.connector_id,
                 mime_type=MimeTypes.HTML.value,
                 parent_external_record_id=parent_external_record_id,
                 parent_record_type=parent_record_type,
@@ -1696,8 +1705,8 @@ class ConfluenceConnector(BaseConnector):
                 # Lookup user by source_user_id (accountId) using transaction store
                 async with self.data_store_provider.transaction() as tx_store:
                     user = await tx_store.get_user_by_source_id(
-                        principal_id,
-                        Connectors.CONFLUENCE,
+                        source_user_id=principal_id,
+                        connector_id=self.connector_id,
                     )
                     if not user:
                         self.logger.debug(f"  ⚠️ User {principal_id} not found in DB, skipping permission")
@@ -1714,8 +1723,8 @@ class ConfluenceConnector(BaseConnector):
                 # Lookup group by source_user_group_id using transaction store
                 async with self.data_store_provider.transaction() as tx_store:
                     group = await tx_store.get_user_group_by_external_id(
-                        Connectors.CONFLUENCE,
-                        principal_id,
+                        connector_id=self.connector_id,
+                        external_id=principal_id,
                     )
                     if not group:
                         self.logger.debug(f"  ⚠️ Group {principal_id} not found in DB, skipping permission")
@@ -1959,6 +1968,7 @@ class ConfluenceConnector(BaseConnector):
                 description=space_description,
                 external_group_id=space_id,
                 connector_name=Connectors.CONFLUENCE,
+                connector_id=self.connector_id,
                 group_type=RecordGroupType.CONFLUENCE_SPACES,
                 web_url=web_url,
                 source_created_at=source_created_at,
@@ -2082,6 +2092,7 @@ class ConfluenceConnector(BaseConnector):
                 version=0,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.CONFLUENCE,
+                connector_id=self.connector_id,
                 record_group_type=RecordGroupType.CONFLUENCE_SPACES,
                 external_record_group_id=external_record_group_id,
                 parent_external_record_id=parent_external_record_id,
@@ -2227,6 +2238,7 @@ class ConfluenceConnector(BaseConnector):
                 version=0,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.CONFLUENCE,
+                connector_id=self.connector_id,
                 mime_type=mime_type,
                 parent_external_record_id=parent_external_record_id,
                 parent_record_type=RecordType.WEBPAGE,
@@ -2316,7 +2328,7 @@ class ConfluenceConnector(BaseConnector):
         try:
             # Fetch all users from database
             all_app_users = await self.data_entities_processor.get_all_app_users(
-                app_name=Connectors.CONFLUENCE
+                connector_id=self.connector_id
             )
 
             self.logger.debug(f"Fetched {len(all_app_users)} total users from database for email lookup")
@@ -2362,6 +2374,7 @@ class ConfluenceConnector(BaseConnector):
 
             return AppUser(
                 app_name=Connectors.CONFLUENCE,
+                connector_id=self.connector_id,
                 source_user_id=account_id,
                 org_id=self.data_entities_processor.org_id,
                 email=email,
@@ -2396,6 +2409,7 @@ class ConfluenceConnector(BaseConnector):
 
             return AppUserGroup(
                 app_name=Connectors.CONFLUENCE,
+                connector_id=self.connector_id,
                 source_user_group_id=group_id,
                 name=group_name,
                 org_id=self.data_entities_processor.org_id,
@@ -3010,7 +3024,8 @@ class ConfluenceConnector(BaseConnector):
         cls,
         logger: Logger,
         data_store_provider: DataStoreProvider,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
+        connector_id: str
     ) -> "ConfluenceConnector":
         """Factory method to create a Confluence connector instance."""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -3025,5 +3040,6 @@ class ConfluenceConnector(BaseConnector):
             logger,
             data_entities_processor,
             data_store_provider,
-            config_service
+            config_service,
+            connector_id
         )

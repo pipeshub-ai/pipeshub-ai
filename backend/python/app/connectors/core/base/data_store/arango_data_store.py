@@ -7,7 +7,6 @@ from arango.database import TransactionDatabase
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
     CollectionNames,
-    Connectors,
 )
 from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
@@ -51,14 +50,14 @@ class ArangoTransactionStore(TransactionStore):
     async def batch_upsert_nodes(self, nodes: List[Dict], collection: str) -> bool | None:
         return await self.arango_service.batch_upsert_nodes(nodes, collection, transaction=self.txn)
 
-    async def get_record_by_path(self, connector_name: Connectors, path: str) -> Optional[Record]:
-        return await self.arango_service.get_record_by_path(connector_name, path, transaction=self.txn)
+    async def get_record_by_path(self, connector_id: str, path: str) -> Optional[Record]:
+        return await self.arango_service.get_record_by_path(connector_id, path, transaction=self.txn)
 
     async def get_record_by_key(self, key: str) -> Optional[Record]:
-        return await self.arango_service.get_document(key, CollectionNames.RECORDS.value, transaction=self.txn)
+        return await self.arango_service.get_record_by_id(key, transaction=self.txn)
 
-    async def get_record_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[Record]:
-        return await self.arango_service.get_record_by_external_id(connector_name, external_id, transaction=self.txn)
+    async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
+        return await self.arango_service.get_record_by_external_id(connector_id, external_id, transaction=self.txn)
 
     async def get_record_by_issue_key(self, connector_name: Connectors, issue_key: str) -> Optional[Record]:
         return await self.arango_service.get_record_by_issue_key(connector_name, issue_key, transaction=self.txn)
@@ -78,10 +77,10 @@ class ArangoTransactionStore(TransactionStore):
 
     async def get_records_by_status(self, org_id: str, connector_name: Connectors, status_filters: List[str], limit: Optional[int] = None, offset: int = 0) -> List[Record]:
         """Get records by status. Returns properly typed Record instances."""
-        return await self.arango_service.get_records_by_status(org_id, connector_name, status_filters, limit, offset, transaction=self.txn)
+        return await self.arango_service.get_records_by_status(org_id, connector_id, status_filters, limit, offset, transaction=self.txn)
 
-    async def get_record_group_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[RecordGroup]:
-        return await self.arango_service.get_record_group_by_external_id(connector_name, external_id, transaction=self.txn)
+    async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[RecordGroup]:
+        return await self.arango_service.get_record_group_by_external_id(connector_id, external_id, transaction=self.txn)
 
     async def get_file_record_by_id(self, id: str) -> Optional[FileRecord]:
         return await self.arango_service.get_file_record_by_id(id, transaction=self.txn)
@@ -97,17 +96,14 @@ class ArangoTransactionStore(TransactionStore):
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
         }], collection=CollectionNames.BELONGS_TO.value, transaction=self.txn)
 
-    async def get_or_create_app_by_name(self, app_name: str, org_id: str) -> Optional[Dict]:
-        return await self.arango_service.get_or_create_app_by_name(app_name, org_id)
-
     async def get_user_by_email(self, email: str) -> Optional[User]:
         return await self.arango_service.get_user_by_email(email, transaction=self.txn)
 
-    async def get_user_by_source_id(self, source_user_id: str, connector_name: Connectors) -> Optional[User]:
-        return await self.arango_service.get_user_by_source_id(source_user_id, connector_name, transaction=self.txn)
+    async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> Optional[User]:
+        return await self.arango_service.get_user_by_source_id(source_user_id, connector_id, transaction=self.txn)
 
-    async def get_app_user_by_email(self, email: str, app_name: Connectors) -> Optional[AppUser]:
-        return await self.arango_service.get_app_user_by_email(email, app_name, transaction=self.txn)
+    async def get_app_user_by_email(self, email: str, connector_id: str) -> Optional[AppUser]:
+        return await self.arango_service.get_app_user_by_email(email, connector_id, transaction=self.txn)
 
     async def get_record_owner_source_user_email(self, record_id: str) -> Optional[str]:
         return await self.arango_service.get_record_owner_source_user_email(record_id, transaction=self.txn)
@@ -118,14 +114,14 @@ class ArangoTransactionStore(TransactionStore):
     async def delete_record_by_key(self, key: str) -> None:
         return await self.arango_service.delete_record(key, transaction=self.txn)
 
-    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str, user_id: str) -> None:
-        return await self.arango_service.delete_record_by_external_id(connector_name, external_id, user_id)
+    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str) -> None:
+        return await self.arango_service.delete_record_by_external_id(connector_id, external_id, user_id)
 
-    async def remove_user_access_to_record(self, connector_name: Connectors, external_id: str, user_id: str) -> None:
-        return await self.arango_service.remove_user_access_to_record(connector_name, external_id, user_id)
+    async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str) -> None:
+        return await self.arango_service.remove_user_access_to_record(connector_id, external_id, user_id)
 
-    async def delete_record_group_by_external_id(self, connector_name: Connectors, external_id: str) -> None:
-        return await self.arango_service.delete_record_group_by_external_id(connector_name, external_id, transaction=self.txn)
+    async def delete_record_group_by_external_id(self, connector_id: str, external_id: str) -> None:
+        return await self.arango_service.delete_record_group_by_external_id(connector_id, external_id, transaction=self.txn)
 
     async def delete_edge(self, from_key: str, to_key: str, collection: str) -> None:
         return await self.arango_service.delete_edge(from_key, to_key, collection, transaction=self.txn)
@@ -151,89 +147,42 @@ class ArangoTransactionStore(TransactionStore):
     async def delete_record_generic(self, record_id: str) -> bool:
         return await self.arango_service.delete_record_generic(record_id, transaction=self.txn)
 
-    async def get_user_group_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[AppUserGroup]:
-        return await self.arango_service.get_user_group_by_external_id(connector_name, external_id, transaction=self.txn)
+    async def get_user_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[AppUserGroup]:
+        return await self.arango_service.get_user_group_by_external_id(connector_id, external_id, transaction=self.txn)
 
-    async def get_app_role_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[AppRole]:
-        return await self.arango_service.get_app_role_by_external_id(connector_name, external_id, transaction=self.txn)
+    async def get_app_role_by_external_id(self, connector_id: str, external_id: str) -> Optional[AppRole]:
+        return await self.arango_service.get_app_role_by_external_id(connector_id, external_id, transaction=self.txn)
 
     async def get_users(self, org_id: str, active: bool = True) -> List[User]:
         return await self.arango_service.get_users(org_id, active)
 
-    async def get_app_users(self, org_id: str, app_name: str) -> List[AppUser]:
-        return await self.arango_service.get_app_users(org_id, app_name)
+    async def get_app_users(self, org_id: str, connector_id: str) -> List[AppUser]:
+        return await self.arango_service.get_app_users(org_id, connector_id)
 
-    async def get_user_groups(self, app_name: Connectors, org_id: str) -> List[AppUserGroup]:
-        return await self.arango_service.get_user_groups(app_name, org_id, transaction=self.txn)
-
-    async def create_user_group_hierarchy(
-        self,
-        child_external_id: str,
-        parent_external_id: str,
-        connector_name: Connectors
-    ) -> bool:
-        """Create BELONGS_TO edge between child and parent user groups"""
-        try:
-            # Lookup both groups
-            child_group = await self.get_user_group_by_external_id(connector_name, child_external_id)
-            if not child_group:
-                self.logger.warning(
-                    f"Child user group not found: {child_external_id} (connector: {connector_name.value})"
-                )
-                return False
-
-            parent_group = await self.get_user_group_by_external_id(connector_name, parent_external_id)
-            if not parent_group:
-                self.logger.warning(
-                    f"Parent user group not found: {parent_external_id} (connector: {connector_name.value})"
-                )
-                return False
-
-            # Create BELONGS_TO edge
-            edge = {
-                "_from": f"{CollectionNames.GROUPS.value}/{child_group.id}",
-                "_to": f"{CollectionNames.GROUPS.value}/{parent_group.id}",
-                "entityType": "GROUP",
-                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-            }
-
-            await self.arango_service.batch_create_edges(
-                [edge],
-                collection=CollectionNames.BELONGS_TO.value,
-                transaction=self.txn
-            )
-
-            self.logger.debug(f"Created user group hierarchy: {child_group.name} -> {parent_group.name}")
-            return True
-
-        except Exception as e:
-            self.logger.error(
-                f"Failed to create user group hierarchy ({child_external_id} -> {parent_external_id}): {str(e)}",
-                exc_info=True
-            )
-            return False
+    async def get_user_groups(self, connector_id: str, org_id: str) -> List[AppUserGroup]:
+        return await self.arango_service.get_user_groups(connector_id, org_id, transaction=self.txn)
 
     async def create_user_group_membership(
         self,
         user_source_id: str,
         group_external_id: str,
-        connector_name: Connectors
+        connector_id: str
     ) -> bool:
         """Create BELONGS_TO edge from user to group using source IDs"""
         try:
             # Lookup user by sourceUserId
-            user = await self.get_user_by_source_id(user_source_id, connector_name)
+            user = await self.get_user_by_source_id(user_source_id, connector_id)
             if not user:
                 self.logger.warning(
-                    f"User not found: {user_source_id} (connector: {connector_name.value})"
+                    f"User not found: {user_source_id} (connector: {connector_id})"
                 )
                 return False
 
             # Lookup group
-            group = await self.get_user_group_by_external_id(connector_name, group_external_id)
+            group = await self.get_user_group_by_external_id(connector_id, group_external_id)
             if not group:
                 self.logger.warning(
-                    f"User group not found: {group_external_id} (connector: {connector_name.value})"
+                    f"User group not found: {group_external_id} (connector: {connector_id})"
                 )
                 return False
 
@@ -270,8 +219,8 @@ class ArangoTransactionStore(TransactionStore):
     async def get_edge(self, from_key: str, to_key: str, collection: str) -> Optional[Dict]:
         return await self.arango_service.get_edge(from_key, to_key, collection, transaction=self.txn)
 
-    async def get_record_by_conversation_index(self, connector_name: Connectors, conversation_index: str, thread_id: str, org_id: str, user_id: str) -> Optional[Record]:
-        return await self.arango_service.get_record_by_conversation_index(connector_name, conversation_index, thread_id, org_id, user_id, transaction=self.txn)
+    async def get_record_by_conversation_index(self, connector_id: str, conversation_index: str, thread_id: str, org_id: str, user_id: str) -> Optional[Record]:
+        return await self.arango_service.get_record_by_conversation_index(connector_id, conversation_index, thread_id, org_id, user_id, transaction=self.txn)
 
 
     async def batch_upsert_records(self, records: List[Record]) -> None:
@@ -356,11 +305,11 @@ class ArangoTransactionStore(TransactionStore):
         if not orgs:
             raise Exception("No organizations found in the database. Cannot initialize DataSourceEntitiesProcessor.")
         org_id = orgs[0]["_key"]
-        app_name = users[0].app_name.value
+        connector_id = users[0].connector_id
 
-        app = await self.arango_service.get_or_create_app_by_name(app_name, org_id)
+        app = await self.arango_service.get_document(connector_id, CollectionNames.APPS.value)
         if not app:
-            raise Exception(f"Failed to get/create app: {app_name}")
+            raise Exception(f"Failed to get/create app: {connector_id}")
 
         app_id = app["_id"]
 
@@ -518,7 +467,7 @@ class ArangoTransactionStore(TransactionStore):
         return await self.arango_service.upsert_sync_point(sync_point_key, sync_point_data, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
 
     async def batch_upsert_record_group_permissions(
-        self, record_group_id: str, permissions: List[Permission], connector_name: Connectors
+        self, record_group_id: str, permissions: List[Permission], connector_id: str
     ) -> None:
         """
         Batch upsert permissions for a record group.
@@ -530,7 +479,7 @@ class ArangoTransactionStore(TransactionStore):
         Args:
             record_group_id: Internal ID (_key) of the record group
             permissions: List of Permission objects
-            connector_name: Connector enum for scoped group lookups
+            connector_id: Connector ID for scoped group lookups
         """
         if not permissions:
             return
@@ -556,11 +505,11 @@ class ArangoTransactionStore(TransactionStore):
                     continue
 
             elif permission.entity_type.value == "GROUP":
-                # Lookup group by external_id using the provided connector_name
+                # Lookup group by external_id using the provided connector_id
                 user_group = None
                 if permission.external_id:
                     user_group = await self.get_user_group_by_external_id(
-                        connector_name, permission.external_id
+                        connector_id, permission.external_id
                     )
 
                 if user_group:

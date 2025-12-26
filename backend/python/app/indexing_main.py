@@ -3,7 +3,6 @@ import asyncio
 # Only for development/debugging
 import signal
 import sys
-import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, List
 
@@ -77,8 +76,6 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
             return
 
         logger.info(f"📋 Found {len(in_progress_records)} in-progress records to recover")
-        # Todo: Fix properly. Wait for connector service to be ready. This is a temporary solution.
-        time.sleep(60)
         # Create the message handler that will process these records
         record_message_handler: RecordEventHandler = await KafkaUtils.create_record_message_handler(app_container)
 
