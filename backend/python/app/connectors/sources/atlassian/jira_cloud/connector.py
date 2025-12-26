@@ -2419,7 +2419,8 @@ class JiraConnector(BaseConnector):
                 source_updated_at=updated_at,
                 created_at=created_at,
                 updated_at=updated_at,
-                inherit_permissions=True
+                inherit_permissions=True,
+                preview_renderable=False
             )
 
             # Set indexing status based on filters
@@ -2836,6 +2837,7 @@ class JiraConnector(BaseConnector):
                     source_created_at=created_at,
                     source_updated_at=updated_at,
                     author_source_id=author_account_id or "unknown",
+                    preview_renderable=False,
                 )
 
                 # Set indexing status based on filters
@@ -3523,7 +3525,8 @@ class JiraConnector(BaseConnector):
                 source_created_at=issue_data["created_at"],
                 source_updated_at=current_updated_at,
                 created_at=issue_data["created_at"],
-                updated_at=current_updated_at
+                updated_at=current_updated_at,
+                preview_renderable=False
             )
 
             # Build permissions (creator, reporter, and assignee)
@@ -3619,6 +3622,7 @@ class JiraConnector(BaseConnector):
                 source_created_at=created_at,
                 source_updated_at=current_updated_at,
                 author_source_id=author_account_id or "unknown",
+                preview_renderable=False,
             )
 
             # Get parent issue to fetch permissions
