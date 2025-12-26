@@ -23,7 +23,7 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -511,7 +511,13 @@ async def stream_record_internal(
             response = await make_api_call(
                 route=buffer_url, token=token
             )
-            return response["data"]
+            if isinstance(response["data"], dict):
+                data = response['data'].get('data')
+                buffer = bytes(data) if isinstance(data, list) else data
+            else:
+                buffer = response['data']
+
+            return Response(content=buffer or b'', media_type="application/octet-stream")
 
         connector_id = record.connector_id
         connector = container.connectors_map[connector_id]
