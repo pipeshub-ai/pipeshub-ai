@@ -1512,7 +1512,7 @@ async def invoke_with_structured_output_and_reflection(
     messages: List,
     schema: type,
     max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
-) -> Optional[Any]:
+) -> Any:
     """
     Invoke LLM with structured output and automatic reflection on parse failure.
 
