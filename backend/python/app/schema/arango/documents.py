@@ -86,6 +86,7 @@ user_group_schema = {
             "externalGroupId",
             "connectorName",
             "createdAtTimestamp",
+            "connectorId"
         ],
         "additionalProperties": False,
     },
@@ -242,7 +243,8 @@ record_schema = {
             "externalRecordId",
             "recordType",
             "origin",
-            "createdAtTimestamp"
+            "createdAtTimestamp",
+            "connectorId"
         ],
         "additionalProperties": False,
     },
@@ -410,6 +412,7 @@ record_group_schema = {
             "groupType",
             "connectorName",
             "createdAtTimestamp",
+            "connectorId"
         ],
         "additionalProperties": False,
     },

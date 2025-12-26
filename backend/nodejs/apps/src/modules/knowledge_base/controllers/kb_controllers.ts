@@ -657,6 +657,7 @@ export const uploadRecordsToKB =
           version: 1,
           webUrl: webUrl,
           mimeType: correctMimeType,
+          connectorId: kbId
         };
 
         const fileRecord: IFileRecordDocument = {
@@ -832,6 +833,7 @@ export const uploadRecordsToFolder =
           version: 1,
           webUrl: webUrl,
           mimeType: correctMimeType,
+          connectorId: kbId
         };
 
         const fileRecord: IFileRecordDocument = {

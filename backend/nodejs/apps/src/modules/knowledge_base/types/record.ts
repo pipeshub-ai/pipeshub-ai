@@ -40,6 +40,7 @@ export interface IRecordDocument {
   connectorName?: ConnectorName;
   updatedAtTimestamp?: number;
   lastSyncTimestamp?: number;
+  connectorId: string;
 
   // Flags and timestamps
   isDeletedAtSource?: boolean; // default: false
