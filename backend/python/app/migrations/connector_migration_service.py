@@ -24,6 +24,7 @@ All operations within a single app migration are atomic via transactions.
 """
 
 import asyncio
+import traceback
 from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 
@@ -1158,6 +1159,240 @@ class ConnectorMigrationService:
             self.logger.error(error_msg)
             raise ConnectorMigrationError(error_msg) from e
 
+    async def _migrate_knowledge_base_records(self) -> Dict:
+        """
+        Migrate records associated with knowledge base record groups.
+
+        For each knowledge base (record group with connectorName="KB" or groupType="KB"),
+        finds all records connected via BELONGS_TO edges and updates their connectorId
+        to be the KB's _key (record group ID).
+
+        This migration is idempotent - it only updates records where connectorId is
+        null, empty, or does not equal the KB's _key.
+
+        Processes records in batches to handle large KBs efficiently and avoid
+        transaction timeouts. Each batch is processed atomically.
+
+        Returns:
+            Dict: Result with success status and number of records updated
+        """
+        # Batch size for processing records (optimized for ArangoDB transactions)
+        BATCH_SIZE = 500
+
+        try:
+            self.logger.info("Starting knowledge base records migration...")
+
+            # Find all knowledge base record groups (outside transaction for efficiency)
+            # KBs are identified by connectorName="KB" or groupType="KB"
+            kb_query = f"""
+                FOR kb IN {CollectionNames.RECORD_GROUPS.value}
+                  FILTER kb.connectorName == "KB" OR kb.groupType == "KB"
+                  RETURN kb
+            """
+
+            kb_cursor = self.arango.db.aql.execute(kb_query)
+            kb_list = list(kb_cursor)
+
+            if not kb_list:
+                self.logger.info("No knowledge base record groups found")
+                return {
+                    "success": True,
+                    "updated_records": 0,
+                    "kbs_processed": 0
+                }
+
+            self.logger.info(f"Found {len(kb_list)} knowledge base(s) to process")
+
+            total_updated = 0
+            kbs_processed = 0
+            kbs_failed = []
+
+            # Process each KB separately to avoid large transactions
+            for kb_idx, kb in enumerate(kb_list, 1):
+                kb_key = kb.get("_key")
+                kb_name = kb.get("groupName", "Unknown")
+
+                if not kb_key:
+                    self.logger.warning("KB record group missing _key, skipping")
+                    continue
+
+                kb_id = f"{CollectionNames.RECORD_GROUPS.value}/{kb_key}"
+
+                try:
+                    self.logger.info(
+                        f"[{kb_idx}/{len(kb_list)}] Processing KB: {kb_name} ({kb_key})"
+                    )
+
+                    # Count total records first (for progress tracking)
+                    count_query = f"""
+                        FOR record IN 1..1 INBOUND @kb_id {CollectionNames.BELONGS_TO.value}
+                          FILTER IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", record)
+                          COLLECT WITH COUNT INTO total
+                          RETURN total
+                    """
+
+                    count_cursor = self.arango.db.aql.execute(
+                        count_query,
+                        bind_vars={"kb_id": kb_id}
+                    )
+                    total_records = next(count_cursor, 0)
+
+                    if total_records == 0:
+                        self.logger.debug(f"No records found for KB {kb_key}")
+                        kbs_processed += 1
+                        continue
+
+                    self.logger.info(
+                        f"  Found {total_records} record(s) in KB {kb_name}, processing in batches of {BATCH_SIZE}..."
+                    )
+
+                    # Get all record keys that need updating (outside transaction for efficiency)
+                    records_query = f"""
+                        FOR record IN 1..1 INBOUND @kb_id {CollectionNames.BELONGS_TO.value}
+                          FILTER IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", record)
+                          // Only get records that need updating
+                          FILTER (
+                            !HAS(record, "connectorId")
+                            OR record.connectorId == null
+                            OR record.connectorId == ""
+                            OR record.connectorId != @kb_key
+                          )
+                          RETURN record._key
+                    """
+
+                    records_cursor = self.arango.db.aql.execute(
+                        records_query,
+                        bind_vars={
+                            "kb_id": kb_id,
+                            "kb_key": kb_key
+                        }
+                    )
+                    all_record_keys = [r for r in records_cursor]
+
+                    if not all_record_keys:
+                        self.logger.debug(f"No records need updating for KB {kb_key}")
+                        kbs_processed += 1
+                        continue
+
+                    total_to_update = len(all_record_keys)
+                    self.logger.info(
+                        f"  {total_to_update} record(s) need updating, processing in batches of {BATCH_SIZE}..."
+                    )
+
+                    kb_updated = 0
+                    batch_num = 0
+
+                    # Process records in batches
+                    for i in range(0, total_to_update, BATCH_SIZE):
+                        batch_num += 1
+                        batch_keys = all_record_keys[i:i + BATCH_SIZE]
+                        batch_size_actual = len(batch_keys)
+
+                        # Start transaction for this batch
+                        transaction = None
+                        try:
+                            transaction = self.arango.db.begin_transaction(
+                                write=[CollectionNames.RECORDS.value]
+                            )
+
+                            # Batch update all records in this batch
+                            batch_update_query = f"""
+                                FOR record_key IN @record_keys
+                                  UPDATE {{ _key: record_key }} WITH {{
+                                    connectorId: @kb_key
+                                  }} IN {CollectionNames.RECORDS.value}
+                                  OPTIONS {{ keepNull: false, mergeObjects: true }}
+                                  RETURN NEW
+                            """
+
+                            update_cursor = transaction.aql.execute(
+                                batch_update_query,
+                                bind_vars={
+                                    "record_keys": batch_keys,
+                                    "kb_key": kb_key
+                                }
+                            )
+                            updated_in_batch = len(list(update_cursor))
+
+                            # Commit batch transaction
+                            await asyncio.to_thread(lambda: transaction.commit_transaction())
+
+                            kb_updated += updated_in_batch
+
+                            self.logger.debug(
+                                f"  Batch {batch_num}: Updated {updated_in_batch}/{batch_size_actual} record(s) "
+                                f"(Progress: {kb_updated}/{total_to_update})"
+                            )
+
+                        except Exception as batch_error:
+                            # Rollback batch transaction on error
+                            if transaction:
+                                try:
+                                    await asyncio.to_thread(lambda: transaction.abort_transaction())
+                                    self.logger.warning(f"  Batch {batch_num} rolled back due to error")
+                                except Exception as rollback_error:
+                                    self.logger.error(f"  Batch {batch_num} rollback failed: {rollback_error}")
+
+                            error_msg = (
+                                f"Failed to process batch {batch_num} for KB {kb_key}: {str(batch_error)}"
+                            )
+                            self.logger.error(f"  ❌ {error_msg}")
+
+                            # Continue with next batch instead of failing entire KB
+                            continue
+
+                    if kb_updated > 0:
+                        self.logger.info(
+                            f"  ✅ Updated {kb_updated} record(s) for KB {kb_name} ({kb_key})"
+                        )
+                        total_updated += kb_updated
+                    else:
+                        self.logger.debug(f"  No records needed updating for KB {kb_name}")
+
+                    kbs_processed += 1
+
+                except Exception as kb_error:
+                    error_msg = f"Failed to process KB {kb_key} ({kb_name}): {str(kb_error)}"
+                    self.logger.error(f"  ❌ {error_msg}")
+                    kbs_failed.append({
+                        "kb_key": kb_key,
+                        "kb_name": kb_name,
+                        "error": str(kb_error)
+                    })
+                    continue
+
+            # Log summary
+            self.logger.info("=" * 70)
+            self.logger.info("Knowledge Base Records Migration Summary")
+            self.logger.info("=" * 70)
+            self.logger.info(f"Total KBs found: {len(kb_list)}")
+            self.logger.info(f"KBs processed successfully: {kbs_processed}")
+            if kbs_failed:
+                self.logger.warning(f"KBs failed: {len(kbs_failed)}")
+                for failed_kb in kbs_failed:
+                    self.logger.warning(f"  - {failed_kb['kb_name']} ({failed_kb['kb_key']}): {failed_kb['error']}")
+            self.logger.info(f"Total records updated: {total_updated}")
+            self.logger.info("=" * 70)
+
+            return {
+                "success": True,
+                "updated_records": total_updated,
+                "kbs_processed": kbs_processed,
+                "kbs_failed": len(kbs_failed),
+                "kbs_failed_details": kbs_failed if kbs_failed else None
+            }
+
+        except Exception as e:
+            error_msg = f"Knowledge base records migration failed: {str(e)}"
+            self.logger.error(error_msg)
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            return {
+                "success": False,
+                "updated_records": 0,
+                "kbs_processed": 0,
+                "error": str(e)
+            }
+
     async def migrate_all(self) -> None:
         """
         Execute the complete migration process for all connector apps.
@@ -1201,12 +1436,32 @@ class ConnectorMigrationService:
             self.logger.error(f"Failed to get organisation type: {e}")
             return
 
+        # Step: Migrate knowledge base records
+        self.logger.info("\n" + "=" * 70)
+        self.logger.info("Starting Knowledge Base Records Migration")
+        self.logger.info("=" * 70)
+
+        kb_migration_result = await self._migrate_knowledge_base_records()
+
+        if kb_migration_result.get("success"):
+            self.logger.info(
+                f"✅ KB records migration completed: "
+                f"updated {kb_migration_result.get('updated_records', 0)} record(s) "
+                f"across {kb_migration_result.get('kbs_processed', 0)} KB(s)"
+            )
+        else:
+            self.logger.error(
+                f"❌ KB records migration failed: {kb_migration_result.get('error', 'Unknown error')}"
+            )
+
+
         # Fetch all apps in the system
         try:
             apps = await self._fetch_all_apps()
         except ConnectorMigrationError:
             self.logger.error("Migration aborted: unable to fetch apps")
             return
+
 
         if not apps or len(apps) == 0:
             # Fresh setup: no connector instances exist yet. Treat migration as

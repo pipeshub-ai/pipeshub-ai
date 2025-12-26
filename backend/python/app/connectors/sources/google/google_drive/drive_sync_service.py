@@ -1081,7 +1081,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                     await self.ensure_user_app_relation(user["email"], org_id)
 
             # List and store groups
-            groups = await self.drive_admin_service.list_groups(org_id)
+            groups = await self.drive_admin_service.list_groups(org_id, self.connector_id)
             if groups:
                 self.logger.info("🚀 Found %s groups", len(groups))
                 for group in groups:

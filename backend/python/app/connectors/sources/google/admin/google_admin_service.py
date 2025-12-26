@@ -237,7 +237,7 @@ class GoogleAdminService:
             )
 
     @exponential_backoff()
-    async def list_groups(self, org_id: str) -> Optional[List[Dict]]:
+    async def list_groups(self, org_id: str, connector_id: str) -> Optional[List[Dict]]:
         """List all groups in the domain for enterprise setup"""
         try:
             self.logger.info("🚀 Listing domain groups")
@@ -280,6 +280,7 @@ class GoogleAdminService:
                             "description": group.get("description", ""),
                             "adminCreated": group.get("adminCreated", False),
                             "createdAt": group.get("creationTime"),
+                            "connectorId": connector_id,
                         }
                         for group in current_groups
                     ]
@@ -694,6 +695,7 @@ class GoogleAdminService:
                     "description": group_info.get("description", ""),
                     # 'createdAtTimestamp': int(parse_timestamp(group_info.get('creationTime')).timestamp()),
                     # 'updatedAtTimestamp': int(datetime.now(timezone.utc).timestamp())
+                    "connectorId": connector_id,
                 }
 
         except Exception as e:
