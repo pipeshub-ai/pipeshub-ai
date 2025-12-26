@@ -35,6 +35,7 @@ from app.modules.parsers.excel.prompt_template import (
 )
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
+
 class ExcelParser:
     def __init__(self, logger) -> None:
         self.logger = logger

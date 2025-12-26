@@ -69,7 +69,7 @@ ANTHROPIC_LEGACY_MODEL_PATTERNS = [
 def supports_human_message_after_tool(llm: BaseChatModel) -> bool:
     """
     Check if the LLM provider supports adding a HumanMessage after ToolMessages.
-    
+
     Some providers (e.g., MistralAI) do not support this message ordering pattern.
     """
     # MistralAI does not support Human message after Tool message
@@ -1536,7 +1536,7 @@ async def invoke_with_structured_output_and_reflection(
     # Try to parse the response
     parsed_response = None
     try:
-        
+
         if isinstance(response, dict):
             if 'content' in response:
                 # Response is a dict with 'content' key (e.g., Bedrock non-structured response)
@@ -1554,7 +1554,7 @@ async def invoke_with_structured_output_and_reflection(
         else:
             if hasattr(response, 'content'):
                 # Response is an AIMessage or string
-                logger.debug(f"Response is AIMessage, extracting content for parsing")
+                logger.debug("Response is AIMessage, extracting content for parsing")
                 response_content = response.content
                 response_text = cleanup_content(response_content)
                 logger.debug(f"Cleaned response content length: {len(response_text)} chars")
@@ -1566,7 +1566,7 @@ async def invoke_with_structured_output_and_reflection(
                 response_content = response.model_dump_json()
                 parsed_response = schema.model_validate(response.model_dump())
                 logger.debug("Pydantic model response validated successfully")
-            
+
         return parsed_response
 
     except Exception as parse_error:

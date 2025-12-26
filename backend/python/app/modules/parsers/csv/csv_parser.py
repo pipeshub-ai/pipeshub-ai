@@ -30,6 +30,7 @@ from app.modules.parsers.excel.prompt_template import (
 )
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
+
 class CSVParser:
     def __init__(
         self, delimiter: str = ",", quotechar: str = '"', encoding: str = "utf-8"
