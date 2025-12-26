@@ -65,6 +65,11 @@ interface AuthSectionProps {
   certificateInputRef: React.RefObject<HTMLInputElement>;
   privateKeyInputRef: React.RefObject<HTMLInputElement>;
   onFieldChange: (section: string, fieldName: string, value: any) => void;
+  // Create-mode connector instance naming
+  isCreateMode: boolean;
+  instanceName: string;
+  instanceNameError: string | null;
+  onInstanceNameChange: (value: string) => void;
 }
 
 const AuthSection: React.FC<AuthSectionProps> = ({
@@ -100,6 +105,10 @@ const AuthSection: React.FC<AuthSectionProps> = ({
   certificateInputRef,
   privateKeyInputRef,
   onFieldChange,
+  isCreateMode,
+  instanceName,
+  instanceNameError,
+  onInstanceNameChange,
 }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
@@ -114,14 +123,15 @@ const AuthSection: React.FC<AuthSectionProps> = ({
   const customGoogleBusinessOAuth = (connectorParam: Connector, accountType: string): boolean =>
     accountType === 'business' &&
     connectorParam.appGroup === 'Google Workspace' &&
-    connectorParam.authType === 'OAUTH';
+    connectorParam.authType === 'OAUTH' &&
+    connectorParam.scope === 'team';
 
   const isSharePointCertificateAuth = (connectorParam: Connector): boolean =>
     connectorParam.name === 'SharePoint Online' &&
     (connectorParam.authType === 'OAUTH_CERTIFICATE' ||
       connectorParam.authType === 'OAUTH_ADMIN_CONSENT');
 
-  const pipeshubDocumentationUrl =
+    const pipeshubDocumentationUrl =
     documentationLinks?.find((link) => link.type === 'pipeshub')?.url ||
     `https://docs.pipeshub.com/connectors/overview`;
 
@@ -312,8 +322,8 @@ const AuthSection: React.FC<AuthSectionProps> = ({
               </Box>
             </Box>
           </Collapse>
-        </Paper>
-      )}
+          </Paper>
+        )}
 
       {/* Collapsible Documentation Links */}
       {documentationLinks && documentationLinks.length > 0 && (
@@ -490,6 +500,11 @@ const AuthSection: React.FC<AuthSectionProps> = ({
             onFileUpload={onFileUpload}
             onFileChange={onFileChange}
             fileInputRef={fileInputRef}
+            isCreateMode={isCreateMode}
+            instanceName={instanceName}
+            instanceNameError={instanceNameError}
+            onInstanceNameChange={onInstanceNameChange}
+            connectorName={connector.name}
           />
         )}
 
@@ -521,81 +536,114 @@ const AuthSection: React.FC<AuthSectionProps> = ({
           onPrivateKeyChange={onPrivateKeyChange}
           certificateInputRef={certificateInputRef}
           privateKeyInputRef={privateKeyInputRef}
+          isCreateMode={isCreateMode}
+          instanceName={instanceName}
+          instanceNameError={instanceNameError}
+          onInstanceNameChange={onInstanceNameChange}
+          connectorName={connector.name}
         />
       )}
 
       {/* Form Fields - More Compact */}
-      <Paper
-        variant="outlined"
-        sx={{
-          p: 2,
-          borderRadius: 1.25,
-          bgcolor: isDark
-            ? alpha(theme.palette.background.paper, 0.4)
-            : theme.palette.background.paper,
-          borderColor: isDark
-            ? alpha(theme.palette.divider, 0.12)
-            : alpha(theme.palette.divider, 0.1),
-          boxShadow: isDark
-            ? `0 1px 2px ${alpha(theme.palette.common.black, 0.2)}`
-            : `0 1px 2px ${alpha(theme.palette.common.black, 0.03)}`,
-        }}
-      >
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 2 }}>
-          <Box
+      {!accountTypeLoading &&
+        !customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual') &&
+        !isSharePointCertificateAuth(connector) && (
+          <Paper
+            variant="outlined"
             sx={{
-              p: 0.625,
-              borderRadius: 1,
-              bgcolor: alpha(theme.palette.text.primary, 0.05),
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
+              p: 2,
+              borderRadius: 1.25,
+              bgcolor: isDark
+                ? alpha(theme.palette.background.paper, 0.4)
+                : theme.palette.background.paper,
+              borderColor: isDark
+                ? alpha(theme.palette.divider, 0.12)
+                : alpha(theme.palette.divider, 0.1),
+              boxShadow: isDark
+                ? `0 1px 2px ${alpha(theme.palette.common.black, 0.2)}`
+                : `0 1px 2px ${alpha(theme.palette.common.black, 0.03)}`,
             }}
           >
-            <Iconify
-              icon={
-                auth.type === 'OAUTH'
-                  ? shieldIcon
-                  : auth.type === 'API_TOKEN'
-                    ? keyIcon
-                    : auth.type === 'USERNAME_PASSWORD'
-                      ? personIcon
-                      : settingsIcon
-              }
-              width={16}
-              color={theme.palette.text.secondary}
-            />
-          </Box>
-          <Box sx={{ flex: 1 }}>
-            <Typography
-              variant="subtitle2"
-              sx={{
-                fontWeight: 600,
-                fontSize: '0.875rem',
-                color: theme.palette.text.primary,
-                lineHeight: 1.4,
-              }}
-            >
-              {auth.type === 'OAUTH'
-                ? 'OAuth2 Credentials'
-                : auth.type === 'API_TOKEN'
-                  ? 'API Credentials'
-                  : auth.type === 'USERNAME_PASSWORD'
-                    ? 'Login Credentials'
-                    : 'Authentication'}
-            </Typography>
-            <Typography
-              variant="caption"
-              sx={{
-                fontSize: '0.75rem',
-                color: theme.palette.text.secondary,
-                lineHeight: 1.3,
-              }}
-            >
-              Enter your {connector.name} authentication details
-            </Typography>
-          </Box>
-        </Box>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 2 }}>
+              <Box
+                sx={{
+                  p: 0.625,
+                  borderRadius: 1,
+                  bgcolor: alpha(theme.palette.text.primary, 0.05),
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Iconify
+                  icon={
+                    auth.type === 'OAUTH'
+                      ? shieldIcon
+                      : auth.type === 'API_TOKEN'
+                        ? keyIcon
+                        : auth.type === 'USERNAME_PASSWORD'
+                          ? personIcon
+                          : settingsIcon
+                  }
+                  width={16}
+                  color={theme.palette.text.secondary}
+                />
+              </Box>
+              <Box sx={{ flex: 1 }}>
+                <Typography
+                  variant="subtitle2"
+                  sx={{
+                    fontWeight: 600,
+                    fontSize: '0.875rem',
+                    color: theme.palette.text.primary,
+                    lineHeight: 1.4,
+                  }}
+                >
+                  {auth.type === 'OAUTH'
+                    ? 'OAuth2 Credentials'
+                    : auth.type === 'API_TOKEN'
+                      ? 'API Credentials'
+                      : auth.type === 'USERNAME_PASSWORD'
+                        ? 'Login Credentials'
+                        : 'Authentication'}
+                </Typography>
+                <Typography
+                  variant="caption"
+                  sx={{
+                    fontSize: '0.75rem',
+                    color: theme.palette.text.secondary,
+                    lineHeight: 1.3,
+                  }}
+                >
+                  Enter your {connector.name} authentication details
+                </Typography>
+              </Box>
+            </Box>
+
+            {isCreateMode && (
+              <Box sx={{ mb: 2.5 }}> 
+                <Grid container spacing={2}>
+                  <Grid item xs={12}>
+                    <FieldRenderer
+                      field={{
+                        name: 'instanceName',
+                        displayName: 'Connector name',
+                        fieldType: 'TEXT',
+                        required: true,
+                        placeholder: `e.g., ${connector.name[0].toUpperCase() + connector.name.slice(1).toLowerCase()} - Production`,
+                        description: 'Give this connector a unique, descriptive name',
+                        defaultValue: '',
+                        validation: {},
+                        isSecret: false,
+                      }}
+                      value={instanceName}
+                      onChange={(value) => onInstanceNameChange(value)}
+                      error={instanceNameError || undefined}
+                    />
+                  </Grid>
+                </Grid>
+              </Box>
+            )}
 
         <Grid container spacing={2}>
           {auth.schema.fields.map((field) => {
@@ -699,7 +747,8 @@ const AuthSection: React.FC<AuthSectionProps> = ({
               );
             })}
         </Grid>
-      </Paper>
+          </Paper>
+        )}
     </Box>
   );
 };

@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import google.oauth2.credentials
 import jwt
@@ -45,8 +46,12 @@ from app.config.constants.http_status_code import (
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.api.middleware import WebhookAuthVerifier
 from app.connectors.core.base.connector.connector_service import BaseConnector
-from app.connectors.core.base.token_service.oauth_service import OAuthToken
+from app.connectors.core.base.token_service.oauth_service import (
+    OAuthProvider,
+    OAuthToken,
+)
 from app.connectors.core.factory.connector_factory import ConnectorFactory
+from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.sources.google.admin.admin_webhook_handler import (
     AdminWebhookHandler,
@@ -397,7 +402,6 @@ async def stream_record_internal(
         # TODO: Validate scopes ["connector:signedUrl"]
 
         org_id = payload.get("orgId")
-
         org_task = arango_service.get_document(org_id, CollectionNames.ORGS.value)
         record_task = arango_service.get_record_by_id(
             record_id
@@ -426,7 +430,9 @@ async def stream_record_internal(
                 route=buffer_url, token=token
             )
             return response["data"]
-        connector = container.connectors_map.get(connector_name)
+
+        connector_id = record.connector_id
+        connector = container.connectors_map[connector_id]
         if not connector:
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
@@ -488,18 +494,28 @@ async def download_file(
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
         external_record_id = record.external_record_id
-
+        connector_id = record.connector_id
         creds = None
-        if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower() or connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
-            if org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]:
-                # Use service account credentials
-                creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container, connector)
+        # Get connector instance to check scope
+        connector_instance = await arango_service.get_document(connector_id, CollectionNames.APPS.value)
+        connector_type = connector_instance.get("type", None)
+        if connector_type is None:
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Connector not found")
+        if connector_type.lower() == Connectors.GOOGLE_DRIVE.value.lower() or connector_type.lower() == Connectors.GOOGLE_MAIL.value.lower():
+            connector_scope = connector_instance.get("scope", ConnectorScope.PERSONAL.value) if connector_instance else ConnectorScope.PERSONAL.value
+
+            # Use service account credentials only for TEAM scope connectors in enterprise/business accounts
+            # Personal scope connectors always use user credentials regardless of account type
+            if (org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value] and
+                connector_scope == ConnectorScope.TEAM.value):
+                # Use service account credentials for team scope in enterprise accounts
+                creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container, connector, connector_id)
             else:
-                # Individual account - use stored OAuth credentials
-                creds = await get_user_credentials(org_id, user_id, logger, google_token_handler, request.app.container,connector=connector)
+                # Use user credentials for personal scope or individual accounts
+                creds = await get_user_credentials(org_id, user_id, logger, google_token_handler, request.app.container,connector,connector_id)
         # Download file based on connector type
         try:
-            if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower():
+            if connector_type.lower() == Connectors.GOOGLE_DRIVE.value.lower():
                 file_id = external_record_id
                 logger.info(f"Downloading Drive file: {file_id}")
                 # Build the Drive service
@@ -522,7 +538,7 @@ async def download_file(
                         file_buffer = io.BytesIO()
                         try:
                             logger.info(f"Exporting Google Workspace file ({mime_type}) to {export_mime_type}")
-                            request = request = drive_service.files().export_media(fileId=file_id,mimeType=export_mime_type)
+                            request = drive_service.files().export_media(fileId=file_id,mimeType=export_mime_type)
                             downloader = MediaIoBaseDownload(file_buffer, request)
 
                             done = False
@@ -607,7 +623,7 @@ async def download_file(
                     file_stream(), media_type=mime_type, headers=headers
                 )
 
-            elif connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
+            elif connector_type.lower() == Connectors.GOOGLE_MAIL.value.lower():
                 file_id = external_record_id
                 logger.info(f"Downloading Gmail attachment for record_id: {record_id}")
                 gmail_service = build("gmail", "v1", credentials=creds)
@@ -807,13 +823,12 @@ async def download_file(
                 )
 
             else:
-                connector_name = connector.lower().replace(" ", "")
                 container: ConnectorAppContainer = request.app.container
-                connector: BaseConnector = container.connectors_map.get(connector_name)
+                connector: BaseConnector = container.connectors_map[connector_id]
                 if not connector:
                     raise HTTPException(
                         status_code=HttpStatusCode.NOT_FOUND.value,
-                        detail=f"Connector '{connector_name}' not found"
+                        detail=f"Connector '{connector_id}' not found"
                     )
                 buffer = await connector.stream_record(record)
                 return buffer
@@ -887,18 +902,25 @@ async def stream_record(
 
         external_record_id = record.external_record_id
         connector = record.connector_name.value
+        connector_id = record.connector_id
         recordType = record.record_type
-        logger.info(f"Connector: {connector}")
-        # Different auth handling based on account type
+        logger.info(f"Connector: {connector} connector_id: {connector_id}")
+        # Different auth handling based on account type and connector scope
         creds = None
-        if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower() or connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
 
-            if org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]:
-                # Use service account credentials
-                creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container,connector)
+        if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower() or connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
+            # Get connector instance to check scope
+            connector_instance = await arango_service.get_document(connector_id, CollectionNames.APPS.value)
+            connector_scope = connector_instance.get("scope", ConnectorScope.PERSONAL.value) if connector_instance else ConnectorScope.PERSONAL.value
+            # Use service account credentials only for TEAM scope connectors in enterprise/business accounts
+            # Personal scope connectors always use user credentials regardless of account type
+            if (org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value] and
+                connector_scope == ConnectorScope.TEAM.value):
+                # Use service account credentials for team scope in enterprise accounts
+                creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container,connector, connector_id)
             else:
-                # Individual account - use stored OAuth credentials
-                creds = await get_user_credentials(org_id, user_id,logger, google_token_handler, request.app.container,connector=connector)
+                # Use user credentials for personal scope or individual accounts
+                creds = await get_user_credentials(org_id, user_id,logger, google_token_handler, request.app.container,connector=connector, connector_id=connector_id)
         # Download file based on connector type
         try:
             if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower():
@@ -1495,13 +1517,12 @@ async def stream_record(
                             detail="Failed to download file from both Gmail and Drive",
                         )
             else:
-                connector_name = connector.lower().replace(" ", "")
                 container: ConnectorAppContainer = request.app.container
-                connector: BaseConnector = container.connectors_map.get(connector_name)
+                connector: BaseConnector = container.connectors_map[connector_id]
                 if not connector:
                     raise HTTPException(
                         status_code=HttpStatusCode.NOT_FOUND.value,
-                        detail=f"Connector '{connector_name}' not found"
+                        detail=f"Connector '{connector_id}' not found"
                     )
                 buffer = await connector.stream_record(record)
                 return buffer
@@ -1734,7 +1755,7 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error converting file to PDF")
 
 
-async def get_service_account_credentials(org_id: str, user_id: str, logger, arango_service, google_token_handler, container,connector: str) -> google.oauth2.credentials.Credentials:
+async def get_service_account_credentials(org_id: str, user_id: str, logger, arango_service, google_token_handler, container,connector: str, connector_id: str) -> google.oauth2.credentials.Credentials:
     """Helper function to get service account credentials"""
     try:
         service_creds_lock = container.service_creds_lock()
@@ -1744,24 +1765,33 @@ async def get_service_account_credentials(org_id: str, user_id: str, logger, ara
                 container.service_creds_cache = {}
                 logger.info("Created service credentials cache")
 
-            cache_key = f"{org_id}_{user_id}"
-            logger.info(f"Service account cache key: {cache_key}")
-
-            if cache_key in container.service_creds_cache:
-                logger.info(f"Service account cache hit: {cache_key}")
-                return container.service_creds_cache[cache_key]
-
-            # Cache miss - create new credentials
-            logger.info(f"Service account cache miss: {cache_key}. Creating new credentials.")
-
             # Get user email
             user = await arango_service.get_user_by_user_id(user_id)
             if not user:
                 raise Exception(f"User not found: {user_id}")
 
+            cache_key = f"{org_id}_{user_id}_{connector_id}"
+            logger.info(f"Service account cache key: {cache_key}")
+
+            if cache_key in container.service_creds_cache:
+                logger.info(f"Service account cache hit: {cache_key}")
+                credentials = container.service_creds_cache[cache_key]
+                cached_email = credentials._subject
+
+                if cached_email == user["email"]:
+                    logger.info(f"Cached credentials are valid for {cache_key}")
+                    return container.service_creds_cache[cache_key]
+                else:
+                    # Remove expired credentials from cache
+                    logger.info(f"Removing expired credentials from cache: {cache_key}")
+                    container.service_creds_cache.pop(cache_key, None)
+
+            # Cache miss - create new credentials
+            logger.info(f"Service account cache miss: {cache_key}. Creating new credentials.")
+
             # Create new credentials
             SCOPES = GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
-            credentials_json = await google_token_handler.get_enterprise_token(org_id,app_name=connector)
+            credentials_json = await google_token_handler.get_enterprise_token(connector_id=connector_id)
             credentials = service_account.Credentials.from_service_account_info(
                 credentials_json, scopes=SCOPES
             )
@@ -1779,10 +1809,10 @@ async def get_service_account_credentials(org_id: str, user_id: str, logger, ara
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error accessing service account credentials"
         )
 
-async def get_user_credentials(org_id: str, user_id: str, logger, google_token_handler, container,connector: str) -> google.oauth2.credentials.Credentials:
+async def get_user_credentials(org_id: str, user_id: str, logger, google_token_handler, container,connector: str, connector_id: str) -> google.oauth2.credentials.Credentials:
     """Helper function to get cached user credentials"""
     try:
-        cache_key = f"{org_id}_{user_id}_{connector}"
+        cache_key = f"{org_id}_{user_id}_{connector_id}"
         user_creds_lock = container.user_creds_lock()
 
         async with user_creds_lock:
@@ -1816,10 +1846,10 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
             logger.info(f"User credentials cache miss: {cache_key}. Creating new credentials.")
 
             # Create new credentials
-            SCOPES = await google_token_handler.get_account_scopes(app_name=connector)
+            SCOPES = await google_token_handler.get_account_scopes(connector_id=connector_id)
             # Refresh token
-            await google_token_handler.refresh_token(org_id, user_id,app_name=connector)
-            creds_data = await google_token_handler.get_individual_token(org_id, user_id,app_name=connector)
+            await google_token_handler.refresh_token(connector_id=connector_id)
+            creds_data = await google_token_handler.get_individual_token(connector_id=connector_id)
 
             if not creds_data.get("access_token"):
                 raise HTTPException(
@@ -1883,8 +1913,8 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
 async def get_records(
     request:Request,
     arango_service: BaseArangoService = Depends(get_arango_service),
-    page: int = 1,
-    limit: int = 20,
+    page: int = Query(1, ge=1, description="Page number (1-based)"),
+    limit: int = Query(20, ge=1, le=100, description="Number of items per page"),
     search: Optional[str] = None,
     record_types: Optional[str] = Query(None, description="Comma-separated list of record types"),
     origins: Optional[str] = Query(None, description="Comma-separated list of origins"),
@@ -2116,74 +2146,28 @@ async def reindex_single_record(
             detail=f"Internal server error while reindexing record: {str(e)}"
         )
 
-@router.post("/api/v1/records/reindex-failed")
-@inject
-async def reindex_failed_records(
+@router.get("/api/v1/stats")
+async def get_connector_stats_endpoint(
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Dict:
-    """
-    Reindex all failed records for a specific connector with permission validation
-    """
+    org_id: str,
+    connector_id: str,
+    arango_service: BaseArangoService = Depends(get_arango_service)
+)-> Dict[str, Any]:
     try:
-        container = request.app.container
-        logger = container.logger()
-        user_id = request.state.user.get("userId")
-        org_id = request.state.user.get("orgId")
-
-        request_body = await request.json()
-
-        logger.info(f"🔄 Attempting to reindex failed {request_body.get('connector')} records")
-
-        result = await arango_service.reindex_failed_connector_records(
-            user_id=user_id,
-            org_id=org_id,
-            connector=request_body.get('connector'),
-            origin=request_body.get('origin')
-        )
-
+        result = await arango_service.get_connector_stats(org_id, connector_id)
+        logger = request.app.container.logger()
         if result["success"]:
-            logger.info(f"✅ Successfully initiated reindex for failed {request_body.get('connector')} records")
-            return {
-                "success": True,
-                "message": result.get("message"),
-                "connector": result.get("connector"),
-                "origin": result.get("origin"),
-                "userPermissionLevel": result.get("user_permission_level"),
-                "eventPublished": result.get("event_published")
-            }
+             return {"success": True, "data": result["data"]}
         else:
-            logger.error(f"❌ Failed to reindex failed records: {result.get('reason')}")
-            raise HTTPException(
-                status_code=result.get("code", 500),
-                detail=result.get("reason", "Failed to reindex failed records")
-            )
-
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"No data found for connector {connector_id}")
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error reindexing failed records: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error while reindexing failed records: {str(e)}"
-        )
-
-@router.get("/api/v1/stats")
-async def get_connector_stats_endpoint(
-    org_id: str,
-    connector: str,
-    arango_service: BaseArangoService = Depends(get_arango_service)
-)-> Dict[str, Any]:
-    result = await arango_service.get_connector_stats(org_id, connector)
-
-    if result["success"]:
-        return {"success": True, "data": result["data"]}
-    else:
-        raise HTTPException(status_code=500, detail=result["message"])
-
+        logger.error(f"Error getting connector stats: {str(e)}")
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Internal server error while getting connector stats: {str(e)}")
 
 async def check_beta_connector_access(
-    app_name: str,
+    connector_type: str,
     request: Request
 ) -> None:
     """
@@ -2191,7 +2175,7 @@ async def check_beta_connector_access(
     Raises HTTPException if beta connectors are disabled and the connector is beta.
 
     Args:
-        app_name: Name of the connector
+        connector_type: Type of the connector
         request: FastAPI request object
 
     Raises:
@@ -2213,12 +2197,12 @@ async def check_beta_connector_access(
         if not beta_enabled:
             # Check if this connector is a beta connector
             beta_connectors = ConnectorFactory.list_beta_connectors()
-            normalized_name = app_name.replace(' ', '').lower()
+            normalized_name = connector_type.replace(' ', '').lower()
 
             if normalized_name in beta_connectors:
                 raise HTTPException(
                     status_code=403,
-                    detail=f"Beta connectors are not enabled. The connector '{app_name}' is a beta connector and cannot be accessed. Please enable beta connectors in platform settings to use this connector."
+                    detail=f"Beta connectors are not enabled. The connector '{connector_type}' is a beta connector and cannot be accessed. Please enable beta connectors in platform settings to use this connector."
                 )
     except HTTPException:
         raise
@@ -2228,683 +2212,1698 @@ async def check_beta_connector_access(
         container.logger().debug(f"Beta connector check failed: {e}")
 
 
-@router.get("/api/v1/connectors/config/{app_name}")
-async def get_connector_config(
-    app_name: str,
-    request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
-) -> Dict[str, Any]:
+def _encode_state_with_instance(state: str, connector_id: str) -> str:
     """
-    Retrieve connector configuration using registry metadata and etcd (no DB requirement).
-    Optimized to use batch-fetched statuses.
-    """
-    # Check beta connector access
-    await check_beta_connector_access(app_name, request)
-
-    try:
-        container = request.app.container
-        logger = container.logger()
-        logger.info(f"Getting connector config for {app_name}")
-
-        # Read connector metadata from registry (source of truth)
-        # This now uses batch-fetched statuses internally for better performance
-        connector_registry = request.app.state.connector_registry
-        registry_entry = await connector_registry.get_connector_by_name(app_name)
-        if not registry_entry:
-            raise HTTPException(status_code=404, detail=f"Connector {app_name} not found in registry")
-
-        # Load config from etcd (may be empty on first load)
-        try:
-            config_service = container.config_service()
-            filtered_app_name = _sanitize_app_name(app_name)
-            config_key: str = f"/services/connectors/{filtered_app_name}/config"
-            config: Optional[Dict[str, Any]] = await config_service.get_config(config_key)
-        except Exception as e:
-            logger.error(f"Failed to load config from etcd for {app_name}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to load config from etcd for {app_name}")
-
-        if not config:
-            config = {"auth": {}, "sync": {}, "filters": {}}
-        config = config.copy() if config else {"auth": {}, "sync": {}, "filters": {}}
-        config.pop("credentials", None)
-        config.pop("oauth", None)
-        response_dict: Dict[str, Any] = {
-            "name": registry_entry["name"],
-            "appGroupId": registry_entry.get("appGroupId"),
-            "appGroup": registry_entry.get("appGroup"),
-            "authType": registry_entry.get("authType"),
-            "appDescription": registry_entry.get("appDescription", ""),
-            "appCategories": registry_entry.get("appCategories", []),
-            "supportsRealtime": registry_entry.get("supportsRealtime", False),
-            "supportsSync": registry_entry.get("supportsSync", False),
-            "iconPath": registry_entry.get("iconPath", "/assets/icons/connectors/default.svg"),
-            "config": config,
-            "isActive": registry_entry.get("isActive", False),
-            "isConfigured": registry_entry.get("isConfigured", False),
-            "isAuthenticated": registry_entry.get("isAuthenticated", False),
-        }
-
-        return {"success": True, "config": response_dict}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger = request.app.container.logger()
-        logger.error(f"Failed to get connector config for {app_name}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get connector config for {app_name}")
-
-
-@router.get("/api/v1/connectors/config-schema/{app_name}")
-async def get_connector_config_and_schema(
-    app_name: str,
-    request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
-) -> Dict[str, Any]:
-    """
-    Retrieve both connector configuration and schema in a single request.
-    This reduces API calls from 2 to 1, improving performance.
-    """
-    # Check beta connector access
-    await check_beta_connector_access(app_name, request)
-
-    try:
-        container = request.app.container
-        logger = container.logger()
-        logger.info(f"Getting connector config and schema for {app_name}")
-
-        # Read connector metadata from registry (source of truth)
-        connector_registry = request.app.state.connector_registry
-        registry_entry = await connector_registry.get_connector_by_name(app_name)
-        if not registry_entry:
-            raise HTTPException(status_code=404, detail=f"Connector {app_name} not found in registry")
-
-        # Load config from etcd (may be empty on first load)
-        try:
-            config_service = container.config_service()
-            filtered_app_name = _sanitize_app_name(app_name)
-            config_key: str = f"/services/connectors/{filtered_app_name}/config"
-            config: Optional[Dict[str, Any]] = await config_service.get_config(config_key)
-        except Exception as e:
-            logger.error(f"Failed to load config from etcd for {app_name}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to load config from etcd for {app_name}")
-
-        if not config:
-            config = {"auth": {}, "sync": {}, "filters": {}}
-        config = config.copy() if config else {"auth": {}, "sync": {}, "filters": {}}
-        config.pop("credentials", None)
-        config.pop("oauth", None)
-
-        # Get schema from registry entry
-        schema = registry_entry.get("config", {})
-
-        response_dict: Dict[str, Any] = {
-            "name": registry_entry["name"],
-            "appGroupId": registry_entry.get("appGroupId"),
-            "appGroup": registry_entry.get("appGroup"),
-            "authType": registry_entry.get("authType"),
-            "appDescription": registry_entry.get("appDescription", ""),
-            "appCategories": registry_entry.get("appCategories", []),
-            "supportsRealtime": registry_entry.get("supportsRealtime", False),
-            "supportsSync": registry_entry.get("supportsSync", False),
-            "iconPath": registry_entry.get("iconPath", "/assets/icons/connectors/default.svg"),
-            "config": config,
-            "isActive": registry_entry.get("isActive", False),
-            "isConfigured": registry_entry.get("isConfigured", False),
-            "isAuthenticated": registry_entry.get("isAuthenticated", False),
-        }
-
-        return {"success": True, "config": response_dict, "schema": schema}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger = request.app.container.logger()
-        logger.error(f"Failed to get connector config and schema for {app_name}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get connector config and schema for {app_name}")
-
-
-@router.get("/api/v1/connectors")
-async def get_connectors(
-    request: Request,
-) -> Dict[str, Any]:
-    """
-    Retrieve all available connectors.
+    Encode OAuth state with connector instance key.
 
     Args:
-        request: FastAPI request object
+        state: Original OAuth state
+        connector_id: Connector instance key (_key)
 
     Returns:
-        Dict containing success status and list of connectors
+        Encoded state containing both original state and connector_id
+    """
+    state_data = {
+        "state": state,
+        "connector_id": connector_id
+    }
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(state_data).encode()
+    ).decode()
+    return encoded
+
+
+def _decode_state_with_instance(encoded_state: str) -> Dict[str, str]:
+    """
+    Decode OAuth state to extract original state and connector_id.
+    Args:
+        encoded_state: Encoded state string
+
+    Returns:
+        Dictionary with 'state' and 'connector_id'
 
     Raises:
-        HTTPException: 404 if no connectors found
+        ValueError: If state cannot be decoded
     """
-    connector_registry = request.app.state.connector_registry
-    result: Optional[List[Dict[str, Any]]] = await connector_registry.get_all_connectors()
+    try:
+        decoded = base64.urlsafe_b64decode(encoded_state.encode()).decode()
+        state_data = json.loads(decoded)
+        return state_data
+    except Exception as e:
+        raise ValueError(f"Invalid state format: {e}")
 
-    if result:
-        return {"success": True, "connectors": result}
-    else:
-        raise HTTPException(status_code=404, detail="No connectors found")
 
-
-@router.get("/api/v1/connectors/active")
-async def get_active_connector(
-    request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Dict[str, Any]:
+def _get_config_path_for_instance(connector_id: str) -> str:
     """
-    Get active connectors.
-    """
-    connector_registry = request.app.state.connector_registry
-    result: List[Dict[str, Any]] = await connector_registry.get_active_connector()
-    return {"success": True, "connectors": result}
-
-
-@router.get("/api/v1/connectors/inactive")
-async def get_inactive_connector(
-    request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Dict[str, Any]:
-    """
-    Get inactive connectors.
-    """
-    connector_registry = request.app.state.connector_registry
-    result: List[Dict[str, Any]] = await connector_registry.get_inactive_connector()
-    return {"success": True, "connectors": result}
-
-
-@router.get("/api/v1/connectors/{app_name}")
-async def get_connector_by_name(
-    app_name: str,
-    request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
-) -> Dict[str, Any]:
-    """
-    Retrieve a single connector by name.
-    Optimized to use batch-fetched statuses.
-    Note: This route must come after /active and /inactive to avoid conflicts.
+    Get etcd configuration path for a connector instance.
 
     Args:
-        app_name: Name of the connector
-        request: FastAPI request object
-        arango_service: Injected ArangoService dependency
+        connector_id: Connector instance key (_key)
 
     Returns:
-        Dict containing success status and connector data
+        Configuration path in etcd
+    """
+    return f"/services/connectors/{connector_id}/config"
+
+
+async def _get_settings_base_path(arango_service: BaseArangoService) -> str:
+    """
+    Determine frontend settings base path based on organization account type.
+
+    Args:
+        arango_service: ArangoDB service instance
+
+    Returns:
+        Settings base path URL
+    """
+    try:
+        organizations = await arango_service.get_all_documents(
+            CollectionNames.ORGS.value
+        )
+
+        if isinstance(organizations, list) and len(organizations) > 0:
+            account_type = str(
+                (organizations[0] or {}).get("accountType", "")
+            ).lower()
+
+            if account_type in ["business", "organization", "enterprise"]:
+                return "/account/company-settings/settings/connector"
+
+    except Exception:
+        pass
+
+    return "/account/individual/settings/connector"
+
+
+# ============================================================================
+# Registry & Instance Endpoints
+# ============================================================================
+
+@router.get("/api/v1/connectors/registry")
+async def get_connector_registry(
+    request: Request,
+    scope: Optional[str] = Query(None, description="personal | team"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=200),
+    search: Optional[str] = Query(None, description="Search by name/group/description"),
+) -> Dict[str, Any]:
+    """
+    Get all available connector types from registry.
+
+    This endpoint returns connector types that can be configured,
+    not the configured instances.
+
+    Args:
+        request: FastAPI request object
+
+    Returns:
+        Dictionary with success status and list of available connectors
 
     Raises:
-        HTTPException: 404 if connector not found, 403 if beta connector access denied
+        HTTPException: 404 if no connectors found in registry
     """
-    # Check beta connector access
-    await check_beta_connector_access(app_name, request)
-
-    try:
-        container = request.app.container
-        logger = container.logger()
-        logger.info(f"Getting connector by name: {app_name}")
-
-        connector_registry = request.app.state.connector_registry
-        result: Optional[Dict[str, Any]] = await connector_registry.get_connector_by_name(app_name)
-
-        if not result:
-            raise HTTPException(status_code=404, detail=f"Connector {app_name} not found")
-
-        return {"success": True, "connector": result}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger = request.app.container.logger()
-        logger.error(f"Failed to get connector {app_name}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get connector {app_name}")
-
-@router.get("/api/v1/connectors/schema/{app_name}")
-async def get_connector_schema(
-    app_name: str,
-    request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
-) -> Dict[str, Any]:
-    """
-    Retrieve connector schema from registry metadata.
-    Optimized to use batch-fetched statuses.
-
-    Args:
-        app_name: Name of the connector
-        request: FastAPI request object
-        arango_service: Injected ArangoService dependency
-
-    Returns:
-        Dict containing success status and connector schema
-
-    Raises:
-        HTTPException: 404 if connector not found, 403 if beta connector access denied
-    """
-    # Check beta connector access
-    await check_beta_connector_access(app_name, request)
-
-    try:
-        container = request.app.container
-        logger = container.logger()
-        logger.info(f"Getting connector schema for {app_name}")
-        connector_registry = request.app.state.connector_registry
-        result: Optional[Dict[str, Any]] = await connector_registry.get_connector_by_name(app_name)
-        if not result:
-            raise HTTPException(status_code=404, detail=f"Connector {app_name} not found")
-
-        # Return the config object as schema
-        schema = result.get("config", {})
-        return {"success": True, "schema": schema}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger = request.app.container.logger()
-        logger.error(f"Failed to get connector schema for {app_name}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get connector schema for {app_name}")
-
-
-@router.get("/api/v1/connectors/{app_name}/oauth/authorize")
-async def get_oauth_authorization_url(
-    app_name: str,
-    request: Request,
-    base_url: Optional[str] = Query(None),
-    arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Dict[str, Any]:
-    """
-    Get OAuth authorization URL for a connector.
-
-    Args:
-        app_name: Name of the connector
-        request: FastAPI request object
-        arango_service: Injected ArangoService dependency
-
-    Returns:
-        Dict containing authorization URL and state
-    """
-    # Check beta connector access
-    await check_beta_connector_access(app_name, request)
-
+    connector_registry = request.app.state.connector_registry
     container = request.app.container
     logger = container.logger()
+    arango_service = await get_arango_service(request)
 
     try:
-        # Get connector metadata from registry (source of truth)
-        connector_registry = request.app.state.connector_registry
-        registry_entry = await connector_registry.get_connector_by_name(app_name)
-        if not registry_entry:
-            raise HTTPException(status_code=404, detail=f"Connector {app_name} not found")
+        # Validate scope
+        if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value]:
+            logger.error(f"Invalid scope: {scope}")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Invalid scope. Must be 'personal' or 'team'"
+            )
 
-        # Check if it's an OAuth connector
-        if (registry_entry.get('authType') or '').upper() not in ['OAUTH', 'OAUTH_ADMIN_CONSENT']:
-            raise HTTPException(status_code=400, detail=f"Connector {app_name} does not support OAuth")
+        # Get account type to filter beta connectors for enterprise accounts
+        account_type = None
+        try:
+            user = getattr(request.state, 'user', None)
+            if user and user.get("orgId"):
+                account_type = await arango_service.get_account_type(user.get("orgId"))
+        except Exception as e:
+            # If we can't get account type, log but don't fail (fail-open)
+            logger.debug(f"Could not get account type: {e}")
 
-        # Get OAuth configuration from etcd
-        config_service = container.config_service()
-        filtered_app_name = _sanitize_app_name(app_name)
-        config_key = f"/services/connectors/{filtered_app_name}/config"
-        config = await config_service.get_config(config_key)
-        if not config or not config.get('auth'):
-            raise HTTPException(status_code=400, detail=f"OAuth configuration not found for {app_name}")
-
-        auth_config = config['auth']
-
-        # Get OAuth configuration from registry metadata
-        connector_auth_config = registry_entry.get('config', {}).get('auth', {})
-        redirect_uri = connector_auth_config.get('redirectUri', '')
-        authorize_url = auth_config.get('authorizeUrl') or connector_auth_config.get('authorizeUrl', '')
-        token_url = auth_config.get('tokenUrl') or connector_auth_config.get('tokenUrl', '')
-
-        if not redirect_uri:
-            raise HTTPException(status_code=400, detail=f"Redirect URI not configured for {app_name}")
-
-        if not authorize_url or not token_url:
-            raise HTTPException(status_code=400, detail=f"OAuth URLs not configured for {app_name}")
-
-        # Create OAuth config using the OAuth service
-        from app.connectors.core.base.token_service.oauth_service import (
-            OAuthProvider,
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        result = await connector_registry.get_all_registered_connectors(
+            is_admin=is_admin,
+            scope=scope,
+            page=page,
+            limit=limit,
+            search=search,
+            account_type=account_type
         )
-        if base_url and len(base_url) > 0:
-            redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
-        else:
-            endpoint_keys = '/services/endpoints'
-            endpoints = await config_service.get_config(endpoint_keys,use_cache=False)
-            base_url = endpoints.get('frontendPublicUrl', 'http://localhost:3001')
-            redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
-        oauth_config = get_oauth_config(app_name, auth_config)
-
-
-        # Create OAuth provider and generate authorization URL
-        oauth_provider = OAuthProvider(
-            config=oauth_config,
-            key_value_store=container.key_value_store(),
-            credentials_path=f"/services/connectors/{filtered_app_name}/config"
-        )
-        # Generate authorization URL using OAuth provider
-        # Add provider-specific parameters to ensure refresh_token is issued where applicable
-        extra_params = {}
-        if app_name.upper() in ['DRIVE', 'GMAIL']:
-            # Google requires these for refresh_token on repeated consents
-            extra_params.update({
-                'access_type': 'offline',
-                'prompt': 'consent',
-                'include_granted_scopes': 'true',
-            })
-
-        auth_url = await oauth_provider.start_authorization(**extra_params)
-
-        # Clean up OAuth provider
-        await oauth_provider.close()
-
-        # Add tenant-specific parameters for Microsoft
-        if app_name.upper() == 'ONEDRIVE':
-            # Add Microsoft-specific parameters
-            from urllib.parse import parse_qs, urlencode, urlparse
-            parsed_url = urlparse(auth_url)
-            params = parse_qs(parsed_url.query)
-            params['response_mode'] = ['query']
-            if (registry_entry.get('authType') or '').upper() == 'OAUTH_ADMIN_CONSENT':
-                params['prompt'] = ['admin_consent']
-
-            # Rebuild URL with additional parameters
-            auth_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}?{urlencode(params, doseq=True)}"
-
-        # Extract state from the authorization URL for response
-        from urllib.parse import parse_qs, urlparse
-        parsed_url = urlparse(auth_url)
-        query_params = parse_qs(parsed_url.query)
-        state = query_params.get('state', [None])[0]
+        if not result:
+            logger.error("No connectors found in registry")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail="No connectors found in registry"
+            )
 
         return {
             "success": True,
-            "authorizationUrl": auth_url,
-            "state": state
+            **result
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"❌ Error getting connector registry: {str(e)}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Error getting connector registry: {str(e)}"
+        )
+
+
+
+@router.get("/api/v1/connectors/")
+async def get_connector_instances(
+    request: Request,
+    scope: Optional[str] = Query(None, description="personal | team"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=200),
+    search: Optional[str] = Query(None, description="Search by instance name/type/group"),
+) -> Dict[str, Any]:
+    """
+    Get all configured connector instances.
+
+    This endpoint returns actual configured instances with their status.
+
+    Args:
+        request: FastAPI request object
+
+    Returns:
+        Dictionary with success status and list of connector instances
+    """
+    connector_registry = request.app.state.connector_registry
+    container = request.app.container
+    logger = container.logger()
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    try:
+        logger.info("Getting connector instances")
+        if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
+
+        # Validate scope
+        if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value]:
+            logger.error(f"Invalid scope: {scope}")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Invalid scope. Must be 'personal' or 'team'"
+            )
+
+        result = await connector_registry.get_all_connector_instances(
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin,
+            scope=scope,
+            page=page,
+            limit=limit,
+            search=search
+        )
+
+        return {
+            "success": True,
+            **result
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"❌ Error getting connector instances: {str(e)}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Error getting connector instances: {str(e)}"
+        )
+
+
+@router.get("/api/v1/connectors/active")
+async def get_active_connector_instances(request: Request) -> Dict[str, Any]:
+    """
+    Get all active connector instances.
+
+    Args:
+        request: FastAPI request object
+
+    Returns:
+        Dictionary with active connector instances
+    """
+
+    connector_registry = request.app.state.connector_registry
+    container = request.app.container
+    logger = container.logger()
+    try:
+        logger.info("Getting active connector instances")
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+        if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
+        connectors = await connector_registry.get_active_connector_instances(
+            user_id=user_id,
+            org_id=org_id
+        )
+        return {
+            "success": True,
+            "connectors": connectors
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"Error getting active connector instances: {str(e)}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to get active connector instances: {str(e)}"
+        )
+
+
+@router.get("/api/v1/connectors/inactive")
+async def get_inactive_connector_instances(request: Request) -> Dict[str, Any]:
+    """
+    Get all inactive connector instances.
+
+    Args:
+        request: FastAPI request object
+
+    Returns:
+        Dictionary with inactive connector instances
+    """
+    connector_registry = request.app.state.connector_registry
+    container = request.app.container
+    logger = container.logger()
+    try:
+        logger.info("Getting inactive connector instances")
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+        if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
+        connectors = await connector_registry.get_inactive_connector_instances(
+            user_id=user_id,
+            org_id=org_id
+        )
+        return {
+            "success": True,
+            "connectors": connectors
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"Error getting inactive connector instances: {str(e)}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to get inactive connector instances: {str(e)}"
+        )
+
+
+@router.get("/api/v1/connectors/configured")
+async def get_configured_connector_instances(
+    request: Request,
+    scope: Optional[str] = Query(None, description="personal | team"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=200),
+    search: Optional[str] = Query(None, description="Search by instance name/type/group"),
+) -> Dict[str, Any]:
+    """
+    Get all configured connector instances.
+
+    Args:
+        request: FastAPI request object
+
+    Returns:
+        Dictionary with configured connector instances
+    """
+    connector_registry = request.app.state.connector_registry
+    container = request.app.container
+    logger = container.logger()
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    try:
+        logger.info("Getting configured connector instances")
+        if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
+
+        if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value]:
+            logger.error(f"Invalid scope: {scope}")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Invalid scope. Must be 'personal' or 'team'"
+            )
+        connectors = await connector_registry.get_configured_connector_instances(
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin,
+            scope=scope,
+            page=page,
+            limit=limit,
+            search=search
+        )
+
+        return {
+            "success": True,
+            "connectors": connectors
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"❌ Error getting configured connector instances: {str(e)}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Error getting configured connector instances: {str(e)}"
+        )
+
+# ============================================================================
+# Instance Configuration Endpoints
+# ============================================================================
+
+@router.post("/api/v1/connectors/")
+async def create_connector_instance(
+    request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service)
+) -> Dict[str, Any]:
+    """
+    Create a new connector instance.
+
+    Request body should contain:
+    - connector_type: Type of connector (from registry)
+    - instance_name: Name for this instance
+    - config: Initial configuration (auth, sync, filters)
+
+    Args:
+        request: FastAPI request object
+        arango_service: Injected ArangoDB service
+
+    Returns:
+        Dictionary with created instance details including connector_id
+
+    Raises:
+        HTTPException: 400 for invalid data, 404 if connector type not found
+    """
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+    logger.info("Creating connector instance")
+    try:
+        user_id = request.state.user.get("userId")
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        logger.info(f"Is admin: {is_admin}")
+        logger.info(f"Headers: {request.headers}")
+        org_id = request.state.user.get("orgId")
+        if not user_id or not org_id:
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
+
+        body = await request.json()
+        connector_type = body.get("connectorType")
+        instance_name = body.get("instanceName")
+        config = body.get("config", {})
+        base_url = body.get("baseUrl", "")
+        scope = (body.get("scope") or "personal").lower()
+
+        if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value]:
+            logger.error(f"Invalid scope: {scope}")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Invalid scope. Must be 'personal' or 'team'"
+            )
+
+        if not connector_type or not instance_name:
+            logger.error(f"connector_type and instance_name are required: {connector_type} {instance_name}")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="connector_type and instance_name are required"
+            )
+
+        # Get account type for beta connector validation
+        account_type = None
+        try:
+            account_type = await arango_service.get_account_type(org_id)
+        except Exception as e:
+            logger.debug(f"Could not get account type: {e}")
+
+        # Verify connector type exists in registry
+        metadata = await connector_registry.get_connector_metadata(connector_type)
+        if not metadata:
+            logger.error(f"Connector type '{connector_type}' not found in registry")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector type '{connector_type}' not found in registry"
+            )
+
+        # Check if this is a beta connector
+        # Use the same normalization logic as the registry
+        normalized_connector_type = connector_registry._normalize_connector_name(connector_type)
+        beta_names = connector_registry._get_beta_connector_names()
+        is_beta_connector = normalized_connector_type in beta_names
+
+        # Validate: Beta connectors cannot be created for team scope in enterprise accounts
+        if is_beta_connector and account_type and account_type.lower() in ['enterprise', 'business'] and scope == ConnectorScope.TEAM.value:
+            logger.error(
+                f"Beta connector '{connector_type}' cannot be created for team scope in enterprise accounts. "
+                f"Beta connectors are only available for personal scope in enterprise accounts or team scope in individual accounts."
+            )
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail=(
+                    f"Beta connector '{connector_type}' cannot be created for team scope in enterprise accounts. "
+                )
+            )
+
+        await check_beta_connector_access(connector_type, request)
+
+        # Check if connector supports requested scope
+        supported_scopes = metadata.get("scope", [ConnectorScope.PERSONAL])
+        if scope not in supported_scopes:
+            logger.error(f"Connector '{connector_type}' does not support scope '{scope}'")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=f"Connector '{connector_type}' does not support scope '{scope}'"
+            )
+
+        # Validate team scope creation permission
+        if scope == ConnectorScope.TEAM.value:
+            if not is_admin:
+                logger.error("Only administrators can create team connectors")
+                raise HTTPException(
+                    status_code=HttpStatusCode.FORBIDDEN.value,
+                    detail="Only administrators can create team connectors"
+                )
+
+        # Create instance in database
+        try:
+            instance = await connector_registry.create_connector_instance_on_configuration(
+                connector_type=connector_type,
+                instance_name=instance_name,
+                scope=scope,
+                created_by=user_id,
+                org_id=org_id,
+                is_admin=is_admin
+            )
+        except ValueError as e:
+            # Handle name uniqueness validation error
+            logger.error(f"Name uniqueness validation failed: {str(e)}")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=str(e)
+            )
+
+        if not instance:
+            logger.error("Failed to create connector instance")
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail="Failed to create connector instance"
+            )
+
+        connector_id = instance.get("_key")
+
+        # Store initial configuration in etcd if provided
+        if config:
+            logger.info(f"Storing initial config for instance {connector_id}")
+            config_service = container.config_service()
+            config_path = _get_config_path_for_instance(connector_id)
+
+            # Prepare configuration
+            prepared_config = {
+                "auth": config.get("auth", {}),
+                "sync": config.get("sync", {}),
+                "filters": config.get("filters", {}),
+                "credentials": None,
+                "oauth": None
+            }
+            auth_metadata = metadata.get("config", {}).get("auth", {})
+
+            redirect_uri = auth_metadata.get("redirectUri", "")
+            if base_url:
+                redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+            else:
+                endpoints = await config_service.get_config(
+                    "/services/endpoints",
+                    use_cache=False
+                )
+                base_url = endpoints.get(
+                    "frontendPublicUrl",
+                    "http://localhost:3001"
+                )
+                redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+
+            # Add OAuth metadata from registry if OAuth-based
+            auth_type = metadata.get("authType", "").upper()
+            if auth_type in ["OAUTH", "OAUTH_ADMIN_CONSENT"]:
+                prepared_config["auth"].update({
+                    "authorizeUrl": auth_metadata.get("authorizeUrl", ""),
+                    "tokenUrl": auth_metadata.get("tokenUrl", ""),
+                    "scopes": auth_metadata.get("scopes", []),
+                    "redirectUri": redirect_uri
+                })
+
+            prepared_config["auth"].update({
+                "authType": auth_type,
+                "connectorScope": scope
+            })
+
+            await config_service.set_config(config_path, prepared_config)
+            logger.info(f"Stored initial config for instance {connector_id}")
+
+        logger.info(
+            f"Created connector instance '{instance_name}' of type {connector_type} "
+            f"with scope {scope} for user {user_id} with key {connector_id}"
+        )
+
+        return {
+            "success": True,
+            "connector": {
+                "connectorId": connector_id,
+                "connectorType": connector_type,
+                "instanceName": instance_name,
+                "created": True,
+                "scope": scope,
+                "createdBy": user_id,
+            }
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error generating OAuth URL for {app_name}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate OAuth URL: {str(e)}")
+        logger.error(f"Error creating connector instance: {e}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to create connector instance: {str(e)}"
+        )
 
 
-@router.get("/api/v1/connectors/{app_name}/oauth/callback")
+@router.get("/api/v1/connectors/{connector_id}")
+async def get_connector_instance(
+    connector_id: str,
+    request: Request
+) -> Dict[str, Any]:
+    """
+    Get a specific connector instance by its key.
+
+    Args:
+        connector_id: Unique instance key (_key)
+        request: FastAPI request object
+
+    Returns:
+        Dictionary with instance details
+
+    Raises:
+        HTTPException: 404 if instance not found
+    """
+    connector_registry = request.app.state.connector_registry
+    container = request.app.container
+    logger = container.logger()
+    logger.info("Getting connector instance")
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+
+    try:
+        if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
+
+        connector = await connector_registry.get_connector_instance(
+            connector_id=connector_id,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin
+        )
+
+        if not connector:
+            logger.error(f"Connector instance {connector_id} not found or access denied")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector instance {connector_id} not found or access denied"
+            )
+
+        connector_type = connector.get("type", "")
+        await check_beta_connector_access(connector_type, request)
+
+        return {
+            "success": True,
+            "connector": connector
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"❌ Error getting connector instance: {str(e)}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Error getting connector instance: {str(e)}"
+        )
+
+@router.get("/api/v1/connectors/{connector_id}/config")
+async def get_connector_instance_config(
+    connector_id: str,
+    request: Request
+) -> Dict[str, Any]:
+    """
+    Get configuration for a specific connector instance.
+
+    Returns both registry metadata and instance-specific configuration
+    from etcd (excluding sensitive credentials).
+
+    Args:
+        connector_id: Unique instance key
+        request: FastAPI request object
+
+    Returns:
+        Dictionary with connector configuration
+
+    Raises:
+        HTTPException: 404 if instance not found
+    """
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+
+    try:
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
+        # Get instance from registry
+        instance = await connector_registry.get_connector_instance(
+            connector_id=connector_id,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin
+        )
+        if not instance:
+            logger.error(f"Connector instance {connector_id} not found or access denied")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector instance {connector_id} not found or access denied"
+            )
+
+        connector_type = instance.get("type", "")
+        await check_beta_connector_access(connector_type, request)
+
+        # Load configuration from etcd
+        config_service = container.config_service()
+        config_path = _get_config_path_for_instance(connector_id)
+
+        try:
+            config = await config_service.get_config(config_path)
+        except Exception as e:
+            logger.warning(f"No config found for instance {connector_id}: {e}")
+            config = None
+
+        if not config:
+            config = {"auth": {}, "sync": {}, "filters": {}}
+
+        # Remove sensitive data
+        config = config.copy()
+        config.pop("credentials", None)
+        config.pop("oauth", None)
+
+        # Build response
+        response_data = {
+            "connector_id": connector_id,
+            "name": instance.get("name"),
+            "type": instance.get("type"),
+            "appGroup": instance.get("appGroup"),
+            "authType": instance.get("authType"),
+            "scope": instance.get("scope"),
+            "createdBy": instance.get("createdBy"),
+            "updatedBy": instance.get("updatedBy"),
+            "appDescription": instance.get("appDescription", ""),
+            "appCategories": instance.get("appCategories", []),
+            "supportsRealtime": instance.get("supportsRealtime", False),
+            "supportsSync": instance.get("supportsSync", False),
+            "supportsAgent": instance.get("supportsAgent", False),
+            "iconPath": instance.get("iconPath", "/assets/icons/connectors/default.svg"),
+            "config": config,
+            "isActive": instance.get("isActive", False),
+            "isConfigured": instance.get("isConfigured", False),
+            "isAuthenticated": instance.get("isAuthenticated", False),
+            "createdAtTimestamp": instance.get("createdAtTimestamp"),
+            "updatedAtTimestamp": instance.get("updatedAtTimestamp")
+        }
+
+        return {
+            "success": True,
+            "config": response_data
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting config for instance {connector_id}: {e}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to get connector configuration: {str(e)}"
+        )
+
+
+@router.put("/api/v1/connectors/{connector_id}/config")
+async def update_connector_instance_config(
+    connector_id: str,
+    request: Request,
+) -> Dict[str, Any]:
+    """
+    Update configuration for a connector instance.
+
+    Request body can contain:
+    - auth: Authentication configuration
+    - sync: Sync settings
+    - filters: Filter configuration
+    - base_url: Optional base URL for OAuth redirects
+
+    Args:
+        connector_id: Unique instance key
+        request: FastAPI request object
+
+    Returns:
+        Dictionary with updated configuration
+
+    Raises:
+        HTTPException: 400 for invalid data, 404 if instance not found
+    """
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+
+    try:
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
+        body = await request.json()
+        base_url = body.get("baseUrl", "")
+
+        # Verify instance exists
+        instance = await connector_registry.get_connector_instance(
+            connector_id=connector_id,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin
+        )
+        if not instance:
+            logger.error(f"Connector instance {connector_id} not found or access denied")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector instance {connector_id} not found or access denied"
+            )
+
+        connector_type = instance.get("type", "")
+        await check_beta_connector_access(connector_type, request)
+
+        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+            logger.error("Only administrators can update team connectors")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only administrators can update team connectors"
+            )
+        if instance.get("createdBy") != user_id and not is_admin:
+            logger.error("Only the creator or an administrator can update this connector")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only the creator or an administrator can update this connector"
+            )
+        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+            logger.error("Only the creator can update this connector")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only the creator can update this connector"
+            )
+
+        config_service = container.config_service()
+        config_path = _get_config_path_for_instance(connector_id)
+
+        # Build new configuration from request
+        new_config = {}
+
+        for section in ["auth", "sync", "filters"]:
+            if section in body and isinstance(body[section], dict):
+                new_config[section] = body[section]
+
+        # Clear credentials and OAuth state on config updates
+        new_config["credentials"] = None
+        new_config["oauth"] = None
+
+        # Add OAuth metadata from registry if applicable
+        auth_type = instance.get("authType", "").upper()
+        if auth_type in ["OAUTH", "OAUTH_ADMIN_CONSENT"]:
+            metadata = await connector_registry.get_connector_metadata(connector_type)
+            auth_metadata = metadata.get("config", {}).get("auth", {})
+
+            if "auth" not in new_config:
+                new_config["auth"] = {}
+
+            # Determine redirect URI
+            redirect_uri = auth_metadata.get("redirectUri", "")
+            if base_url:
+                redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+            else:
+                endpoints = await config_service.get_config(
+                    "/services/endpoints",
+                    use_cache=False
+                )
+                base_url = endpoints.get(
+                    "frontendPublicUrl",
+                    "http://localhost:3001"
+                )
+                redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+
+            new_config["auth"].update({
+                "authorizeUrl": auth_metadata.get("authorizeUrl", ""),
+                "tokenUrl": auth_metadata.get("tokenUrl", ""),
+                "scopes": auth_metadata.get("scopes", []),
+                "redirectUri": redirect_uri
+            })
+
+        # Save configuration
+        await config_service.set_config(config_path, new_config)
+        logger.info(f"Updated config for instance {connector_id}")
+
+        # Update instance status
+        updates = {
+            "isConfigured": True,
+            "isAuthenticated": False,
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            "updatedBy": user_id
+        }
+        updated_instance = await connector_registry.update_connector_instance(
+            connector_id=connector_id,
+            updates=updates,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin
+        )
+        if not updated_instance:
+            logger.error(f"Failed to update {instance.get('name')} connector instance")
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail=f"Failed to update {instance.get('name')} connector instance"
+            )
+        return {
+            "success": True,
+            "config": new_config
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating config for instance {connector_id}: {e}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to update connector configuration: {str(e)}"
+        )
+
+
+@router.delete("/api/v1/connectors/{connector_id}")
+async def delete_connector_instance(
+    connector_id: str,
+    request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service)
+) -> Dict[str, Any]:
+    """
+    Delete a connector instance and its configuration.
+
+    Args:
+        connector_id: Unique instance key
+        request: FastAPI request object
+        arango_service: Injected ArangoDB service
+
+    Returns:
+        Dictionary with success status
+
+    Raises:
+        HTTPException: 404 if instance not found
+    """
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+
+    try:
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
+        # Verify instance exists
+        instance = await connector_registry.get_connector_instance(
+            connector_id=connector_id,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin
+        )
+        if not instance:
+            logger.error(f"Connector instance {connector_id} not found or access denied")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector instance {connector_id} not found or access denied"
+            )
+        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+            logger.error("Only administrators can delete team connectors")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only administrators can delete team connectors"
+            )
+        if instance.get("createdBy") != user_id and not is_admin:
+            logger.error("Only the creator or an administrator can delete this connector")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only the creator or an administrator can delete this connector"
+            )
+        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+            logger.error("Only the creator can delete this connector")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only the creator can delete this connector"
+            )
+
+        connector_type = instance.get("type", "")
+        await check_beta_connector_access(connector_type, request)
+
+        # Delete configuration from etcd
+        config_service = container.config_service()
+        config_path = _get_config_path_for_instance(connector_id)
+
+        try:
+            await config_service.delete_config(config_path)
+        except Exception as e:
+            logger.warning(f"Could not delete config for {connector_id}: {e}")
+
+        # Delete instance from database
+        await arango_service.delete_nodes(
+            [connector_id],
+            CollectionNames.APPS.value
+        )
+
+        await arango_service.delete_edge(
+            org_id,
+            connector_id,
+            CollectionNames.ORG_APP_RELATION.value
+        )
+
+        logger.info(f"Deleted connector instance {connector_id}")
+
+        return {
+            "success": True,
+            "message": f"Connector instance {connector_id} deleted successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting instance {connector_id}: {e}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to delete connector instance: {str(e)}"
+        )
+
+
+@router.put("/api/v1/connectors/{connector_id}/name")
+async def update_connector_instance_name(
+    connector_id: str,
+    request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service)
+) -> Dict[str, Any]:
+    """
+    Update the display name for a connector instance.
+
+    Args:
+        connector_id: Unique instance key
+        request: FastAPI request object
+
+    Returns:
+        Dictionary with success status and updated instance fields
+    """
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+
+    try:
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
+        body = await request.json()
+        instance_name = (body or {}).get("instanceName", "")
+
+        if not instance_name or not instance_name.strip():
+            logger.error("instanceName is required")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="instanceName is required"
+            )
+
+        # Verify instance exists
+        instance = await connector_registry.get_connector_instance(connector_id=connector_id,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin
+        )
+        if not instance:
+            logger.error(f"Connector instance {connector_id} not found or access denied")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector instance {connector_id} not found or access denied"
+            )
+
+        connector_type = instance.get("type", "")
+        await check_beta_connector_access(connector_type, request)
+
+        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+            logger.error("Only administrators can update team connectors")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only administrators can update team connectors"
+            )
+        if instance.get("createdBy") != user_id and not is_admin:
+            logger.error("Only the creator or an administrator can update this connector")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only the creator or an administrator can update this connector"
+            )
+        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+            logger.error("Only the creator can update this connector")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only the creator can update this connector"
+            )
+        updates = {
+            "name": instance_name.strip(),
+            "updatedBy": user_id
+        }
+
+        try:
+            updated = await connector_registry.update_connector_instance(
+                connector_id=connector_id,
+                updates=updates,
+                user_id=user_id,
+                org_id=org_id,
+                is_admin=is_admin
+            )
+        except ValueError as e:
+            # Handle name uniqueness validation error
+            logger.error(f"Name uniqueness validation failed: {str(e)}")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=str(e)
+            )
+
+        if not updated:
+            logger.error(f"Failed to update {instance.get('name')} connector instance name")
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail=f"Failed to update {instance.get('name')} connector instance name"
+            )
+
+        logger.info(f"Updated instance {connector_id} name to '{instance_name}'")
+
+        return {
+            "success": True,
+            "connector": {
+                "_key": connector_id,
+                "name": instance_name.strip(),
+            },
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating instance name for {connector_id}: {e}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to update connector instance name: {str(e)}"
+        )
+
+
+# ============================================================================
+# OAuth Endpoints
+# ============================================================================
+
+@router.get("/api/v1/connectors/{connector_id}/oauth/authorize")
+async def get_oauth_authorization_url(
+    connector_id: str,
+    request: Request,
+    base_url: Optional[str] = Query(None),
+    arango_service: BaseArangoService = Depends(get_arango_service)
+) -> Dict[str, Any]:
+    """
+    Get OAuth authorization URL for a connector instance.
+
+    Args:
+        connector_id: Unique instance key
+        request: FastAPI request object
+        base_url: Optional base URL for redirect
+        arango_service: Injected ArangoDB service
+
+    Returns:
+        Dictionary with authorization URL and encoded state
+
+    Raises:
+        HTTPException: 400 if OAuth not supported, 404 if instance not found
+    """
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+
+    try:
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
+        # Get instance
+        instance = await connector_registry.get_connector_instance(
+            connector_id=connector_id,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin
+        )
+        if not instance:
+            logger.error(f"Connector instance {connector_id} not found or access denied")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector instance {connector_id} not found or access denied"
+            )
+
+        connector_type = instance.get("type", "").replace(" ","").upper()
+        await check_beta_connector_access(connector_type, request)
+
+        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+            logger.error("Only administrators can get OAuth authorization URL for team connectors")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only administrators can get OAuth authorization URL for team connectors"
+            )
+        if instance.get("createdBy") != user_id and not is_admin:
+            logger.error("Only the creator or an administrator can get OAuth authorization URL for this connector")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only the creator or an administrator can get OAuth authorization URL for this connector"
+            )
+        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+            logger.error("Only the creator can get OAuth authorization URL for this connector")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only the creator can get OAuth authorization URL for this connector"
+            )
+
+        # Verify OAuth support
+        auth_type = (instance.get("authType") or "").upper()
+        if auth_type not in ["OAUTH", "OAUTH_ADMIN_CONSENT"]:
+            logger.error("Connector instance does not support OAuth")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Connector instance does not support OAuth"
+            )
+
+        # Get configuration
+        config_service = container.config_service()
+        config_path = _get_config_path_for_instance(connector_id)
+        config = await config_service.get_config(config_path)
+
+        if not config or not config.get("auth"):
+            logger.error("OAuth configuration not found. Please configure first.")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="OAuth configuration not found. Please configure first."
+            )
+
+        auth_config = config["auth"]
+
+        # Determine redirect URI - use the exact URI from config
+        redirect_uri = auth_config.get("redirectUri", "")
+
+        logger.info(f"Redirect URI: {redirect_uri}")
+
+        # Create OAuth configuration
+        oauth_config = get_oauth_config(instance.get("type", ""), auth_config)
+
+        # Create OAuth provider
+        oauth_provider = OAuthProvider(
+            config=oauth_config,
+            key_value_store=container.key_value_store(),
+            credentials_path=config_path
+        )
+
+        try:
+            # Add provider-specific parameters
+            extra_params = {}
+
+            if connector_type in ["DRIVE", "GMAIL", "CALENDAR", "MEET", "DOCS", "SHEETS", "SLIDES", "FORMS"]:
+                extra_params.update({
+                    "access_type": "offline",
+                    "prompt": "consent",
+                    "include_granted_scopes": "true"
+                })
+
+            # Generate authorization URL
+            auth_url = await oauth_provider.start_authorization(**extra_params)
+
+            # Add Microsoft-specific parameters
+            if connector_type == "ONEDRIVE":
+                parsed_url = urlparse(auth_url)
+                params = parse_qs(parsed_url.query)
+                params["response_mode"] = ["query"]
+
+                if auth_type == "OAUTH_ADMIN_CONSENT":
+                    params["prompt"] = ["admin_consent"]
+
+                auth_url = (
+                    f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}?"
+                    f"{urlencode(params, doseq=True)}"
+                )
+
+            # Extract and encode state with connector_id
+            parsed_url = urlparse(auth_url)
+            query_params = parse_qs(parsed_url.query)
+            original_state = query_params.get("state", [None])[0]
+
+            if not original_state:
+                raise ValueError("No state parameter in authorization URL")
+
+            # Encode state with connector_id
+            encoded_state = _encode_state_with_instance(original_state, connector_id)
+
+            # Replace state in URL
+            query_params["state"] = [encoded_state]
+            final_auth_url = (
+                f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}?"
+                f"{urlencode(query_params, doseq=True)}"
+            )
+
+            return {
+                "success": True,
+                "authorizationUrl": final_auth_url,
+                "state": encoded_state
+            }
+
+        finally:
+            await oauth_provider.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating OAuth URL for {connector_id}: {e}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to generate OAuth URL: {str(e)}"
+        )
+
+
+@router.get("/api/v1/connectors/oauth/callback")
 async def handle_oauth_callback(
-    app_name: str,
     request: Request,
     code: Optional[str] = Query(None),
     state: Optional[str] = Query(None),
     error: Optional[str] = Query(None),
     base_url: Optional[str] = Query(None),
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    arango_service: BaseArangoService = Depends(get_arango_service)
 ) -> Dict[str, Any]:
-    """GET callback handler for OAuth redirects.
-    This endpoint processes the OAuth callback and redirects to the frontend with the result.
     """
-    # Check beta connector access
-    await check_beta_connector_access(app_name, request)
+    Handle OAuth callback and exchange code for tokens.
 
+    This endpoint processes OAuth callbacks for any connector instance.
+    The connector_id is extracted from the encoded state parameter.
+
+    Args:
+        request: FastAPI request object
+        code: Authorization code from OAuth provider
+        state: Encoded state containing connector_id
+        error: OAuth error if any
+        base_url: Optional base URL for redirects
+        arango_service: Injected ArangoDB service
+
+    Returns:
+        Dictionary with redirect URL and status
+    """
     container = request.app.container
     logger = container.logger()
     config_service = container.config_service()
     connector_registry = request.app.state.connector_registry
 
-    try:
+    settings_base_path = await _get_settings_base_path(arango_service)
 
-        connector_name = app_name
+    # Normalize error values
+    if error in ["null", "undefined", "None", ""]:
+        error = None
 
-        async def _get_settings_base_path() -> str:
-            """Decide frontend settings base path by org account type.
-            Falls back to individual when unknown.
-            """
-            try:
-                orgs = await arango_service.get_all_documents(CollectionNames.ORGS.value)
-                if isinstance(orgs, list) and len(orgs) > 0:
-                    account_type = str((orgs[0] or {}).get("accountType", "")).lower()
-                    if account_type in ["business", "organization", "enterprise"]:
-                        return "/account/company-settings/settings/connector"
-            except Exception:
-                pass
-            return "/account/individual/settings/connector"
+    # Check for OAuth errors
+    if error:
+        logger.error(f"OAuth error: {error}")
+        error_url = f"{base_url or ''}/connectors/oauth/callback?oauth_error={error}"
+        return {
+            "success": False,
+            "error": error,
+            "redirect_url": error_url
+        }
 
-        settings_base_path = await _get_settings_base_path()
-
-        # Normalize common non-errors coming from frontend as strings
-        if error in ["null", "undefined", "None", ""]:
-            error = None
-
-        # Check for OAuth errors
-        if error:
-            logger.error(f"OAuth error for {app_name}: {error}")
-            return {"success": False, "error": error, "redirect_url": f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error={error}"}
+    if not code or not state:
+        logger.error("Missing OAuth parameters")
+        error_url = f"{base_url or ''}/connectors/oauth/callback?oauth_error=missing_parameters"
+        return {
+            "success": False,
+            "error": "missing_parameters",
+            "redirect_url": error_url
+        }
 
 
-        if not code or not state:
-            logger.error(f"Missing OAuth parameters for {app_name}")
-            return {"success": False, "error": "missing_parameters", "redirect_url": f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=missing_parameters"}
-
-        # Process OAuth callback directly here
-        logger.info(f"Processing OAuth callback for {app_name}")
-
-        # Get connector metadata from registry (source of truth)
-        registry_entry = await connector_registry.get_connector_by_name(app_name)
-        if not registry_entry:
-            logger.error(f"Connector {app_name} not found")
-            return {"success": False, "error": "connector_not_found", "redirect_url": f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=connector_not_found"}
-
-        # Get OAuth configuration
-        filtered_app_name = _sanitize_app_name(app_name)
-        config_key = f"/services/connectors/{filtered_app_name}/config"
-        config = await config_service.get_config(config_key)
-
-        if not config or not config.get('auth'):
-            logger.error(f"OAuth configuration not found for {app_name}")
-            return {"success": False, "error": "config_not_found", "redirect_url": f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=config_not_found"}
-
-        auth_config = config['auth']
-
-        # Get OAuth configuration from registry metadata
-        connector_auth_config = registry_entry.get('config', {}).get('auth', {})
-        redirect_uri = connector_auth_config.get('redirectUri', '')
-        authorize_url = auth_config.get('authorizeUrl') or connector_auth_config.get('authorizeUrl', '')
-        token_url = auth_config.get('tokenUrl') or connector_auth_config.get('tokenUrl', '')
-
-        if not redirect_uri:
-            return {"success": False, "error": "redirect_uri_not_configured", "redirect_url": f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=redirect_uri_not_configured"}
-
-        if not authorize_url or not token_url:
-            return {"success": False, "error": "oauth_urls_not_configured", "redirect_url": f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=oauth_urls_not_configured"}
-
-        # Create OAuth config using the OAuth service
-        from app.connectors.core.base.token_service.oauth_service import (
-            OAuthProvider,
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    if not user_id or not org_id:
+        logger.error(f"User not authenticated: {user_id} {org_id}")
+        raise HTTPException(
+            status_code=HttpStatusCode.UNAUTHORIZED.value,
+            detail="User not authenticated"
         )
-        if base_url and len(base_url) > 0:
-            redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
-        else:
-            endpoint_keys = '/services/endpoints'
-            endpoints = await config_service.get_config(endpoint_keys,use_cache=False)
-            base_url = endpoints.get('frontendPublicUrl', 'http://localhost:3001')
-            redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+    try:
+        # Decode state to get connector_id
+        try:
+            state_data = _decode_state_with_instance(state)
+            original_state = state_data["state"]
+            connector_id = state_data["connector_id"]
+        except ValueError as e:
+            logger.error(f"Invalid state format: {e}")
+            error_url = f"{base_url or ''}/connectors/oauth/callback?oauth_error=invalid_state"
+            return {
+                "success": False,
+                "error": "invalid_state",
+                "redirect_url": error_url
+            }
 
-        oauth_config = get_oauth_config(app_name, auth_config)
+        # Get instance
+        instance = await connector_registry.get_connector_instance(
+            connector_id=connector_id,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin
+        )
+        if not instance:
+            logger.error(f"Instance {connector_id} not found or access denied")
+            error_url = f"{base_url or ''}/connectors/oauth/callback?oauth_error=instance_not_found"
+            return {
+                "success": False,
+                "error": "instance_not_found",
+                "redirect_url": error_url
+            }
 
-        # Create OAuth provider and exchange code for token
+        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+            logger.error("Only administrators can handle OAuth callback for team connectors")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only administrators can handle OAuth callback for team connectors"
+            )
+        if instance.get("createdBy") != user_id and not is_admin:
+            logger.error("Only the creator or an administrator can handle OAuth callback for this connector")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only the creator or an administrator can handle OAuth callback for this connector"
+            )
+        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+            logger.error("Only the creator can handle OAuth callback for this connector")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only the creator can handle OAuth callback for this connector"
+            )
+        connector_type = instance.get("type", "").replace(" ","")
+        await check_beta_connector_access(connector_type, request)
+
+        # Get configuration
+        config_path = _get_config_path_for_instance(connector_id)
+        config = await config_service.get_config(config_path)
+
+        if not config or not config.get("auth"):
+            logger.error(f"No OAuth config for instance {connector_id}")
+            error_url = f"{base_url or ''}/connectors/oauth/callback?oauth_error=config_not_found"
+            return {
+                "success": False,
+                "error": "config_not_found",
+                "redirect_url": error_url
+            }
+
+        auth_config = config["auth"]
+
+        # Determine redirect URI - must match exactly what was used in authorization URL
+        redirect_uri = auth_config.get("redirectUri", "")
+
+        logger.info(f"Callback redirect URI: {redirect_uri}")
+
+        # Create OAuth configuration - use auth_config for all OAuth settings
+        oauth_config = get_oauth_config(connector_type, auth_config)
+
+        # Create OAuth provider and exchange code
         oauth_provider = OAuthProvider(
             config=oauth_config,
             key_value_store=container.key_value_store(),
-            credentials_path=f"/services/connectors/{filtered_app_name}/config"
+            credentials_path=config_path
         )
 
-        # Exchange code for token using OAuth provider (ensure cleanup)
         try:
-            token = await oauth_provider.handle_callback(code, state)
+            # Pass the original state (not the encoded one) to the OAuth provider
+            token = await oauth_provider.handle_callback(code, original_state)
         finally:
             await oauth_provider.close()
 
-        # Validate token before storing
+        # Validate token
         if not token or not token.access_token:
-            logger.error(f"Invalid token received for {app_name}")
-            return {"success": False, "error": "invalid_token", "redirect_url": f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=invalid_token"}
+            logger.error(f"Invalid token received for instance {connector_id}")
+            error_url = f"{base_url}{settings_base_path}?oauth_error=invalid_token"
+            return {
+                "success": False,
+                "error": "invalid_token",
+                "redirect_url": error_url
+            }
 
-        logger.info(f"OAuth tokens stored successfully for {app_name}")
+        logger.info(f"OAuth tokens stored successfully for instance {connector_id}")
 
-        # Refresh configuration cache so subsequent reads see latest credentials
+        # Refresh configuration cache
         try:
-            config_service = container.config_service()
             kv_store = container.key_value_store()
-            updated_config = await kv_store.get_key(f"/services/connectors/{filtered_app_name}/config")
+            updated_config = await kv_store.get_key(config_path)
             if isinstance(updated_config, dict):
-                await config_service.set_config(f"/services/connectors/{filtered_app_name}/config", updated_config)
-                logger.info(f"Refreshed config cache for {app_name} after OAuth callback")
+                await config_service.set_config(config_path, updated_config)
+                logger.info(f"Refreshed config cache for instance {connector_id}")
         except Exception as cache_err:
-            logger.warning(f"Could not refresh config cache for {app_name}: {cache_err}")
+            logger.warning(f"Could not refresh config cache: {cache_err}")
 
-        # Schedule token refresh ~10 minutes before expiry
+        # Schedule token refresh
         try:
             from app.connectors.core.base.token_service.token_refresh_service import (
                 TokenRefreshService,
             )
-            refresh_service = TokenRefreshService(container.key_value_store(), arango_service)
-            await refresh_service.schedule_token_refresh(_sanitize_app_name(app_name), token)
-            logger.info(f"Scheduled token refresh for {app_name}")
+            refresh_service = TokenRefreshService(
+                container.key_value_store(),
+                arango_service
+            )
+            await refresh_service.schedule_token_refresh(connector_id, connector_type, token)
+            logger.info(f"Scheduled token refresh for instance {connector_id}")
         except Exception as sched_err:
-            logger.warning(f"Could not schedule token refresh for {app_name}: {sched_err}")
+            logger.warning(f"Could not schedule token refresh: {sched_err}")
 
-        # Return redirect URL for frontend to follow
-        redirect_url = f"{base_url}{settings_base_path}/{app_name}"
-        logger.info(f"OAuth successful, redirecting to: {redirect_url}")
-        logger.info("app name: " + app_name)
-        logger.info("connector name: " + connector_name)
-        # Return appropriate response based on caller
+        # Update instance authentication status
         updates = {
             "isAuthenticated": True,
-            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms()
         }
-        await connector_registry.update_connector(app_name, updates)
-        logger.info(f"Connector 'isAuthenticated' status for {app_name} set to True.")
+        await connector_registry.update_connector_instance(connector_id=connector_id, updates=updates, user_id=user_id, org_id=org_id, is_admin=is_admin)
+        logger.info(f"Instance {connector_id} marked as authenticated")
 
-        return {"success": True, "redirect_url": redirect_url}
+        # Build redirect URL
+        redirect_url = f"{base_url}{settings_base_path}/{connector_id}"
+
+        return {
+            "success": True,
+            "redirect_url": redirect_url
+        }
 
     except Exception as e:
-        logger.error(f"Error handling OAuth GET callback for {app_name}: {str(e)}")
-        connector_name = app_name
-        if base_url and len(base_url) > 0:
-            base_url = f"{base_url.rstrip('/')}/"
-        else:
-            endpoint_keys = '/services/endpoints'
-            endpoints = await config_service.get_config(endpoint_keys,use_cache=False)
-            base_url = endpoints.get('frontendPublicUrl', 'http://localhost:3001')
-            base_url = f"{base_url.rstrip('/')}/"
+        logger.error(f"Error handling OAuth callback: {e}")
+
+        # Update instance authentication status on error
         try:
-            orgs = await arango_service.get_all_documents(CollectionNames.ORGS.value)
-            account_type = str((orgs[0] or {}).get("accountType", "")).lower() if isinstance(orgs, list) and orgs else ""
-            settings_base_path = "/account/company-settings/settings/connector" if account_type in ["business", "organization", "enterprise"] else "/account/individual/settings/connector"
+            if 'connector_id' in locals():
+                updates = {
+                    "isAuthenticated": False,
+                    "updatedAtTimestamp": get_epoch_timestamp_in_ms()
+                }
+                await connector_registry.update_connector_instance(connector_id=connector_id, updates=updates, user_id=user_id, org_id=org_id, is_admin=is_admin)
         except Exception:
-            settings_base_path = "/account/individual/settings/connector"
-        error_url = f"{base_url}/connectors/oauth/callback/{connector_name}?oauth_error=server_error"
-        updates = {
-            "isAuthenticated": False,
-            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            pass
+
+        error_url = f"{base_url or ''}/connectors/oauth/callback?oauth_error=server_error"
+        return {
+            "success": False,
+            "error": "server_error",
+            "redirect_url": error_url
         }
-        await connector_registry.update_connector(app_name, updates)
-        logger.info(f"Connector 'isAuthenticated' status for {app_name} set to False due to an error.")
-        return {"success": False, "error": "server_error", "redirect_url": error_url}
 
 
-async def get_connector_filter_options_from_config(app_name: str, connector_config: Dict[str, Any], token_or_credentials: OAuthToken | Dict[str, Any], config_service) -> Dict[str, Any]:
+# ============================================================================
+# Filter Endpoints
+# ============================================================================
+
+async def _get_connector_filter_options_from_config(
+    connector_type: str,
+    connector_config: Dict[str, Any],
+    token_or_credentials: Dict[str, Any],
+    config_service: Dict[str, Any]
+) -> Dict[str, Any]:
     """
-    Get filter options for a connector based on its configuration by calling dynamic endpoints.
+    Get filter options for a connector by calling dynamic endpoints.
 
     Args:
-        app_name: Name of the connector
-        connector_config: Connector configuration from database
-        token_or_credentials: OAuth token or other credentials
+        connector_type: Type of the connector
+        connector_config: Connector configuration
+        token_or_credentials: OAuth token or credentials
         config_service: Configuration service instance
 
     Returns:
-        Dict containing available filter options
+        Dictionary of available filter options
     """
     try:
-        # Get filter endpoints from connector config
-        filter_endpoints = connector_config.get('config', {}).get('filters', {}).get('endpoints', {})
+        filter_endpoints = connector_config.get("config", {}).get("filters", {}).get("endpoints", {})
 
         if not filter_endpoints:
             return {}
 
         filter_options = {}
 
-        # Dynamically fetch filter options from configured endpoints
         for filter_type, endpoint in filter_endpoints.items():
             try:
                 if endpoint == "static":
-                    # Handle static filter types (like fileTypes)
-                    filter_options[filter_type] = await _get_static_filter_options(app_name, filter_type)
+                    options = await _get_static_filter_options(
+                        connector_type,
+                        filter_type
+                    )
+                    filter_options[filter_type] = options
                 else:
-                    # Call dynamic API endpoint
-                    options = await _fetch_filter_options_from_api(endpoint, filter_type, token_or_credentials, app_name)
+                    options = await _fetch_filter_options_from_api(
+                        endpoint,
+                        filter_type,
+                        token_or_credentials,
+                        connector_type
+                    )
                     if options:
                         filter_options[filter_type] = options
 
             except Exception as e:
-                print(f"Error fetching {filter_type} for {app_name}: {str(e)}")
-                # Fallback to static options for this filter type
-                filter_options[filter_type] = await _get_static_filter_options(app_name, filter_type)
+                logger.warning(f"Error fetching {filter_type} for {connector_type}: {e}")
+                filter_options[filter_type] = await _get_static_filter_options(
+                    connector_type,
+                    filter_type
+                )
 
         return filter_options
 
     except Exception as e:
-        print(f"Error getting filter options for {app_name}: {str(e)}")
-        # Return hardcoded fallback options
-        return await _get_fallback_filter_options(app_name)
+        logger.error(f"Error getting filter options for {connector_type}: {e}")
+        return await _get_fallback_filter_options(connector_type)
 
 
-async def _fetch_filter_options_from_api(endpoint: str, filter_type: str, token_or_credentials: OAuthToken | Dict[str, Any], app_name: str) -> List[Dict[str, str]]:
+async def _fetch_filter_options_from_api(
+    endpoint: str,
+    filter_type: str,
+    token_or_credentials: Dict[str, Any],
+    connector_type: str
+) -> List[Dict[str, str]]:
     """
     Fetch filter options from a dynamic API endpoint.
 
     Args:
         endpoint: API endpoint URL
-        filter_type: Type of filter (labels, folders, channels, etc.)
-        token_or_credentials: OAuth token or other credentials
-        app_name: Name of the connector
+        filter_type: Type of filter
+        token_or_credentials: Authentication token or credentials
+        connector_type: Type of connector
 
     Returns:
         List of filter options with value and label
     """
-
     import aiohttp
 
     headers = {}
 
-    # Set up authentication headers based on token type
-    if hasattr(token_or_credentials, 'access_token'):
-        # OAuth token
-        headers['Authorization'] = f"Bearer {token_or_credentials.access_token}"
+    # Set up authentication headers
+    if hasattr(token_or_credentials, "access_token"):
+        headers["Authorization"] = f"Bearer {token_or_credentials.access_token}"
     elif isinstance(token_or_credentials, dict):
-        # API token or other credentials
-        if 'access_token' in token_or_credentials:
-            headers['Authorization'] = f"Bearer {token_or_credentials['access_token']}"
-        elif 'api_token' in token_or_credentials:
-            headers['Authorization'] = f"Bearer {token_or_credentials['api_token']}"
-        elif 'token' in token_or_credentials:
-            headers['Authorization'] = f"Bearer {token_or_credentials['token']}"
+        if "access_token" in token_or_credentials:
+            headers["Authorization"] = f"Bearer {token_or_credentials['access_token']}"
+        elif "api_token" in token_or_credentials:
+            headers["Authorization"] = f"Bearer {token_or_credentials['api_token']}"
+        elif "token" in token_or_credentials:
+            headers["Authorization"] = f"Bearer {token_or_credentials['token']}"
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(endpoint, headers=headers) as response:
-            if response.status == HttpStatusCode.SUCCESS.value:
-                data = await response.json()
-                return _parse_filter_response(data, filter_type, app_name)
-            else:
-                print(f"API call failed for {filter_type}: {response.status}")
-                return []
-    return []
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(endpoint, headers=headers) as response:
+                if response.status == HttpStatusCode.SUCCESS.value:
+                    data = await response.json()
+                    return _parse_filter_response(data, filter_type, connector_type)
+                else:
+                    logger.warning(
+                        f"API call failed for {filter_type}: {response.status}"
+                    )
+                    return []
+    except Exception as e:
+        logger.error(f"Error fetching filter options from API: {e}")
+        return []
 
 
-def _parse_filter_response(data: Dict[str, Any], filter_type: str, app_name: str) -> List[Dict[str, str]]:
+def _parse_filter_response(
+    data: Dict[str, Any],
+    filter_type: str,
+    connector_type: str
+) -> List[Dict[str, str]]:
     """
     Parse API response to extract filter options.
 
     Args:
         data: API response data
         filter_type: Type of filter being parsed
-        app_name: Name of the connector
+        connector_type: Type of connector
 
     Returns:
         List of filter options with value and label
@@ -2912,72 +3911,72 @@ def _parse_filter_response(data: Dict[str, Any], filter_type: str, app_name: str
     options = []
 
     try:
-        if app_name.upper() == 'GMAIL' and filter_type == 'labels':
-            # Gmail labels API response
-            labels = data.get('labels', [])
+        connector_upper = connector_type.upper()
+
+        if connector_upper == "GMAIL" and filter_type == "labels":
+            labels = data.get("labels", [])
             for label in labels:
-                if label.get('type') == 'user':  # Only user-created labels, not system labels
+                if label.get("type") == "user":
                     options.append({
-                        "value": label['id'],
-                        "label": label['name']
+                        "value": label["id"],
+                        "label": label["name"]
                     })
 
-        elif app_name.upper() == 'DRIVE' and filter_type == 'folders':
-            # Google Drive folders API response
-            files = data.get('files', [])
+        elif connector_upper == "DRIVE" and filter_type == "folders":
+            files = data.get("files", [])
             for file in files:
                 options.append({
-                    "value": file['id'],
-                    "label": file['name']
+                    "value": file["id"],
+                    "label": file["name"]
                 })
 
-        elif app_name.upper() == 'ONEDRIVE' and filter_type == 'folders':
-            # OneDrive folders API response
-            items = data.get('value', [])
+        elif connector_upper == "ONEDRIVE" and filter_type == "folders":
+            items = data.get("value", [])
             for item in items:
-                if item.get('folder'):
+                if item.get("folder"):
                     options.append({
-                        "value": item['id'],
-                        "label": item['name']
+                        "value": item["id"],
+                        "label": item["name"]
                     })
 
-        elif app_name.upper() == 'SLACK' and filter_type == 'channels':
-            # Slack channels API response
-            channels = data.get('channels', [])
+        elif connector_upper == "SLACK" and filter_type == "channels":
+            channels = data.get("channels", [])
             for channel in channels:
-                if not channel.get('is_archived'):
+                if not channel.get("is_archived"):
                     options.append({
-                        "value": channel['id'],
+                        "value": channel["id"],
                         "label": f"#{channel['name']}"
                     })
 
-        elif app_name.upper() == 'CONFLUENCE' and filter_type == 'spaces':
-            # Confluence spaces API response
-            spaces = data.get('results', [])
+        elif connector_upper == "CONFLUENCE" and filter_type == "spaces":
+            spaces = data.get("results", [])
             for space in spaces:
                 options.append({
-                    "value": space['key'],
-                    "label": space['name']
+                    "value": space["key"],
+                    "label": space["name"]
                 })
 
     except Exception as e:
-        print(f"Error parsing {filter_type} response for {app_name}: {str(e)}")
+        logger.error(f"Error parsing {filter_type} response: {e}")
 
     return options
 
 
-async def _get_static_filter_options(app_name: str, filter_type: str) -> List[Dict[str, str]]:
+async def _get_static_filter_options(
+    connector_type: str,
+    filter_type: str
+) -> List[Dict[str, str]]:
     """
-    Get static filter options for connectors that don't have dynamic endpoints.
+    Get static filter options for connectors.
 
     Args:
-        app_name: Name of the connector
+        connector_type: Type of connector
         filter_type: Type of filter
 
     Returns:
         List of static filter options
     """
-    if filter_type == 'fileTypes':
+    if filter_type == "fileTypes":
         return [
             {"value": "document", "label": "Documents"},
             {"value": "spreadsheet", "label": "Spreadsheets"},
@@ -2986,7 +3985,7 @@ async def _get_static_filter_options(app_name: str, filter_type: str) -> List[Di
             {"value": "image", "label": "Images"},
             {"value": "video", "label": "Videos"}
         ]
-    elif filter_type == 'contentTypes':
+    elif filter_type == "contentTypes":
         return [
             {"value": "page", "label": "Pages"},
             {"value": "blogpost", "label": "Blog Posts"},
@@ -2997,18 +3996,20 @@ async def _get_static_filter_options(app_name: str, filter_type: str) -> List[Di
     return []
 
 
-async def _get_fallback_filter_options(app_name: str) -> Dict[str, List[Dict[str, str]]]:
+async def _get_fallback_filter_options(
+    connector_type: str
+) -> Dict[str, List[Dict[str, str]]]:
     """
     Get hardcoded fallback filter options when dynamic fetching fails.
 
     Args:
-        app_name: Name of the connector
+        connector_type: Type of connector
 
     Returns:
-        Dict containing fallback filter options
+        Dictionary of fallback filter options
     """
     fallback_options = {
-        'GMAIL': {
+        "GMAIL": {
             "labels": [
                 {"value": "INBOX", "label": "Inbox"},
                 {"value": "SENT", "label": "Sent"},
@@ -3017,7 +4018,7 @@ async def _get_fallback_filter_options(app_name: str) -> Dict[str, List[Dict[str
                 {"value": "TRASH", "label": "Trash"}
             ]
         },
-        'DRIVE': {
+        "DRIVE": {
             "fileTypes": [
                 {"value": "document", "label": "Documents"},
                 {"value": "spreadsheet", "label": "Spreadsheets"},
@@ -3027,7 +4028,7 @@ async def _get_fallback_filter_options(app_name: str) -> Dict[str, List[Dict[str
                 {"value": "video", "label": "Videos"}
             ]
         },
-        'ONEDRIVE': {
+        "ONEDRIVE": {
             "fileTypes": [
                 {"value": "document", "label": "Documents"},
                 {"value": "spreadsheet", "label": "Spreadsheets"},
@@ -3037,13 +4038,13 @@ async def _get_fallback_filter_options(app_name: str) -> Dict[str, List[Dict[str
                 {"value": "video", "label": "Videos"}
             ]
         },
-        'SLACK': {
+        "SLACK": {
             "channels": [
                 {"value": "general", "label": "#general"},
                 {"value": "random", "label": "#random"}
             ]
         },
-        'CONFLUENCE': {
+        "CONFLUENCE": {
             "spaces": [
                 {"value": "DEMO", "label": "Demo Space"},
                 {"value": "DOCS", "label": "Documentation"}
@@ -3051,415 +4052,605 @@ async def _get_fallback_filter_options(app_name: str) -> Dict[str, List[Dict[str
         }
     }
 
-    return fallback_options.get(app_name.upper(), {})
+    return fallback_options.get(connector_type.upper(), {})
 
 
-@router.get("/api/v1/connectors/{app_name}/filters")
-async def get_connector_filters(
-    app_name: str,
+@router.get("/api/v1/connectors/{connector_id}/filters")
+async def get_connector_instance_filters(
+    connector_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    arango_service: BaseArangoService = Depends(get_arango_service)
 ) -> Dict[str, Any]:
     """
-    Get filter options for a connector based on its authentication type.
+    Get filter options for a connector instance.
 
     Args:
-        app_name: Name of the connector
+        connector_id: Unique instance key
         request: FastAPI request object
-        arango_service: Injected ArangoService dependency
+        arango_service: Injected ArangoDB service
 
     Returns:
-        Dict containing available filter options
-    """
-    # Check beta connector access
-    await check_beta_connector_access(app_name, request)
+        Dictionary with available filter options
 
+    Raises:
+        HTTPException: 400 for auth issues, 404 if instance not found
+    """
     container = request.app.container
     logger = container.logger()
+    connector_registry = request.app.state.connector_registry
 
     try:
-        # Convert app_name to uppercase for database lookup (connectors are stored in uppercase)
-        app_name_upper = app_name.upper()
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
+        # Get instance
+        instance = await connector_registry.get_connector_instance(connector_id=connector_id,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin
+        )
+        if not instance:
+            logger.error(f"Connector instance {connector_id} not found or access denied")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector instance {connector_id} not found or access denied"
+            )
 
-        # Get connector metadata from registry
-        connector_registry = request.app.state.connector_registry
-        connector_config = await connector_registry.get_connector_by_name(app_name_upper)
+        connector_type = instance.get("type", "")
+        await check_beta_connector_access(connector_type, request)
+
+        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+            logger.error("Only administrators can get filter options for team connectors")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only administrators can get filter options for team connectors"
+            )
+        if instance.get("createdBy") != user_id and not is_admin:
+            logger.error("Only the creator or an administrator can get filter options for this connector")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only the creator or an administrator can get filter options for this connector"
+            )
+        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+            logger.error("Only the creator can get filter options for this connector")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only the creator can get filter options for this connector"
+            )
+
+        # Get connector metadata
+        connector_config = await connector_registry.get_connector_metadata(connector_type)
         if not connector_config:
-            raise HTTPException(status_code=404, detail=f"Connector {app_name_upper} not found")
+            logger.error(f"Connector type {connector_type} not found")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector type {connector_type} not found"
+            )
 
         # Get credentials based on auth type
         config_service = container.config_service()
-        auth_type = (connector_config.get('authType') or '').upper()
-        filtered_app_name = _sanitize_app_name(app_name)
-        config_key = f"/services/connectors/{filtered_app_name}/config"
-        config = await config_service.get_config(config_key)
+        config_path = _get_config_path_for_instance(connector_id)
+        config = await config_service.get_config(config_path)
 
+        auth_type = (instance.get("authType") or "").upper()
         token_or_credentials = None
 
-        if auth_type == 'OAUTH':
-            # Only OAUTH requires user-specific OAuth credentials
-            if not config or not config.get('credentials'):
-                raise HTTPException(status_code=400, detail=f"OAuth credentials not found for {app_name}. Please authenticate first.")
+        if auth_type == "OAUTH":
+            if not config or not config.get("credentials"):
+                logger.error("OAuth credentials not found. Please authenticate first.")
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail="OAuth credentials not found. Please authenticate first."
+                )
+            token_or_credentials = OAuthToken.from_dict(config["credentials"])
 
-            # Create token object
-            token_or_credentials = OAuthToken.from_dict(config['credentials'])
-
-        elif auth_type == 'OAUTH_ADMIN_CONSENT':
-            # OAUTH_ADMIN_CONSENT doesn't require user tokens, use configured auth values
-            if not config or not config.get('auth'):
-                raise HTTPException(status_code=400, detail=f"Connector configuration not found for {app_name}. Please configure first.")
-            token_or_credentials = config.get('auth', {})
-
-        elif auth_type == 'API_TOKEN':
-            # Get API token from config
-            if not config or not config.get('auth'):
-                raise HTTPException(status_code=400, detail=f"API token configuration not found for {app_name}. Please configure first.")
-            token_or_credentials = config.get('auth', {})
-
-        elif auth_type == 'USERNAME_PASSWORD':
-            # Get username/password from config
-            if not config or not config.get('auth'):
-                raise HTTPException(status_code=400, detail=f"Authentication configuration not found for {app_name}. Please configure first.")
-            token_or_credentials = config.get('auth', {})
+        elif auth_type in ["OAUTH_ADMIN_CONSENT", "API_TOKEN", "USERNAME_PASSWORD"]:
+            if not config or not config.get("auth"):
+                logger.error("Configuration not found. Please configure first.")
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail="Configuration not found. Please configure first."
+                )
+            token_or_credentials = config.get("auth", {})
 
         else:
-            raise HTTPException(status_code=400, detail=f"Unsupported authentication type: {auth_type}")
+            logger.error(f"Unsupported authentication type: {auth_type}")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=f"Unsupported authentication type: {auth_type}"
+            )
 
-        # Get filter options from configured endpoints
-        filter_options = await get_connector_filter_options_from_config(app_name, connector_config, token_or_credentials, config_service)
+        # Get filter options
+        filter_options = await _get_connector_filter_options_from_config(
+            connector_type,
+            connector_config,
+            token_or_credentials,
+            config_service
+        )
 
         return {
             "success": True,
             "filterOptions": filter_options
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error getting filter options for {app_name}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get filter options: {str(e)}")
+        logger.error(f"Error getting filter options for {connector_id}: {e}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to get filter options: {str(e)}"
+        )
 
 
-@router.post("/api/v1/connectors/{app_name}/filters")
-async def save_connector_filters(
-    app_name: str,
+@router.post("/api/v1/connectors/{connector_id}/filters")
+async def save_connector_instance_filters(
+    connector_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    arango_service: BaseArangoService = Depends(get_arango_service)
 ) -> Dict[str, Any]:
     """
-    Save filter selections for a connector.
+    Save filter selections for a connector instance.
 
     Args:
-        app_name: Name of the connector
+        connector_id: Unique instance key
         request: FastAPI request object
-        arango_service: Injected ArangoService dependency
+        arango_service: Injected ArangoDB service
 
     Returns:
-        Dict containing success status
-    """
-    # Check beta connector access
-    await check_beta_connector_access(app_name, request)
+        Dictionary with success status
 
+    Raises:
+        HTTPException: 400 if no filters provided, 404 if instance not found
+    """
     container = request.app.container
     logger = container.logger()
+    connector_registry = request.app.state.connector_registry
 
     try:
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
         body = await request.json()
-        filter_selections = body.get('filters', {})
+        filter_selections = body.get("filters", {})
 
         if not filter_selections:
-            raise HTTPException(status_code=400, detail="No filter selections provided")
+            logger.error("No filter selections provided")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="No filter selections provided"
+            )
 
+        # Verify instance exists
+        instance = await connector_registry.get_connector_instance(connector_id=connector_id,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin
+        )
+        if not instance:
+            logger.error(f"Connector instance {connector_id} not found or access denied")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector instance {connector_id} not found or access denied"
+            )
+
+        connector_type = instance.get("type", "")
+        await check_beta_connector_access(connector_type, request)
+
+        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+            logger.error("Only administrators can save filter options for team connectors")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only administrators can save filter options for team connectors"
+            )
+        if instance.get("createdBy") != user_id and not is_admin:
+            logger.error("Only the creator or an administrator can save filter options for this connector")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only the creator or an administrator can save filter options for this connector"
+            )
+        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+            logger.error("Only the creator can save filter options for this connector")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only the creator can save filter options for this connector"
+            )
         # Get current config
         config_service = container.config_service()
-        filtered_app_name = _sanitize_app_name(app_name)
-        config_key = f"/services/connectors/{filtered_app_name}/config"
-        config = await config_service.get_config(config_key)
+        config_path = _get_config_path_for_instance(connector_id)
+        config = await config_service.get_config(config_path)
 
         if not config:
+            logger.error("Configuration not found. Please configure first.")
             config = {}
 
-        # Update filters in config
-        if 'filters' not in config:
-            config['filters'] = {}
+        # Update filters
+        if "filters" not in config:
+            logger.error("Filters not found. Please configure first.")
+            config["filters"] = {}
 
-        config['filters']['values'] = filter_selections
+        config["filters"]["values"] = filter_selections
 
         # Save updated config
-        await config_service.set_config(config_key, config)
+        await config_service.set_config(config_path, config)
+
+        logger.info(f"Saved filter selections for instance {connector_id}")
 
         return {
             "success": True,
             "message": "Filter selections saved successfully"
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error saving filter selections for {app_name}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to save filter selections: {str(e)}")
-
-@router.put("/api/v1/connectors/config/{app_name}")
-async def update_connector_config(
-    app_name: str,
-    request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Dict[str, Any]:
-    """
-    Update connector configuration including authentication, sync, and filter settings.
-
-    Args:
-        app_name: Name of the connector application
-        request: FastAPI request object
-        arango_service: Injected ArangoService dependency
-
-    Returns:
-        Dict containing success status and updated configuration
-
-    Raises:
-        HTTPException: 400 if invalid JSON, 404 if connector config not found, 403 if beta connector access denied
-    """
-    # Check beta connector access
-    await check_beta_connector_access(app_name, request)
-
-    container = request.app.container
-    logger = container.logger()
-    connector_registry = request.app.state.connector_registry
-    try:
-        body_dict: Dict[str, Any] = await request.json()
-        logger.info(f"Body dict: {body_dict}")
-        base_url = body_dict.get('base_url', '')
-    except Exception as e:
-        logger.error(f"Failed to parse request body for {app_name}: {e}")
-        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
-
-    try:
-        config_service = container.config_service()
-        filtered_app_name = _sanitize_app_name(app_name)
-        config_key: str = f"/services/connectors/{filtered_app_name}/config"
-
-        # Load existing (unused now; we overwrite sections and clear auth artifacts)
-        try:
-            await config_service.get_config(config_key)
-        except Exception:
-            pass
-
-        # Build new config from incoming sections only
-        merged_config: Dict[str, Any] = {}
-
-        for section in ["auth", "sync", "filters"]:
-            if section in body_dict and isinstance(body_dict[section], dict):
-                merged_config[section] = body_dict[section]
-            elif section in body_dict:
-                merged_config[section] = body_dict[section]
-
-        # Explicitly clear credentials and oauth state on config updates so
-        # the UI will require re-auth and we avoid stale secrets
-        merged_config["credentials"] = None
-        merged_config["oauth"] = None
-
-
-        # Create app in database if it doesn't exist (only when configuring)
-        try:
-            await connector_registry.create_app_when_configured(app_name)
-            logger.info(f"App created in database for {app_name} (if not already exists)")
-        except Exception as e:
-            logger.warning(f"App may already exist in database for {app_name}: {e}")
-
-        app_doc = await connector_registry.get_connector_by_name(app_name)
-        auth_type = app_doc.get('authType', '')
-        connector_config = app_doc.get('config', {})
-
-        redirect_uri = connector_config.get('auth', {}).get('redirectUri', '')
-        if base_url and len(base_url) > 0:
-            redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
-        else:
-            endpoint_keys = '/services/endpoints'
-            endpoints = await config_service.get_config(endpoint_keys,use_cache=False)
-            base_url = endpoints.get('frontendPublicUrl', 'http://localhost:3001')
-            redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
-
-        # Ensure OAuth static metadata from registry is present in etcd config
-        auth_meta = connector_config.get('auth', {})
-        if 'auth' not in merged_config or not isinstance(merged_config['auth'], dict):
-            merged_config['auth'] = {}
-
-        merged_config['auth']['authorizeUrl'] = merged_config['auth'].get('authorizeUrl') or auth_meta.get('authorizeUrl', '')
-        merged_config['auth']['tokenUrl'] = merged_config['auth'].get('tokenUrl') or auth_meta.get('tokenUrl', '')
-        merged_config['auth']['scopes'] = auth_meta.get('scopes', [])
-        merged_config["auth"]["redirectUri"] = redirect_uri
-        merged_config["auth"]["authType"] = auth_type
-
-        await config_service.set_config(config_key, merged_config)
-        logger.info(f"Config stored in etcd for {app_name}")
-
-        updates = {
-            "isConfigured": True,
-            "isAuthenticated": False,
-            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-        }
-        await connector_registry.update_connector(app_name, updates)
-        logger.info(f"Connector updated in database for {app_name}")
-        return {"success": True, "config": merged_config}
-    except Exception as e:
-        logger.error(f"Failed to store config in etcd for {app_name}: {e}")
+        logger.error(f"Error saving filter selections for {connector_id}: {e}")
         raise HTTPException(
-                status_code=500,
-                detail=f"Internal error updating connector config for {app_name}"
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to save filter selections: {str(e)}"
         )
 
 
-@router.post("/api/v1/connectors/toggle/{app_name}")
-async def toggle_connector(
-    app_name: str,
+# ============================================================================
+# Connector Toggle Endpoint
+# ============================================================================
+
+@router.post("/api/v1/connectors/{connector_id}/toggle")
+async def toggle_connector_instance(
+    connector_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    arango_service: BaseArangoService = Depends(get_arango_service)
 ) -> Dict[str, Any]:
     """
-    Toggle connector active status and trigger sync events.
+    Toggle connector instance active status and trigger sync events.
 
     Args:
-        app_name: Name of the connector to toggle
+        connector_id: Unique instance key
         request: FastAPI request object
-        arango_service: Injected ArangoService dependency
+        arango_service: Injected ArangoDB service
 
     Returns:
-        Dict containing success status and message
+        Dictionary with success status
 
     Raises:
-        HTTPException: 404 if org/connector not found, 403 if beta connector access denied, 500 for internal errors
+        HTTPException: 400 for validation errors, 404 if instance not found
     """
-    # Check beta connector access
-    await check_beta_connector_access(app_name, request)
-
     container = request.app.container
     logger = container.logger()
     producer = container.messaging_producer
     connector_registry = request.app.state.connector_registry
 
-    user_info: Dict[str, Optional[str]] = {
+    user_info = {
         "orgId": request.state.user.get("orgId"),
-        "userId": request.state.user.get("userId"),
+        "userId": request.state.user.get("userId")
     }
 
-    logger.info(f"Toggling connector {app_name}")
-    logger.debug(f"User info: {user_info}")
 
     try:
-        # Fetch organization data
-        org = await arango_service.get_document(user_info["orgId"], CollectionNames.ORGS.value)
+        body = await request.json()
+        toggle_type = body.get("type")
+        if not toggle_type or toggle_type not in ["sync", "agent"]:
+            logger.error(f"Toggle type is required and must be 'sync' or 'agent'. Got {toggle_type}")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Toggle type is required and must be 'sync' or 'agent'. Got {toggle_type}"
+            )
+
+        logger.info(f"Toggling connector instance {connector_id} {toggle_type} status")
+
+
+        # Get organization
+        org = await arango_service.get_document(
+            user_info["orgId"],
+            CollectionNames.ORGS.value
+        )
         if not org:
-            raise HTTPException(status_code=404, detail="No organizations found")
+            logger.error("Organization not found")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail="Organization not found"
+            )
+        org_id = user_info["orgId"]
+        user_id = user_info["userId"]
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
 
-        # Fetch and validate app
-        app = await connector_registry.get_connector_by_name(app_name)
-        if not app:
-            raise HTTPException(status_code=404, detail=f"Connector {app_name} not found")
+        # Get instance
+        instance = await connector_registry.get_connector_instance(connector_id=connector_id,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin
+        )
+        if not instance:
+            logger.error(f"Connector instance {connector_id} not found or access denied")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector instance {connector_id} not found or access denied"
+            )
 
-        current_status: bool = app["isActive"]
+        current_sync_status = instance["isActive"]
+        current_agent_status = instance.get("isAgentActive", False)
+        connector_type = instance.get("type", "").upper()
 
-        # If attempting to enable, enforce prerequisites based on auth type
-        try:
-            if not current_status:  # enabling
-                auth_type = (app.get("authType") or "").upper()
-                config_service = container.config_service()
-                filtered_app_name = _sanitize_app_name(app_name)
-                config_key = f"/services/connectors/{filtered_app_name}/config"
-                cfg = await config_service.get_config(config_key)
-                # Allow enabling rules:
-                # - OAUTH: require credentials.access_token
-                # - OAUTH_ADMIN_CONSENT: no user token required; must be configured
-                # - Others (API_TOKEN, USERNAME_PASSWORD, etc.): must be configured
-                org_account_type = str(org.get("accountType", "")).lower()
-                custom_google_business_logic = org_account_type == "enterprise" and app_name.upper() in ["GMAIL", "DRIVE"]
-                if auth_type == "OAUTH":
-                    if custom_google_business_logic:
-                        auth_creds = cfg.get("auth", {})
-                        if not auth_creds or not (auth_creds.get("client_id") and auth_creds.get("adminEmail")):
-                            logger.error(f"Connector {app_name} cannot be enabled until OAuth authentication is completed")
-                            raise HTTPException(
-                                status_code=HttpStatusCode.BAD_REQUEST.value,
-                                detail="Connector cannot be enabled until OAuth authentication is completed",
-                            )
-                    else:
-                        creds = (cfg or {}).get("credentials") if cfg else None
-                        if not creds or not creds.get("access_token"):
-                            logger.error(f"Connector {app_name} cannot be enabled until OAuth authentication is completed")
-                            raise HTTPException(
-                                status_code=HttpStatusCode.BAD_REQUEST.value,
-                                detail="Connector cannot be enabled until OAuth authentication is completed",
-                            )
-                elif auth_type == "OAUTH_ADMIN_CONSENT":
-                    if not app.get("isConfigured", False):
-                        logger.error(f"Connector {app_name} must be configured before enabling")
+        await check_beta_connector_access(connector_type, request)
+
+        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+            logger.error("Only administrators can toggle team connectors")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only administrators can toggle team connectors"
+            )
+        if instance.get("createdBy") != user_id and not is_admin:
+            logger.error("Only the creator or an administrator can toggle this connector")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only the creator or an administrator can toggle this connector"
+            )
+        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+            logger.error("Only the creator can toggle this connector")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only the creator can toggle this connector"
+            )
+
+        # Determine target status
+        if toggle_type == "sync":
+            target_status = not current_sync_status
+            status_field = "isActive"
+        else:  # agent
+            target_status = not current_agent_status
+            status_field = "isAgentActive"
+
+        # Validate prerequisites when enabling
+        if toggle_type == "sync" and not current_sync_status:
+            auth_type = (instance.get("authType") or "").upper()
+            config_service = container.config_service()
+            config_path = _get_config_path_for_instance(connector_id)
+            config = await config_service.get_config(config_path)
+
+            org_account_type = str(org.get("accountType", "")).lower()
+            custom_google_business_logic = (
+                org_account_type == "enterprise" and
+                connector_type in ["GMAIL", "DRIVE"] and
+                instance.get("scope") == ConnectorScope.TEAM.value
+            )
+
+            if auth_type == "OAUTH":
+                if custom_google_business_logic:
+                    auth_creds = config.get("auth", {}) if config else {}
+                    if not auth_creds or not (
+                        auth_creds.get("client_id") and
+                        auth_creds.get("adminEmail")
+                    ):
+                        logger.error("Connector cannot be enabled until OAuth authentication is completed")
                         raise HTTPException(
                             status_code=HttpStatusCode.BAD_REQUEST.value,
-                            detail="Connector must be configured before enabling",
+                            detail="Connector cannot be enabled until OAuth authentication is completed"
                         )
                 else:
-                    if not app.get("isConfigured", False):
-                        logger.error(f"Connector {app_name} must be configured before enabling")
+                    creds = (config or {}).get("credentials") if config else None
+                    if not creds or not creds.get("access_token"):
+                        logger.error("Connector cannot be enabled until OAuth authentication is completed")
                         raise HTTPException(
                             status_code=HttpStatusCode.BAD_REQUEST.value,
-                            detail="Connector must be configured before enabling",
+                            detail="Connector cannot be enabled until OAuth authentication is completed"
                         )
-        except HTTPException:
-            raise
-        except Exception as prereq_err:
-            logger.error(f"Failed to validate enable preconditions for {app_name}: {prereq_err}")
-            raise HTTPException(status_code=500, detail="Failed to validate connector state")
+            else:
+                if not instance.get("isConfigured", False):
+                    logger.error("Connector must be configured before enabling")
+                    raise HTTPException(
+                        status_code=HttpStatusCode.BAD_REQUEST.value,
+                        detail="Connector must be configured before enabling"
+                    )
 
-        # Update connector status using connector registry
-        try:
-            logger.info(f"🚀 Updating connector status: {app_name}")
+        if toggle_type == "agent" and not current_agent_status:
+            # Check if connector supports agent functionality
+            if not instance.get("supportsAgent", False):
+                logger.error("This connector does not support agent functionality")
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail="This connector does not support agent functionality"
+                )
 
-            updates = {
-                "isActive": not current_status,
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms()
+            if not instance.get("isConfigured", False):
+                logger.error("Connector must be configured before enabling")
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail="Connector must be configured before enabling"
+                )
+
+
+        # Update connector status
+        updates = {
+            status_field: target_status,
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            "updatedBy": user_id
+        }
+
+        success = await connector_registry.update_connector_instance(
+            connector_id=connector_id,
+            updates=updates,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin
+        )
+        if not success:
+            logger.error(f"Failed to update {instance.get('name')} connector instance status")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Failed to update {instance.get('name')} connector instance status"
+            )
+
+        logger.info(f"Successfully toggled connector instance {connector_id} {toggle_type} to {target_status}")
+
+        if toggle_type == "sync":
+            # Prepare event messaging
+            event_type = "appEnabled" if target_status else "appDisabled"
+            credentials_route = f"api/v1/configurationManager/internal/connectors/{connector_id}/config"
+
+            payload = {
+                "orgId": user_info["orgId"],
+                "appGroup": instance["appGroup"],
+                "appGroupId": instance.get("appGroupId"),
+                "credentialsRoute": credentials_route,
+                "apps": [connector_type.replace(" ", "").lower()],
+                "connectorId": connector_id,
+                "syncAction": "immediate",
+                "scope": instance.get("scope")
             }
 
-            success = await connector_registry.update_connector(app_name, updates)
-            if not success:
-                logger.warning(f"⚠️ Failed to update connector: {app_name}")
-                raise HTTPException(status_code=404, detail=f"Connector {app_name} not found")
+            message = {
+                "eventType": event_type,
+                "payload": payload,
+                "timestamp": get_epoch_timestamp_in_ms()
+            }
 
-            logger.info(f"✅ Successfully updated connector: {app_name}")
-            new_status: bool = not current_status
+            # Send message to sync-events topic
+            logger.info(f"Sending message to sync-events topic: {message}")
+            await producer.send_message(topic="entity-events", message=message)
 
-        except HTTPException:
-            # Re-raise HTTP exceptions to preserve status codes
-            raise
-        except Exception as e:
-            logger.error(f"❌ Failed to update connector {app_name}: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to update connector {app_name}")
-
-        # Prepare event messaging
-        event_type: str = "appEnabled" if new_status else "appDisabled"
-
-        # Determine credentials routes based on account type
-        filtered_app_name = _sanitize_app_name(app_name)
-        credentials_route: str = f"api/v1/configurationManager/internal/connectors/{filtered_app_name}/config"
-
-        # Build message payload
-        payload: Dict[str, Any] = {
-            "orgId": user_info["orgId"],
-            "appGroup": app["appGroup"],
-            "appGroupId": app["appGroupId"],
-            "credentialsRoute": credentials_route,
-            "apps": [filtered_app_name],
-            "syncAction": "immediate",
+        return {
+            "success": True,
+            "message": f"Connector instance {connector_id} {toggle_type} toggled successfully"
         }
-
-        message: Dict[str, Any] = {
-            'eventType': event_type,
-            'payload': payload,
-            'timestamp': get_epoch_timestamp_in_ms()
-        }
-
-        # Send message to sync-events topic
-        await producer.send_message(topic='entity-events', message=message)
-
-        return {"success": True, "message": f"Connector {app_name} toggled successfully"}
 
     except HTTPException:
-        # Re-raise HTTP exceptions to preserve status codes and messages
         raise
     except Exception as e:
-        logger.error(f"Failed to toggle connector {app_name}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to toggle connector {app_name}")
+        logger.error(f"Failed to toggle connector instance {connector_id} {toggle_type}: {e}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to toggle connector instance {connector_id} {toggle_type}: {str(e)}"
+        )
+
+
+# ============================================================================
+# Schema Endpoint
+# ============================================================================
+
+@router.get("/api/v1/connectors/registry/{connector_type}/schema")
+async def get_connector_schema(
+    connector_type: str,
+    request: Request
+) -> Dict[str, Any]:
+    """
+    Get connector schema from registry.
+
+    Args:
+        connector_type: Type of connector
+        request: FastAPI request object
+
+    Returns:
+        Dictionary with connector schema
+
+    Raises:
+        HTTPException: 404 if connector type not found
+    """
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+    logger.info("Getting connector schema")
+    try:
+        await check_beta_connector_access(connector_type, request)
+        metadata = await connector_registry.get_connector_metadata(connector_type)
+        if not metadata:
+            logger.error(f"Connector type {connector_type} not found")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector type {connector_type} not found"
+            )
+
+        schema = metadata.get("config", {})
+
+        return {
+            "success": True,
+            "schema": schema
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting schema for {connector_type}: {e}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to get connector schema: {str(e)}"
+        )
+
+@router.get("/api/v1/connectors/agents/active")
+async def get_active_agent_instances(
+    request: Request,
+    scope: Optional[str] = Query(None, description="personal | team"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=200),
+    search: Optional[str] = Query(None, description="Search by instance name/type/group")
+) -> Dict[str, Any]:
+    """
+    Get all active agent instances for the current user.
+
+    Args:
+        request: FastAPI request object
+        scope: Optional scope filter (personal/team)
+        page: Page number (1-indexed)
+        limit: Number of items per page
+        search: Optional search query
+    Returns:
+        Dictionary with active agent instances
+    """
+    container = request.app.container
+    logger = container.logger()
+    try:
+        logger.info("Getting active agent instances")
+        connector_registry = request.app.state.connector_registry
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        if not user_id or not org_id:
+            logger.error(f"User not authenticated: {user_id} {org_id}")
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
+
+        if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value]:
+            logger.error("Invalid scope. Must be 'personal' or 'team'")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Invalid scope. Must be 'personal' or 'team'"
+            )
+        connectors = await connector_registry.get_active_agent_connector_instances(
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin,
+            scope=scope,
+            page=page,
+            limit=limit,
+            search=search
+        )
+
+        return {
+                "success": True,
+                **connectors
+            }
+    except Exception as e:
+        logger.error(f"Error getting active agent instances: {str(e)}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to get active agent instances: {str(e)}"
+        )

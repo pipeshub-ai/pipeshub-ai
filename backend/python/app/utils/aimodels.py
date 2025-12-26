@@ -77,6 +77,22 @@ def get_default_embedding_model() -> Embeddings:
         raise e
 
 logger = create_logger("aimodels")
+
+def is_multimodal_llm(config: Dict[str, Any]) -> bool:
+    """
+    Check if an LLM configuration supports multimodal capabilities.
+
+    Args:
+        config: LLM configuration dictionary
+
+    Returns:
+        bool: True if the LLM supports multimodal capabilities
+    """
+    return (
+        config.get("isMultimodal", False) or
+        config.get("configuration", {}).get("isMultimodal", False)
+    )
+
 def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str | None = None) -> Embeddings:
     configuration = config['configuration']
     is_default = config.get("isDefault")

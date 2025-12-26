@@ -23,6 +23,7 @@ import { useAdmin } from 'src/context/AdminContext';
 
 import { Form, Field } from 'src/components/hook-form';
 
+import {useUsers} from 'src/context/UserContext';
 import {
   updateUser,
   getUserById,
@@ -76,7 +77,7 @@ export default function UserProfile() {
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState<boolean>(false);
   const [saveChanges, setSaveChanges] = useState<boolean>(false);
   const { isAdmin } = useAdmin();
-
+  const users = useUsers();
   const location = useLocation();
   const pathSegments = location.pathname.split('/');
   const userId = pathSegments.length > 0 ? pathSegments[pathSegments.length - 1] : null;
@@ -109,8 +110,12 @@ export default function UserProfile() {
           throw new Error('User ID is required');
         }
 
+        const user = users.find((u) => u._id === userId);
+
         const userData = await getUserById(userId);
-        const { fullName, firstName, email, lastName, designation } = userData;
+        const { fullName, firstName, lastName, designation } = userData;
+
+        const email = user?.email || "";
 
         reset({
           fullName,
@@ -133,7 +138,7 @@ export default function UserProfile() {
     };
 
     fetchUserData();
-  }, [reset, userId]);
+  }, [reset, userId, users]);
 
   // useEffect(() => {
   //   const fetchLogo = async (): Promise<void> => {

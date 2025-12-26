@@ -1431,40 +1431,12 @@ async def call_aiter_llm_stream(
 
 def bind_tools_for_llm(llm, tools: List[object]) -> BaseChatModel|bool:
     """
-    Bind tools to the LLM, handling provider-specific quirks.
+    Bind tools to the LLM.
     """
-    try:
-        from langchain_aws import ChatBedrock
-        if isinstance(llm, ChatBedrock):
-            # AWS Bedrock Converse API does not support 'strict' in tool definition
-            # We need to convert tools to OpenAI format and remove the 'strict' parameter
-            from langchain_core.utils.function_calling import convert_to_openai_tool
-
-            formatted_tools = []
-            for tool in tools:
-                # Convert tool to OpenAI format
-                tool_dict = convert_to_openai_tool(tool)
-
-                # Remove 'strict' parameter from function definition if present
-                if 'function' in tool_dict and 'strict' in tool_dict['function']:
-                    del tool_dict['function']['strict']
-
-                formatted_tools.append(tool_dict)
-
-            logger.info("tools for Bedrock, bind successfully")
-            try:
-                return llm.bind(tools=formatted_tools)
-            except Exception:
-                return False
-    except ImportError:
-        pass
-    except (TypeError, AttributeError, KeyError) as e:
-        # Fallback if conversion fails
-        logger.warning(f"Failed to format tools for Bedrock: {e}")
-        pass
     try:
         return llm.bind_tools(tools)
     except Exception:
+        logger.warning("Tool binding failed, using llm without tools.")
         return False
 
 def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:

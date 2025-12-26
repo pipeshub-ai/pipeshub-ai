@@ -1,4 +1,5 @@
 import uuid
+from typing import Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -19,7 +20,7 @@ class GmailChangeHandler:
         self.arango_service = arango_service
         self.logger = logger
 
-    async def process_changes(self, user_service, changes, org_id, user) -> bool:
+    async def process_changes(self, user_service, changes, org_id, user, connector_id: Optional[str] = None) -> bool:
         """Process changes since last sync time"""
         self.logger.info("🚀 Processing changes")
         self.logger.info(f"changes: {changes}")
@@ -117,6 +118,7 @@ class GmailChangeHandler:
                         "version": 0,
                         "origin": OriginTypes.CONNECTOR.value,
                         "connectorName": Connectors.GOOGLE_MAIL.value,
+                        "connectorId": connector_id,
                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                         "lastSyncTimestamp": get_epoch_timestamp_in_ms(),
@@ -224,6 +226,7 @@ class GmailChangeHandler:
                                     "externalRevisionId": None,
                                     "origin": OriginTypes.CONNECTOR.value,
                                     "connectorName": Connectors.GOOGLE_MAIL.value,
+                                    "connectorId": connector_id,
                                     "virtualRecordId": None,
                                     "lastSyncTimestamp": get_epoch_timestamp_in_ms(),
                                     "isDeleted": False,
@@ -385,6 +388,7 @@ class GmailChangeHandler:
                         "body": message_data.get("body", ""),
                         "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{message_record['_key']}/signedUrl",
                         "connectorName": Connectors.GOOGLE_MAIL.value,
+                        "connectorId": connector_id,
                         "origin": OriginTypes.CONNECTOR.value,
                         "mimeType": "text/gmail_content",
                         "createdAtSourceTimestamp": int(
@@ -429,6 +433,7 @@ class GmailChangeHandler:
                                 "eventType": EventTypes.NEW_RECORD.value,
                                 "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{attachment_key}/signedUrl",
                                 "connectorName": Connectors.GOOGLE_MAIL.value,
+                                "connectorId": connector_id,
                                 "extension": extension,
                                 "origin": OriginTypes.CONNECTOR.value,
                                 "mimeType": attachment.get(
@@ -576,6 +581,7 @@ class GmailChangeHandler:
                                     "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{attachment['_key']}/signedUrl",
                                     "eventType": EventTypes.DELETE_RECORD.value,
                                     "connectorName": Connectors.GOOGLE_MAIL.value,
+                                    "connectorId": connector_id,
                                     "origin": OriginTypes.CONNECTOR.value,
                                     "mimeType": attachment.get("mimeType"),
                                 }
@@ -603,6 +609,7 @@ class GmailChangeHandler:
                                 "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{existing_message['_key']}/signedUrl",
                                 "eventType": EventTypes.DELETE_RECORD.value,
                                 "connectorName": Connectors.GOOGLE_MAIL.value,
+                                "connectorId": connector_id,
                                 "origin": OriginTypes.CONNECTOR.value,
                             }
                             await self.arango_service.kafka_service.send_event_to_kafka(
