@@ -1128,10 +1128,8 @@ class Processor:
                 record = convert_record_dict_to_record(record)
                 record.virtual_record_id = virtual_record_id
 
-                block_containers = await parser.get_blocks_from_csv_result(csv_result, recordId, orgId, recordName, version, origin, llm)
+                block_containers = await parser.get_blocks_from_csv_result(csv_result, llm)
                 record.block_containers = block_containers
-
-
 
                 ctx = TransformContext(record=record)
                 pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
