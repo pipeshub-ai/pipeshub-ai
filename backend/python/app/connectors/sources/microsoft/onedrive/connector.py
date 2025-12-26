@@ -29,17 +29,13 @@ from app.connectors.core.base.sync_point.sync_point import (
 )
 from app.connectors.core.registry.connector_builder import (
     AuthField,
+    CommonFields,
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
-    CommonFields
 )
 from app.connectors.core.registry.filters import (
-    FilterCategory,
     FilterCollection,
-    FilterField,
-    FilterOperator,
-    FilterType,
     IndexingFilterKey,
     SyncFilterKey,
     load_connector_filters,
@@ -54,10 +50,10 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     FileRecord,
+    IndexingStatus,
     Record,
     RecordGroupType,
     RecordType,
-    IndexingStatus
 )
 from app.models.permission import EntityType, Permission
 from app.utils.streaming import stream_content
@@ -180,7 +176,7 @@ class OneDriveConnector(BaseConnector):
         if not all((tenant_id, client_id, client_secret)):
             self.logger.error("Incomplete OneDrive config. Ensure tenantId, clientId, and clientSecret are configured.")
             raise ValueError("Incomplete OneDrive credentials. Ensure tenantId, clientId, and clientSecret are configured.")
-        
+
         self.sync_filters, self.indexing_filters = await load_connector_filters(
             self.config_service, "onedrive", self.connector_id, self.logger
         )
@@ -327,7 +323,7 @@ class OneDriveConnector(BaseConnector):
             )
             if file_record.is_file and file_record.extension is None:
                 return None
-            
+
             # Get current permissions
             permission_result = await self.msgraph_client.get_file_permission(
                 item.parent_reference.drive_id if item.parent_reference else None,
@@ -453,14 +449,14 @@ class OneDriveConnector(BaseConnector):
         new_set = {(p.external_id, p.email, p.type, p.entity_type) for p in new_perms}
 
         return old_set == new_set
-    
+
     def _pass_date_filters(self, item: DriveItem) -> bool:
         """
         Checks if the DriveItem passes the configured CREATED and MODIFIED date filters.
         Relies on client-side filtering since OneDrive Delta API does not support $filter.
         """
         # 1. ALWAYS Allow Folders
-        # We must sync folders regardless of date to ensure the directory structure 
+        # We must sync folders regardless of date to ensure the directory structure
         # exists for any new files that might be inside them.
         if item.folder is not None:
             return True
@@ -469,7 +465,7 @@ class OneDriveConnector(BaseConnector):
         created_filter = self.sync_filters.get(SyncFilterKey.CREATED)
         if created_filter:
             created_after_iso, created_before_iso = created_filter.get_datetime_iso()
-            
+
             # Use _parse_datetime to get millisecond timestamps for easy comparison
             item_ts = self._parse_datetime(item.created_date_time)
             start_ts = self._parse_datetime(created_after_iso)
@@ -485,7 +481,7 @@ class OneDriveConnector(BaseConnector):
         modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
         if modified_filter:
             modified_after_iso, modified_before_iso = modified_filter.get_datetime_iso()
-            
+
             # Use _parse_datetime to get millisecond timestamps
             item_ts = self._parse_datetime(item.last_modified_date_time)
             start_ts = self._parse_datetime(modified_after_iso)
@@ -1201,7 +1197,7 @@ class OneDriveConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error during OneDrive reindex: {e}", exc_info=True)
             raise
-    
+
     async def _check_and_fetch_updated_record(
         self, org_id: str, record: Record
     ) -> Optional[Tuple[Record, List[Permission]]]:
@@ -1267,7 +1263,7 @@ class OneDriveConnector(BaseConnector):
                 "Content-Disposition": f"attachment; filename={record.record_name}"
             }
         )
-    
+
     def _parse_datetime(self, dt_obj) -> Optional[int]:
         """Parse datetime object or string to epoch timestamp in milliseconds."""
         if not dt_obj:

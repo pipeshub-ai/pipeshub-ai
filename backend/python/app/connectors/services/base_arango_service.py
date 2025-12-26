@@ -3273,7 +3273,7 @@ class BaseArangoService:
                 FOR record, edge, path IN 0..5 INBOUND recordGroup._id @@inherit_permissions
                     FILTER record._id == record_from
                     FILTER IS_SAME_COLLECTION("records", record)
-                    
+
                     RETURN groupToRgEdge.role
             )
 

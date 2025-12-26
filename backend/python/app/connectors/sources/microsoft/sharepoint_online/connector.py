@@ -49,20 +49,14 @@ from app.connectors.core.base.sync_point.sync_point import (
 )
 from app.connectors.core.registry.connector_builder import (
     AuthField,
-    CommonFields,
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
 )
 from app.connectors.core.registry.filters import (
     FilterCategory,
-    FilterCollection,
     FilterField,
-    FilterOperator,
     FilterType,
-    IndexingFilterKey,
-    SyncFilterKey,
-    load_connector_filters,
 )
 from app.connectors.sources.microsoft.common.apps import SharePointOnlineApp
 from app.connectors.sources.microsoft.common.msgraph_client import (
@@ -82,7 +76,6 @@ from app.models.entities import (
     SharePointListItemRecord,
     SharePointListRecord,
     SharePointPageRecord,
-    IndexingStatus,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.streaming import stream_content
@@ -1501,8 +1494,8 @@ class SharePointConnector(BaseConnector):
                     page_record = await self._create_page_record(page, site_id, site_name, existing_record)
 
                     # Set indexing status based on filter
-                    if not content_indexing_enabled:
-                        page_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                    # if not content_indexing_enabled:
+                    #     page_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
                     if page_record:
                         permissions = await self._get_page_permissions(site_id, page.id)

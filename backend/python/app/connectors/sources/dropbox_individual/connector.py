@@ -44,15 +44,12 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
 )
 from app.connectors.core.registry.filters import (
-    FilterCategory,
     FilterCollection,
-    FilterField,
-    FilterOperator,
-    FilterType,
     IndexingFilterKey,
     SyncFilterKey,
     load_connector_filters,
 )
+
 # App-specific Dropbox client imports
 from app.connectors.sources.dropbox_individual.common.apps import DropboxIndividualApp
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
@@ -60,11 +57,11 @@ from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 # Model imports
 from app.models.entities import (
     FileRecord,
+    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
     RecordType,
-    IndexingStatus,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.dropbox.dropbox_ import (
@@ -325,7 +322,7 @@ class DropboxIndividualConnector(BaseConnector):
         """
         Process a single Dropbox entry and detect changes.
         Simplified version without team-specific parameters.
-        
+
         Args:
             entry: The Dropbox file/folder metadata
             user_id: The user's account ID
@@ -335,7 +332,7 @@ class DropboxIndividualConnector(BaseConnector):
             modified_before: Only include files modified before this date
             created_after: Only include files created after this date
             created_before: Only include files created before this date
-            
+
         Returns:
             RecordUpdate object or None if entry should be skipped
         """
@@ -589,7 +586,7 @@ class DropboxIndividualConnector(BaseConnector):
         """
         Process Dropbox entries and yield records with their permissions.
         Generator for non-blocking processing of large datasets.
-        
+
         Args:
             entries: List of Dropbox file/folder metadata entries
             user_id: The user's account ID
@@ -622,7 +619,7 @@ class DropboxIndividualConnector(BaseConnector):
             except Exception as e:
                 self.logger.error(f"Error processing item in generator: {e}", exc_info=True)
                 continue
-    
+
     def _pass_date_filters(
         self,
         entry: Union[FileMetadata, FolderMetadata, DeletedMetadata],
@@ -633,41 +630,41 @@ class DropboxIndividualConnector(BaseConnector):
     ) -> bool:
         """
         Returns True if entry PASSES filters (should be kept)
-        
+
         Note: Dropbox only provides `server_modified` (modification date) for files.
         For `client_modified` (creation/upload date), we use it as the "created" date.
         Folders don't have date metadata, so they are never filtered out.
-        
+
         Args:
             entry: The Dropbox file/folder metadata
             modified_after: Skip files modified before this date
             modified_before: Skip files modified after this date
             created_after: Skip files created before this date
             created_before: Skip files created after this date
-            
+
         Returns:
             False if the entry should be skipped, True otherwise
         """
         # Folders don't have date metadata - never filter them out
         if not isinstance(entry, FileMetadata):
             return True
-        
+
         # No filters applied
         if not any([modified_after, modified_before, created_after, created_before]):
             return True
-        
+
         # Get the dates from the entry
         # server_modified = last time the file was modified on Dropbox
         # client_modified = modification time set by the desktop client when file was added
         server_modified = entry.server_modified
         client_modified = getattr(entry, 'client_modified', None)
-        
+
         # Ensure timezone awareness for comparison
         if server_modified and server_modified.tzinfo is None:
             server_modified = server_modified.replace(tzinfo=timezone.utc)
         if client_modified and client_modified.tzinfo is None:
             client_modified = client_modified.replace(tzinfo=timezone.utc)
-        
+
         # Apply modified date filters (using server_modified)
         if server_modified:
             if modified_after and server_modified < modified_after:
@@ -676,7 +673,7 @@ class DropboxIndividualConnector(BaseConnector):
             if modified_before and server_modified > modified_before:
                 self.logger.debug(f"Skipping {entry.name}: modified {server_modified} after cutoff {modified_before}")
                 return False
-        
+
         # Apply created date filters (using client_modified as proxy for creation date)
         # If client_modified is not available, fall back to server_modified
         created_date = client_modified or server_modified
@@ -687,13 +684,13 @@ class DropboxIndividualConnector(BaseConnector):
             if created_before and created_date > created_before:
                 self.logger.debug(f"Skipping {entry.name}: created {created_date} after cutoff {created_before}")
                 return False
-        
+
         return True
 
     def _get_date_filters(self) -> Tuple[Optional[datetime], Optional[datetime], Optional[datetime], Optional[datetime]]:
         """
         Extract date filter values from sync_filters.
-        
+
         Returns:
             Tuple of (modified_after, modified_before, created_after, created_before)
         """
@@ -701,7 +698,7 @@ class DropboxIndividualConnector(BaseConnector):
         modified_before: Optional[datetime] = None
         created_after: Optional[datetime] = None
         created_before: Optional[datetime] = None
-        
+
         # Get modified date filter
         modified_date_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
         if modified_date_filter and not modified_date_filter.is_empty():
@@ -712,7 +709,7 @@ class DropboxIndividualConnector(BaseConnector):
             if before_iso:
                 modified_before = datetime.fromisoformat(before_iso).replace(tzinfo=timezone.utc)
                 self.logger.info(f"Applying modified date filter: before {modified_before}")
-        
+
         # Get created date filter
         created_date_filter = self.sync_filters.get(SyncFilterKey.CREATED)
         if created_date_filter and not created_date_filter.is_empty():
@@ -723,7 +720,7 @@ class DropboxIndividualConnector(BaseConnector):
             if before_iso:
                 created_before = datetime.fromisoformat(before_iso).replace(tzinfo=timezone.utc)
                 self.logger.info(f"Applying created date filter: before {created_before}")
-        
+
         return modified_after, modified_before, created_after, created_before
 
     async def _run_sync_with_cursor(self, user_id: str, user_email: str) -> None:
@@ -943,7 +940,7 @@ class DropboxIndividualConnector(BaseConnector):
         signed_url = await self.get_signed_url(record)
         if not signed_url:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
-            
+
         return StreamingResponse(
             stream_content(signed_url),
             media_type=record.mime_type if record.mime_type else "application/octet-stream",
@@ -966,7 +963,7 @@ class DropboxIndividualConnector(BaseConnector):
     async def reindex_records(self, records: List[Record]) -> None:
         """
         Reindex records from Dropbox Individual account.
-        
+
         This method checks each record at the source for updates:
         - If the record has changed (metadata, content, or permissions), it updates the DB
         - If the record hasn't changed, it publishes a reindex event for the existing record
@@ -990,7 +987,7 @@ class DropboxIndividualConnector(BaseConnector):
             org_id = self.data_entities_processor.org_id
             updated_records = []
             non_updated_records = []
-            
+
             for record in records:
                 try:
                     updated_record_data = await self._check_and_fetch_updated_record(
@@ -1014,7 +1011,7 @@ class DropboxIndividualConnector(BaseConnector):
             if non_updated_records:
                 await self.data_entities_processor.reindex_existing_records(non_updated_records)
                 self.logger.info(f"Published reindex events for {len(non_updated_records)} non-updated records")
-                
+
         except Exception as e:
             self.logger.error(f"Error during Dropbox Individual reindex: {e}", exc_info=True)
             raise
@@ -1024,13 +1021,13 @@ class DropboxIndividualConnector(BaseConnector):
     ) -> Optional[Tuple[Record, List[Permission]]]:
         """
         Fetch record from Dropbox and return data for reindexing if changed.
-        
+
         Args:
             org_id: The organization ID
             record: The record to check for updates
             user_id: The current user's account ID
             user_email: The current user's email
-            
+
         Returns:
             Tuple of (updated_record, permissions) if the record has changed, None otherwise
         """
