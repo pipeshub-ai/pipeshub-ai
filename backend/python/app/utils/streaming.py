@@ -1265,20 +1265,37 @@ async def call_aiter_llm_stream(
             answer = token.get("answer", "")
             if answer:
                 state.answer_buf = answer
-                normalized, cites = normalize_citations_and_chunks(
-                            answer, final_results,records
-                        )
 
-                chunk_text = normalized[state.prev_norm_len:]
-                state.prev_norm_len = len(normalized)
-                yield {
-                    "event": "answer_chunk",
-                    "data": {
-                        "chunk": chunk_text,
-                        "accumulated": normalized,
-                        "citations": cites,
-                    },
-                }
+                # Check for incomplete citations at the end of the answer
+                incomplete_match = incomplete_cite_re.search(answer)
+                if incomplete_match:
+                    # Only process up to the incomplete citation
+                    safe_answer = answer[:incomplete_match.start()]
+                    if not safe_answer or len(safe_answer) <= state.emit_upto:
+                        # Nothing safe to emit yet, wait for more content
+                        continue
+                else:
+                    safe_answer = answer
+
+                # Only process if we have new content beyond what we've already emitted
+                if len(safe_answer) > state.emit_upto:
+                    state.emit_upto = len(safe_answer)
+                    normalized, cites = normalize_citations_and_chunks(
+                                safe_answer, final_results, records
+                            )
+
+                    chunk_text = normalized[state.prev_norm_len:]
+                    state.prev_norm_len = len(normalized)
+
+                    if chunk_text:  # Only yield if there's actual content to emit
+                        yield {
+                            "event": "answer_chunk",
+                            "data": {
+                                "chunk": chunk_text,
+                                "accumulated": normalized,
+                                "citations": cites,
+                            },
+                        }
 
             continue
 
