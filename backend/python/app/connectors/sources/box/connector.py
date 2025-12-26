@@ -39,7 +39,7 @@ from app.connectors.core.registry.connector_builder import (
 # App-specific Box client imports
 from app.connectors.sources.box.common.apps import BoxApp
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
-from app.config.constants.arangodb import Connectors
+
 # Model imports
 from app.models.entities import (
     AppUser,
