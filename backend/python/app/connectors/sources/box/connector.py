@@ -33,12 +33,13 @@ from app.connectors.core.registry.connector_builder import (
     CommonFields,
     ConnectorBuilder,
     DocumentationLink,
+    ConnectorScope,
 )
 
 # App-specific Box client imports
 from app.connectors.sources.box.common.apps import BoxApp
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
-
+from app.config.constants.arangodb import Connectors
 # Model imports
 from app.models.entities import (
     AppUser,
@@ -106,6 +107,7 @@ def get_mimetype_enum_for_box(entry_type: str, filename: str = None) -> MimeType
     .with_auth_type("API_TOKEN")\
     .with_description("Sync files and folders from Box")\
     .with_categories(["Storage"])\
+    .with_scopes([ConnectorScope.TEAM.value, ConnectorScope.PERSONAL.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/box.svg")
         .with_realtime_support(True)
@@ -119,11 +121,10 @@ def get_mimetype_enum_for_box(entry_type: str, filename: str = None) -> MimeType
             'https://docs.pipeshub.com/connectors/box',
             'pipeshub'
         ))
-        # .with_redirect_uri("connectors/oauth/callback/Box", True)
         .with_oauth_urls(
             "https://account.box.com/api/oauth2/authorize",
             "https://api.box.com/oauth2/token",
-            ["root_readwrite", "manage_managed_users", "manage_groups"]  # Note: Box scopes are configured in Developer Console, not in OAuth URL
+            ["root_readwrite", "manage_managed_users", "manage_groups", "manage_enterprise_properties"]  # Note: Box scopes are configured in Developer Console, not in OAuth URL
         )
         .add_auth_field(CommonFields.client_id("Box Developer Console"))
         .add_auth_field(CommonFields.client_secret("Box Developer Console"))
@@ -133,8 +134,10 @@ def get_mimetype_enum_for_box(entry_type: str, filename: str = None) -> MimeType
             placeholder="Enter Box Enterprise ID",
             description="The Enterprise ID from Box Developer Console"
         ))
-        .with_webhook_config(True, ["FILE.UPLOADED", "FILE.DELETED", "FILE.MOVED", "FOLDER.CREATED"])
+        .with_webhook_config(True, ["FILE.UPLOADED", "FILE.DELETED", "FILE.MOVED", "FOLDER.CREATED", "COLLABORATION.REMOVED"])
         .with_scheduled_config(True, 60)
+        .with_agent_support(False)
+        .with_sync_support(True)
         .add_sync_custom_field(CommonFields.batch_size_field())
     )\
     .build_decorator()
@@ -155,16 +158,25 @@ class BoxConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
+        connector_id: str,
     ) -> None:
 
-        super().__init__(BoxApp(), logger, data_entities_processor, data_store_provider, config_service)
+        super().__init__(
+            BoxApp(connector_id=connector_id), 
+            logger, 
+            data_entities_processor, 
+            data_store_provider, 
+            config_service, 
+            connector_id=connector_id
+        )
 
         self.connector_name = Connectors.BOX
+        self.connector_id = connector_id
 
         # Initialize sync point for tracking record changes
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
             return SyncPoint(
-                connector_name=self.connector_name,
+                connector_id=self.connector_id, 
                 org_id=self.data_entities_processor.org_id,
                 sync_data_point_type=sync_data_point_type,
                 data_store_provider=self.data_store_provider
@@ -186,7 +198,7 @@ class BoxConnector(BaseConnector):
     async def init(self) -> bool:
         """Initializes the Box client using credentials from the config service."""
         config = await self.config_service.get_config(
-            "/services/connectors/box/config"
+            f"/services/connectors/{self.connector_id}/config"
         )
         if not config:
             self.logger.error("Box configuration not found.")
@@ -288,7 +300,7 @@ class BoxConnector(BaseConnector):
         """
         try:
             # 1. Fetch current config from configuration service
-            config = await self.config_service.get_config("/services/connectors/box/config")
+            config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
             
             if not config:
                 self.logger.warning("Could not fetch Box config for token refresh check.")
@@ -375,7 +387,7 @@ class BoxConnector(BaseConnector):
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
                     external_id=entry_id,
-                    connector_name=self.connector_name
+                    connector_id=self.connector_id
                 )
 
             is_file = entry_type == 'file'
@@ -416,6 +428,7 @@ class BoxConnector(BaseConnector):
                 version=version,
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name.value,
+                connector_id=self.connector_id,
                 mime_type=mime_type,
                 weburl=web_url,
                 created_at=current_timestamp,
@@ -505,9 +518,8 @@ class BoxConnector(BaseConnector):
                 response = await self.data_source.collaborations_get_folder_collaborations(folder_id=item_id)
 
             if not response.success:
-                # Handle 404 (Not Found) gracefully - usually means no permission to view collabs
+                # Handle 404 no permission to view collabs
                 if response.status_code == 404:
-                    # Just debug log a short message, don't dump the whole error
                     self.logger.debug(f"No collaborations found or accessible for {item_type} {item_id} (404).")
                 else:
                     self.logger.debug(f"Could not fetch permissions for {item_type} {item_id}: {response.error}")
@@ -585,7 +597,7 @@ class BoxConnector(BaseConnector):
                 async with self.data_store_provider.transaction() as tx_store:
                     existing_record = await tx_store.get_record_by_external_id(
                         external_id=record_update.external_record_id,
-                        connector_name=self.connector_name
+                        connector_id=self.connector_id
                     )
                     if existing_record:
                         await self.data_entities_processor.on_record_deleted(
@@ -626,6 +638,7 @@ class BoxConnector(BaseConnector):
                 for user in users_data:
                     app_user = AppUser(
                         app_name=self.connector_name,
+                        connector_id=self.connector_id,
                         source_user_id=user.get('id'),
                         org_id=self.data_entities_processor.org_id,
                         email=user.get('login', ''),
@@ -664,7 +677,7 @@ class BoxConnector(BaseConnector):
         try:
             # Fetch all users from database
             all_app_users = await self.data_entities_processor.get_all_app_users(
-                app_name=Connectors.BOX
+                connector_id=self.connector_id
             )
 
             self.logger.debug(f"Fetched {len(all_app_users)} total users from database for email lookup")
@@ -714,6 +727,7 @@ class BoxConnector(BaseConnector):
                     # Create AppUserGroup
                     app_user_group = AppUserGroup(
                         app_name=self.connector_name,
+                        connector_id=self.connector_id,
                         source_user_group_id=group_id,
                         name=group_name,
                         org_id=self.data_entities_processor.org_id,
@@ -778,6 +792,7 @@ class BoxConnector(BaseConnector):
                     external_group_id=user.source_user_id,
                     external_user_id=user.source_user_id,
                     connector_name=self.connector_name.value,
+                    connector_id=self.connector_id,
                     group_type=RecordGroupType.DRIVE.value,
                     web_url=root_folder.get('shared_link', {}).get('url') if root_folder.get('shared_link') else None,
                     source_created_at=int(datetime.fromisoformat(root_folder.get('created_at', '').replace('Z', '+00:00')).timestamp() * 1000) if root_folder.get('created_at') else None,
@@ -960,39 +975,437 @@ class BoxConnector(BaseConnector):
             self.logger.error(f"Error processing users in batches: {e}")
             raise
 
-    async def run_sync(self) -> None:
-        """Runs a full synchronization from the Box account."""
+    async def _ensure_virtual_groups(self) -> None:
+        """
+        Creates 'stub' groups for Public and Organization-wide access.
+        This fixes the "No user group found" warnings.
+        """
         try:
-            self.logger.info("Starting Box full sync.")
+            virtual_groups = []
+            
+            # 1. Public Group (For 'open' shared links)
+            virtual_groups.append(AppUserGroup(
+                app_name=self.connector_name,
+                connector_id=self.connector_id,
+                source_user_group_id="PUBLIC",
+                name="Public (External)",
+                org_id=self.data_entities_processor.org_id,
+                description="Virtual group for content shared publicly via link"
+            ))
 
-            # Step 1: Sync users
-            self.logger.info("Syncing users...")
+            # 2. Organization Group (For 'company' shared links)
+            org_group_id = f"ORG_{self.data_entities_processor.org_id}"
+            virtual_groups.append(AppUserGroup(
+                app_name=self.connector_name,
+                connector_id=self.connector_id,
+                source_user_group_id=org_group_id,
+                name="Entire Organization",
+                org_id=self.data_entities_processor.org_id,
+                description="Virtual group for content shared with the entire company"
+            ))
+
+            # Upsert them (Empty member list [] because they are virtual)
+            await self.data_entities_processor.on_new_user_groups(
+                [(g, []) for g in virtual_groups]
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create virtual groups: {e}")
+
+    async def run_sync(self) -> None:
+        """
+        Smart Sync: Decides between Full vs. Incremental based on cursor state.
+        """
+        try:
+            self.logger.info("🔍 [Smart Sync] Checking sync state...")
+
+            # 1. Check if we have an existing cursor
+            key = "event_stream_cursor"
+            
+            cursor_data = None
+            try:
+                cursor_data = await self.box_cursor_sync_point.read_sync_point(key)
+            except Exception as e:
+                self.logger.debug(f"⚠️ [Smart Sync] Could not read sync point (first run?): {e}")
+
+            # 2. DECISION LOGIC
+            if cursor_data and cursor_data.get("cursor"):
+                cursor_val = cursor_data.get("cursor")
+                self.logger.info(f"✅ [Smart Sync] Found existing cursor: {cursor_val}")
+                self.logger.info("🚀 [Smart Sync] Switching to INCREMENTAL SYNC path.")
+                
+                # Hand off to the incremental engine
+                await self.run_incremental_sync()
+                return
+
+            # NO CURSOR FOUND PROCEED WITH FULL SYNC
+            self.logger.info("⚪ [Smart Sync] No cursor found. Starting FULL SYNC & Anchoring.")
+
+            # ANCHOR THE STREAM
+            try:
+                await self._get_fresh_datasource()
+                
+                # Get current position ('now')
+                response = await self.data_source.events_get_events(
+                    stream_type='admin_logs_streaming',
+                    stream_position='now',
+                    limit=1
+                )
+                
+                if response.success:
+                    data = response.data
+                    next_stream_pos = getattr(data, 'next_stream_position', None)
+                    
+                    if next_stream_pos:
+                        await self.box_cursor_sync_point.update_sync_point(
+                            key, 
+                            {"cursor": next_stream_pos}
+                        )
+                        self.logger.info(f"⚓ [Smart Sync] Anchored Event Stream at: {next_stream_pos}")
+                    else:
+                        self.logger.warning("⚠️ [Smart Sync] Anchoring Warning: 'next_stream_position' not found.")
+            except Exception as e:
+                self.logger.warning(f"❌ [Smart Sync] Failed to anchor event stream: {e}", exc_info=True)
+
+            # SYNC RESOURCES (Full Scan)
+            self.logger.info("📦 [Full Sync] Syncing users...")
             users = await self._sync_users()
             await self.data_entities_processor.on_new_app_users(users)
 
-            # Step 2: Sync user groups
-            self.logger.info("Syncing user groups...")
+            self.logger.info("📦 [Full Sync] Creating virtual groups...")
+            await self._ensure_virtual_groups()
+
+            self.logger.info("📦 [Full Sync] Syncing user groups...")
             await self._sync_user_groups()
 
-            # Step 3: Sync record groups (user drives)
-            self.logger.info("Syncing user drives...")
+            self.logger.info("📦 [Full Sync] Syncing user drives...")
             await self._sync_record_groups(users)
 
-            # Step 4: Sync user files and folders
-            self.logger.info("Syncing user files and folders...")
+            self.logger.info("📦 [Full Sync] Syncing user files and folders...")
             await self._process_users_in_batches(users)
 
-            self.logger.info("Box full sync completed.")
+            self.logger.info("✅ [Full Sync] Completed successfully.")
+
         except Exception as ex:
-            self.logger.error(f"Error in Box connector run: {ex}", exc_info=True)
+            self.logger.error(f"❌ [Run Sync] Error in Box connector run: {ex}", exc_info=True)
             raise
 
     async def run_incremental_sync(self) -> None:
-        """Runs an incremental sync using Box events API."""
-        self.logger.info("Starting Box incremental sync.")
-        # TODO: Implement incremental sync using Box events stream
-        self.logger.warning("Incremental sync not yet implemented for Box")
-        pass
+        """
+        Runs an incremental sync using the Box Enterprise Event Stream.
+        """
+        self.logger.info("🔄 [Incremental] Starting Box Enterprise incremental sync.")
+        await self._ensure_virtual_groups()
+        key = "event_stream_cursor"
+
+        # 1. Load Cursor
+        stream_position = 'now'
+        try:
+            data = await self.box_cursor_sync_point.read_sync_point(key)
+            if data and isinstance(data, dict):
+                stream_position = data.get("cursor") or 'now'
+            self.logger.info(f"📍 [Incremental] Loaded Cursor: {stream_position}")
+        except Exception:
+            self.logger.info("⚠️ [Incremental] No existing cursor found, starting from 'now'")
+
+        limit = 500
+        has_more = True
+
+        try:
+            while has_more:
+                await self._get_fresh_datasource()
+                
+                self.logger.info(f"📡 [Incremental] Polling Box events from pos: {stream_position}")
+
+                response = await self.data_source.events_get_events(
+                    stream_position=stream_position,
+                    stream_type='admin_logs_streaming',
+                    limit=limit
+                )
+
+                if not response.success:
+                    self.logger.error(f"❌ [Incremental] Failed to fetch events: {response.error}")
+                    if response.error and "stream_position" in str(response.error):
+                         self.logger.warning("⚠️ [Incremental] Stream position expired. Resetting to 'now'.")
+                         stream_position = 'now'
+                         continue
+                    break
+
+                data = response.data if response.data else {}
+                events = getattr(data, 'entries', [])
+                next_stream_position = getattr(data, 'next_stream_position', None)
+                
+                if events:
+                    self.logger.info(f"📥 [Incremental] Fetched {len(events)} new events from Box.")
+                    await self._process_event_batch(events)
+                else:
+                    self.logger.info("ℹ️ [Incremental] Box says: No new events yet.")
+                    has_more = False
+
+                if next_stream_position:
+                    stream_position = next_stream_position
+                    # Update cursor immediately
+                    await self.box_cursor_sync_point.update_sync_point(
+                        key, 
+                        {"cursor": stream_position}
+                    )
+                    self.logger.debug(f"💾 [Incremental] Updated cursor to: {stream_position}")
+
+        except Exception as e:
+            self.logger.error(f"❌ [Incremental] Error during sync: {e}", exc_info=True)
+
+    async def _process_event_batch(self, events: List[Dict]) -> None:
+        """
+        Deduplicates events, handles deletions, and groups updates.
+        Now handles "Flat" dictionary schemas AND fetches missing emails.
+        """
+        files_to_sync: Dict[str, str] = {} 
+        files_to_delete: set = set()
+        
+        DELETION_EVENTS = {
+            'ITEM_TRASH', 'ITEM_DELETE', 'DELETE', 'TRASH', 
+            'PERMANENT_DELETE', 'DISCARD'
+        }
+
+        REVOCATION_EVENTS = {
+            'COLLABORATION_REMOVE', 
+            'REMOVE_COLLABORATOR', 
+            'COLLABORATION_DELETED',
+            'unshared' 
+        }
+
+        def get_val(obj, key, default=None):
+            if obj is None: return default
+            if isinstance(obj, dict): return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        for event in events:
+            event_type = get_val(event, 'event_type')
+            source = get_val(event, 'source')
+            
+            # 1. HANDLE REVOCATIONS (Permissions Removed)
+            if event_type in REVOCATION_EVENTS:
+                file_id = None
+                removed_email = None
+                removed_user_box_id = None
+
+                if source:
+                    # PATH A: Standard Box Object
+                    item = get_val(source, 'item')
+                    if item:
+                        file_id = get_val(item, 'id')
+                    
+                    accessible_by = get_val(source, 'accessible_by')
+                    if accessible_by:
+                        removed_email = get_val(accessible_by, 'login')
+                        removed_user_box_id = get_val(accessible_by, 'id')
+
+                    # PATH B: Flat Dictionary
+                    if not file_id:
+                        file_id = get_val(source, 'file_id')
+                    
+                    if not removed_user_box_id:
+                        removed_user_box_id = get_val(source, 'user_id')
+
+                if not file_id:
+                    file_id = get_val(event, 'source_item_id') or get_val(event, 'item_id')
+
+                # Fetch Email from Box if we only have ID using data_source
+                if removed_user_box_id and not removed_email:
+                    try:
+                        user_response = await self.data_source.users_get_user_by_id(removed_user_box_id)
+                        
+                        if user_response.success and user_response.data:
+                            user_data = user_response.data
+                            # Handle both Dict and Object responses
+                            if isinstance(user_data, dict):
+                                removed_email = user_data.get('login')
+                            else:
+                                removed_email = getattr(user_data, 'login', None)
+                        else:
+                            self.logger.warning(f"⚠️ Failed to fetch user details for ID {removed_user_box_id}: {user_response.error}")
+
+                    except AttributeError:
+                        try:
+                            user_response = await self.data_source.users_get_user(removed_user_box_id)
+                            if user_response.success and user_response.data:
+                                removed_email = user_response.data.get('login')
+                        except Exception as e:
+                             self.logger.error(f"❌ Failed to resolve Box ID {removed_user_box_id} (Fallback): {e}")
+
+                    except Exception as e:
+                        self.logger.error(f"❌ Failed to resolve Box ID {removed_user_box_id}: {e}")
+
+                # EXECUTE REMOVAL
+                if file_id and removed_email:
+                    self.logger.info(f"🚫 Stream detected revocation: {removed_email} from {file_id}")
+                    
+                    internal_user = None
+
+                    if removed_email:
+                        users = await self._get_app_users_by_emails([removed_email])
+                        if users: internal_user = users[0]
+
+                    if internal_user:
+                        user_id = getattr(internal_user, 'id', None)
+                        if user_id:
+                            await self.data_store_provider.arango_service.remove_user_access_to_record(
+                                connector_id=self.connector_id,
+                                external_id=file_id,
+                                user_id=user_id
+                            )
+                        else:
+                            self.logger.warning(f"⚠️ User found but has no Internal ID")
+                    else:
+                        self.logger.warning(f"⚠️ User {removed_email} not found in DB")
+
+                else:
+                    self.logger.warning(f"⚠️ Revocation skipped. Missing: FileID={file_id}, Email={removed_email}")
+                
+                continue 
+
+            # 2. EXTRACT FILE ID (Standard Events)
+            file_id = None
+            if source:
+                file_id = get_val(source, 'id') or get_val(source, 'item_id') or get_val(source, 'file_id')
+            
+            if not file_id:
+                file_id = get_val(event, 'item_id') or get_val(event, 'source_item_id')
+
+            if not file_id:
+                continue
+
+            # 3. HANDLE DELETIONS
+            if event_type in DELETION_EVENTS:
+                self.logger.info(f"🗑️ Found DELETION event ({event_type}) for File ID: {file_id}")
+                files_to_delete.add(file_id)
+                files_to_sync.pop(file_id, None) 
+                continue
+            
+            # 4. FILTER & PREPARE SYNC
+            if source:
+                item_type = get_val(source, 'item_type') or get_val(source, 'type')
+                if item_type and item_type.lower() != 'file':
+                    continue
+
+            if file_id in files_to_delete:
+                files_to_delete.remove(file_id)
+
+            owner = get_val(source, 'owned_by') or get_val(event, 'created_by')
+            owner_id = get_val(owner, 'id') if owner else None
+
+            if owner_id:
+                files_to_sync[file_id] = owner_id
+
+        # 5. EXECUTE BATCHES
+        if files_to_delete:
+            self.logger.info(f"⚠️ Executing {len(files_to_delete)} deletions...")
+            await self._execute_deletions(list(files_to_delete))
+
+        if files_to_sync:
+            owner_groups = {}
+            for fid, oid in files_to_sync.items():
+                owner_groups.setdefault(oid, []).append(fid)
+
+            for owner_id, file_ids in owner_groups.items():
+                await self._fetch_and_sync_files_for_owner(owner_id, file_ids)
+
+    async def _fetch_and_sync_files_for_owner(self, owner_id: str, file_ids: List[str]) -> None:
+        """
+        Impersonates the owner, fetches full file details in parallel, and upserts.
+        """
+        try:
+            # 1. Switch Context to the File Owner
+            await self.data_source.set_as_user_context(owner_id)
+            
+            # 2. Parallel Fetch of File Details
+            tasks = [self.data_source.files_get_file_by_id(fid) for fid in file_ids]
+            responses = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            updates_to_push = []
+
+            for res in responses:
+                if isinstance(res, Exception) or not getattr(res, 'success', False):
+                    continue
+                
+                file_obj = res.data
+                
+                # 5: Convert SDK Object to Dictionary
+                # _process_box_entry EXPECTS a Dict. We must convert the SDK object.
+                file_entry = {}
+                if hasattr(file_obj, 'to_dict'):
+                    file_entry = file_obj.to_dict()
+                elif hasattr(file_obj, 'response_object'):
+                    file_entry = file_obj.response_object
+                elif isinstance(file_obj, dict):
+                    file_entry = file_obj
+                else:
+                    self.logger.warning(f"Could not convert File Object {type(file_obj)} to dict")
+                    continue
+                
+                # 3. Reuse existing _process_box_entry logic with the clean Dict
+                update_obj = await self._process_box_entry(
+                    entry=file_entry,
+                    user_id=owner_id, 
+                    user_email="incremental_sync_user", 
+                    record_group_id=owner_id,
+                    is_personal_folder=True
+                )
+                
+                if update_obj:
+                    updates_to_push.append((update_obj.record, update_obj.new_permissions))
+
+            # 4. Batch Upsert to Database
+            if updates_to_push:
+                await self.data_entities_processor.on_new_records(updates_to_push)
+
+        except Exception as e:
+            self.logger.error(f"Error syncing files for owner {owner_id}: {e}")
+        finally:
+            # 5. ALWAYS Clear Context
+            await self.data_source.clear_as_user_context()
+
+    async def _execute_deletions(self, file_ids: List[str]) -> None:
+        """
+        Handles batch deletion of records.
+        """
+        if not file_ids:
+            return
+
+        # self.logger.info(f"🗑️ Processing batch deletion for {len(file_ids)} Box files...")
+        self.logger.info(f"ℹ️ [TODO] Skipped deletion for {len(file_ids)} files (Backend support pending). IDs: {file_ids}")
+        # arango_service = self.data_store_provider.arango_service
+        
+        # deleted_count = 0
+
+        # for external_id in file_ids:
+        #     try:
+        #         # 1. Use the service to find the record
+        #         existing_record = await arango_service.get_record_by_external_id(
+        #             connector_id=self.connector_id, 
+        #             external_id=external_id
+        #         )
+
+        #         if not existing_record:
+        #             self.logger.debug(f"ℹ️ Skipped deletion: Box File {external_id} not found in DB.")
+        #             continue
+
+        #         # 2. Get the internal ID
+        #         internal_id = existing_record.id
+
+        #         # 3. Delete using the processor
+        #         await self.data_entities_processor.on_record_deleted(
+        #             record_id=internal_id
+        #         )
+                
+        #         deleted_count += 1
+        #         self.logger.info(f"✅ Deleted record: {internal_id} (Box ID: {external_id})")
+
+        #     except Exception as e:
+        #         self.logger.error(f"❌ Failed to process deletion for Box File {external_id}: {str(e)}")
+
+        # if deleted_count > 0:
+        #     self.logger.info(f"🗑️ Batch Deletion Complete: Removed {deleted_count} records.")
 
     async def get_signed_url(self, record: Record) -> Optional[str]:
         """
@@ -1113,7 +1526,8 @@ class BoxConnector(BaseConnector):
         cls,
         logger: Logger,
         data_store_provider: DataStoreProvider,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
+        connector_id: str,
     ) -> "BoxConnector":
         """Factory method to create a Box connector instance."""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -1127,7 +1541,8 @@ class BoxConnector(BaseConnector):
             logger,
             data_entities_processor,
             data_store_provider,
-            config_service
+            config_service,
+            connector_id=connector_id
         )
 
     async def cleanup(self) -> None:
@@ -1135,7 +1550,106 @@ class BoxConnector(BaseConnector):
         self.logger.info("Cleaning up Box connector resources.")
         self.data_source = None
 
-    async def reindex_records(self, record_results: List[Record]) -> None:
-        """Reindex records - not implemented for Box yet."""
-        self.logger.warning("Reindex not implemented for Box connector")
-        pass
+    async def reindex_records(self, records: List[Record]) -> None:
+        """
+        Reindex a list of Box records.
+        1. Groups records by Owner (to handle As-User context).
+        2. Fetches fresh data from Box.
+        3. Compares with DB state.
+        4. Pushes updates or reindex events.
+        """
+        try:
+            if not records:
+                self.logger.info("No records to reindex")
+                return
+
+            self.logger.info(f"Starting reindex for {len(records)} Box records")
+
+            # 1. Group records by Owner (external_record_group_id)
+            # We need this to set the correct 'As-User' context for the API calls
+            records_by_owner: Dict[str, List[Record]] = {}
+            for record in records:
+                # Default to current user if group ID is missing
+                owner_id = record.external_record_group_id or self.current_user_id
+                if owner_id:
+                    records_by_owner.setdefault(owner_id, []).append(record)
+
+            updated_records_batch = []
+            non_updated_records_batch = []
+
+            # 2. Process per Owner
+            for owner_id, owner_records in records_by_owner.items():
+                try:
+                    # Set Context
+                    await self.data_source.set_as_user_context(owner_id)
+
+                    # Create fetch tasks
+                    tasks = []
+                    for rec in owner_records:
+                        if rec.is_file:
+                            tasks.append(self.data_source.files_get_file_by_id(rec.external_record_id))
+                        else:
+                            # It is a folder
+                            tasks.append(self.data_source.folders_get_folder_by_id(rec.external_record_id))
+
+                    # Execute in parallel
+                    responses = await asyncio.gather(*tasks, return_exceptions=True)
+
+                    for record, response in zip(owner_records, responses):
+                        
+                        # Handle API Errors (e.g. 404 Not Found)
+                        if isinstance(response, Exception) or not getattr(response, 'success', False):
+                            self.logger.warning(f"Could not fetch record {record.record_name} ({record.external_record_id}) during reindex. It may be deleted.")
+                            continue
+
+                        box_item = response.data
+                        
+                        # Convert SDK Object to Dict
+                        entry_dict = {}
+                        if hasattr(box_item, 'to_dict'):
+                            entry_dict = box_item.to_dict()
+                        elif hasattr(box_item, 'response_object'):
+                            entry_dict = box_item.response_object
+                        elif isinstance(box_item, dict):
+                            entry_dict = box_item
+                        
+                        if not entry_dict:
+                            continue
+
+                        # Process entry to check for changes
+                        # We pass 'incremental_sync_reindex' as email just as a placeholder 
+                        # because _process_box_entry mainly needs ID for logic.
+                        update_result = await self._process_box_entry(
+                            entry=entry_dict,
+                            user_id=owner_id,
+                            user_email="reindex_process", 
+                            record_group_id=owner_id,
+                            is_personal_folder=True
+                        )
+
+                        if update_result:
+                            # Separation Logic: Changed vs Unchanged
+                            if update_result.is_updated or update_result.is_new:
+                                updated_records_batch.append((update_result.record, update_result.new_permissions or []))
+                            else:
+                                non_updated_records_batch.append(record)
+
+                except Exception as ex:
+                    self.logger.error(f"Error reindexing batch for owner {owner_id}: {ex}")
+                finally:
+                    # Always clear context before moving to next owner
+                    await self.data_source.clear_as_user_context()
+
+            # 3. Commit Updates to DB
+            if updated_records_batch:
+                self.logger.info(f"📝 Updating {len(updated_records_batch)} records that changed at source.")
+                await self.data_entities_processor.on_new_records(updated_records_batch)
+
+            # 4. Non-Updated Records
+            if non_updated_records_batch:
+                self.logger.info(f"✅ Verified {len(non_updated_records_batch)} records (no changes).")
+                await self.data_entities_processor.reindex_existing_records(non_updated_records_batch)
+
+        except Exception as e:
+            self.logger.error(f"Error during Box reindex: {e}", exc_info=True)
+            raise
