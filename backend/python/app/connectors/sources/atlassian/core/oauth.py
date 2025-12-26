@@ -23,6 +23,9 @@ class AtlassianScope(Enum):
     JIRA_WORK_READ = "read:jira-work"
     JIRA_WORK_WRITE = "write:jira-work"
     JIRA_USER_READ = "read:jira-user"
+    USER_JIRA_READ = "read:user:jira"
+    JIRA_GROUP_READ = "read:group:jira"
+    JIRA_AVATAR_READ = "read:avatar:jira"
     JIRA_WEBHOOK_READ = "read:webhook:jira"
     JIRA_WEBHOOK_WRITE = "write:webhook:jira"
     JIRA_PROJECT_MANAGE = "manage:jira-project"
@@ -75,6 +78,7 @@ class AtlassianScope(Enum):
         return [
             cls.JIRA_WORK_READ.value,
             cls.JIRA_USER_READ.value,
+            cls.JIRA_GROUP_READ.value,
             cls.ACCOUNT_READ.value,
             cls.OFFLINE_ACCESS.value,
             cls.JIRA_PROJECT_READ.value,
@@ -130,6 +134,10 @@ class AtlassianScope(Enum):
             cls.JIRA_WORK_READ.value,
             cls.JIRA_WORK_WRITE.value,
             cls.JIRA_USER_READ.value,
+            cls.USER_JIRA_READ.value,
+            cls.JIRA_GROUP_READ.value,
+            cls.JIRA_AVATAR_READ.value,
+            cls.JIRA_CONFIGURATION_MANAGE.value,
             cls.JIRA_PROJECT_READ.value,
             cls.JIRA_PROJECT_WRITE.value,
             # Confluence

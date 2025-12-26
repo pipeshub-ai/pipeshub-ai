@@ -59,8 +59,23 @@ class ArangoTransactionStore(TransactionStore):
     async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
         return await self.arango_service.get_record_by_external_id(connector_id, external_id, transaction=self.txn)
 
+    async def get_record_by_issue_key(self, connector_name: Connectors, issue_key: str) -> Optional[Record]:
+        return await self.arango_service.get_record_by_issue_key(connector_name, issue_key, transaction=self.txn)
 
-    async def get_records_by_status(self, org_id: str, connector_id: str, status_filters: List[str], limit: Optional[int] = None, offset: int = 0) -> List[Record]:
+    async def get_records_by_parent(
+        self,
+        connector_name: Connectors,
+        parent_external_record_id: str,
+        record_type: Optional[str] = None
+    ) -> List[Record]:
+        return await self.arango_service.get_records_by_parent(
+            connector_name,
+            parent_external_record_id,
+            record_type,
+            transaction=self.txn
+        )
+
+    async def get_records_by_status(self, org_id: str, connector_name: Connectors, status_filters: List[str], limit: Optional[int] = None, offset: int = 0) -> List[Record]:
         """Get records by status. Returns properly typed Record instances."""
         return await self.arango_service.get_records_by_status(org_id, connector_id, status_filters, limit, offset, transaction=self.txn)
 
