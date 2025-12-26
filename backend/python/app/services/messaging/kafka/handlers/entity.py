@@ -378,6 +378,9 @@ class EntityEventService(BaseEventService):
         elif scope == ConnectorScopes.TEAM.value and (account_type == AccountType.ENTERPRISE.value or account_type == AccountType.BUSINESS.value):
             await initialize_enterprise_google_account_services_fn(org_id, self.app_container, connector_id, app_names)
             return True
+        elif scope == ConnectorScopes.TEAM.value and account_type == AccountType.INDIVIDUAL.value:
+            await initialize_individual_google_account_services_fn(org_id, self.app_container, connector_id, app_names)
+            return True
         else:
             self.logger.error(f"Invalid account type/scope combination: account_type={account_type}, scope={scope}")
             return False
