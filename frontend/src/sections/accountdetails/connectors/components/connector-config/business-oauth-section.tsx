@@ -7,12 +7,14 @@ import {
   Button,
   alpha,
   useTheme,
+  Grid,
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import keyIcon from '@iconify-icons/mdi/key';
 import checkCircleIcon from '@iconify-icons/mdi/check-circle';
 import uploadIcon from '@iconify-icons/mdi/upload';
 import fileDocumentIcon from '@iconify-icons/mdi/file-document-outline';
+import { FieldRenderer } from '../field-renderers';
 
 interface BusinessOAuthSectionProps {
   adminEmail: string;
@@ -25,6 +27,12 @@ interface BusinessOAuthSectionProps {
   onFileUpload: () => void;
   onFileChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   fileInputRef: React.RefObject<HTMLInputElement>;
+  // Create-mode connector instance naming
+  isCreateMode: boolean;
+  instanceName: string;
+  instanceNameError: string | null;
+  onInstanceNameChange: (value: string) => void;
+  connectorName: string;
 }
 
 const BusinessOAuthSection: React.FC<BusinessOAuthSectionProps> = ({
@@ -38,6 +46,11 @@ const BusinessOAuthSection: React.FC<BusinessOAuthSectionProps> = ({
   onFileUpload,
   onFileChange,
   fileInputRef,
+  isCreateMode,
+  instanceName,
+  instanceNameError,
+  onInstanceNameChange,
+  connectorName,
 }) => {
   const theme = useTheme();
 
@@ -94,6 +107,32 @@ const BusinessOAuthSection: React.FC<BusinessOAuthSectionProps> = ({
           </Typography>
         </Box>
       </Box>
+
+      {/* Connector Name Field */}
+      {isCreateMode && (
+        <Box sx={{ mb: 2.5 }}> 
+          <Grid container spacing={2}>
+            <Grid item xs={12}>
+              <FieldRenderer
+                field={{
+                  name: 'instanceName',
+                  displayName: 'Connector name',
+                  fieldType: 'TEXT',
+                  required: true,
+                  placeholder: `e.g., ${connectorName[0].toUpperCase() + connectorName.slice(1).toLowerCase()} - Production`,
+                  description: 'Give this connector a unique, descriptive name',
+                  defaultValue: '',
+                  validation: {},
+                  isSecret: false,
+                }}
+                value={instanceName}
+                onChange={(value) => onInstanceNameChange(value)}
+                error={instanceNameError || undefined}
+              />
+            </Grid>
+          </Grid>
+        </Box>
+      )}
 
       {/* Admin Email Field */}
       <Box sx={{ mb: 2 }}>

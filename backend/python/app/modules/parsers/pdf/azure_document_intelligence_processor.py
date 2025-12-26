@@ -76,7 +76,7 @@ class AzureOCRStrategy(OCRStrategy):
                     # Log page dimensions
                     self.logger.debug(f"   📐 Page dimensions: {page.rect.width:.1f} x {page.rect.height:.1f}")
 
-                    page_needs_ocr = self.needs_ocr(page)
+                    page_needs_ocr = OCRStrategy.needs_ocr(page, self.logger)
                     if page_needs_ocr:
                         pages_needing_ocr.append(page_num + 1)
                         self.logger.info(f"   ✅ Page {page_num + 1}: NEEDS OCR")

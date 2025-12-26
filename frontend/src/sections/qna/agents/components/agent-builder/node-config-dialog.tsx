@@ -31,7 +31,7 @@ import personIcon from '@iconify-icons/eva/person-add-fill';
 import accountGroupIcon from '@iconify-icons/mdi/account-group';
 import shieldIcon from '@iconify-icons/mdi/shield-check-outline';
 import { useUsers } from 'src/context/UserContext';
-import { useGroups } from 'src/context/GroupsContext';
+// import { useGroups } from 'src/context/GroupsContext';
 import { userChipStyle, groupChipStyle } from '../../utils/agent';
 
 interface NodeConfigDialogProps {
@@ -57,7 +57,7 @@ const NodeConfigDialog: React.FC<NodeConfigDialogProps> = memo(
     const [config, setConfig] = useState<Record<string, any>>({});
     const [isInitialized, setIsInitialized] = useState(false);
     const users = useUsers();
-    const groups = useGroups();
+    // const groups = useGroups();
 
     // Initialize config only when dialog opens with a valid node
     useEffect(() => {
@@ -224,9 +224,9 @@ const NodeConfigDialog: React.FC<NodeConfigDialogProps> = memo(
             const selectedUsers = users
               ? users.filter((user) => value?.approvers?.users?.includes(user._id))
               : [];
-            const selectedGroups = groups
-              ? groups.filter((group) => value?.approvers?.groups?.includes(group._id))
-              : [];
+            // const selectedGroups = groups
+            //   ? groups.filter((group) => value?.approvers?.groups?.includes(group._id))
+            //   : [];
 
             return (
               <Grid item xs={12} key={key}>
@@ -260,7 +260,7 @@ const NodeConfigDialog: React.FC<NodeConfigDialogProps> = memo(
                             [key]: {
                               ...prev[key],
                               requiresApproval: e.target.checked,
-                              approvers: prev[key]?.approvers || { users: [], groups: [] },
+                              approvers: prev[key]?.approvers || { users: [] },
                               approvalThreshold: prev[key]?.approvalThreshold || 'single',
                             },
                           }))
@@ -406,7 +406,7 @@ const NodeConfigDialog: React.FC<NodeConfigDialogProps> = memo(
                       </Box>
 
                       {/* Groups Selection */}
-                      <Box sx={{ mb: 2 }}>
+                      {/* <Box sx={{ mb: 2 }}>
                         <Typography
                           variant="body2"
                           color="text.secondary"
@@ -528,7 +528,7 @@ const NodeConfigDialog: React.FC<NodeConfigDialogProps> = memo(
                             </MenuItem>
                           )}
                         />
-                      </Box>
+                      </Box> */}
 
                       {/* Approval Threshold */}
                       <Box sx={{ mb: 2 }}>
@@ -643,7 +643,7 @@ const NodeConfigDialog: React.FC<NodeConfigDialogProps> = memo(
                         <Typography variant="caption" color="text.secondary">
                           This tool requires approval from{' '}
                           <strong>
-                            {(selectedUsers.length || 0) + (selectedGroups.length || 0)} approver(s)
+                            {(selectedUsers.length || 0)} approver(s)
                           </strong>{' '}
                           using <strong>{value?.approvalThreshold || 'single'}</strong> threshold.
                           {value?.autoApprove && ' Auto-approval is enabled for recurring actions.'}
@@ -784,7 +784,7 @@ const NodeConfigDialog: React.FC<NodeConfigDialogProps> = memo(
                       backgroundColor: alpha(theme.palette.background.paper, 0.8),
                       backdropFilter: 'blur(8px)',
                       '&::-webkit-scrollbar': {
-                        width: 8,
+                        width: 4,
                       },
                       '&::-webkit-scrollbar-track': {
                         backgroundColor: alpha(theme.palette.background.default, 0.3),
@@ -1011,7 +1011,7 @@ const NodeConfigDialog: React.FC<NodeConfigDialogProps> = memo(
       [
         node?.data.type,
         users,
-        groups,
+        // groups,
         getAvatarColor,
         isDark,
         node?.data.config?.tools,

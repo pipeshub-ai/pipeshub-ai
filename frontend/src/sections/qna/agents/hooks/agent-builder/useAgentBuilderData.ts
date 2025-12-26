@@ -1,13 +1,18 @@
 // src/sections/qna/agents/hooks/useFlowBuilderData.ts
 import { useState, useCallback, useEffect } from 'react';
 import type { Agent } from 'src/types/agent';
-import AgentApiService from '../../services/api';
+import type { Connector } from 'src/sections/accountdetails/connectors/types/types';
+import { ConnectorApiService } from 'src/sections/accountdetails/connectors/services/api';
 import type { UseAgentBuilderDataReturn } from '../../types/agent';
+import AgentApiService from '../../services/api';
 
 export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | null): UseAgentBuilderDataReturn => {
   const [availableTools, setAvailableTools] = useState<any[]>([]);
   const [availableModels, setAvailableModels] = useState<any[]>([]);
   const [availableKnowledgeBases, setAvailableKnowledgeBases] = useState<any[]>([]);
+  const [activeAgentConnectors, setActiveAgentConnectors] = useState<Connector[]>([]);
+  const [activeConnectors, setActiveConnectors] = useState<Connector[]>([]);
+  const [connectorRegistry, setConnectorRegistry] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadedAgent, setLoadedAgent] = useState<Agent | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -26,24 +31,37 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
     }
   }, []);
 
-  // Load available resources from APIs
+  // Load available resources from APIs - ALL IN ONE CALL
   const loadResources = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
 
-      // Load basic resources first
-      const [toolsResponse, modelsResponse, kbResponse] = await Promise.all([
+      // Load ALL resources in parallel for maximum efficiency
+      const [
+        toolsResponse, 
+        modelsResponse, 
+        kbResponse, 
+        activeAgentConnectorsResponse,
+        activeConnectorsResponse,
+        connectorRegistryResponse
+      ] = await Promise.all([
         AgentApiService.getAvailableTools(),
         AgentApiService.getAvailableModels(),
         AgentApiService.getKnowledgeBases(),
+        ConnectorApiService.getActiveAgentConnectorInstances(1, 100, ''),
+        ConnectorApiService.getActiveConnectorInstances(),
+        ConnectorApiService.getConnectorRegistry(undefined, 1, 100, ''),
       ]);
 
       setAvailableTools(toolsResponse || []);
       const models = Array.isArray(modelsResponse) ? modelsResponse : [];
       setAvailableModels(models);
       setAvailableKnowledgeBases(kbResponse?.knowledgeBases || []);
-
+      setActiveAgentConnectors(activeAgentConnectorsResponse?.connectors || []);
+      setActiveConnectors(activeConnectorsResponse || []);
+      setConnectorRegistry(connectorRegistryResponse?.connectors || []);
+      
       // If editing an agent, load the agent details after basic resources
       if (editingAgent?._key) {
         await loadAgentDetails(editingAgent._key);
@@ -72,6 +90,9 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
     availableTools,
     availableModels,
     availableKnowledgeBases,
+    activeAgentConnectors,
+    activeConnectors,
+    connectorRegistry,
     loading,
     loadedAgent,
     error,

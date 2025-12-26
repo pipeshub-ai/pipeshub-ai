@@ -24,15 +24,22 @@ export abstract class BaseError extends Error {
     Error.captureStackTrace(this, this.constructor);
   }
 
-  public toJSON(): Object {
-    return {
+  public toJSON(includeStack: boolean = false): Record<string, any> {
+    const json: Record<string, any> = {
       name: this.name,
       code: this.code,
       statusCode: this.statusCode,
       message: this.message,
       metadata: this.metadata,
       timestamp: this.timestamp,
-      stack: this.stack,
     };
+    
+    // Only include stack trace if explicitly requested (for server-side logging only)
+    // Never expose stack traces to clients - security best practice
+    if (includeStack) {
+      json.stack = this.stack;
+    }
+    
+    return json;
   }
 }
