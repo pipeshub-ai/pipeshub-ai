@@ -225,6 +225,11 @@ class OneDriveConnector(BaseConnector):
             RecordUpdate object containing the record and change information
         """
         try:
+            # Apply Date Filters
+            if not self._passes_date_filters(item):
+                self.logger.debug(f"Skipping item {item.name} (ID: {item.id}) due to date filters.")
+                return # Skip this item
+
             # Check if item is deleted
             if hasattr(item, 'deleted') and item.deleted is not None:
                 self.logger.info(f"Item {item.id} has been deleted")
@@ -450,6 +455,51 @@ class OneDriveConnector(BaseConnector):
         new_set = {(p.external_id, p.email, p.type, p.entity_type) for p in new_perms}
 
         return old_set == new_set
+    
+    def _passes_date_filters(self, item: DriveItem) -> bool:
+        """
+        Checks if the DriveItem passes the configured CREATED and MODIFIED date filters.
+        Relies on client-side filtering since OneDrive Delta API does not support $filter.
+        """
+        # 1. ALWAYS Allow Folders
+        # We must sync folders regardless of date to ensure the directory structure 
+        # exists for any new files that might be inside them.
+        if item.folder is not None:
+            return True
+
+        # 2. Check Created Date Filter
+        created_filter = self.sync_filters.get(SyncFilterKey.CREATED)
+        if created_filter:
+            created_after_iso, created_before_iso = created_filter.get_datetime_iso()
+            
+            # Use _parse_datetime to get millisecond timestamps for easy comparison
+            item_ts = self._parse_datetime(item.created_date_time)
+            start_ts = self._parse_datetime(created_after_iso)
+            end_ts = self._parse_datetime(created_before_iso)
+
+            if item_ts is not None:
+                if start_ts and item_ts < start_ts:
+                    return False
+                if end_ts and item_ts > end_ts:
+                    return False
+
+        # 3. Check Modified Date Filter
+        modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
+        if modified_filter:
+            modified_after_iso, modified_before_iso = modified_filter.get_datetime_iso()
+            
+            # Use _parse_datetime to get millisecond timestamps
+            item_ts = self._parse_datetime(item.last_modified_date_time)
+            start_ts = self._parse_datetime(modified_after_iso)
+            end_ts = self._parse_datetime(modified_before_iso)
+
+            if item_ts is not None:
+                if start_ts and item_ts < start_ts:
+                    return False
+                if end_ts and item_ts > end_ts:
+                    return False
+
+        return True
 
     async def _process_delta_items_generator(self, delta_items: List[dict]) -> AsyncGenerator[Tuple[FileRecord, List[Permission], RecordUpdate], None]:
         """
@@ -1219,7 +1269,19 @@ class OneDriveConnector(BaseConnector):
                 "Content-Disposition": f"attachment; filename={record.record_name}"
             }
         )
-
+    
+    def _parse_datetime(self, dt_obj) -> Optional[int]:
+        """Parse datetime object or string to epoch timestamp in milliseconds."""
+        if not dt_obj:
+            return None
+        try:
+            if isinstance(dt_obj, str):
+                dt = datetime.fromisoformat(dt_obj.replace('Z', '+00:00'))
+            else:
+                dt = dt_obj
+            return int(dt.timestamp() * 1000)
+        except Exception:
+            return None
 
     async def test_connection_and_access(self) -> bool:
         """Test connection and access to OneDrive."""
