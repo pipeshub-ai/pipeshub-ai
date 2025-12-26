@@ -32,7 +32,7 @@ import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import { configPaths } from '../../configuration_manager/paths/paths';
 import { storageTypes } from '../../configuration_manager/constants/constants';
 import {
-  ReindexAllRecordEvent,
+  ConnectorSyncEvent,
   SyncEventProducer,
   Event as SyncEvent,
   BaseSyncEvent,
@@ -2766,7 +2766,7 @@ export class RecordRelationService {
     };
   }
 
-  async reindexAllRecords(reindexPayload: any): Promise<any> {
+  async reindexFailedRecords(reindexPayload: any): Promise<any> {
     try {
       const connectorNormalized = reindexPayload.app
         .replace(/\s+/g, '')
@@ -2776,6 +2776,8 @@ export class RecordRelationService {
       
       const payload = {
         orgId: reindexPayload.orgId,
+        connector: connectorNormalized,
+        connectorId: reindexPayload.connectorId,
         statusFilters: ['FAILED'],
       };
 
@@ -2790,20 +2792,21 @@ export class RecordRelationService {
 
       return { success: true };
     } catch (eventError: any) {
-      logger.error('Failed to publish reindex record event', {
+      logger.error('Failed to publish reindex failed record event', {
         error: eventError,
       });
       return { success: false, error: eventError.message };
     }
   }
 
-  async createReindexAllRecordEventPayload(
+  async createReindexFailedRecordEventPayload(
     reindexPayload: any,
-  ): Promise<ReindexAllRecordEvent> {
+  ): Promise<ConnectorSyncEvent> {
     return {
       orgId: reindexPayload.orgId,
       origin: reindexPayload.origin,
       connector: reindexPayload.app,
+      connectorId: reindexPayload.connectorId,
       createdAtTimestamp: Date.now().toString(),
       updatedAtTimestamp: Date.now().toString(),
       sourceCreatedAtTimestamp: Date.now().toString(),
@@ -2845,6 +2848,7 @@ export class RecordRelationService {
       orgId: resyncConnectorEventPayload.orgId,
       origin: resyncConnectorEventPayload.origin,
       connector: connectorName,
+      connectorId: resyncConnectorEventPayload.connectorId,
       createdAtTimestamp: Date.now().toString(),
       updatedAtTimestamp: Date.now().toString(),
       sourceCreatedAtTimestamp: Date.now().toString(),

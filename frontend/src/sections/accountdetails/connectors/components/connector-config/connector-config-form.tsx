@@ -14,11 +14,16 @@ import {
   useTheme,
   IconButton,
   Chip,
+  Stack,
+  Paper,
+  Grid,
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import { useAccountType } from 'src/hooks/use-account-type';
+import settingsIcon from '@iconify-icons/mdi/settings';
 import closeIcon from '@iconify-icons/mdi/close';
 import saveIcon from '@iconify-icons/eva/save-outline';
+import { createScrollableContainerStyle } from 'src/sections/qna/chatbot/utils/styles/scrollbar';
 import { useConnectorConfig } from '../../hooks/use-connector-config';
 import AuthSection from './auth-section';
 import SyncSection from './sync-section';
@@ -26,17 +31,20 @@ import FiltersSection from './filters-section';
 import ConfigStepper from './config-stepper';
 import { Connector } from '../../types/types';
 import { isNoneAuthType } from '../../utils/auth';
+import { FieldRenderer } from '../field-renderers';
 
 interface ConnectorConfigFormProps {
   connector: Connector;
   onClose: () => void;
   onSuccess?: () => void;
+  initialInstanceName?: string;
 }
 
 const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
   connector,
   onClose,
   onSuccess,
+  initialInstanceName,
 }) => {
   const theme = useTheme();
   const { isBusiness, isIndividual, loading: accountTypeLoading } = useAccountType();
@@ -44,7 +52,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [showTopFade, setShowTopFade] = useState(false);
   const [showBottomFade, setShowBottomFade] = useState(false);
-  
+
   // Check if connector is active - prevents saving while active
   const isConnectorActive = connector.isActive;
   const {
@@ -59,6 +67,11 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     conditionalDisplay,
 
     // Business OAuth state (Google Workspace)
+    isCreateMode,
+    instanceName,
+    instanceNameError,
+
+    // Business OAuth state
     adminEmail,
     adminEmailError,
     selectedFile,
@@ -81,6 +94,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     handleNext,
     handleBack,
     handleSave,
+    setInstanceName,
     handleFileSelect,
     handleFileUpload,
     handleFileChange,
@@ -96,7 +110,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     handlePrivateKeyChange,
     certificateInputRef,
     privateKeyInputRef,
-  } = useConnectorConfig({ connector, onClose, onSuccess });
+  } = useConnectorConfig({ connector, onClose, onSuccess, initialInstanceName });
 
   // Handler for removing filters
   const handleRemoveFilter = useCallback(
@@ -113,24 +127,31 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     [connectorConfig?.config?.filters?.sync?.schema?.fields?.length]
   );
   const steps = useMemo(
-    () => isNoAuthType 
-      ? (hasFilters ? ['Filters', 'Sync Settings'] : ['Sync Settings'])
-      : (hasFilters ? ['Authentication', 'Filters', 'Sync Settings'] : ['Authentication', 'Sync Settings']),
+    () =>
+      isNoAuthType
+        ? hasFilters
+          ? ['Filters', 'Sync Settings']
+          : ['Sync Settings']
+        : hasFilters
+          ? ['Authentication', 'Filters', 'Sync Settings']
+          : ['Authentication', 'Sync Settings'],
     [isNoAuthType, hasFilters]
   );
 
   // Memoize fade gradients to avoid recalculation
   const topFadeGradient = useMemo(
-    () => isDark
-      ? 'linear-gradient(to bottom, rgba(18, 18, 23, 0.98), transparent)'
-      : `linear-gradient(to bottom, ${theme.palette.background.paper}, transparent)`,
+    () =>
+      isDark
+        ? 'linear-gradient(to bottom, rgba(18, 18, 23, 0.98), transparent)'
+        : `linear-gradient(to bottom, ${theme.palette.background.paper}, transparent)`,
     [isDark, theme.palette.background.paper]
   );
 
   const bottomFadeGradient = useMemo(
-    () => isDark
-      ? 'linear-gradient(to top, rgba(18, 18, 23, 0.98), transparent)'
-      : `linear-gradient(to top, ${theme.palette.background.paper}, transparent)`,
+    () =>
+      isDark
+        ? 'linear-gradient(to top, rgba(18, 18, 23, 0.98), transparent)'
+        : `linear-gradient(to top, ${theme.palette.background.paper}, transparent)`,
     [isDark, theme.palette.background.paper]
   );
 
@@ -138,14 +159,14 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
   const checkScroll = useCallback(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
-    
+
     const { scrollTop, scrollHeight, clientHeight } = container;
     const newShowTop = scrollTop > 10;
     const newShowBottom = scrollTop < scrollHeight - clientHeight - 10;
-    
+
     // Batch state updates to avoid multiple re-renders
-    setShowTopFade((prev) => prev !== newShowTop ? newShowTop : prev);
-    setShowBottomFade((prev) => prev !== newShowBottom ? newShowBottom : prev);
+    setShowTopFade((prev) => (prev !== newShowTop ? newShowTop : prev));
+    setShowBottomFade((prev) => (prev !== newShowBottom ? newShowBottom : prev));
   }, []);
 
   useEffect(() => {
@@ -155,7 +176,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     }
 
     checkScroll();
-    
+
     // Throttle scroll events for better performance
     let ticking = false;
     const handleScroll = () => {
@@ -186,7 +207,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     };
   }, [activeStep, checkScroll]);
 
-  const renderStepContent = useMemo(() => {
+  const renderStepContent = useCallback(() => {
     if (isNoAuthType) {
       // For 'NONE' authType, show filters (if available) then sync step
       if (hasFilters) {
@@ -240,7 +261,10 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
               conditionalDisplay={conditionalDisplay}
               accountTypeLoading={accountTypeLoading}
               isBusiness={isBusiness}
-              
+              isCreateMode={isCreateMode}
+              instanceName={instanceName || ''}
+              instanceNameError={instanceNameError}
+              onInstanceNameChange={setInstanceName}
               // Google Workspace Business OAuth props
               adminEmail={adminEmail}
               adminEmailError={adminEmailError}
@@ -252,7 +276,6 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
               onFileUpload={handleFileUpload}
               onFileChange={handleFileChange}
               fileInputRef={fileInputRef}
-              
               // SharePoint Certificate OAuth props
               certificateFile={certificateFile}
               certificateFileName={certificateFileName}
@@ -268,7 +291,6 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
               onPrivateKeyChange={handlePrivateKeyChange}
               certificateInputRef={certificateInputRef}
               privateKeyInputRef={privateKeyInputRef}
-              
               onFieldChange={handleFieldChange}
             />
           );
@@ -309,7 +331,10 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             conditionalDisplay={conditionalDisplay}
             accountTypeLoading={accountTypeLoading}
             isBusiness={isBusiness}
-            
+            isCreateMode={isCreateMode}
+            instanceName={instanceName || ''}
+            instanceNameError={instanceNameError}
+            onInstanceNameChange={setInstanceName}
             // Google Workspace Business OAuth props
             adminEmail={adminEmail}
             adminEmailError={adminEmailError}
@@ -321,7 +346,6 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             onFileUpload={handleFileUpload}
             onFileChange={handleFileChange}
             fileInputRef={fileInputRef}
-            
             // SharePoint Certificate OAuth props
             certificateFile={certificateFile}
             certificateFileName={certificateFileName}
@@ -337,7 +361,6 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             onPrivateKeyChange={handlePrivateKeyChange}
             certificateInputRef={certificateInputRef}
             privateKeyInputRef={privateKeyInputRef}
-            
             onFieldChange={handleFieldChange}
           />
         );
@@ -392,6 +415,10 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     handlePrivateKeyChange,
     certificateInputRef,
     privateKeyInputRef,
+    isCreateMode,
+    instanceName,
+    instanceNameError,
+    setInstanceName,
   ]);
 
   if (loading) {
@@ -404,7 +431,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
         PaperProps={{
           sx: {
             borderRadius: 2.5,
-            boxShadow: isDark 
+            boxShadow: isDark
               ? '0 24px 48px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05)'
               : '0 20px 60px rgba(0, 0, 0, 0.12)',
           },
@@ -435,7 +462,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
       PaperProps={{
         sx: {
           borderRadius: 2.5,
-          boxShadow: isDark 
+          boxShadow: isDark
             ? '0 24px 48px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05)'
             : '0 20px 60px rgba(0, 0, 0, 0.12)',
           overflow: 'hidden',
@@ -463,7 +490,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           py: 2.5,
           backgroundColor: 'transparent',
           flexShrink: 0,
-          borderBottom: isDark 
+          borderBottom: isDark
             ? `1px solid ${alpha(theme.palette.divider, 0.12)}`
             : `1px solid ${alpha(theme.palette.divider, 0.08)}`,
         }}
@@ -473,8 +500,11 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             sx={{
               p: 1.25,
               borderRadius: 1.5,
-              bgcolor: isDark 
+              bgcolor: isDark
                 ? alpha(theme.palette.common.white, 0.08)
+                : alpha(theme.palette.grey[100], 0.8),
+              backgroundColor: isDark
+                ? alpha(theme.palette.common.white, 0.9)
                 : alpha(theme.palette.grey[100], 0.8),
               display: 'flex',
               alignItems: 'center',
@@ -482,7 +512,6 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
               border: isDark ? `1px solid ${alpha(theme.palette.common.white, 0.1)}` : 'none',
             }}
           >
-
             <img
               src={connector.iconPath}
               alt={connector.name}
@@ -498,15 +527,15 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           <Box>
             <Typography
               variant="h6"
-              sx={{ 
-                fontWeight: 600, 
-                mb: 0.5, 
+              sx={{
+                fontWeight: 600,
+                mb: 0.5,
                 color: theme.palette.text.primary,
                 fontSize: '1.125rem',
                 letterSpacing: '-0.01em',
               }}
             >
-              Configure {connector.name}
+              Configure {connector.name[0].toUpperCase() + connector.name.slice(1).toLowerCase()}
             </Typography>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
               <Chip
@@ -517,13 +546,11 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
                   fontSize: '0.6875rem',
                   height: 20,
                   fontWeight: 500,
-                  borderColor: isDark 
+                  borderColor: isDark
                     ? alpha(theme.palette.divider, 0.3)
                     : alpha(theme.palette.divider, 0.2),
-                  bgcolor: isDark 
-                    ? alpha(theme.palette.common.white, 0.05)
-                    : 'transparent',
-                  color: isDark 
+                  bgcolor: isDark ? alpha(theme.palette.common.white, 0.05) : 'transparent',
+                  color: isDark
                     ? alpha(theme.palette.text.primary, 0.9)
                     : theme.palette.text.secondary,
                   '& .MuiChip-label': { px: 1.25, py: 0 },
@@ -538,13 +565,11 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
                     fontSize: '0.6875rem',
                     height: 20,
                     fontWeight: 500,
-                    borderColor: isDark 
+                    borderColor: isDark
                       ? alpha(theme.palette.divider, 0.3)
                       : alpha(theme.palette.divider, 0.2),
-                    bgcolor: isDark 
-                      ? alpha(theme.palette.common.white, 0.05)
-                      : 'transparent',
-                    color: isDark 
+                    bgcolor: isDark ? alpha(theme.palette.common.white, 0.05) : 'transparent',
+                    color: isDark
                       ? alpha(theme.palette.text.primary, 0.9)
                       : theme.palette.text.secondary,
                     '& .MuiChip-label': { px: 1.25, py: 0 },
@@ -559,12 +584,10 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           onClick={onClose}
           size="small"
           sx={{
-            color: isDark 
-              ? alpha(theme.palette.text.secondary, 0.8)
-              : theme.palette.text.secondary,
+            color: isDark ? alpha(theme.palette.text.secondary, 0.8) : theme.palette.text.secondary,
             p: 1,
             '&:hover': {
-              backgroundColor: isDark 
+              backgroundColor: isDark
                 ? alpha(theme.palette.common.white, 0.1)
                 : alpha(theme.palette.text.secondary, 0.08),
               color: theme.palette.text.primary,
@@ -576,10 +599,10 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
         </IconButton>
       </DialogTitle>
 
-      <DialogContent 
-        sx={{ 
-          p: 0, 
-          overflow: 'hidden', 
+      <DialogContent
+        sx={{
+          p: 0,
+          overflow: 'hidden',
           flex: 1,
           display: 'flex',
           flexDirection: 'column',
@@ -596,12 +619,8 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
               mb: 0,
               borderRadius: 1.5,
               flexShrink: 0,
-              bgcolor: isDark 
-                ? alpha(theme.palette.error.main, 0.15)
-                : undefined,
-              border: isDark
-                ? `1px solid ${alpha(theme.palette.error.main, 0.3)}`
-                : 'none',
+              bgcolor: isDark ? alpha(theme.palette.error.main, 0.15) : undefined,
+              border: isDark ? `1px solid ${alpha(theme.palette.error.main, 0.3)}` : 'none',
               alignItems: 'center',
             }}
           >
@@ -644,11 +663,10 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           />
         )}
 
-        <Box 
+        <Box
           ref={scrollContainerRef}
-          sx={{ 
-            px: 2.5,
-            py: 2,
+          sx={{
+            px: 1.5,
             flex: 1,
             display: 'flex',
             flexDirection: 'column',
@@ -673,18 +691,11 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             },
           }}
         >
-          <Box sx={{ flexShrink: 0, mb: 2.5 }}>
-            <ConfigStepper activeStep={activeStep} steps={steps} />
-          </Box>
-          <Box 
-            sx={{ 
-              flex: 1,
-              display: 'flex',
-              flexDirection: 'column',
-              minHeight: 0,
-            }}
-          >
-            {renderStepContent}
+          <Box sx={{ p: 2 }}>
+            <Stack spacing={0.5}>
+              <ConfigStepper activeStep={activeStep} steps={steps} />
+              <Box>{renderStepContent()}</Box>
+            </Stack>
           </Box>
         </Box>
       </DialogContent>
@@ -708,7 +719,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             sx={{
               p: 1.25,
               borderRadius: 1,
-              bgcolor: isDark 
+              bgcolor: isDark
                 ? alpha(theme.palette.info.main, 0.06)
                 : alpha(theme.palette.info.main, 0.03),
               border: `1px solid ${alpha(theme.palette.info.main, isDark ? 0.15 : 0.1)}`,
@@ -717,22 +728,23 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
               gap: 1.25,
             }}
           >
-            <Iconify 
-              icon="mdi:lock-outline" 
-              width={16} 
+            <Iconify
+              icon="mdi:lock-outline"
+              width={16}
               color={theme.palette.info.main}
               sx={{ flexShrink: 0 }}
             />
-            <Typography 
-              variant="caption" 
-              sx={{ 
+            <Typography
+              variant="caption"
+              sx={{
                 fontSize: '0.75rem',
                 color: theme.palette.text.secondary,
                 lineHeight: 1.4,
                 fontWeight: 500,
               }}
             >
-              Configuration is locked while connector is active. Disable the connector to make changes.
+              Configuration is locked while connector is active. Disable the connector to make
+              changes.
             </Typography>
           </Box>
         )}
@@ -801,6 +813,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           {activeStep < steps.length - 1 ? (
             <Button
               variant="contained"
+              color="primary"
               onClick={handleNext}
               disabled={saving}
               sx={{
@@ -810,9 +823,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
                 py: 0.625,
                 borderRadius: 1,
                 fontSize: '0.8125rem',
-                boxShadow: isDark
-                  ? `0 2px 8px ${alpha(theme.palette.primary.main, 0.3)}`
-                  : 'none',
+                boxShadow: isDark ? `0 2px 8px ${alpha(theme.palette.primary.main, 0.3)}` : 'none',
                 '&:hover': {
                   boxShadow: isDark
                     ? `0 4px 12px ${alpha(theme.palette.primary.main, 0.4)}`
@@ -829,6 +840,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           ) : (
             <Button
               variant="contained"
+              color="primary"
               onClick={handleSave}
               disabled={saving || isConnectorActive}
               startIcon={
@@ -845,9 +857,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
                 py: 0.625,
                 borderRadius: 1,
                 fontSize: '0.8125rem',
-                boxShadow: isDark
-                  ? `0 2px 8px ${alpha(theme.palette.primary.main, 0.3)}`
-                  : 'none',
+                boxShadow: isDark ? `0 2px 8px ${alpha(theme.palette.primary.main, 0.3)}` : 'none',
                 '&:hover': {
                   boxShadow: isDark
                     ? `0 4px 12px ${alpha(theme.palette.primary.main, 0.4)}`

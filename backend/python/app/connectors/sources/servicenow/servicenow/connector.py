@@ -37,6 +37,7 @@ from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
     ConnectorBuilder,
+    ConnectorScope,
     DocumentationLink,
 )
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
@@ -91,6 +92,7 @@ ORGANIZATIONAL_ENTITIES = {
     .with_auth_type("OAUTH")\
     .with_description("Sync knowledge base articles, categories, and permissions from ServiceNow")\
     .with_categories(["Knowledge Management"])\
+    .with_scopes([ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/servicenow.svg")
         .with_realtime_support(False)
@@ -98,7 +100,14 @@ ORGANIZATIONAL_ENTITIES = {
             DocumentationLink(
                 "ServiceNow OAuth Setup",
                 "https://docs.servicenow.com/bundle/latest/page/administer/security/concept/c_OAuthApplications.html",
-                "setup"
+                "Setup"
+            )
+        )
+        .add_documentation_link(
+            DocumentationLink(
+                "Pipeshub Documentation",
+                "https://docs.pipeshub.com/connectors/servicenow/servicenow",
+                "Pipeshub"
             )
         )
         .with_redirect_uri("connectors/oauth/callback/ServiceNow", True)
@@ -144,6 +153,8 @@ ORGANIZATIONAL_ENTITIES = {
         .add_auth_field(CommonFields.client_secret("ServiceNow OAuth Application Registry"))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(False)
     )\
     .build_decorator()
 class ServiceNowConnector(BaseConnector):
@@ -163,6 +174,7 @@ class ServiceNowConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
+        connector_id: str,
     ) -> None:
         """
         Initialize the ServiceNow KB Connector.
@@ -174,16 +186,18 @@ class ServiceNowConnector(BaseConnector):
             config_service: Configuration service
         """
         super().__init__(
-            ServicenowApp(),
+            ServicenowApp(connector_id),
             logger,
             data_entities_processor,
             data_store_provider,
             config_service,
+            connector_id
         )
 
         # ServiceNow API client instances
         self.servicenow_client: Optional[ServiceNowRESTClientViaOAuthAuthorizationCode] = None
         self.servicenow_datasource: Optional[ServiceNowDataSource] = None
+        self.connector_id = connector_id
 
         # Configuration
         self.instance_url: Optional[str] = None
@@ -198,7 +212,7 @@ class ServiceNowConnector(BaseConnector):
         # Initialize sync points for incremental sync
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
             return SyncPoint(
-                connector_name=self.connector_name,
+                connector_id=self.connector_id,
                 org_id=self.data_entities_processor.org_id,
                 sync_data_point_type=sync_data_point_type,
                 data_store_provider=self.data_store_provider,
@@ -238,10 +252,10 @@ class ServiceNowConnector(BaseConnector):
         """
         try:
             self.logger.info("🔧 Initializing ServiceNow KB Connector (OAuth)...")
-
+            connector_id = self.connector_id
             # Load configuration
             config = await self.config_service.get_config(
-                "/services/connectors/servicenow/config"
+                f"/services/connectors/{connector_id}/config"
             )
 
             if not config:
@@ -325,8 +339,10 @@ class ServiceNowConnector(BaseConnector):
         if not self.servicenow_client:
             raise Exception("ServiceNow client not initialized. Call init() first.")
 
+        connector_id = self.connector_id
+
         # Fetch current token from config (async I/O)
-        config = await self.config_service.get_config("/services/connectors/servicenow/config")
+        config = await self.config_service.get_config(f"/services/connectors/{connector_id}/config")
 
         if not config:
             raise Exception("ServiceNow configuration not found")
@@ -755,8 +771,8 @@ class ServiceNowConnector(BaseConnector):
                     try:
                         # Get AppUser by source_user_id (ServiceNow sys_id)
                         app_user = await tx_store.get_user_by_source_id(
-                            connector_name=self.connector_name,
-                            source_user_id=sys_id
+                            source_user_id=sys_id,
+                            connector_id=self.connector_id
                         )
 
                         if app_user:
@@ -885,7 +901,7 @@ class ServiceNowConnector(BaseConnector):
                             await tx_store.create_user_group_membership(
                                 link["user_sys_id"],
                                 link["org_sys_id"],
-                                Connectors.SERVICENOW,
+                                self.connector_id
                             )
 
                 # Move to next page
@@ -1346,7 +1362,7 @@ class ServiceNowConnector(BaseConnector):
             async with self.data_store_provider.transaction() as tx_store:
                 existing_app_users = await tx_store.get_app_users(
                     org_id=self.data_entities_processor.org_id,
-                    app_name=Connectors.SERVICENOW
+                    connector_id=self.connector_id
                 )
 
                 self.logger.info(f"Loaded {len(existing_app_users)} existing users from DB for lookup: {existing_app_users}")
@@ -1610,7 +1626,7 @@ class ServiceNowConnector(BaseConnector):
                             kb_sys_id = kb_data['sys_id']
 
                             existing_kb = await tx_store.get_record_group_by_external_id(
-                                connector_name=Connectors.SERVICENOW,
+                                connector_id=self.connector_id,
                                 external_id=kb_sys_id
                             )
 
@@ -1671,7 +1687,7 @@ class ServiceNowConnector(BaseConnector):
                                 await tx_store.batch_upsert_record_group_permissions(
                                     kb_record_group.id,
                                     permission_objects,
-                                    Connectors.SERVICENOW
+                                    self.connector_id
                                 )
 
                                 self.logger.debug(f"Created KB {kb_sys_id} with {len(permission_objects)} permissions")
@@ -2119,7 +2135,7 @@ class ServiceNowConnector(BaseConnector):
                     # Use tx_store method to get user by source_sys_id
                     user = await tx_store.get_user_by_source_id(
                         source_sys_id,
-                        Connectors.SERVICENOW,
+                        self.connector_id
                     )
 
                     if user:
@@ -2421,7 +2437,8 @@ class ServiceNowConnector(BaseConnector):
                 source_updated_at = self._parse_servicenow_datetime(user_data["sys_updated_on"])
 
             app_user = AppUser(
-                app_name=Connectors.SERVICENOW,
+                app_name=self.connector_name,
+                connector_id=self.connector_id,
                 source_user_id=sys_id,
                 org_id=self.data_entities_processor.org_id,
                 email=email,
@@ -2467,6 +2484,7 @@ class ServiceNowConnector(BaseConnector):
             # Create AppUserGroup (for user groups, not record groups)
             user_group = AppUserGroup(
                 app_name=Connectors.SERVICENOW,
+                connector_id=self.connector_id,
                 source_user_group_id=sys_id,
                 name=name,
                 org_id=self.data_entities_processor.org_id,
@@ -2517,6 +2535,7 @@ class ServiceNowConnector(BaseConnector):
             # Create AppUserGroup with prefix
             org_group = AppUserGroup(
                 app_name=Connectors.SERVICENOW,
+                connector_id=self.connector_id,
                 source_user_group_id=sys_id,
                 name=f"{prefix}{name}",
                 description=f"ServiceNow {prefix.rstrip('_')}: {name}",
@@ -2574,6 +2593,7 @@ class ServiceNowConnector(BaseConnector):
                 description=kb_data.get("description", ""),
                 external_group_id=sys_id,
                 connector_name=Connectors.SERVICENOW,
+                connector_id=self.connector_id,
                 group_type=RecordGroupType.SERVICENOWKB,
                 web_url=web_url,
                 source_created_at=source_created_at,
@@ -2628,6 +2648,7 @@ class ServiceNowConnector(BaseConnector):
                 parent_external_group_id=parent_sys_id,
                 external_group_id=sys_id,
                 connector_name=Connectors.SERVICENOW,
+                connector_id=self.connector_id,
                 group_type=RecordGroupType.SERVICENOW_CATEGORY,
                 web_url=web_url,
                 source_created_at=source_created_at,
@@ -2714,6 +2735,7 @@ class ServiceNowConnector(BaseConnector):
                 record_type=RecordType.WEBPAGE,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.SERVICENOW,
+                connector_id=self.connector_id,
                 record_group_type=record_group_type,  # CATEGORY or KB
                 external_record_group_id=external_record_group_id,  # Category or KB sys_id
                 parent_external_record_id=None,
@@ -2795,6 +2817,7 @@ class ServiceNowConnector(BaseConnector):
                 version=0,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.SERVICENOW,
+                connector_id=self.connector_id,
                 mime_type=mime_type,
                 parent_external_record_id=attachment_data.get("table_sys_id"),  # Parent article sys_id
                 parent_record_type=RecordType.WEBPAGE,  # Parent is article
@@ -2843,6 +2866,7 @@ class ServiceNowConnector(BaseConnector):
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
+        connector_id: str
     ) -> "ServiceNowConnector":
         """
         Factory method to create and initialize the connector.
@@ -2860,4 +2884,4 @@ class ServiceNowConnector(BaseConnector):
         )
         await data_entities_processor.initialize()
 
-        return cls(logger, data_entities_processor, data_store_provider, config_service)
+        return cls(logger, data_entities_processor, data_store_provider, config_service, connector_id)

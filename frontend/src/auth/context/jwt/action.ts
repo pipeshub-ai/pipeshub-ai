@@ -382,6 +382,25 @@ export const signUp = async ({
  *************************************** */
 export const signOut = async (): Promise<void> => {
   try {
+    const accessToken = localStorage.getItem(STORAGE_KEY);
+    
+    if (accessToken) {
+      try {
+        await axios.post(
+          `${CONFIG.authUrl}/api/v1/userAccount/logout/manual`,
+          {},
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+            },
+          }
+        );
+      } catch (error) {
+        console.error('Logout API call failed, proceeding with session cleanup:', error);
+      }
+    }
+    
+    // Clear session after logout API call (or if it failed)
     await setSession(null, null);
   } catch (error) {
     throw new Error('Error during sign out:', error);
