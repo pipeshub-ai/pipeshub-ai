@@ -338,9 +338,9 @@ class ExcelParser:
             f"Retrying LLM call after error. Attempt {retry_state.attempt_number}"
         ),
     )
-    async def _call_llm(self, llm, messages) -> Union[str, dict, list]:
+    async def _call_llm(self,messages) -> Union[str, dict, list]:
         """Wrapper for LLM calls with retry logic"""
-        return await llm.ainvoke(messages)
+        return await self.llm.ainvoke(messages)
 
     async def get_tables_in_sheet(self, sheet_name: str) -> List[Dict[str, Any]]:
         """Get all tables in a specific sheet"""
@@ -453,7 +453,7 @@ Do not include any additional explanation or text."""
             messages = self.table_summary_prompt.format_messages(
                 headers=table["headers"], sample_data=json.dumps(sample_data, indent=2)
             )
-            response = await self._call_llm(self.llm, messages)
+            response = await self._call_llm(messages)
             if '</think>' in response.content:
                 response.content = response.content.split('</think>')[-1]
             return response.content

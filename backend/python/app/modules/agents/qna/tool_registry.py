@@ -6,7 +6,7 @@ import json
 import re
 from typing import Callable, Dict, List, Optional, Union
 
-from langchain.tools import BaseTool
+from langchain_core.tools import BaseTool
 from pydantic import ConfigDict, Field
 
 from app.agents.tools.factories.registry import ClientFactoryRegistry

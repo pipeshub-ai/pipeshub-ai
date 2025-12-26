@@ -54,6 +54,29 @@ MAX_TOKENS_THRESHOLD = 80000
 TOOL_EXECUTION_TOKEN_RATIO = 0.5
 MAX_REFLECTION_RETRIES_DEFAULT = 2
 
+# Legacy Anthropic models that don't support structured output
+# New models (claude-4+) support it by default, so only list older ones here
+ANTHROPIC_LEGACY_MODEL_PATTERNS = [
+    "claude-3",
+    "claude-sonnet-4-20250514",
+    "claude-opus-4-20250514",
+    "claude-2",
+    "claude-1",
+    "claude-instant",
+]
+
+
+def supports_human_message_after_tool(llm: BaseChatModel) -> bool:
+    """
+    Check if the LLM provider supports adding a HumanMessage after ToolMessages.
+    
+    Some providers (e.g., MistralAI) do not support this message ordering pattern.
+    """
+    # MistralAI does not support Human message after Tool message
+    if isinstance(llm, ChatMistralAI):
+        return False
+    return True
+
 
 # Create a logger for this module
 parser = PydanticOutputParser(pydantic_object=AnswerWithMetadataJSON)
@@ -523,7 +546,7 @@ async def execute_tool_calls(
 
         hops += 1
 
-    if len(tool_results)>0 and not isinstance(llm, ChatMistralAI):   # MistralAI does not support Human msg after tool msg
+    if len(tool_results) > 0 and supports_human_message_after_tool(llm):
         messages.append(HumanMessage(content="""Strictly follow the citation guidelines mentioned in the prompt above."""))
 
     yield {
@@ -1476,9 +1499,9 @@ def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
             if not model_str:
                 logger.warning("model name not found, using non-structured LLM")
                 return llm
-            has_supported_model = "opus-4-5" in model_str or "sonnet-4-5" in model_str or "haiku-4-5" in model_str or "opus-4-1" in model_str
-            if not has_supported_model:
-                logger.info("Using non-structured LLM")
+            is_legacy_model = any(pattern in model_str for pattern in ANTHROPIC_LEGACY_MODEL_PATTERNS)
+            if is_legacy_model:
+                logger.info("Legacy Anthropic model detected, using non-structured LLM")
                 return llm
 
             additional_kwargs["stream"] = True
