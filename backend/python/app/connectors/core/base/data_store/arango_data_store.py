@@ -64,15 +64,15 @@ class ArangoTransactionStore(TransactionStore):
         return await self.arango_service.get_record_by_issue_key(connector_name, issue_key, transaction=self.txn)
 
     async def get_records_by_parent(
-        self, 
-        connector_name: Connectors, 
-        parent_external_record_id: str, 
+        self,
+        connector_name: Connectors,
+        parent_external_record_id: str,
         record_type: Optional[str] = None
     ) -> List[Record]:
         return await self.arango_service.get_records_by_parent(
-            connector_name, 
-            parent_external_record_id, 
-            record_type, 
+            connector_name,
+            parent_external_record_id,
+            record_type,
             transaction=self.txn
         )
 

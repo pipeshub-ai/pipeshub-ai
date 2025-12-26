@@ -1,9 +1,19 @@
 ﻿"""Jira Cloud Connector Implementation"""
+import base64
 import re
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Set, Tuple
-import base64
+from typing import (
+    Any,
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Set,
+    Tuple,
+)
 from uuid import uuid4
 
 from fastapi.responses import StreamingResponse
@@ -93,7 +103,7 @@ class SyncStats:
 def extract_media_from_adf(adf_content: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Extract all media nodes from ADF content.
-    
+
     Returns list of media info dicts with:
         - id: Media ID/token
         - alt: Alt text (usually filename)
@@ -104,16 +114,16 @@ def extract_media_from_adf(adf_content: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     if not adf_content or not isinstance(adf_content, dict):
         return []
-    
+
     media_nodes: List[Dict[str, Any]] = []
-    
+
     def traverse(node: Dict[str, Any]) -> None:
         """Recursively traverse ADF nodes to find media."""
         if not isinstance(node, dict):
             return
-        
+
         node_type = node.get("type", "")
-        
+
         # Check if this is a media node
         if node_type == "media":
             attrs = node.get("attrs", {})
@@ -127,21 +137,20 @@ def extract_media_from_adf(adf_content: Dict[str, Any]) -> List[Dict[str, Any]]:
             }
             if media_info["id"]:  # Only add if we have an ID
                 media_nodes.append(media_info)
-        
+
         # Recurse into content
         if "content" in node:
             for child in node.get("content", []):
                 traverse(child)
-    
+
     # Start traversal from root
     if "content" in adf_content:
         for node in adf_content.get("content", []):
             traverse(node)
     else:
         traverse(adf_content)
-    
-    return media_nodes
 
+    return media_nodes
 
 def adf_to_text(
     adf_content: Dict[str, Any],
@@ -150,7 +159,7 @@ def adf_to_text(
     """
     Convert Atlassian Document Format (ADF) to Markdown.
     Returns markdown-formatted text with headers, lists, code blocks, tables, etc.
-    
+
     Args:
         adf_content: The ADF document to convert
         media_cache: Optional dict mapping media_id -> base64 data URI for embedding images
@@ -165,12 +174,12 @@ def adf_to_text(
         """Apply markdown formatting based on text marks (bold, italic, link, etc.)."""
         if not marks:
             return text
-        
+
         # Process marks in reverse order (innermost first)
         for mark in reversed(marks):
             mark_type = mark.get("type", "")
             attrs = mark.get("attrs", {})
-            
+
             if mark_type == "strong":
                 text = f"**{text}**"
             elif mark_type == "em":
@@ -186,12 +195,12 @@ def adf_to_text(
             elif mark_type == "underline":
                 # Markdown doesn't have underline, use emphasis
                 text = f"*{text}*"
-        
+
         return text
 
     def extract_list_item_content(list_item: Dict[str, Any], depth: int) -> Dict[str, str]:
         """Extract text content and nested lists from a list item.
-        
+
         Returns dict with:
             - text: The main text content of the list item
             - nested: Any nested lists formatted with proper indentation
@@ -199,7 +208,7 @@ def adf_to_text(
         content = list_item.get("content", [])
         text_parts: List[str] = []
         nested_parts: List[str] = []
-        
+
         for child in content:
             child_type = child.get("type", "")
             if child_type in ["bulletList", "orderedList", "taskList"]:
@@ -212,19 +221,19 @@ def adf_to_text(
                 child_text = extract_text(child, depth)
                 if child_text:
                     text_parts.append(child_text)
-        
+
         # Join text parts, clean up excessive whitespace
         main_text = " ".join(text_parts).strip()
         main_text = re.sub(r'\s+', ' ', main_text)  # Normalize whitespace
-        
+
         # Join nested lists
         nested_text = "\n".join(nested_parts) if nested_parts else ""
-        
+
         return {"text": main_text, "nested": nested_text}
 
     def extract_text(node: Dict[str, Any], list_depth: int = 0, strip_marks: bool = False) -> str:
         """Recursively extract text from ADF nodes and convert to markdown.
-        
+
         Args:
             node: The ADF node to process
             list_depth: Current nesting level for lists (0 = not in list, 1+ = nested depth)
@@ -289,10 +298,10 @@ def adf_to_text(
         elif node_type in ["bulletList", "unorderedList"]:
             content = node.get("content", [])
             bullet_lines: List[str] = []
-            
+
             for child in content:
                 child_type = child.get("type", "")
-                
+
                 # Extract the text content from the list item
                 if child_type == "listItem":
                     # Standard structure: listItem > paragraph > text
@@ -303,14 +312,14 @@ def adf_to_text(
                     # Fallback: directly extract text from whatever node this is
                     item_text = extract_text(child, list_depth + 1, strip_marks).strip()
                     nested_content = ""
-                
+
                 # Add bullet marker if we have text
                 if item_text:
                     bullet_line = f"{indent}- {item_text}"
                     bullet_lines.append(bullet_line)
                     if nested_content:
                         bullet_lines.append(nested_content)
-            
+
             # Join all bullet items with newlines
             if bullet_lines:
                 text = "\n".join(bullet_lines)
@@ -321,10 +330,10 @@ def adf_to_text(
         elif node_type in ["orderedList", "numberedList"]:
             content = node.get("content", [])
             numbered_lines: List[str] = []
-            
+
             for i, child in enumerate(content, start=1):
                 child_type = child.get("type", "")
-                
+
                 # Extract the text content from the list item
                 if child_type == "listItem":
                     # Standard structure: listItem > paragraph > text
@@ -335,14 +344,14 @@ def adf_to_text(
                     # Fallback: directly extract text from whatever node this is
                     item_text = extract_text(child, list_depth + 1, strip_marks).strip()
                     nested_content = ""
-                
+
                 # Add number marker if we have text
                 if item_text:
                     numbered_line = f"{indent}{i}. {item_text}"
                     numbered_lines.append(numbered_line)
                     if nested_content:
                         numbered_lines.append(nested_content)
-            
+
             # Join all numbered items with newlines
             if numbered_lines:
                 text = "\n".join(numbered_lines)
@@ -375,9 +384,9 @@ def adf_to_text(
             media_id = attrs.get("id", "")
             alt = attrs.get("alt", "")
             title = attrs.get("title", "")
-            
+
             display_text = alt or title or "attachment"
-            
+
             # Check if we have base64 data for this media in cache
             if media_id and media_id in _media_cache:
                 data_uri = _media_cache[media_id]
@@ -409,7 +418,7 @@ def adf_to_text(
             content = node.get("content", [])
             rows: List[str] = []
             is_first_row = True
-            
+
             for row in content:
                 if row.get("type") == "tableRow":
                     cells: List[str] = []
@@ -423,16 +432,16 @@ def adf_to_text(
                             # Replace newlines with space for markdown table compatibility
                             cell_text = cell_text.replace("\n", " ")
                             cells.append(cell_text)
-                    
+
                     if cells:
                         rows.append("| " + " | ".join(cells) + " |")
-                        
+
                         # Add header separator after first row
                         if is_first_row:
                             separator = "| " + " | ".join(["---"] * len(cells)) + " |"
                             rows.append(separator)
                             is_first_row = False
-            
+
             if rows:
                 text = "\n".join(rows) + "\n\n"
 
@@ -586,32 +595,31 @@ def adf_to_text(
 
     return result.strip()
 
-
 async def adf_to_text_with_images(
     adf_content: Dict[str, Any],
     media_fetcher: Callable[[str, str], Awaitable[Optional[str]]]
 ) -> str:
     """
     Convert Atlassian Document Format (ADF) to Markdown with embedded images.
-    
+
     This async version fetches media content and embeds it as base64 data URIs.
     Used for streaming content that needs to be indexed by multimodal models.
-    
+
     Args:
         adf_content: The ADF document to convert
         media_fetcher: Async callback that takes (media_id, alt_text) and returns
                       base64 data URI string or None if fetch fails
-    
+
     Returns:
         Markdown text with images embedded as base64 data URIs
     """
     if not adf_content or not isinstance(adf_content, dict):
         return ""
-    
+
     # Extract all media nodes and fetch their content
     media_nodes = extract_media_from_adf(adf_content)
     media_cache: Dict[str, str] = {}
-    
+
     # Fetch all media (sequentially to avoid rate limits)
     for media_info in media_nodes:
         media_id = media_info.get("id", "")
@@ -624,7 +632,7 @@ async def adf_to_text_with_images(
             except Exception:
                 # If fetch fails, we'll just use the alt text
                 pass
-    
+
     # Reuse the main adf_to_text function with the media cache
     return adf_to_text(adf_content, media_cache)
 
@@ -754,8 +762,8 @@ class JiraConnector(BaseConnector):
                 self.logger
             )
 
-            self.logger.info(f"Sync filters: {self.sync_filters}")
-            self.logger.info(f"Indexing filters: {self.indexing_filters}")
+            self.logger.info(f"🔍 Sync filters: {self.sync_filters}")
+            self.logger.info(f"🔍 Indexing filters: {self.indexing_filters}")
 
             # Use JiraClient.build_from_services() to create client with proper auth
             client = await JiraClient.build_from_services(
@@ -778,9 +786,9 @@ class JiraConnector(BaseConnector):
             self.cloud_id = resources[0].id
             self.site_url = resources[0].url
 
-            self.logger.info("Jira client initialized successfully using Client + DataSource architecture")
+            self.logger.info("✅ Jira client initialized successfully using Client + DataSource architecture")
         except Exception as e:
-            self.logger.error(f"Failed to initialize Jira client: {e}")
+            self.logger.error(f"❌ Failed to initialize Jira client: {e}")
             raise
 
     async def _get_access_token(self) -> str:
@@ -849,7 +857,7 @@ class JiraConnector(BaseConnector):
             )
             return int(dt.timestamp() * 1000)
         except Exception as e:
-            self.logger.warning(f"Failed to parse timestamp '{timestamp_str}': {e}")
+            self.logger.warning(f"⚠️ Failed to parse timestamp '{timestamp_str}': {e}")
             return 0
 
     async def run_sync(self) -> None:
@@ -858,7 +866,7 @@ class JiraConnector(BaseConnector):
         """
         # Check if sync is already in progress
         if self._sync_in_progress:
-            self.logger.warning("Sync already in progress, skipping this run")
+            self.logger.warning("⚠️ Sync already in progress, skipping this run")
             return
 
         self._sync_in_progress = True
@@ -871,14 +879,14 @@ class JiraConnector(BaseConnector):
             users = await self.data_entities_processor.get_all_active_users()
 
             if not users:
-                self.logger.info("No users found")
+                self.logger.info("ℹ️ No users found")
                 return
 
             # Fetch and sync users
             jira_users = await self._fetch_users(org_id)
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
-                self.logger.info(f"Synced {len(jira_users)} Jira users")
+                self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
 
             # Fetch and sync user groups (returns mapping for role resolution)
             groups_members_map = await self._sync_user_groups(org_id, jira_users)
@@ -890,14 +898,14 @@ class JiraConnector(BaseConnector):
                 if project_keys_filter:
                     allowed_keys = project_keys_filter.get_value(default=[])
 
-            # Fetch projects (only fetch filtered projects if filter is set)
+            # Fetch projects
             projects, raw_projects = await self._fetch_projects(allowed_keys)
 
-            # Sync project roles BEFORE RecordGroups (so roles exist for permission edges)
+            # Sync project roles BEFORE RecordGroups
             project_keys_for_roles = [proj.short_name for proj, _ in projects]
             await self._sync_project_roles(project_keys_for_roles, jira_users, groups_members_map)
 
-            # Sync project lead roles BEFORE RecordGroups (using raw project data)
+            # Sync project lead roles
             await self._sync_project_lead_roles(raw_projects, jira_users)
 
             # Create RecordGroups and its permissions
@@ -911,10 +919,10 @@ class JiraConnector(BaseConnector):
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
             await self._handle_issue_deletions(last_sync_time)
 
-            self.logger.info(f"Jira sync completed. {sync_stats}")
+            self.logger.info(f"✅ Jira sync completed. {sync_stats}")
 
         except Exception as e:
-            self.logger.error(f"Error during Jira sync: {e}", exc_info=True)
+            self.logger.error(f"❌ Error during Jira sync: {e}", exc_info=True)
             raise
         finally:
             self._sync_in_progress = False
@@ -928,7 +936,7 @@ class JiraConnector(BaseConnector):
             last_sync_time = sync_point_data.get("last_sync_time") if sync_point_data else None
 
             if self._have_filters_changed(sync_point_data):
-                self.logger.info("Filters changed, performing full sync")
+                self.logger.info("🔄 Filters changed, performing full sync")
                 return None
             return last_sync_time
         except Exception:
@@ -951,7 +959,7 @@ class JiraConnector(BaseConnector):
                 )
                 stats.add(project_stats)
             except Exception as e:
-                self.logger.error(f"Error processing issues for project {project.short_name}: {e}", exc_info=True)
+                self.logger.error(f"❌ Error processing issues for project {project.short_name}: {e}", exc_info=True)
                 continue
 
         return stats
@@ -975,29 +983,11 @@ class JiraConnector(BaseConnector):
         )
 
         if not issues_with_permissions:
-            self.logger.info(f"No new/updated issues for project {project.short_name}")
+            self.logger.info(f"ℹ️ No new/updated issues for project {project.short_name}")
             return stats
 
-        # Separate new vs updated records
-        new_records = [(r, p) for r, p in issues_with_permissions if r.version == 0]
-        
-        # For updated records, only include those that were actually modified since last sync
-        if last_sync_time is not None:
-            updated_records = [
-                (r, p) for r, p in issues_with_permissions 
-                if r.version > 0 and hasattr(r, 'source_updated_at') and r.source_updated_at and r.source_updated_at > last_sync_time
-            ]
-        else:
-            # Full sync - all existing records are considered updated
-            updated_records = [(r, p) for r, p in issues_with_permissions if r.version > 0]
-
-        # Process new records
-        if new_records:
-            await self._process_new_records(new_records, project.short_name, stats)
-
-        # Process updated records
-        if updated_records:
-            await self._process_updated_records(updated_records, project.short_name, stats)
+        # Process all records (new and updated) - on_new_records internally handles both
+        await self._process_new_records(issues_with_permissions, project.short_name, stats)
 
         stats.total_synced += len(issues_with_permissions)
         return stats
@@ -1009,7 +999,8 @@ class JiraConnector(BaseConnector):
         stats: "SyncStats"
     ) -> None:
         """
-        Process new records in batches.
+        Process records (new and updated) in batches.
+        on_new_records internally handles both new and updated.
         """
         # Sort records: records without parent_external_record_id (Epics) come first
         sorted_records = sorted(
@@ -1023,44 +1014,21 @@ class JiraConnector(BaseConnector):
             batch = sorted_records[i:i + batch_size]
             await self.data_entities_processor.on_new_records(batch)
 
-            stats.new_count += len(batch)
+            # Count new vs updated for stats
+            new_in_batch = sum(1 for r, _ in batch if r.version == 0)
+            updated_in_batch = len(batch) - new_in_batch
+            stats.new_count += new_in_batch
+            stats.updated_count += updated_in_batch
+
             issues_count = sum(1 for r, _ in batch if isinstance(r, TicketRecord))
             comments_count = sum(1 for r, _ in batch if isinstance(r, CommentRecord))
             files_count = sum(1 for r, _ in batch if isinstance(r, FileRecord))
 
             self.logger.info(
-                f"Synced batch {i//batch_size + 1}: {issues_count} NEW issues, "
-                f"{comments_count} NEW comments, {files_count} NEW attachments for project {project_name}"
+                f"📦 Synced batch {i//batch_size + 1}: {issues_count} issues, "
+                f"{comments_count} comments, {files_count} attachments for project {project_name} "
+                f"({new_in_batch} new, {updated_in_batch} updated)"
             )
-
-    async def _process_updated_records(
-        self,
-        records_with_permissions: List[Tuple[Record, List[Permission]]],
-        project_name: str,
-        stats: "SyncStats"
-    ) -> None:
-        """
-        Process updated records - upsert and update permissions.
-        """
-        # Batch upsert updated records
-        async with self.data_store_provider.transaction() as tx_store:
-            tickets = [r for r, _ in records_with_permissions if isinstance(r, TicketRecord)]
-            comments = [r for r, _ in records_with_permissions if isinstance(r, CommentRecord)]
-            files = [r for r, _ in records_with_permissions if isinstance(r, FileRecord)]
-
-            if tickets:
-                await tx_store.batch_upsert_records(tickets)
-            if comments:
-                await tx_store.batch_upsert_records(comments)
-            if files:
-                await tx_store.batch_upsert_records(files)
-
-        # Update permissions and notify about content updates
-        for record, permissions in records_with_permissions:
-            await self.data_entities_processor.on_updated_record_permissions(record, permissions)
-            await self.data_entities_processor.on_record_content_update(record)
-
-        stats.updated_count += len(records_with_permissions)
 
     async def _update_issues_sync_checkpoint(self, stats: "SyncStats", project_count: int) -> None:
         """
@@ -1089,7 +1057,7 @@ class JiraConnector(BaseConnector):
         deletion_check_time = audit_last_sync_time or global_last_sync_time
 
         if deletion_check_time:
-            deleted_count = await self._detect_and_handle_deletions(deletion_check_time)
+            await self._detect_and_handle_deletions(deletion_check_time)
 
             # Update audit sync checkpoint
             await self.issues_sync_point.update_sync_point(
@@ -1161,7 +1129,7 @@ class JiraConnector(BaseConnector):
             )
             app_users.append(app_user)
 
-        self.logger.info(f"Fetched {len(app_users)} active users with emails")
+        self.logger.info(f"👥 Fetched {len(app_users)} active users with emails")
         return app_users
 
     async def _detect_and_handle_deletions(self, last_sync_time: int) -> int:
@@ -1169,7 +1137,7 @@ class JiraConnector(BaseConnector):
         Detect and handle deleted issues using Jira Audit API.
         """
         try:
-            self.logger.info("Checking for deleted issues via Audit API...")
+            self.logger.info("🔍 Checking for deleted issues via Audit API...")
 
             # Convert timestamp to ISO format
             from_date = datetime.fromtimestamp(
@@ -1183,7 +1151,7 @@ class JiraConnector(BaseConnector):
             deleted_issue_keys = await self._fetch_deleted_issues_from_audit(from_date, to_date)
 
             if not deleted_issue_keys:
-                self.logger.info("No deleted issues found in audit log")
+                self.logger.info("ℹ️ No deleted issues found in audit log")
                 return 0
 
             # Handle each deletion
@@ -1193,13 +1161,13 @@ class JiraConnector(BaseConnector):
                     await self._handle_deleted_issue(issue_key)
                     deleted_count += 1
                 except Exception as e:
-                    self.logger.error(f"Error handling deleted issue {issue_key}: {e}")
+                    self.logger.error(f"❌ Error handling deleted issue {issue_key}: {e}")
                     continue
 
             return deleted_count
 
         except Exception as e:
-            self.logger.error(f"Error detecting deletions: {e}", exc_info=True)
+            self.logger.error(f"❌ Error detecting deletions: {e}", exc_info=True)
             return 0
 
     async def _fetch_deleted_issues_from_audit(
@@ -1225,7 +1193,7 @@ class JiraConnector(BaseConnector):
                 )
 
                 if response.status != HttpStatusCode.OK.value:
-                    self.logger.warning(f"Failed to fetch audit records: {response.text()}")
+                    self.logger.warning(f"⚠️ Failed to fetch audit records: {response.text()}")
                     break
 
                 audit_data = response.json()
@@ -1254,7 +1222,7 @@ class JiraConnector(BaseConnector):
                 offset += limit
 
             except Exception as e:
-                self.logger.error(f"Error fetching audit records at offset {offset}: {e}")
+                self.logger.error(f"❌ Error fetching audit records at offset {offset}: {e}")
                 break
 
         return deleted_issue_keys
@@ -1264,7 +1232,7 @@ class JiraConnector(BaseConnector):
         Handle deletion of an issue and its related entities (comments, attachments).
         """
         try:
-            self.logger.info(f"Handling deletion of issue {issue_key}")
+            self.logger.info(f"🗑️ Handling deletion of issue {issue_key}")
 
             issue_id = None
             try:
@@ -1272,7 +1240,7 @@ class JiraConnector(BaseConnector):
                 response = await datasource.get_issue(issueIdOrKey=issue_key)
 
                 if response.status == HttpStatusCode.OK.value:
-                    self.logger.warning(f"Issue {issue_key} still exists in Jira (not deleted, maybe moved?)")
+                    self.logger.warning(f"⚠️ Issue {issue_key} still exists in Jira (not deleted, maybe moved?)")
                     return
 
             except Exception:
@@ -1287,12 +1255,12 @@ class JiraConnector(BaseConnector):
                 )
 
                 if not issue_record:
-                    self.logger.warning(f"Issue {issue_key} not found in database (already deleted or never synced?)")
+                    self.logger.warning(f"⚠️ Issue {issue_key} not found in database (already deleted or never synced?)")
                     return
 
                 issue_id = issue_record.external_record_id
                 record_internal_id = issue_record.id
-                self.logger.info(f"Found issue {issue_key} with internal ID {record_internal_id}, external ID {issue_id}")
+                self.logger.info(f"✅ Found issue {issue_key} with internal ID {record_internal_id}, external ID {issue_id}")
 
                 # 1. Delete child Sub-tasks
                 subtask_count = await self._delete_issue_children(
@@ -1323,12 +1291,12 @@ class JiraConnector(BaseConnector):
                 )
 
                 self.logger.info(
-                    f"Deleted issue {issue_key} and its children "
+                    f"🗑️ Deleted issue {issue_key} and its children "
                     f"({subtask_count} sub-tasks, {comment_count} comments, {attachment_count} attachments)"
                 )
 
         except Exception as e:
-            self.logger.error(f"Error handling deleted issue {issue_key}: {e}", exc_info=True)
+                    self.logger.error(f"❌ Error handling deleted issue {issue_key}: {e}", exc_info=True)
 
     async def _delete_issue_children(
         self,
@@ -1384,7 +1352,7 @@ class JiraConnector(BaseConnector):
             return deleted_count
 
         except Exception as e:
-            self.logger.error(f"Error deleting {child_type_name}s for issue {parent_issue_id}: {e}")
+            self.logger.error(f"❌ Error deleting {child_type_name}s for issue {parent_issue_id}: {e}")
             return 0
 
     async def _fetch_application_roles_to_groups_mapping(self) -> Dict[str, List[Dict[str, str]]]:
@@ -1401,7 +1369,7 @@ class JiraConnector(BaseConnector):
             response = await datasource.get_all_application_roles()
 
             if response.status != HttpStatusCode.OK.value:
-                self.logger.warning(f"Failed to fetch application roles: {response.text()}")
+                self.logger.warning(f"⚠️ Failed to fetch application roles: {response.text()}")
                 return {}
 
             roles_data = response.json()
@@ -1420,10 +1388,10 @@ class JiraConnector(BaseConnector):
 
             # Cache the result
             self._app_roles_cache = mapping
-            self.logger.info(f"Fetched {len(mapping)} application roles with group mappings")
+            self.logger.info(f"🔐 Fetched {len(mapping)} application roles with group mappings")
 
         except Exception as e:
-            self.logger.error(f"Error fetching application roles: {e}", exc_info=True)
+            self.logger.error(f"❌ Error fetching application roles: {e}", exc_info=True)
 
         return mapping
 
@@ -1458,7 +1426,7 @@ class JiraConnector(BaseConnector):
             )
 
             if scheme_response.status != HttpStatusCode.OK.value:
-                self.logger.warning(f"Failed to fetch permission scheme for {project_key}: {scheme_response.text()}")
+                self.logger.warning(f"⚠️ Failed to fetch permission scheme for {project_key}: {scheme_response.text()}")
                 return []
 
             scheme_data = scheme_response.json()
@@ -1471,7 +1439,7 @@ class JiraConnector(BaseConnector):
             )
 
             if grants_response.status != HttpStatusCode.OK.value:
-                self.logger.warning(f"Failed to fetch permission grants for scheme {scheme_id}: {grants_response.text()}")
+                self.logger.warning(f"⚠️ Failed to fetch permission grants for scheme {scheme_id}: {grants_response.text()}")
                 return []
 
             grants_data = grants_response.json()
@@ -1545,7 +1513,7 @@ class JiraConnector(BaseConnector):
                             type=PermissionType.READ
                         ))
                     else:
-                        self.logger.warning(f"  {project_key}: User permission skipped - no email for accountId '{holder_param}'")
+                        self.logger.warning(f"⚠️  {project_key}: User permission skipped - no email for accountId '{holder_param}'")
 
                 elif holder_type == "anyone":
                     # All authenticated users have access handle public condition
@@ -1586,12 +1554,12 @@ class JiraConnector(BaseConnector):
                     continue
 
                 else:
-                    self.logger.warning(f"  {project_key}: Unknown holder type '{holder_type}' with param '{holder_param}' - skipping")
+                    self.logger.warning(f"⚠️  {project_key}: Unknown holder type '{holder_type}' with param '{holder_param}' - skipping")
 
             return permissions
 
         except Exception as e:
-            self.logger.error(f"Error fetching permission scheme for project {project_key}: {e}", exc_info=True)
+            self.logger.error(f"❌ Error fetching permission scheme for project {project_key}: {e}", exc_info=True)
             return []
 
     async def _sync_user_groups(self, org_id: str, jira_users: List[AppUser]) -> Dict[str, List[AppUser]]:
@@ -1600,15 +1568,15 @@ class JiraConnector(BaseConnector):
         This mapping is used to resolve group members for project roles.
         """
         try:
-            self.logger.info("Starting Jira user group synchronization")
+            self.logger.info("🚀 Starting Jira user group synchronization")
 
             # Fetch all groups
             groups = await self._fetch_groups()
             if not groups:
-                self.logger.info("No groups found in Jira")
+                self.logger.info("ℹ️ No groups found in Jira")
                 return {}
 
-            self.logger.info(f"Found {len(groups)} groups. Fetching members...")
+            self.logger.info(f"👥 Found {len(groups)} groups. Fetching members...")
 
             # Create email -> AppUser lookup for efficient matching
             user_by_email = {user.email.lower(): user for user in jira_users if user.email}
@@ -1669,7 +1637,7 @@ class JiraConnector(BaseConnector):
             if user_groups_batch:
                 await self.data_entities_processor.on_new_user_groups(user_groups_batch)
             else:
-                self.logger.info("No groups with valid members to sync")
+                self.logger.info("ℹ️ No groups with valid members to sync")
 
             return groups_members_map
 
@@ -1720,10 +1688,10 @@ class JiraConnector(BaseConnector):
                     break
 
             except Exception as e:
-                self.logger.error(f"Error fetching groups at offset {start_at}: {e}")
+                self.logger.error(f"❌ Error fetching groups at offset {start_at}: {e}")
                 break
 
-        self.logger.info(f"Fetched {len(groups)} total groups")
+        self.logger.info(f"👥 Fetched {len(groups)} total groups")
         return groups
 
     async def _fetch_group_members(self, group_id: str, group_name: str) -> List[str]:
@@ -1748,7 +1716,7 @@ class JiraConnector(BaseConnector):
                 )
 
                 if response.status != HttpStatusCode.OK.value:
-                    self.logger.warning(f"Failed to fetch members for group {group_name}: {response.text()}")
+                    self.logger.warning(f"⚠️ Failed to fetch members for group {group_name}: {response.text()}")
                     break
 
                 members_data = response.json()
@@ -1775,7 +1743,7 @@ class JiraConnector(BaseConnector):
                     break
 
             except Exception as e:
-                self.logger.error(f"Error fetching members for group {group_name}: {e}")
+                self.logger.error(f"❌ Error fetching members for group {group_name}: {e}")
                 break
 
         return member_emails
@@ -1796,7 +1764,7 @@ class JiraConnector(BaseConnector):
         if groups_members_map is None:
             groups_members_map = {}
 
-        self.logger.info(f"Syncing project roles for {len(project_keys)} projects...")
+        self.logger.info(f"🔐 Syncing project roles for {len(project_keys)} projects...")
 
         # Build email -> AppUser lookup for fast member resolution
         user_by_email: Dict[str, AppUser] = {
@@ -1823,7 +1791,7 @@ class JiraConnector(BaseConnector):
                 response = await datasource.get_project_roles(projectIdOrKey=project_key)
 
                 if response.status != HttpStatusCode.OK.value:
-                    self.logger.warning(f"Failed to fetch roles for project {project_key}: {response.status}")
+                    self.logger.warning(f"⚠️ Failed to fetch roles for project {project_key}: {response.status}")
                     continue
 
                 roles_dict = response.json()
@@ -1930,17 +1898,17 @@ class JiraConnector(BaseConnector):
                         continue
 
             except Exception as project_error:
-                self.logger.error(f"Error syncing roles for project {project_key}: {project_error}")
+                self.logger.error(f"❌ Error syncing roles for project {project_key}: {project_error}")
                 continue
 
         # Step 4: Sync all roles in batch
         if roles_to_sync:
             await self.data_entities_processor.on_new_app_roles(roles_to_sync)
             self.logger.info(
-                f"Synced {total_roles} project roles with {total_members} direct user members"
+                f"✅ Synced {total_roles} project roles with {total_members} direct user members"
             )
         else:
-            self.logger.info("No project roles to sync")
+            self.logger.info("ℹ️ No project roles to sync")
 
     async def _sync_project_lead_roles(
         self,
@@ -2031,15 +1999,15 @@ class JiraConnector(BaseConnector):
                         projects.append(project)
                         self.logger.debug(f"Successfully fetched project: {project_key}")
                     elif response.status == HttpStatusCode.NOT_FOUND.value:
-                        self.logger.warning(f"Project {project_key} not found, skipping")
+                        self.logger.warning(f"⚠️ Project {project_key} not found, skipping")
                     else:
-                        self.logger.warning(f"Failed to fetch project {project_key}: HTTP {response.status}")
+                        self.logger.warning(f"⚠️ Failed to fetch project {project_key}: HTTP {response.status}")
                 except Exception as e:
-                    self.logger.error(f"Error fetching project {project_key}: {e}")
+                    self.logger.error(f"❌ Error fetching project {project_key}: {e}")
                     continue
         else:
             # project_keys is None or empty - fetch all projects
-            self.logger.info("Fetching all projects")
+            self.logger.info("📁 Fetching all projects")
             start_at = 0
 
             while True:
@@ -2105,7 +2073,7 @@ class JiraConnector(BaseConnector):
             record_groups.append((record_group, project_permissions))
 
             if project_permissions:
-                self.logger.info(f"Project {project_key}: {len(project_permissions)} permission grants from scheme")
+                self.logger.info(f"🔐 Project {project_key}: {len(project_permissions)} permission grants from scheme")
 
         return record_groups, projects
 
@@ -2124,7 +2092,7 @@ class JiraConnector(BaseConnector):
             raise ValueError("DataSource not initialized")
 
         if not self.cloud_id:
-            self.logger.error("cloud_id is not set. Cannot fetch issues.")
+            self.logger.error("❌ cloud_id is not set. Cannot fetch issues.")
             return []
 
         issues: List[Dict[str, Any]] = []
@@ -2151,14 +2119,14 @@ class JiraConnector(BaseConnector):
         if modified_after:
             if last_sync_time:
                 modified_after = max(modified_after, last_sync_time)
-                self.logger.info(f"Incremental sync with filter: using {modified_after} (max of filter and checkpoint)")
+                self.logger.info(f"🔄 Incremental sync with filter: using {modified_after} (max of filter and checkpoint)")
             else:
-                self.logger.info(f"Full sync with filter: fetching issues modified after {modified_after}")
+                self.logger.info(f"🔄 Full sync with filter: fetching issues modified after {modified_after}")
         elif last_sync_time:
             buffer_minutes = JQL_TIME_BUFFER_MINUTES
             modified_after = last_sync_time - (buffer_minutes * 60 * 1000)
         else:
-            self.logger.info("Full sync: fetching all issues (no filter, first time)")
+            self.logger.info("🆕 Full sync: fetching all issues (no filter, first time)")
 
         if modified_after:
             modified_dt = datetime.fromtimestamp(modified_after / 1000, tz=timezone.utc)
@@ -2178,7 +2146,7 @@ class JiraConnector(BaseConnector):
 
         # Build final JQL (ORDER BY required for pagination)
         jql = " AND ".join(jql_conditions) + " ORDER BY updated ASC"
-        self.logger.info(f"JQL Query: {jql}")
+        self.logger.info(f"🔍 JQL Query: {jql}")
 
         next_page_token: Optional[str] = None
         page_count = 0
@@ -2202,7 +2170,7 @@ class JiraConnector(BaseConnector):
                 issues_batch = response.json()
 
             except Exception as e:
-                self.logger.error(f"Failed to fetch issues for project {project_key}: {e}")
+                self.logger.error(f"❌ Failed to fetch issues for project {project_key}: {e}")
                 raise
 
             batch_issues = issues_batch.get("issues", [])
@@ -2476,7 +2444,7 @@ class JiraConnector(BaseConnector):
                     all_records.extend(comment_records)
                     self.logger.debug(f"Added {len(comment_records)} comments for issue {issue_key}")
             except Exception as e:
-                self.logger.error(f"Failed to fetch comments for issue {issue_key}: {e}")
+                self.logger.error(f"❌ Failed to fetch comments for issue {issue_key}: {e}")
 
             try:
                 attachment_records = await self._fetch_issue_attachments(
@@ -2492,7 +2460,7 @@ class JiraConnector(BaseConnector):
                 if attachment_records:
                     all_records.extend(attachment_records)
             except Exception as e:
-                self.logger.error(f"Failed to fetch attachments for issue {issue_key}: {e}")
+                self.logger.error(f"❌ Failed to fetch attachments for issue {issue_key}: {e}")
 
         return all_records
 
@@ -2526,7 +2494,7 @@ class JiraConnector(BaseConnector):
         )
         filename_info = f" (filename: {record.record_name})" if record.record_name else ""
         self.logger.info(
-            f"Deleted attachment {record.external_record_id}{filename_info} "
+            f"🗑️ Deleted attachment {record.external_record_id}{filename_info} "
             f"for issue {issue_key} {reason}"
         )
 
@@ -2536,10 +2504,10 @@ class JiraConnector(BaseConnector):
         tx_store
     ) -> Optional[Record]:
         """
-        Find attachment record by ID, trying both new-style and legacy formats.
+        Find attachment record by ID
         """
         external_id = f"attachment_{attachment_id}"
-        
+
         # First try new-style external ID (attachment_<id>)
         record = await tx_store.get_record_by_external_id(
             connector_name=Connectors.JIRA,
@@ -2574,11 +2542,11 @@ class JiraConnector(BaseConnector):
             # Get current attachments once (used in multiple places)
             fields = issue.get("fields", {}) or {}
             attachments = fields.get("attachment", []) or []
-            
+
             # Map current attachments by filename for inline attachment resolution
             attachments_by_filename: Dict[str, List[str]] = {}
             current_attachment_ids: Set[str] = set()
-            
+
             for att in attachments:
                 att_id = att.get("id")
                 filename = att.get("filename")
@@ -2646,7 +2614,7 @@ class JiraConnector(BaseConnector):
             if not unmatched_removed_filenames and not has_description_change:
                 if deleted_count > 0:
                     self.logger.info(
-                        f"Deleted {deleted_count} attachments for issue {issue_key} based on changelog events"
+                        f"🗑️ Deleted {deleted_count} attachments for issue {issue_key} based on changelog events"
                     )
                 return
 
@@ -2663,8 +2631,8 @@ class JiraConnector(BaseConnector):
                 record_filename_lower = record.record_name.lower() if record.record_name else ""
                 if unmatched_removed_filenames and record_filename_lower in unmatched_removed_filenames:
                     await self._delete_attachment_record(
-                        record, 
-                        issue_key, 
+                        record,
+                        issue_key,
                         tx_store,
                         "because it was removed from description"
                     )
@@ -2697,13 +2665,13 @@ class JiraConnector(BaseConnector):
                     )
                 else:
                     self.logger.info(
-                        f"Deleted {deleted_count} attachments for issue {issue_key} that were removed from Jira"
+                        f"🗑️ Deleted {deleted_count} attachments for issue {issue_key} that were removed from Jira"
                     )
 
         except Exception as e:
             issue_key = issue.get("key", "unknown")
             self.logger.error(
-                f"Error handling attachment deletions from changelog for issue {issue_key}: {e}",
+                f"❌ Error handling attachment deletions from changelog for issue {issue_key}: {e}",
                 exc_info=True,
             )
 
@@ -2790,7 +2758,7 @@ class JiraConnector(BaseConnector):
                     await self._delete_missing_comments_for_issue(issue_id, set(), tx_store)
                 return []
 
-            self.logger.info(f"Processing {len(all_comments)} comments for issue {issue_key}")
+            self.logger.info(f"💬 Processing {len(all_comments)} comments for issue {issue_key}")
 
             # If comments changed (add/edit/delete), delete any DB comments that no longer exist at source
             if has_comment_changes:
@@ -2891,11 +2859,11 @@ class JiraConnector(BaseConnector):
 
                 comment_records.append((comment_record, comment_permissions))
 
-            self.logger.info(f"Returning {len(comment_records)} comment records for issue {issue_key}")
+            self.logger.info(f"💬 Returning {len(comment_records)} comment records for issue {issue_key}")
             return comment_records
 
         except Exception as e:
-            self.logger.error(f"Failed to fetch comments for issue {issue_key}: {e}", exc_info=True)
+            self.logger.error(f"❌ Failed to fetch comments for issue {issue_key}: {e}", exc_info=True)
             return []
 
     async def _delete_missing_comments_for_issue(
@@ -2937,18 +2905,18 @@ class JiraConnector(BaseConnector):
                 )
                 deleted_count += 1
                 self.logger.info(
-                    f"Deleted comment {external_id} for issue {issue_id} "
+                    f"🗑️ Deleted comment {external_id} for issue {issue_id} "
                     "because it no longer exists in Jira"
                 )
 
             if deleted_count > 0:
                 self.logger.info(
-                    f"Deleted {deleted_count} comments for issue {issue_id} that were removed from Jira"
+                    f"🗑️ Deleted {deleted_count} comments for issue {issue_id} that were removed from Jira"
                 )
 
         except Exception as e:
             self.logger.error(
-                f"Error deleting missing comments for issue {issue_id}: {e}",
+                f"❌ Error deleting missing comments for issue {issue_id}: {e}",
                 exc_info=True,
             )
 
@@ -3051,7 +3019,7 @@ class JiraConnector(BaseConnector):
 
                 attachment_records.append((attachment_record, attachment_permissions))
 
-            self.logger.info(f"Returning {len(attachment_records)} attachment records for issue {issue_key}")
+            self.logger.info(f"📎 Returning {len(attachment_records)} attachment records for issue {issue_key}")
             return attachment_records
 
         except Exception as e:
@@ -3098,7 +3066,7 @@ class JiraConnector(BaseConnector):
         current_filters = self._get_current_filter_values()
 
         if stored_filters != current_filters:
-            self.logger.info(f"Filter change detected: {stored_filters} -> {current_filters}")
+            self.logger.info(f"🔄 Filter change detected: {stored_filters} -> {current_filters}")
             return True
 
         return False
@@ -3153,39 +3121,39 @@ class JiraConnector(BaseConnector):
     ) -> Optional[str]:
         """
         Fetch attachment content by filename and return as base64 data URI.
-        
+
         Jira inline media (images in description/comments) reference attachments
         on the issue. We find the attachment by filename (media alt text) and
         fetch its content.
-        
+
         Args:
             issue_id: The issue ID/key containing the attachment
             media_id: The media ID from ADF (not always useful for fetching)
             media_alt: The alt text, usually the filename
-            
+
         Returns:
             Base64 data URI string like "data:image/png;base64,..." or None
         """
         try:
             datasource = await self._get_fresh_datasource()
-            
+
             # Get issue to find attachments
             response = await datasource.get_issue(
                 issueIdOrKey=issue_id,
                 fields=["attachment"]
             )
-            
+
             if response.status != HttpStatusCode.OK.value:
-                self.logger.warning(f"Failed to fetch issue {issue_id} for media: {response.status}")
+                self.logger.warning(f"⚠️ Failed to fetch issue {issue_id} for media: {response.status}")
                 return None
-            
+
             issue_details = response.json()
             attachments = issue_details.get("fields", {}).get("attachment", [])
-            
+
             if not attachments:
                 self.logger.debug(f"No attachments found for issue {issue_id}")
                 return None
-            
+
             # Find attachment matching the filename (alt text)
             target_attachment = None
             for attachment in attachments:
@@ -3193,7 +3161,7 @@ class JiraConnector(BaseConnector):
                 if filename == media_alt:
                     target_attachment = attachment
                     break
-            
+
             if not target_attachment:
                 # Try partial match if exact match fails
                 for attachment in attachments:
@@ -3201,41 +3169,41 @@ class JiraConnector(BaseConnector):
                     if media_alt in filename or filename in media_alt:
                         target_attachment = attachment
                         break
-            
+
             if not target_attachment:
                 self.logger.debug(f"No attachment found matching '{media_alt}' in issue {issue_id}")
                 return None
-            
+
             # Fetch attachment content
             attachment_id = target_attachment.get("id")
             mime_type = target_attachment.get("mimeType", "application/octet-stream")
-            
+
             content_response = await datasource.get_attachment_content(
                 id=attachment_id,
                 redirect=False
             )
-            
+
             if content_response.status != HttpStatusCode.OK.value:
-                self.logger.warning(f"Failed to fetch attachment content {attachment_id}: {content_response.status}")
+                self.logger.warning(f"⚠️ Failed to fetch attachment content {attachment_id}: {content_response.status}")
                 return None
-            
+
             # Convert to base64
             content_bytes = content_response.bytes()
             base64_data = base64.b64encode(content_bytes).decode('utf-8')
-            
+
             # Create data URI
             data_uri = f"data:{mime_type};base64,{base64_data}"
-            
+
             self.logger.debug(f"Successfully converted attachment '{media_alt}' to base64 ({len(base64_data)} chars)")
             return data_uri
-            
+
         except Exception as e:
-            self.logger.warning(f"Error fetching media '{media_alt}' for issue {issue_id}: {e}")
+            self.logger.warning(f"⚠️ Error fetching media '{media_alt}' for issue {issue_id}: {e}")
             return None
 
     async def _fetch_issue_content(self, issue_id: str) -> str:
         """Fetch full issue content for streaming using DataSource.
-        
+
         Fetches images from attachments and embeds them as base64 data URIs
         for multimodal indexing.
         """
@@ -3258,25 +3226,25 @@ class JiraConnector(BaseConnector):
         summary = fields.get("summary", "")
 
         summary_text = f"Title: {summary}" if summary else ""
-        
+
         # Create media fetcher callback for this issue
         async def media_fetcher(media_id: str, alt_text: str) -> Optional[str]:
             return await self._fetch_media_as_base64(issue_id, media_id, alt_text)
-        
+
         # Convert description with embedded images
         if description:
             description_md = await adf_to_text_with_images(description, media_fetcher)
             description_text = f"Description:\n{description_md}"
         else:
             description_text = ""
-        
+
         combined_text = f"# {summary_text}\n\n{description_text}"
 
         return combined_text
 
     async def _fetch_comment_content(self, comment_id: str, issue_id: str) -> str:
         """Fetch comment content for streaming using DataSource.
-        
+
         Fetches images from attachments and embeds them as base64 data URIs
         for multimodal indexing.
         """
@@ -3297,11 +3265,11 @@ class JiraConnector(BaseConnector):
 
         # Extract comment body (ADF format)
         body_adf = comment_details.get("body")
-        
+
         # Create media fetcher callback for the parent issue
         async def media_fetcher(media_id: str, alt_text: str) -> Optional[str]:
             return await self._fetch_media_as_base64(issue_id, media_id, alt_text)
-        
+
         # Convert comment body with embedded images
         if body_adf:
             comment_text = await adf_to_text_with_images(body_adf, media_fetcher)
@@ -3342,7 +3310,7 @@ class JiraConnector(BaseConnector):
             response = await datasource.get_current_user()
             return response.status == HttpStatusCode.OK.value
         except Exception as e:
-            self.logger.error(f"Connection test failed: {e}")
+            self.logger.error(f"❌ Connection test failed: {e}")
             return False
 
     async def run_incremental_sync(self) -> None:
@@ -3353,7 +3321,7 @@ class JiraConnector(BaseConnector):
         """Cleanup resources - close HTTP client connections properly"""
         try:
             self.logger.info("Cleaning up Jira connector resources")
-            
+
             # Close HTTP client properly BEFORE event loop closes
             # This prevents Windows asyncio "Event loop is closed" errors
             if self.external_client:
@@ -3370,7 +3338,7 @@ class JiraConnector(BaseConnector):
 
             # Clear data source reference
             self.data_source = None
-            
+
             self.logger.info("Jira connector cleanup completed")
         except Exception as e:
             self.logger.warning(f"Error during cleanup: {e}")
@@ -3615,7 +3583,7 @@ class JiraConnector(BaseConnector):
                 self.logger.debug(f"Comment {comment_id} has not changed at source")
                 return None
 
-            self.logger.info(f"Comment {comment_id} has changed at source")
+            self.logger.info(f"🔄 Comment {comment_id} has changed at source")
 
             # Extract author info
             author = comment_data.get("author", {})
@@ -3749,7 +3717,7 @@ class JiraConnector(BaseConnector):
                 self.logger.debug(f"Attachment {attachment_id} has not changed at source")
                 return None
 
-            self.logger.info(f"Attachment {attachment_id} has changed at source")
+            self.logger.info(f"🔄 Attachment {attachment_id} has changed at source")
 
             # Get attachment metadata
             filename = attachment_data.get("filename", "unknown")

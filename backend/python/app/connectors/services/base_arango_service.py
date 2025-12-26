@@ -2343,20 +2343,6 @@ class BaseArangoService:
             file_record = await self.get_document(record_id, CollectionNames.FILES.value) if record.get("recordType") == "FILE" else await self.get_document(record_id, CollectionNames.MAILS.value)
 
             self.logger.info(f"📋 File record: {file_record}")
-
-            # If record has AUTO_INDEX_OFF status, update it to NOT_STARTED before reindexing
-            # This allows manual reindex to proceed while keeping automatic indexing blocked
-            current_indexing_status = record.get("indexingStatus")
-            if current_indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
-                self.logger.info(f"🔄 Record {record_id} has AUTO_INDEX_OFF status, updating to NOT_STARTED for manual reindex")
-                await self.update_node(
-                    record_id,
-                    {"indexingStatus": ProgressStatus.NOT_STARTED.value},
-                    CollectionNames.RECORDS.value
-                )
-                # Update local record dict for payload
-                record["indexingStatus"] = ProgressStatus.NOT_STARTED.value
-
             # Create and publish reindex event
             try:
                 payload = await self._create_reindex_event_payload(record, file_record,user_id,request)
@@ -4581,7 +4567,7 @@ class BaseArangoService:
             browse_pattern = f"/browse/{issue_key}"
             db = transaction if transaction else self.db
             cursor = db.aql.execute(
-                query, 
+                query,
                 bind_vars={
                     "connector_name": connector_name.value,
                     "record_type": "TICKET",
@@ -4629,14 +4615,14 @@ class BaseArangoService:
         """
         try:
             self.logger.debug(
-                "🚀 Retrieving child records for parent %s %s (record_type: %s)", 
+                "🚀 Retrieving child records for parent %s %s (record_type: %s)",
                 connector_name, parent_external_record_id, record_type or "all"
             )
 
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
                 FILTER record.externalParentId != null
-                    AND record.externalParentId == @parent_id 
+                    AND record.externalParentId == @parent_id
                     AND record.connectorName == @connector_name
             """
 
@@ -4658,14 +4644,14 @@ class BaseArangoService:
             records = [Record.from_arango_base_record(result) for result in results]
 
             self.logger.debug(
-                "✅ Successfully retrieved %d child record(s) for parent %s %s", 
+                "✅ Successfully retrieved %d child record(s) for parent %s %s",
                 len(records), connector_name, parent_external_record_id
             )
             return records
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to retrieve child records for parent %s %s: %s", 
+                "❌ Failed to retrieve child records for parent %s %s: %s",
                 connector_name, parent_external_record_id, str(e)
             )
             return []

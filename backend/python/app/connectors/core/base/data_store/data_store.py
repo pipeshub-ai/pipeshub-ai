@@ -72,9 +72,9 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def get_records_by_parent(
-        self, 
-        connector_name: Connectors, 
-        parent_external_record_id: str, 
+        self,
+        connector_name: Connectors,
+        parent_external_record_id: str,
         record_type: Optional[str] = None
     ) -> List[Record]:
         """Get all child records for a parent record by parent_external_record_id. Optionally filter by record_type."""
