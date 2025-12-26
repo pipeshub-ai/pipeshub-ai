@@ -517,7 +517,7 @@ async def stream_record_internal(
             else:
                 buffer = response['data']
 
-            return Response(content=buffer, media_type="application/octet-stream")
+            return Response(content=buffer or b'', media_type="application/octet-stream")
 
         connector_id = record.connector_id
         connector = container.connectors_map[connector_id]
