@@ -382,6 +382,23 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
     ],
   },
   {
+    id: 'together',
+    label: 'Together',
+    description: 'Enter your Together API credentials for embeddings.',
+    modelPlaceholder: 'e.g., togethercomputer/m2-bert-80M-32k-retrieval',
+    fields: [
+      'apiKey',
+      'model',
+      'endpoint',
+      { name: 'isMultimodal', required: false, defaultValue: false },
+    ],
+    customFields: {
+      endpoint: {
+        placeholder: 'e.g., https://api.together.xyz/v1',
+      },
+    },
+  },
+  {
     id: 'openAICompatible',
     label: 'OpenAI API Compatible',
     description: 'Enter your OpenAI-compatible API credentials to get started.',

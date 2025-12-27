@@ -1,7 +1,7 @@
 import time
 from typing import Any, Dict, List
 
-from langchain.schema import Document
+from langchain_core.documents import Document
 from langchain_experimental.text_splitter import SemanticChunker
 from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
 

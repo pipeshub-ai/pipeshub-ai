@@ -15,15 +15,11 @@ import {
   IconButton,
   Chip,
   Stack,
-  Paper,
-  Grid,
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import { useAccountType } from 'src/hooks/use-account-type';
-import settingsIcon from '@iconify-icons/mdi/settings';
 import closeIcon from '@iconify-icons/mdi/close';
 import saveIcon from '@iconify-icons/eva/save-outline';
-import { createScrollableContainerStyle } from 'src/sections/qna/chatbot/utils/styles/scrollbar';
 import { useConnectorConfig } from '../../hooks/use-connector-config';
 import AuthSection from './auth-section';
 import SyncSection from './sync-section';
@@ -31,7 +27,6 @@ import FiltersSection from './filters-section';
 import ConfigStepper from './config-stepper';
 import { Connector } from '../../types/types';
 import { isNoneAuthType } from '../../utils/auth';
-import { FieldRenderer } from '../field-renderers';
 
 interface ConnectorConfigFormProps {
   connector: Connector;

@@ -1,10 +1,8 @@
 import base64
 import json
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Optional, Tuple
 
 from jinja2 import Template
-from langchain.output_parsers import PydanticOutputParser
-from langchain.schema import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
 from app.config.configuration_service import ConfigurationService
@@ -18,8 +16,9 @@ from app.models.blocks import (
     Point,
     TableMetadata,
 )
-from app.modules.parsers.excel.prompt_template import row_text_prompt
+from app.modules.parsers.excel.prompt_template import RowDescriptions, row_text_prompt
 from app.utils.llm import get_llm
+from app.utils.streaming import invoke_with_structured_output_and_reflection
 
 
 class TableSummary(BaseModel):
@@ -45,21 +44,18 @@ Return the JSON object only, no additional text or explanation.
 """
 
 
-async def _call_llm(config, messages) -> Union[str, dict, list]:
-    llm,_ = await get_llm(config)
-    return await llm.ainvoke(messages)
-
-
-
-async def get_table_summary_n_headers(config, table_markdown: str) -> TableSummary:
+async def get_table_summary_n_headers(config, table_markdown: str) -> Optional[TableSummary]:
     """
     Use LLM to generate a concise summary, mirroring the approach in Excel's get_table_summary.
+
+    Returns:
+        TableSummary Pydantic model with summary and headers, or None if parsing fails.
     """
     try:
-        # LLM prompt (reuse Excel's)
-        # messages = table_summary_prompt.format_messages(
-        #     sample_data=table_markdown
-        # )
+        # Get LLM
+        llm, _ = await get_llm(config)
+
+        # Prepare prompt
         template = Template(table_summary_prompt_template)
         rendered_form = template.render(table_markdown=table_markdown)
         messages = [
@@ -69,65 +65,17 @@ async def get_table_summary_n_headers(config, table_markdown: str) -> TableSumma
             },
             {"role": "user", "content": rendered_form},
         ]
-        response = await _call_llm(config, messages)
-        if '</think>' in response.content:
-                response.content = response.content.split('</think>')[-1]
-        response_text = response.content.strip()
-        if response_text.startswith("```json"):
-            response_text = response_text.replace("```json", "", 1)
-        if response_text.endswith("```"):
-            response_text = response_text.rsplit("```", 1)[0]
-        response_text = response_text.strip()
 
-        try:
-            parser = PydanticOutputParser(pydantic_object=TableSummary)
-            parsed_response = parser.parse(response_text)
+        # Use centralized utility with reflection
+        parsed_response = await invoke_with_structured_output_and_reflection(
+            llm, messages, TableSummary
+        )
+
+        if parsed_response is not None:
             return parsed_response
-        except Exception as parse_error:
-
-            # Reflection: attempt to fix the validation issue by providing feedback to the LLM
-            try:
-                reflection_prompt = f"""
-                The previous response failed validation with the following error:
-                {str(parse_error)}
-
-                The response was:
-                {response_text}
-
-                Please correct your response to match the expected schema.
-                Ensure all fields are properly formatted and all required fields are present.
-                Respond only with valid JSON that matches the TableSummary schema.
-                """
-
-                reflection_messages = [
-                    HumanMessage(content=rendered_form),
-                    AIMessage(content=response_text),
-                    HumanMessage(content=reflection_prompt),
-                ]
-
-                # Use retry wrapper for reflection LLM call
-                reflection_response = await _call_llm(config, reflection_messages)
-                if '</think>' in reflection_response.content:
-                    reflection_response.content = reflection_response.content.split('</think>')[-1]
-                reflection_text = reflection_response.content.strip()
-
-                # Clean the reflection response
-                if reflection_text.startswith("```json"):
-                    reflection_text = reflection_text.replace("```json", "", 1)
-                if reflection_text.endswith("```"):
-                    reflection_text = reflection_text.rsplit("```", 1)[0]
-                reflection_text = reflection_text.strip()
-
-
-                # Try parsing again with the reflection response
-                parsed_reflection = parser.parse(reflection_text)
-
-                return parsed_reflection
-
-            except Exception:
-                raise ValueError(
-                    f"Failed to parse LLM response and reflection attempt failed: {str(parse_error)}"
-                )
+        else:
+            # Return a default TableSummary if parsing fails
+            return TableSummary(summary="", headers=[])
     except Exception as e:
         raise e
 
@@ -159,29 +107,20 @@ async def get_rows_text(
             messages = row_text_prompt.format_messages(
                 table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2)
             )
+            llm, _ = await get_llm(config)
 
-            response = await _call_llm(config, messages)
-            if '</think>' in response.content:
-                response.content = response.content.split('</think>')[-1]
-            # Try to extract JSON array from response
-            try:
-                # First try direct JSON parsing
-                return json.loads(response.content),table_rows
-            except json.JSONDecodeError:
-                # If that fails, try to find and parse a JSON array in the response
-                content = response.content
-                # Look for array between [ and ]
-                start = content.find("[")
-                end = content.rfind("]")
-                if start != -1 and end != -1:
-                    try:
-                        return json.loads(content[start : end + 1]),table_rows
-                    except json.JSONDecodeError:
-                        # If still can't parse, return response as single-item array
-                        return [content],table_rows
-                else:
-                    # If no array found, return response as single-item array
-                    return [content],table_rows
+            # Default to string representations of rows
+            descriptions = [str(row) for row in rows_data]
+
+            # Use centralized utility with reflection
+            parsed_response = await invoke_with_structured_output_and_reflection(
+                llm, messages, RowDescriptions
+            )
+
+            if parsed_response is not None and parsed_response.descriptions:
+                descriptions = parsed_response.descriptions
+
+            return descriptions, table_rows
         except Exception:
             raise
     else:
@@ -222,8 +161,8 @@ async def process_table_pymupdf(
     for table in tables:
         table_markdown = table.to_markdown()
         response = await get_table_summary_n_headers(config, table_markdown)
-        table_summary = response.summary
-        column_headers = response.headers
+        table_summary = response.summary if response else ""
+        column_headers = response.headers if response else []
         table_data = table.extract()
         table_rows_text,table_rows = await get_rows_text(config, {"grid": table_data}, table_summary, column_headers)
         bbox = _normalize_bbox(table.bbox, page_width, page_height)

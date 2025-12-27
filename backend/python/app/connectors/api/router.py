@@ -7,7 +7,7 @@ import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import google.oauth2.credentials
@@ -23,7 +23,7 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -166,6 +166,88 @@ def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
 
 def _sanitize_app_name(app_name: str) -> str:
     return app_name.replace(" ", "").lower()
+
+
+def _trim_config_values(
+    obj: Union[str, int, float, bool, None, List[Any], Dict[str, Any]],
+    path: str = ""
+) -> Union[str, int, float, bool, None, List[Any], Dict[str, Any]]:
+    """
+    Recursively trims leading and trailing whitespace from string values in a configuration object.
+    Skips certain fields that may contain intentional whitespace (like certificates, keys, etc.)
+
+    Only trims string values. Preserves:
+    - Booleans (True/False)
+    - Numbers (int, float)
+    - Date/datetime objects
+    - Other non-string types
+
+    Args:
+        obj: The object to trim (can be str, int, float, bool, None, list, or dict)
+        path: Current path in the object (for tracking nested fields)
+
+    Returns:
+        A new object with trimmed string values (same type as input)
+    """
+    if obj is None:
+        return obj
+
+    # Fields that should NOT be trimmed (they may contain intentional whitespace)
+    skip_trim_fields = {
+        'certificate', 'privatekey', 'private_key', 'credentials', 'oauth',
+        'json', 'jsondata', 'client_secret', 'clientsecret', 'secret',
+        'token', 'accesstoken', 'refreshtoken'
+    }
+
+    # If it's a string, trim it (unless it's in a skip list)
+    if isinstance(obj, str):
+        # Check if current field name should be skipped
+        field_name = path.split('.')[-1] if '.' in path else path
+        if field_name.lower() in skip_trim_fields:
+            return obj
+        return obj.strip()
+
+    # If it's a list, recursively trim each element
+    if isinstance(obj, list):
+        return [_trim_config_values(item, f"{path}[{i}]") for i, item in enumerate(obj)]
+
+    # If it's a dict, recursively trim each property
+    if isinstance(obj, dict):
+        trimmed = {}
+        for key, value in obj.items():
+            new_path = f"{path}.{key}" if path else key
+            trimmed[key] = _trim_config_values(value, new_path)
+        return trimmed
+
+    # Preserve all other types as-is:
+    # - Booleans (isinstance(obj, bool))
+    # - Numbers (isinstance(obj, (int, float)))
+    # - Date/datetime objects (isinstance(obj, (datetime, date)))
+    # - Other types
+    return obj
+
+
+def _trim_connector_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Trims whitespace from connector configuration before saving.
+    This ensures consistent data without leading/trailing spaces.
+
+    Args:
+        config: The configuration dictionary to trim
+
+    Returns:
+        A new configuration dictionary with trimmed values
+    """
+    if not config or not isinstance(config, dict):
+        return config
+
+    trimmed_config = config.copy()
+
+    for section in ["auth", "sync", "filters"]:
+        if section in trimmed_config and isinstance(trimmed_config[section], dict):
+            trimmed_config[section] = _trim_config_values(trimmed_config[section], section)
+
+    return trimmed_config
 
 @router.post("/drive/webhook")
 @inject
@@ -429,7 +511,13 @@ async def stream_record_internal(
             response = await make_api_call(
                 route=buffer_url, token=token
             )
-            return response["data"]
+            if isinstance(response["data"], dict):
+                data = response['data'].get('data')
+                buffer = bytes(data) if isinstance(data, list) else data
+            else:
+                buffer = response['data']
+
+            return Response(content=buffer or b'', media_type="application/octet-stream")
 
         connector_id = record.connector_id
         connector = container.connectors_map[connector_id]
@@ -2635,8 +2723,11 @@ async def create_connector_instance(
 
         body = await request.json()
         connector_type = body.get("connectorType")
-        instance_name = body.get("instanceName")
+        instance_name = (body.get("instanceName") or "").strip()
         config = body.get("config", {})
+        # Trim whitespace from config values
+        if config:
+            config = _trim_connector_config(config)
         base_url = body.get("baseUrl", "")
         scope = (body.get("scope") or "personal").lower()
 
@@ -3024,6 +3115,9 @@ async def update_connector_instance_config(
             )
         body = await request.json()
         base_url = body.get("baseUrl", "")
+
+        # Trim whitespace from config values before processing
+        body = _trim_connector_config(body)
 
         # Verify instance exists
         instance = await connector_registry.get_connector_instance(
