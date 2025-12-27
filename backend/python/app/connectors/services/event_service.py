@@ -158,8 +158,10 @@ class EventService:
                 self.logger.error(f"{connector_name.capitalize()} {connector_id} connector not initialized")
                 return False
 
+            connector_app_name = connector.app.get_app_name()
             # Get connector enum value
-            connector_enum = getattr(Connectors, connector_name.upper().replace(" ", ""), None)
+            enum_key = connector_app_name.name.upper().replace(" ", "_")
+            connector_enum = getattr(Connectors, enum_key, None)
             if not connector_enum:
                 self.logger.error(f"Unknown connector name: {connector_name}")
                 return False
