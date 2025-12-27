@@ -532,7 +532,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def get_record_by_path(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         path: str,
         transaction: Optional[str] = None
     ) -> Optional[Dict]:
@@ -540,7 +540,7 @@ class IGraphDBProvider(ABC):
         Get a record by its file path.
 
         Args:
-            connector_name (Connectors): Connector type
+            connector_id (str): Connector ID
             path (str): File/record path
             transaction (Optional[Any]): Optional transaction context
 
@@ -552,7 +552,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def get_record_by_external_id(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         external_id: str,
         transaction: Optional[str] = None
     ) -> Optional['Record']:
@@ -560,7 +560,7 @@ class IGraphDBProvider(ABC):
         Get a record by its external ID from the source system.
 
         Args:
-            connector_name (Connectors): Connector type
+            connector_id (str): Connector ID
             external_id (str): External record ID
             transaction (Optional[Any]): Optional transaction context
 
@@ -573,7 +573,7 @@ class IGraphDBProvider(ABC):
     async def get_record_key_by_external_id(
         self,
         external_id: str,
-        connector_name: str,
+        connector_id: str,
         transaction: Optional[str] = None
     ) -> Optional[str]:
         """
@@ -581,7 +581,7 @@ class IGraphDBProvider(ABC):
 
         Args:
             external_id (str): External record ID
-            connector_name (str): Connector name
+            connector_id (str): Connector ID
             transaction (Optional[Any]): Optional transaction context
 
         Returns:
@@ -593,7 +593,7 @@ class IGraphDBProvider(ABC):
     async def get_records_by_status(
         self,
         org_id: str,
-        connector_name: Connectors,
+        connector_id: str,
         status_filters: List[str],
         limit: Optional[int] = None,
         offset: int = 0,
@@ -604,7 +604,7 @@ class IGraphDBProvider(ABC):
 
         Args:
             org_id (str): Organization ID
-            connector_name (Connectors): Connector type
+            connector_id (str): Connector ID
             status_filters (List[str]): List of status values to filter by
             limit (Optional[int]): Maximum number of records to return
             offset (int): Number of records to skip
@@ -618,7 +618,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def get_record_by_conversation_index(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         conversation_index: str,
         thread_id: str,
         org_id: str,
@@ -629,7 +629,7 @@ class IGraphDBProvider(ABC):
         Get a record by conversation index (for email/chat connectors).
 
         Args:
-            connector_name (Connectors): Connector type
+            connector_id (str): Connector ID
             conversation_index (str): Conversation index
             thread_id (str): Thread ID
             org_id (str): Organization ID
@@ -646,7 +646,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def get_record_group_by_external_id(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         external_id: str,
         transaction: Optional[str] = None
     ) -> Optional['RecordGroup']:
@@ -654,7 +654,7 @@ class IGraphDBProvider(ABC):
         Get a record group by its external ID.
 
         Args:
-            connector_name (Connectors): Connector type
+            connector_id (str): Connector ID
             external_id (str): External record group ID
             transaction (Optional[Any]): Optional transaction context
 
@@ -723,7 +723,7 @@ class IGraphDBProvider(ABC):
     async def get_user_by_source_id(
         self,
         source_user_id: str,
-        connector_name: Connectors,
+        connector_id: str,
         transaction: Optional[str] = None
     ) -> Optional['User']:
         """
@@ -731,7 +731,7 @@ class IGraphDBProvider(ABC):
 
         Args:
             source_user_id (str): User ID in source system
-            connector_name (Connectors): Connector type
+            connector_id (str): Connector ID
             transaction (Optional[Any]): Optional transaction context
 
         Returns:
@@ -777,7 +777,7 @@ class IGraphDBProvider(ABC):
     async def get_app_user_by_email(
         self,
         email: str,
-        app_name: Connectors,
+        connector_id: str,
         transaction: Optional[str] = None
     ) -> Optional['AppUser']:
         """
@@ -785,7 +785,7 @@ class IGraphDBProvider(ABC):
 
         Args:
             email (str): User email
-            app_name (Connectors): App/connector name
+            connector_id (str): Connector ID
             transaction (Optional[Any]): Optional transaction context
 
         Returns:
@@ -797,14 +797,14 @@ class IGraphDBProvider(ABC):
     async def get_app_users(
         self,
         org_id: str,
-        app_name: str
+        connector_id: str
     ) -> List[Dict]:
         """
-        Get all users for a specific app in an organization.
+        Get all users for a specific connector in an organization.
 
         Args:
             org_id (str): Organization ID
-            app_name (str): App/connector name
+            connector_id (str): Connector ID
 
         Returns:
             List[Dict]: List of app users
@@ -816,7 +816,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def get_user_group_by_external_id(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         external_id: str,
         transaction: Optional[str] = None
     ) -> Optional['AppUserGroup']:
@@ -824,7 +824,7 @@ class IGraphDBProvider(ABC):
         Get a user group by external ID.
 
         Args:
-            connector_name (Connectors): Connector type
+            connector_id (str): Connector ID
             external_id (str): External group ID
             transaction (Optional[Any]): Optional transaction context
 
@@ -836,15 +836,15 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def get_user_groups(
         self,
-        app_name: Connectors,
+        connector_id: str,
         org_id: str,
         transaction: Optional[str] = None
     ) -> List['AppUserGroup']:
         """
-        Get all user groups for an app in an organization.
+        Get all user groups for a connector in an organization.
 
         Args:
-            app_name (Connectors): App/connector name
+            connector_id (str): Connector ID
             org_id (str): Organization ID
             transaction (Optional[Any]): Optional transaction context
 
@@ -856,7 +856,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def get_app_role_by_external_id(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         external_id: str,
         transaction: Optional[str] = None
     ) -> Optional['AppRole']:
@@ -864,7 +864,7 @@ class IGraphDBProvider(ABC):
         Get an app role by external ID.
 
         Args:
-            connector_name (Connectors): Connector type
+            connector_id (str): Connector ID
             external_id (str): External role ID
             transaction (Optional[Any]): Optional transaction context
 
@@ -888,24 +888,6 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of organizations
-        """
-        pass
-
-    @abstractmethod
-    async def get_or_create_app_by_name(
-        self,
-        app_name: str,
-        org_id: str
-    ) -> Optional[Dict]:
-        """
-        Get or create an app by name for an organization.
-
-        Args:
-            app_name (str): App name
-            org_id (str): Organization ID
-
-        Returns:
-            Optional[Dict]: App data if successful, None otherwise
         """
         pass
 
@@ -1444,7 +1426,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def delete_record_by_external_id(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         external_id: str,
         user_id: str,
         transaction: Optional[str] = None
@@ -1453,7 +1435,7 @@ class IGraphDBProvider(ABC):
         Delete a record by external ID.
 
         Args:
-            connector_name (Connectors): Connector type
+            connector_id (str): Connector ID
             external_id (str): External record ID
             user_id (str): User ID performing the deletion
             transaction (Optional[str]): Optional transaction context
@@ -1463,7 +1445,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def remove_user_access_to_record(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         external_id: str,
         user_id: str,
         transaction: Optional[str] = None
@@ -1472,7 +1454,7 @@ class IGraphDBProvider(ABC):
         Remove a user's access to a record (for inbox-based deletions).
 
         Args:
-            connector_name (Connectors): Connector type
+            connector_id (str): Connector ID
             external_id (str): External record ID
             user_id (str): User ID to remove access from
             transaction (Optional[str]): Optional transaction context
@@ -1511,27 +1493,6 @@ class IGraphDBProvider(ABC):
         """
         pass
 
-    # ==================== App Operations ====================
-
-    @abstractmethod
-    async def get_app_by_name(
-        self,
-        name: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
-        """
-        Get an app by its name (case-insensitive).
-
-        Args:
-            name (str): App name
-            transaction (Optional[Any]): Optional transaction context
-
-        Returns:
-            Optional[Dict]: App data if found, None otherwise
-        """
-        pass
-
-    # ==================== Sync State Operations ====================
 
     @abstractmethod
     async def get_user_sync_state(
@@ -1711,7 +1672,7 @@ class IGraphDBProvider(ABC):
     async def get_failed_records_with_active_users(
         self,
         org_id: str,
-        connector_name: Connectors
+        connector_id: str
     ) -> List[Dict]:
         """
         Get failed records along with their active users who have permissions.
@@ -1720,7 +1681,7 @@ class IGraphDBProvider(ABC):
 
         Args:
             org_id (str): Organization ID
-            connector_name (Connectors): Connector name
+            connector_id (str): Connector ID
 
         Returns:
             List[Dict]: List of dictionaries with 'record' and 'users' keys
@@ -1731,7 +1692,7 @@ class IGraphDBProvider(ABC):
     async def get_failed_records_by_org(
         self,
         org_id: str,
-        connector_name: Connectors
+        connector_id: str
     ) -> List[Dict]:
         """
         Get all failed records for an organization and connector.
@@ -1740,7 +1701,7 @@ class IGraphDBProvider(ABC):
 
         Args:
             org_id (str): Organization ID
-            connector_name (Connectors): Connector name
+            connector_id (str): Connector ID
 
         Returns:
             List[Dict]: List of failed record documents

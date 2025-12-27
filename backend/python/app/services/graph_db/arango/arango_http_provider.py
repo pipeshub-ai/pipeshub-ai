@@ -827,7 +827,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def get_record_by_external_id(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         external_id: str,
         transaction: Optional[str] = None
     ) -> Optional[Record]:
@@ -835,7 +835,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         query = f"""
         FOR doc IN {CollectionNames.RECORDS.value}
             FILTER doc.externalRecordId == @external_id
-            AND doc.connectorName == @connector_name
+            AND doc.connectorId == @connector_id
             LIMIT 1
             RETURN doc
         """
@@ -845,7 +845,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 query,
                 bind_vars={
                     "external_id": external_id,
-                    "connector_name": connector_name.value
+                    "connector_id": connector_id
                 },
                 txn_id=transaction
             )
@@ -857,7 +857,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_record_key_by_external_id(
         self,
         external_id: str,
-        connector_name: str,
+        connector_id: str,
         transaction: Optional[str] = None
     ) -> Optional[str]:
         """Get record key by external ID"""
@@ -865,14 +865,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
             query = """
             FOR record IN @@collection
                 FILTER record.externalRecordId == @external_id
-                AND record.connectorName == @connector_name
+                AND record.connectorId == @connector_id
                 LIMIT 1
                 RETURN record._key
             """
             bind_vars = {
                 "@collection": CollectionNames.RECORDS.value,
                 "external_id": external_id,
-                "connector_name": connector_name
+                "connector_id": connector_id
             }
 
             results = await self.http_client.execute_aql(query, bind_vars, transaction)
@@ -884,7 +884,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def get_record_by_path(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         path: str,
         transaction: Optional[str] = None
     ) -> Optional[Dict]:
@@ -892,7 +892,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Get a record from the FILES collection using its path.
 
         Args:
-            connector_name (Connectors): The name of the connector.
+            connector_id (str): The ID of the connector.
             path (str): The path of the file to look up.
             transaction (Optional[str]): Optional transaction ID.
 
@@ -901,7 +901,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         try:
             self.logger.info(
-                f"🚀 Retrieving record by path for connector {connector_name.value} and path {path}"
+                f"🚀 Retrieving record by path for connector {connector_id} and path {path}"
             )
 
             query = f"""
@@ -936,7 +936,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_records_by_status(
         self,
         org_id: str,
-        connector_name: Connectors,
+        connector_id: str,
         status_filters: List[str],
         limit: Optional[int] = None,
         offset: int = 0,
@@ -947,7 +947,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Returns properly typed Record instances (FileRecord, MailRecord, etc.)
         """
         try:
-            self.logger.info(f"Retrieving records for connector {connector_name.value} with status filters: {status_filters}, limit: {limit}, offset: {offset}")
+            self.logger.info(f"Retrieving records for connector {connector_id} with status filters: {status_filters}, limit: {limit}, offset: {offset}")
 
             limit_clause = "LIMIT @offset, @limit" if limit else ""
 
@@ -961,7 +961,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             type_doc_conditions = []
             bind_vars = {
                 "org_id": org_id,
-                "connector_name": connector_name.value,
+                "connector_id": connector_id,
                 "status_filters": status_filters,
             }
 
@@ -999,7 +999,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
                 FILTER record.orgId == @org_id
-                    AND record.connectorName == @connector_name
+                    AND record.connectorId == @connector_id
                     AND record.indexingStatus IN @status_filters
                 SORT record._key
                 {limit_clause}
@@ -1029,11 +1029,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 )
                 typed_records.append(record)
 
-            self.logger.info(f"✅ Successfully retrieved {len(typed_records)} typed records for connector {connector_name.value}")
+            self.logger.info(f"✅ Successfully retrieved {len(typed_records)} typed records for connector {connector_id}")
             return typed_records
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to retrieve records by status for connector {connector_name.value}: {str(e)}")
+            self.logger.error(f"❌ Failed to retrieve records by status for connector {connector_id}: {str(e)}")
             return []
 
     def _create_typed_record_from_arango(self, record_dict: Dict, type_doc: Optional[Dict]) -> Record:
@@ -1079,7 +1079,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def get_record_by_conversation_index(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         conversation_index: str,
         thread_id: str,
         org_id: str,
@@ -1091,7 +1091,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.connectorName == @connector_name
+                FILTER record.connectorId == @connector_id
                     AND record.orgId == @org_id
                 FOR mail IN {CollectionNames.MAILS.value}
                     FILTER mail._key == record._key
@@ -1101,7 +1101,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER edge._to == record._id
                             AND edge.role == 'OWNER'
                             AND edge.type == 'USER'
-                        LET user_key = SPLIT(edge._to, '/')[1]
+                        LET user_key = SPLIT(edge._from, '/')[1]
                         LET user = DOCUMENT('{CollectionNames.USERS.value}', user_key)
                         FILTER user.userId == @user_id
                         LIMIT 1
@@ -1111,8 +1111,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             bind_vars = {
                 "conversation_index": conversation_index,
                 "thread_id": thread_id,
-                "connector_name": connector_name.value,
-                "org_id": org_id
+                "connector_id": connector_id,
+                "org_id": org_id,
+                "user_id": user_id
             }
 
             results = await self.http_client.execute_aql(query, bind_vars, transaction)
@@ -1124,7 +1125,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def get_record_group_by_external_id(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         external_id: str,
         transaction: Optional[str] = None
     ) -> Optional[RecordGroup]:
@@ -1136,7 +1137,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         query = f"""
         FOR doc IN {CollectionNames.RECORD_GROUPS.value}
             FILTER doc.externalGroupId == @external_id
-            AND doc.connectorName == @connector_name
+            AND doc.connectorId == @connector_id
             LIMIT 1
             RETURN doc
         """
@@ -1146,7 +1147,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 query,
                 bind_vars={
                     "external_id": external_id,
-                    "connector_name": connector_name.value
+                    "connector_id": connector_id
                 },
                 txn_id=transaction
             )
@@ -1239,7 +1240,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_user_by_source_id(
         self,
         source_user_id: str,
-        connector_name: Connectors,
+        connector_id: str,
         transaction: Optional[str] = None
     ) -> Optional[User]:
         """
@@ -1247,7 +1248,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         Args:
             source_user_id: The user ID from the source system
-            connector_name: Connector enum for scoped lookup
+            connector_id: Connector ID
             transaction: Optional transaction ID
 
         Returns:
@@ -1255,14 +1256,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         try:
             self.logger.info(
-                f"🚀 Retrieving user by source_id {source_user_id} for connector {connector_name.value}"
+                f"🚀 Retrieving user by source_id {source_user_id} for connector {connector_id}"
             )
 
             user_query = f"""
             // First find the app
             LET app = FIRST(
                 FOR a IN {CollectionNames.APPS.value}
-                    FILTER LOWER(a.name) == LOWER(@app_name)
+                    FILTER a._key == @connector_id
                     RETURN a
             )
 
@@ -1279,7 +1280,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             results = await self.http_client.execute_aql(
                 user_query,
                 bind_vars={
-                    "app_name": connector_name.value,
+                    "connector_id": connector_id,
                     "source_user_id": source_user_id,
                 },
                 txn_id=transaction
@@ -1365,7 +1366,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_app_user_by_email(
         self,
         email: str,
-        app_name: Connectors,
+        connector_id: str,
         transaction: Optional[str] = None
     ) -> Optional[AppUser]:
         """
@@ -1373,7 +1374,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         Args:
             email: User email address
-            app_name: Connector name
+            connector_id: Connector ID
             transaction: Optional transaction ID
 
         Returns:
@@ -1381,14 +1382,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         try:
             self.logger.info(
-                f"🚀 Retrieving user for email {email} and app {app_name.value}"
+                f"🚀 Retrieving user for email {email} and app {connector_id}"
             )
 
             query = f"""
                 // First find the app
                 LET app = FIRST(
                     FOR a IN {CollectionNames.APPS.value}
-                        FILTER LOWER(a.name) == LOWER(@app_name)
+                        FILTER a._key == @connector_id
                         RETURN a
                 )
 
@@ -1417,26 +1418,26 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 query, 
                 bind_vars={
                     "email": email,
-                    "app_name": app_name.value
+                    "connector_id": connector_id
                 },
                 txn_id=transaction
             )
 
             if results and results[0]:
-                self.logger.info(f"✅ Successfully retrieved user for email {email} and app {app_name.value}")
+                self.logger.info(f"✅ Successfully retrieved user for email {email} and app {connector_id}")
                 return AppUser.from_arango_user(results[0])
             else:
-                self.logger.warning(f"⚠️ No user found for email {email} and app {app_name.value}")
+                self.logger.warning(f"⚠️ No user found for email {email} and app {connector_id}")
                 return None
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to retrieve user for email {email} and app {app_name.value}: {str(e)}")
+            self.logger.error(f"❌ Failed to retrieve user for email {email} and app {connector_id}: {str(e)}")
             return None
 
     async def get_app_users(
         self,
         org_id: str,
-        app_name: Connectors
+        connector_id: str
     ) -> List[Dict]:
         """
         Fetch all users from the database who belong to the organization
@@ -1444,19 +1445,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         Args:
             org_id (str): Organization ID
-            app_name (Connectors): App connector name
+            connector_id (str): Connector ID
 
         Returns:
             List[Dict]: List of user documents with their details and sourceUserId
         """
         try:
-            self.logger.info(f"🚀 Fetching users connected to {app_name.value} app")
+            self.logger.info(f"🚀 Fetching users connected to {connector_id} app")
 
             query = f"""
                 // First find the app
                 LET app = FIRST(
                     FOR a IN {CollectionNames.APPS.value}
-                        FILTER LOWER(a.name) == LOWER(@app_name)
+                        FILTER a._key == @connector_id
                         RETURN a
                 )
 
@@ -1485,21 +1486,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
             results = await self.http_client.execute_aql(
                 query,
                 bind_vars={
-                    "app_name": app_name.value,
+                    "connector_id": connector_id,
                     "org_id": org_id
                 }
             )
 
-            self.logger.info(f"✅ Successfully fetched {len(results)} users for {app_name.value}")
+            self.logger.info(f"✅ Successfully fetched {len(results)} users for {connector_id}")
             return results if results else []
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to fetch users for {app_name.value}: {str(e)}")
+            self.logger.error(f"❌ Failed to fetch users for {connector_id}: {str(e)}")
             return []
 
     async def get_user_group_by_external_id(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         external_id: str,
         transaction: Optional[str] = None
     ) -> Optional[AppUserGroup]:
@@ -1511,7 +1512,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         query = f"""
         FOR group IN {CollectionNames.GROUPS.value}
             FILTER group.externalGroupId == @external_id
-            AND group.connectorName == @connector_name
+            AND group.connectorId == @connector_id
             LIMIT 1
             RETURN group
         """
@@ -1521,7 +1522,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 query,
                 bind_vars={
                     "external_id": external_id,
-                    "connector_name": connector_name.value
+                    "connector_id": connector_id
                 },
                 txn_id=transaction
             )
@@ -1538,14 +1539,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def get_user_groups(
         self,
-        app_name: Connectors,
+        connector_id: str,
         org_id: str,
         transaction: Optional[str] = None
     ) -> List[AppUserGroup]:
         """
         Get all user groups for a specific connector and organization.
         Args:
-            app_name: Connector name
+            connector_id: Connector ID
             org_id: Organization ID
             transaction: Optional transaction ID
         Returns:
@@ -1553,18 +1554,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         try:
             self.logger.info(
-                f"🚀 Retrieving user groups for connector {app_name.value} and org {org_id}"
+                f"🚀 Retrieving user groups for connector {connector_id} and org {org_id}"
             )
 
             query = f"""
             FOR group IN {CollectionNames.GROUPS.value}
-                FILTER group.connectorName == @connector_name
+                FILTER group.connectorId == @connector_id
                     AND group.orgId == @org_id
                 RETURN group
             """
 
             bind_vars = {
-                "connector_name": app_name.value,
+                "connector_id": connector_id,
                 "org_id": org_id
             }
 
@@ -1572,19 +1573,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
             groups = [AppUserGroup.from_arango_base_user_group(group_data) for group_data in groupData]
 
             self.logger.info(
-                f"✅ Successfully retrieved {len(groups)} user groups for connector {app_name.value}"
+                f"✅ Successfully retrieved {len(groups)} user groups for connector {connector_id}"
             )
             return groups
 
         except Exception as e:
             self.logger.error(
-                f"❌ Failed to retrieve user groups for connector {app_name.value}: {str(e)}"
+                f"❌ Failed to retrieve user groups for connector {connector_id}: {str(e)}"
             )
             return []
 
     async def get_app_role_by_external_id(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         external_id: str,
         transaction: Optional[str] = None
     ) -> Optional[AppRole]:
@@ -1596,7 +1597,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         query = f"""
         FOR role IN {CollectionNames.ROLES.value}
             FILTER role.externalRoleId == @external_id
-            AND role.connectorName == @connector_name
+            AND role.connectorId == @connector_id
             LIMIT 1
             RETURN role
         """
@@ -1606,7 +1607,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 query,
                 bind_vars={
                     "external_id": external_id,
-                    "connector_name": connector_name.value
+                    "connector_id": connector_id
                 },
                 txn_id=transaction
             )
@@ -1870,85 +1871,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to get all documents from collection: {collection}: {str(e)}")
             return []
 
-    async def get_or_create_app_by_name(
-        self,
-        app_name: str,
-        app_group: str,
-        auth_type: Optional[str] = None,
-        app_type: Optional[str] = None
-    ) -> Optional[Dict]:
-        """
-        Get an existing app by name or create it if it doesn't exist.
-
-        Args:
-            app_name: Name of the application
-            app_group: Group the app belongs to (e.g., "Google Workspace")
-            auth_type: Authentication type (e.g., "oauth", "api_token")
-            app_type: Optional type override (defaults to uppercased app_name)
-
-        Returns:
-            App document if successful
-        """
-        try:
-            # First try to get existing app
-            existing_app = await self.get_app_by_name(app_name)
-            if existing_app:
-                return existing_app
-
-            # If not found, create new app
-            orgs = await self.get_all_documents(CollectionNames.ORGS.value)
-
-            if not orgs or not isinstance(orgs, list):
-                self.logger.warning(f"No organizations found in DB; skipping app creation for {app_name}")
-                return None
-
-            org_id = orgs[0].get("_key")
-            if not org_id:
-                self.logger.warning(f"First organization document missing _key; skipping app creation for {app_name}")
-                return None
-
-            # Generate consistent app group ID
-            app_group_id = hashlib.sha256(app_group.encode()).hexdigest()
-
-            # Create app document
-            doc = {
-                '_key': f"{org_id}_{app_name.replace(' ', '_').upper()}",
-                'name': app_name,
-                'type': app_type or app_name.upper().replace(' ', '_'),
-                'appGroup': app_group,
-                'appGroupId': app_group_id,
-                'authType': auth_type or 'oauth',
-                'isActive': False,
-                'isConfigured': False,
-                'createdAtTimestamp': get_epoch_timestamp_in_ms(),
-                'updatedAtTimestamp': get_epoch_timestamp_in_ms()
-            }
-
-            # Insert app document
-            app_doc = await self.batch_upsert_nodes([doc], CollectionNames.APPS.value)
-            if not app_doc:
-                raise Exception(f"Failed to create app {app_name} in database")
-
-            # Create org-app edge
-            edge_data = {
-                "_from": f"{CollectionNames.ORGS.value}/{org_id}",
-                "_to": f"{CollectionNames.APPS.value}/{doc['_key']}",
-                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-            }
-
-            edge_doc = await self.batch_create_edges(
-                [edge_data],
-                CollectionNames.ORG_APP_RELATION.value,
-            )
-            if not edge_doc:
-                raise Exception(f"Failed to create edge for {app_name} in database")
-
-            self.logger.info(f"Created database entry for {app_name}")
-            return app_doc
-
-        except Exception as e:
-            self.logger.error(f"Error in get_or_create_app_by_name for {app_name}: {e}")
-            return None
 
     async def get_org_apps(
         self,
@@ -2080,20 +2002,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> Optional[str]:
         """Get record owner source user email"""
         try:
-            query = """
-            FOR edge IN @@edge_collection
-                FILTER edge._to == @record_key
-                AND edge.role == "OWNER"
-                AND edge.type == "USER"
+            query = f"""
+            FOR edge IN {CollectionNames.PERMISSION.value}
+                FILTER edge._to == CONCAT('{CollectionNames.RECORDS.value}/', @record_id)
+                FILTER edge.role == 'OWNER'
+                FILTER edge.type == 'USER'
                 LET user_key = SPLIT(edge._from, '/')[1]
                 LET user = DOCUMENT('{CollectionNames.USERS.value}', user_key)
                 LIMIT 1
                 RETURN user.email
             """
             bind_vars = {
-                "@edge_collection": CollectionNames.PERMISSION.value,
-                "@user_collection": CollectionNames.USERS.value,
-                "record_key": f"{CollectionNames.RECORDS.value}/{record_id}"
+                "record_id": record_id
             }
 
             results = await self.http_client.execute_aql(query, bind_vars, transaction)
@@ -2306,21 +2226,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Creates users if they don't exist, creates org relation and user-app relation.
         """
         try:
+            if not users:
+                return
+
             # Get org_id
             orgs = await self.get_all_orgs()
             if not orgs:
                 raise Exception("No organizations found in the database")
             org_id = orgs[0]["_key"]
+            connector_id = users[0].connector_id
 
-            if not users:
-                return
-
-            app_name = users[0].app_name.value
-
-            # Get or create app
-            app = await self.get_or_create_app_by_name(app_name, org_id)
+            app = await self.get_document(connector_id, CollectionNames.APPS.value)
             if not app:
-                raise Exception(f"Failed to get/create app: {app_name}")
+                raise Exception(f"Failed to get/create app: {connector_id}")
 
             app_id = app["_id"]
 
@@ -3181,7 +3099,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def delete_record_by_external_id(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         external_id: str,
         user_id: str,
         transaction: Optional[str] = None
@@ -3190,22 +3108,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Delete a record by external ID.
 
         Args:
-            connector_name: Connector type
+            connector_id: Connector ID
             external_id: External record ID
             user_id: User ID performing the deletion
             transaction: Optional transaction ID
         """
         try:
-            self.logger.info(f"🗂️ Deleting record {external_id} from {connector_name}")
+            self.logger.info(f"🗂️ Deleting record {external_id} from {connector_id}")
 
             # Get record
             record = await self.get_record_by_external_id(
-                connector_name,
+                connector_id,
                 external_id,
                 transaction=transaction
             )
             if not record:
-                self.logger.warning(f"⚠️ Record {external_id} not found in {connector_name}")
+                self.logger.warning(f"⚠️ Record {external_id} not found in {connector_id}")
                 return
 
             # Delete record using the record's internal ID and user_id
@@ -3213,19 +3131,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Check if deletion was successful
             if deletion_result.get("success"):
-                self.logger.info(f"✅ Record {external_id} deleted from {connector_name}")
+                self.logger.info(f"✅ Record {external_id} deleted from {connector_id}")
             else:
                 error_reason = deletion_result.get("reason", "Unknown error")
                 self.logger.error(f"❌ Failed to delete record {external_id}: {error_reason}")
                 raise Exception(f"Deletion failed: {error_reason}")
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete record {external_id} from {connector_name}: {str(e)}")
+            self.logger.error(f"❌ Failed to delete record {external_id} from {connector_id}: {str(e)}")
             raise
 
     async def remove_user_access_to_record(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         external_id: str,
         user_id: str,
         transaction: Optional[str] = None
@@ -3235,22 +3153,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
         This removes the user's permissions and belongsTo edges without deleting the record itself.
 
         Args:
-            connector_name: Connector type
+            connector_id: Connector ID
             external_id: External record ID
             user_id: User ID to remove access from
             transaction: Optional transaction ID
         """
         try:
-            self.logger.info(f"🔄 Removing user access: {external_id} from {connector_name} for user {user_id}")
+            self.logger.info(f"🔄 Removing user access: {external_id} from {connector_id} for user {user_id}")
 
             # Get record
             record = await self.get_record_by_external_id(
-                connector_name,
+                connector_id,
                 external_id,
                 transaction=transaction
             )
             if not record:
-                self.logger.warning(f"⚠️ Record {external_id} not found in {connector_name}")
+                self.logger.warning(f"⚠️ Record {external_id} not found in {connector_id}")
                 return
 
             # Remove user's permission edges
@@ -3279,7 +3197,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.info(f"ℹ️ No permissions found for user {user_id} on record {record.id}")
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_name}: {str(e)}")
+            self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_id}: {str(e)}")
             raise
 
     # ==================== Connector-Specific Delete Methods ====================
@@ -3508,34 +3426,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(
                 f"❌ Failed to retrieve internal key for external file ID {external_file_id}: {str(e)}"
             )
-            return None
-
-    async def get_app_by_name(
-        self,
-        app_name: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
-        """
-        Get app by name.
-
-        Generic method using filters.
-        """
-        query = f"""
-        FOR app IN {CollectionNames.APPS.value}
-            FILTER LOWER(SUBSTITUTE(app.name, ' ', '')) == LOWER(SUBSTITUTE(@app_name, ' ', ''))
-            LIMIT 1
-            RETURN app
-        """
-
-        try:
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars={"app_name": app_name},
-                txn_id=transaction
-            )
-            return results[0] if results else None
-        except Exception as e:
-            self.logger.error(f"❌ Get app by name failed: {str(e)}")
             return None
 
     async def get_user_sync_state(
@@ -3871,7 +3761,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_failed_records_with_active_users(
         self,
         org_id: str,
-        connector_name: Connectors
+        connector_id: str
     ) -> List[Dict]:
         """
         Get failed records along with active users who have permissions.
@@ -3882,7 +3772,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         FOR doc IN records
             FILTER doc.orgId == @org_id
             AND doc.indexingStatus == "FAILED"
-            AND doc.connectorName == @connector_name
+            AND doc.connectorId == @connector_id
 
             LET active_users = (
                 FOR perm IN permission
@@ -3906,7 +3796,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 query,
                 bind_vars={
                     "org_id": org_id,
-                    "connector_name": connector_name.value
+                    "connector_id": connector_id
                 }
             )
             return results if results else []
@@ -3917,7 +3807,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_failed_records_by_org(
         self,
         org_id: str,
-        connector_name: Connectors
+        connector_id: str
     ) -> List[Dict]:
         """
         Get all failed records for an organization and connector.
@@ -3930,7 +3820,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             filters={
                 "orgId": org_id,
                 "indexingStatus": "FAILED",
-                "connectorName": connector_name.value
+                "connectorId": connector_id
             }
         )
 
