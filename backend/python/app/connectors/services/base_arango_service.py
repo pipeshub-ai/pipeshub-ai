@@ -73,6 +73,9 @@ from app.schema.arango.edges import (
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+# Constants
+MAX_REINDEX_DEPTH = 100  # Maximum depth for reindexing records (unlimited depth is capped at this value)
+
 # Collection definitions with their schemas
 NODE_COLLECTIONS = [
     (CollectionNames.RECORDS.value, record_schema),
@@ -2219,9 +2222,9 @@ class BaseArangoService:
         try:
             self.logger.info(f"🔄 Starting reindex for record {record_id} by user {user_id} with depth {depth}")
 
-            # Handle negative depth: -1 means unlimited (set to max 100), other negatives are invalid (set to 0)
+            # Handle negative depth: -1 means unlimited (set to MAX_REINDEX_DEPTH), other negatives are invalid (set to 0)
             if depth == -1:
-                depth = 100
+                depth = MAX_REINDEX_DEPTH
                 self.logger.info(f"Depth was -1 (unlimited), setting to maximum limit: {depth}")
             elif depth < 0:
                 self.logger.warning(f"Invalid negative depth {depth}, setting to 0 (single record only)")
@@ -2456,9 +2459,9 @@ class BaseArangoService:
         try:
             self.logger.info(f"🔄 Starting record group reindex for {record_group_id} with depth {depth} by user {user_id}")
 
-            # Handle negative depth: -1 means unlimited (set to max 100), other negatives are invalid (set to 0)
+            # Handle negative depth: -1 means unlimited (set to MAX_REINDEX_DEPTH), other negatives are invalid (set to 0)
             if depth == -1:
-                depth = 100
+                depth = MAX_REINDEX_DEPTH
                 self.logger.info(f"Depth was -1 (unlimited), setting to maximum limit: {depth}")
             elif depth < 0:
                 self.logger.warning(f"Invalid negative depth {depth}, setting to 0 (direct records only)")
@@ -4175,7 +4178,6 @@ class BaseArangoService:
                 }
             else:
                 self.logger.warning(f"⚠️ No permissions found for user {user_key} on record {record_id}")
-                self.logger.warning(f"⚠️ Query returned: {result}")
                 return {
                     "permission": None,
                     "source": "NONE"

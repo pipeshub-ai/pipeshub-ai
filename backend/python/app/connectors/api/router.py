@@ -40,9 +40,7 @@ from app.config.constants.arangodb import (
     RecordRelations,
     RecordTypes,
 )
-from app.config.constants.http_status_code import (
-    HttpStatusCode,
-)
+from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.api.middleware import WebhookAuthVerifier
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -2208,7 +2206,7 @@ async def reindex_single_record(
         try:
             request_body = await request.json()
             depth = request_body.get("depth", 0)
-        except Exception:
+        except json.JSONDecodeError:
             # No body or invalid JSON - use default depth
             pass
 
@@ -2286,8 +2284,14 @@ async def reindex_record_group(
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
 
-        request_body = await request.json()
-        depth = request_body.get("depth", 0)  # Default to 0 (only direct records)
+        # Parse optional depth from request body
+        depth = 0  # Default to 0 (only direct records)
+        try:
+            request_body = await request.json()
+            depth = request_body.get("depth", 0)
+        except json.JSONDecodeError:
+            # No body or invalid JSON - use default depth
+            depth = 0
 
         logger.info(f"🔄 Attempting to reindex record group {record_group_id} with depth {depth}")
 
