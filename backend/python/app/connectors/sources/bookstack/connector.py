@@ -29,15 +29,23 @@ from app.connectors.core.base.sync_point.sync_point import (
 )
 from app.connectors.core.registry.connector_builder import (
     AuthField,
+    CommonFields,
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+)
+from app.connectors.core.registry.filters import (
+    FilterCollection,
+    IndexingFilterKey,
+    SyncFilterKey,
+    load_connector_filters,
 )
 from app.connectors.sources.bookstack.common.apps import BookStackApp
 from app.models.entities import (
     AppRole,
     AppUser,
     FileRecord,
+    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -110,6 +118,9 @@ class RecordUpdate:
             max_length=100,
             is_secret=True
         ))
+        .add_filter_field(CommonFields.modified_date_filter("Filter content by modification date."))
+        .add_filter_field(CommonFields.created_date_filter("Filter content by creation date."))
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(False)
@@ -150,6 +161,9 @@ class BookStackConnector(BaseConnector):
         self.batch_size = 100
         self.max_concurrent_batches = 5
 
+        self.sync_filters: FilterCollection = FilterCollection()
+        self.indexing_filters: FilterCollection = FilterCollection()
+
     def _create_sync_points(self) -> None:
         """Initialize sync points for different data types."""
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
@@ -186,6 +200,10 @@ class BookStackConnector(BaseConnector):
             base_url = credentials_config.get("base_url")
             token_id = credentials_config.get("token_id")
             token_secret = credentials_config.get("token_secret")
+
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "bookstack", self.connector_id, self.logger
+            )
 
             if not all([base_url, token_id, token_secret]):
                 self.logger.error(
@@ -1483,11 +1501,26 @@ class BookStackConnector(BaseConnector):
         """
         self.logger.info("Starting sync for pages as records.")
 
+        # Get date filters
+        modified_after, modified_before, created_after, created_before = self._get_date_filters()
+
+        # Build API filter params
+        api_filters = self._build_date_filter_params(
+            modified_after=modified_after,
+            modified_before=modified_before,
+            created_after=created_after,
+            created_before=created_before
+        )
+
         batch_records: List[Tuple[FileRecord, List[Permission]]] = []
         offset = 0
 
         while True:
-            response = await self.data_source.list_pages(count=self.batch_size, offset=offset)
+            response = await self.data_source.list_pages(
+                count=self.batch_size,
+                offset=offset,
+                filter=api_filters  # Pass date filters to API
+            )
 
             pages_data = {}
             if response.success and response.data and 'content' in response.data:
@@ -1513,6 +1546,10 @@ class BookStackConnector(BaseConnector):
 
                 if not record_update:
                     continue
+
+                if record_update.record:
+                    if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                        record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
                 # Handle deleted records
                 if record_update.is_deleted:
@@ -1698,14 +1735,23 @@ class BookStackConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error handling record updates: {e}", exc_info=True)
 
-    async def _sync_records_incremental(self, last_sync_timestamp: str, roles_details: Dict[int, Dict], users: List[AppUser]) -> None:
+    async def _sync_records_incremental(
+        self,
+        last_sync_timestamp: str,
+        roles_details: Dict[int, Dict],
+        users: List[AppUser]
+    ) -> None:
         """
         Syncs records (pages) incrementally by processing create, update, and
         delete events from the audit log since the last sync.
         """
         self.logger.info(f"Starting incremental record (page) sync from: {last_sync_timestamp}")
 
-        # 1. Concurrently fetch all page-related events
+        # Get date filters for client-side filtering
+        modified_after, modified_before, created_after, created_before = self._get_date_filters()
+
+        # Audit log filters - only use last_sync_timestamp
+        # We'll apply page date filters client-side after fetching page details
         tasks = {
             "create": self.data_source.list_audit_log(filter={'type': 'page_create', 'created_at:gte': last_sync_timestamp}),
             "update": self.data_source.list_audit_log(filter={'type': 'page_update', 'created_at:gte': last_sync_timestamp}),
@@ -1721,23 +1767,41 @@ class BookStackConnector(BaseConnector):
         if create_response and create_response.success and create_response.data.get('data'):
             self.logger.info(f"Found {len(create_response.data['data'])} new page(s) to create.")
             for event in create_response.data['data']:
-                await self._handle_page_upsert_event(event, roles_details, users)
+                await self._handle_page_upsert_event(
+                    event, roles_details, users,
+                    modified_after=modified_after,
+                    modified_before=modified_before,
+                    created_after=created_after,
+                    created_before=created_before
+                )
 
         # 3. Process Update Events
         update_response = event_responses.get("update")
         if update_response and update_response.success and update_response.data.get('data'):
             self.logger.info(f"Found {len(update_response.data['data'])} page(s) to update.")
             for event in update_response.data['data']:
-                await self._handle_page_upsert_event(event, roles_details, users)
+                await self._handle_page_upsert_event(
+                    event, roles_details, users,
+                    modified_after=modified_after,
+                    modified_before=modified_before,
+                    created_after=created_after,
+                    created_before=created_before
+                )
 
         permissions_update_response = event_responses.get("permissions_update")
         if permissions_update_response and permissions_update_response.success and permissions_update_response.data.get('data'):
-            self.logger.info(f"Found {len(permissions_update_response.data['data'])} page(s) to update.")
+            self.logger.info(f"Found {len(permissions_update_response.data['data'])} page(s) with permission updates.")
             for event in permissions_update_response.data['data']:
                 if event.get('loggable_type') == 'page':
-                    await self._handle_page_upsert_event(event, roles_details, users)
+                    await self._handle_page_upsert_event(
+                        event, roles_details, users,
+                        modified_after=modified_after,
+                        modified_before=modified_before,
+                        created_after=created_after,
+                        created_before=created_before
+                    )
 
-        # 4. Process Delete Events
+        # 4. Process Delete Events (no date filter needed - if it was deleted, handle it)
         delete_response = event_responses.get("delete")
         if delete_response and delete_response.success and delete_response.data.get('data'):
             self.logger.info(f"Found {len(delete_response.data['data'])} page(s) to delete.")
@@ -1749,12 +1813,19 @@ class BookStackConnector(BaseConnector):
         if move_response and move_response.success and move_response.data.get('data'):
             self.logger.info(f"Found {len(move_response.data['data'])} page(s) to move.")
             self.logger.warning("!! method not implemented yet !!")
-            # for event in move_response.data['data']:
-            #     await self._handle_page_move_event(event)
 
         self.logger.info("✅ Finished incremental record sync.")
 
-    async def _handle_page_upsert_event(self, event: Dict, roles_details: Dict[int, Dict], users: List[AppUser]) -> None:
+    async def _handle_page_upsert_event(
+        self,
+        event: Dict,
+        roles_details: Dict[int, Dict],
+        users: List[AppUser],
+        modified_after: Optional[datetime] = None,
+        modified_before: Optional[datetime] = None,
+        created_after: Optional[datetime] = None,
+        created_before: Optional[datetime] = None
+    ) -> None:
         """
         Handles a 'page_create' or 'page_update' event by fetching the page's
         latest details and calling the correct data processor method.
@@ -1778,19 +1849,26 @@ class BookStackConnector(BaseConnector):
             return
 
         try:
-            # 1. Parse the JSON string into a Python dictionary
             pages_data = json.loads(json_content_str)
-            # 2. Extract the list of pages from the 'data' key
             pages_list = pages_data.get("data", [])
-            # 3. Check if we actually got a page back
             if not pages_list:
                 self.logger.warning(f"No page data found in the response for ID {page_id}. Skipping.")
                 return
-            # 4. Get the first (and only) page object from the list
             page_details = pages_list[0]
 
         except json.JSONDecodeError:
             self.logger.error(f"Failed to decode JSON for page ID {page_id}. Content: {json_content_str}")
+            return
+
+        # Apply date filters - skip if page doesn't pass
+        if not self._pass_date_filters(
+            page_details,
+            modified_after=modified_after,
+            modified_before=modified_before,
+            created_after=created_after,
+            created_before=created_before
+        ):
+            self.logger.info(f"Skipping page '{page_name}' (ID: {page_id}) due to date filters.")
             return
 
         # Process the page to determine if it's new or updated
@@ -1799,16 +1877,151 @@ class BookStackConnector(BaseConnector):
         if not record_update:
             return
 
-        # **This is the logic you requested:**
-        # If the record is new, handle it here directly.
+        if record_update.record:
+            if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
         if record_update.is_new:
             self.logger.info(f"New record detected from event: {record_update.record.record_name}")
             new_record_batch = [(record_update.record, record_update.new_permissions or [])]
             await self.data_entities_processor.on_new_records(new_record_batch)
 
-        # If it's an existing record that was updated, pass it to the original handler.
         elif record_update.is_updated:
             await self._handle_record_updates(record_update)
+
+    def _get_date_filters(self) -> Tuple[Optional[datetime], Optional[datetime], Optional[datetime], Optional[datetime]]:
+        """
+        Extract date filter values from sync_filters.
+
+        Returns:
+            Tuple of (modified_after, modified_before, created_after, created_before)
+        """
+        modified_after: Optional[datetime] = None
+        modified_before: Optional[datetime] = None
+        created_after: Optional[datetime] = None
+        created_before: Optional[datetime] = None
+
+        # Get modified date filter
+        modified_date_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
+        if modified_date_filter and not modified_date_filter.is_empty():
+            after_iso, before_iso = modified_date_filter.get_datetime_iso()
+            if after_iso:
+                modified_after = datetime.fromisoformat(after_iso).replace(tzinfo=timezone.utc)
+                self.logger.info(f"Applying modified date filter: after {modified_after}")
+            if before_iso:
+                modified_before = datetime.fromisoformat(before_iso).replace(tzinfo=timezone.utc)
+                self.logger.info(f"Applying modified date filter: before {modified_before}")
+
+        # Get created date filter
+        created_date_filter = self.sync_filters.get(SyncFilterKey.CREATED)
+        if created_date_filter and not created_date_filter.is_empty():
+            after_iso, before_iso = created_date_filter.get_datetime_iso()
+            if after_iso:
+                created_after = datetime.fromisoformat(after_iso).replace(tzinfo=timezone.utc)
+                self.logger.info(f"Applying created date filter: after {created_after}")
+            if before_iso:
+                created_before = datetime.fromisoformat(before_iso).replace(tzinfo=timezone.utc)
+                self.logger.info(f"Applying created date filter: before {created_before}")
+
+        return modified_after, modified_before, created_after, created_before
+
+
+    def _build_date_filter_params(
+        self,
+        modified_after: Optional[datetime] = None,
+        modified_before: Optional[datetime] = None,
+        created_after: Optional[datetime] = None,
+        created_before: Optional[datetime] = None,
+        additional_filters: Optional[Dict[str, str]] = None
+        ) -> Dict[str, str]:
+        """
+        Build filter parameters for BookStack API including date filters.
+
+        Args:
+            modified_after: Only include pages modified after this date
+            modified_before: Only include pages modified before this date
+            created_after: Only include pages created after this date
+            created_before: Only include pages created before this date
+            additional_filters: Any additional filters to include
+
+        Returns:
+            Dictionary of filter parameters for the API
+        """
+        filters: Dict[str, str] = {}
+
+        if additional_filters:
+            filters.update(additional_filters)
+
+        # Add modified date filters (using updated_at field)
+        if modified_after:
+            filters['updated_at:gte'] = modified_after.strftime('%Y-%m-%dT%H:%M:%SZ')
+        if modified_before:
+            filters['updated_at:lte'] = modified_before.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        # Add created date filters
+        if created_after:
+            filters['created_at:gte'] = created_after.strftime('%Y-%m-%dT%H:%M:%SZ')
+        if created_before:
+            filters['created_at:lte'] = created_before.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        return filters if filters else None
+
+    def _pass_date_filters(
+        self,
+        page: Dict,
+        modified_after: Optional[datetime] = None,
+        modified_before: Optional[datetime] = None,
+        created_after: Optional[datetime] = None,
+        created_before: Optional[datetime] = None
+    ) -> bool:
+        """
+        Check if a page passes the date filters.
+
+        Args:
+            page: The page data dictionary from BookStack API
+            modified_after: Only include pages modified after this date
+            modified_before: Only include pages modified before this date
+            created_after: Only include pages created after this date
+            created_before: Only include pages created before this date
+
+        Returns:
+            True if the page passes all filters, False if it should be skipped
+        """
+        # No filters applied - pass everything
+        if not any([modified_after, modified_before, created_after, created_before]):
+            return True
+
+        # Parse page dates
+        page_created_at = None
+        page_updated_at = None
+
+        created_at_str = page.get('created_at')
+        if created_at_str:
+            page_created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+
+        updated_at_str = page.get('updated_at')
+        if updated_at_str:
+            page_updated_at = datetime.fromisoformat(updated_at_str.replace('Z', '+00:00'))
+
+        # Apply created date filters
+        if page_created_at:
+            if created_after and page_created_at < created_after:
+                self.logger.debug(f"Skipping page '{page.get('name')}': created {page_created_at} before filter {created_after}")
+                return False
+            if created_before and page_created_at > created_before:
+                self.logger.debug(f"Skipping page '{page.get('name')}': created {page_created_at} after filter {created_before}")
+                return False
+
+        # Apply modified date filters
+        if page_updated_at:
+            if modified_after and page_updated_at < modified_after:
+                self.logger.debug(f"Skipping page '{page.get('name')}': modified {page_updated_at} before filter {modified_after}")
+                return False
+            if modified_before and page_updated_at > modified_before:
+                self.logger.debug(f"Skipping page '{page.get('name')}': modified {page_updated_at} after filter {modified_before}")
+                return False
+
+        return True
 
     async def run_incremental_sync(self) -> None:
         """
@@ -1851,10 +2064,138 @@ class BookStackConnector(BaseConnector):
         self.logger.info("Cleaning up BookStack connector resources.")
         self.data_source = None
 
-    async def reindex_records(self, record_results: List[Record]) -> None:
-        """Reindex records - not implemented for BookStack yet."""
-        self.logger.warning("Reindex not implemented for BookStack connector")
-        pass
+    async def reindex_records(self, records: List[Record]) -> None:
+        """
+        Reindex records from BookStack.
+
+        This method checks each record at the source for updates:
+        - If the record has changed (metadata, content, or permissions), it updates the DB
+        - If the record hasn't changed, it publishes a reindex event for the existing record
+        """
+        try:
+            if not records:
+                self.logger.info("No records to reindex")
+                return
+
+            self.logger.info(f"Starting reindex for {len(records)} BookStack records")
+
+            # Ensure BookStack client is initialized
+            if not self.data_source:
+                self.logger.error("BookStack client not initialized. Call init() first.")
+                raise Exception("BookStack client not initialized. Call init() first.")
+
+            # Fetch roles and users needed for processing pages
+            roles_details = await self.list_roles_with_details()
+            users = await self.get_all_users()
+
+            # Check records at source for updates
+            org_id = self.data_entities_processor.org_id
+            updated_records = []
+            non_updated_records = []
+
+            for record in records:
+                try:
+                    updated_record_data = await self._check_and_fetch_updated_record(
+                        org_id, record, roles_details, users
+                    )
+                    if updated_record_data:
+                        updated_record, permissions = updated_record_data
+                        updated_records.append((updated_record, permissions))
+                    else:
+                        non_updated_records.append(record)
+                except Exception as e:
+                    self.logger.error(f"Error checking record {record.id} at source: {e}")
+                    continue
+
+            # Update DB only for records that changed at source
+            if updated_records:
+                await self.data_entities_processor.on_new_records(updated_records)
+                self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
+
+            # Publish reindex events for non-updated records
+            if non_updated_records:
+                await self.data_entities_processor.reindex_existing_records(non_updated_records)
+                self.logger.info(f"Published reindex events for {len(non_updated_records)} non-updated records")
+
+        except Exception as e:
+            self.logger.error(f"Error during BookStack reindex: {e}", exc_info=True)
+            raise
+
+    async def _check_and_fetch_updated_record(
+        self, org_id: str, record: Record, roles_details: Dict[int, Dict], users: List[AppUser]
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """
+        Fetch record from BookStack and return data for reindexing if changed.
+
+        Args:
+            org_id: The organization ID
+            record: The record to check for updates
+            roles_details: Dictionary of role details for permission parsing
+            users: List of all users for permission parsing
+
+        Returns:
+            Tuple of (updated_record, permissions) if the record has changed, None otherwise
+        """
+        try:
+            external_id = record.external_record_id
+
+            if not external_id:
+                self.logger.warning(f"Missing external_record_id for record {record.id}")
+                return None
+
+            # Parse the page ID from external_record_id (format: "page/{page_id}")
+            if not external_id.startswith("page/"):
+                self.logger.warning(f"Invalid external_record_id format for record {record.id}: {external_id}")
+                return None
+
+            page_id = external_id.split("/")[1]
+
+            # Fetch fresh page data from BookStack
+            page_response = await self.data_source.list_pages(filter={"id": str(page_id)})
+
+            if not page_response.success or not page_response.data:
+                self.logger.warning(f"Could not fetch page data for record {record.id}: {page_response.error if page_response else 'No response'}")
+                return None
+
+            json_content_str = page_response.data.get('content')
+            if not json_content_str:
+                self.logger.warning(f"API response for page ID {page_id} is empty. Skipping.")
+                return None
+
+            try:
+                # Parse the JSON string into a Python dictionary
+                pages_data = json.loads(json_content_str)
+                # Extract the list of pages from the 'data' key
+                pages_list = pages_data.get("data", [])
+                # Check if we actually got a page back
+                if not pages_list:
+                    self.logger.warning(f"No page data found in the response for ID {page_id}. Skipping.")
+                    return None
+                # Get the first (and only) page object from the list
+                page_details = pages_list[0]
+
+            except json.JSONDecodeError:
+                self.logger.error(f"Failed to decode JSON for page ID {page_id}. Content: {json_content_str}")
+                return None
+
+            # Process the page using existing logic
+            record_update = await self._process_bookstack_page(page_details, roles_details, users)
+
+            if not record_update or record_update.is_deleted:
+                return None
+
+            # Only return data if there's an actual update (metadata, content, or permissions)
+            if record_update.is_updated:
+                self.logger.info(f"Record {external_id} has changed at source. Updating.")
+                # Ensure we keep the internal DB ID
+                record_update.record.id = record.id
+                return (record_update.record, record_update.new_permissions or [])
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Error checking BookStack record {record.id} at source: {e}", exc_info=True)
+            return None
 
     @classmethod
     async def create_connector(

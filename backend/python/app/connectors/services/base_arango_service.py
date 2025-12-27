@@ -3234,13 +3234,11 @@ class BaseArangoService:
             LET group_permission = FIRST(
                 FOR permission IN @@permission
                     FILTER permission._from == user_from
-                    FILTER permission.type == "USER"
                     LET group = DOCUMENT(permission._to)
                     FILTER group != null
                     FOR perm IN @@permission
                         FILTER perm._from == group._id
                         FILTER perm._to == record_from
-                        FILTER perm.type == "GROUP"
                         RETURN perm.role
             )
 
@@ -3249,7 +3247,6 @@ class BaseArangoService:
             LET record_group_permission = FIRST(
                 // First hop: user -> group
                 FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
-                    FILTER userToGroupEdge.type == "USER"
                     FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
 
                     // Second hop: group -> recordgroup
@@ -3264,29 +3261,25 @@ class BaseArangoService:
             )
 
             LET nested_record_group_permission = FIRST(
-                // First hop: user -> group
+                // First hop: user -> group/role
                 FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
-                    FILTER userToGroupEdge.type == "USER"
                     FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
 
-                // Second hop: group -> recordgroup1
-                FOR recordGroup1, groupToRg1Edge IN 1..1 ANY group._id @@permission
+                // Second hop: group -> recordgroup
+                FOR recordGroup, groupToRgEdge IN 1..1 ANY group._id @@permission
+                    FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
 
-                // Third hop: recordgroup1 -> recordgroup2
-                FOR recordGroup2, rg1ToRg2Edge IN 1..1 INBOUND recordGroup1._id @@inherit_permissions
-                    FILTER rg1ToRg2Edge.type == "GROUP"
+                // Third hop: recordgroup -> nested record groups (0 to 5 levels) -> record
+                FOR record, edge, path IN 0..5 INBOUND recordGroup._id @@inherit_permissions
+                    FILTER record._id == record_from
+                    FILTER IS_SAME_COLLECTION("records", record)
 
-                // Fourth hop: recordgroup2 -> record
-                FOR rec, rg2ToRecordEdge IN 1..1 INBOUND recordGroup2._id @@inherit_permissions
-                    FILTER rec._id == record_from
-                    // The role is on the final edge from the record group (rg2) to the record
-                    RETURN groupToRg1Edge.role
+                    RETURN groupToRgEdge.role
             )
 
             LET direct_user_record_group_permission = FIRST(
                 // Direct user -> record_group (with nested record groups support)
                 FOR recordGroup, userToRgEdge IN 1..1 ANY user_from @@permission
-                    FILTER userToRgEdge.type == "USER"
                     FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
 
                     // Record group -> nested record groups (0 to 5 levels) -> record

@@ -49,6 +49,12 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorScope,
     DocumentationLink,
 )
+from app.connectors.core.registry.filters import (
+    FilterCollection,
+    IndexingFilterKey,
+    SyncFilterKey,
+    load_connector_filters,
+)
 
 # App-specific Dropbox client imports
 from app.connectors.sources.dropbox.common.apps import DropboxApp
@@ -59,6 +65,7 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     FileRecord,
+    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -184,6 +191,9 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
         )
         .add_auth_field(CommonFields.client_id("Dropbox App Console"))
         .add_auth_field(CommonFields.client_secret("Dropbox App Console"))
+        .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
+        .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_webhook_config(True, ["file.added", "file.modified", "file.deleted"])
         .with_scheduled_config(True, 60)
         .add_sync_custom_field(CommonFields.batch_size_field())
@@ -231,6 +241,8 @@ class DropboxConnector(BaseConnector):
         self.batch_size = 100
         self.max_concurrent_batches = 5
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
+        self.sync_filters: FilterCollection = FilterCollection()
+        self.indexing_filters: FilterCollection = FilterCollection()
 
     async def init(self) -> bool:
         """Initializes the Dropbox client using credentials from the config service."""
@@ -249,6 +261,10 @@ class DropboxConnector(BaseConnector):
         auth_config = config.get("auth")
         app_key = auth_config.get("clientId")
         app_secret = auth_config.get("clientSecret")
+
+        self.sync_filters, self.indexing_filters = await load_connector_filters(
+            self.config_service, "dropbox", self.connector_id, self.logger
+        )
 
         try:
             config = DropboxTokenConfig(
@@ -269,7 +285,11 @@ class DropboxConnector(BaseConnector):
         self, entry: Union[FileMetadata, FolderMetadata, DeletedMetadata],
          user_id: str, user_email: str,
           record_group_id: str,
-          is_person_folder: bool
+          is_person_folder: bool,
+          modified_after: Optional[datetime] = None,
+          modified_before: Optional[datetime] = None,
+          created_after: Optional[datetime] = None,
+          created_before: Optional[datetime] = None
     ) -> Optional[RecordUpdate]:
         """
         Process a single Dropbox entry and detect changes.
@@ -278,6 +298,11 @@ class DropboxConnector(BaseConnector):
             RecordUpdate object containing the record and change information.
         """
         try:
+
+            # 0. Apply date filters if provided
+            if not self._pass_date_filters(entry, modified_after, modified_before, created_after, created_before):
+                return None
+
             # 1. Handle Deleted Items (Deletion from db not implemented yet)
             if isinstance(entry, DeletedMetadata):
                 pass
@@ -562,7 +587,11 @@ class DropboxConnector(BaseConnector):
             return None
 
     async def _process_dropbox_items_generator(
-        self, entries: List[Union[FileMetadata, FolderMetadata, DeletedMetadata]], user_id: str, user_email: str, record_group_id: str, is_person_folder: bool
+        self, entries: List[Union[FileMetadata, FolderMetadata, DeletedMetadata]], user_id: str, user_email: str, record_group_id: str, is_person_folder: bool,
+        modified_after: Optional[datetime] = None,
+        modified_before: Optional[datetime] = None,
+        created_after: Optional[datetime] = None,
+        created_before: Optional[datetime] = None
     ) -> AsyncGenerator[Tuple[Optional[FileRecord], List[Permission], RecordUpdate], None]:
         """
         Process Dropbox entries and yield records with their permissions.
@@ -570,13 +599,125 @@ class DropboxConnector(BaseConnector):
         """
         for entry in entries:
             try:
-                record_update = await self._process_dropbox_entry(entry, user_id, user_email, record_group_id, is_person_folder)
+                record_update = await self._process_dropbox_entry(
+                    entry, user_id, user_email, record_group_id, is_person_folder,
+                    modified_after=modified_after,
+                    modified_before=modified_before,
+                    created_after=created_after,
+                    created_before=created_before
+                )
                 if record_update:
+                    if record_update.record and not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                        record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
                     yield (record_update.record, record_update.new_permissions or [], record_update)
                 await asyncio.sleep(0)
             except Exception as e:
                 self.logger.error(f"Error processing item in generator: {e}", exc_info=True)
                 continue
+
+    def _pass_date_filters(
+        self,
+        entry: Union[FileMetadata, FolderMetadata, DeletedMetadata],
+        modified_after: Optional[datetime] = None,
+        modified_before: Optional[datetime] = None,
+        created_after: Optional[datetime] = None,
+        created_before: Optional[datetime] = None
+    ) -> bool:
+        """
+        Returns True if entry PASSES filters (should be kept)
+
+        Note: Dropbox only provides `server_modified` (modification date) for files.
+        For `client_modified` (creation/upload date), we use it as the "created" date.
+        Folders don't have date metadata, so they are never filtered out.
+
+        Args:
+            entry: The Dropbox file/folder metadata
+            modified_after: Skip files modified before this date
+            modified_before: Skip files modified after this date
+            created_after: Skip files created before this date
+            created_before: Skip files created after this date
+
+        Returns:
+            False if the entry should be skipped, True otherwise
+        """
+        # Folders don't have date metadata - never filter them out
+        if not isinstance(entry, FileMetadata):
+            return True
+
+        # No filters applied
+        if not any([modified_after, modified_before, created_after, created_before]):
+            return True
+
+        # Get the dates from the entry
+        # server_modified = last time the file was modified on Dropbox
+        # client_modified = modification time set by the desktop client when file was added
+        server_modified = entry.server_modified
+        client_modified = getattr(entry, 'client_modified', None)
+
+        # Ensure timezone awareness for comparison
+        if server_modified and server_modified.tzinfo is None:
+            server_modified = server_modified.replace(tzinfo=timezone.utc)
+        if client_modified and client_modified.tzinfo is None:
+            client_modified = client_modified.replace(tzinfo=timezone.utc)
+
+        # Apply modified date filters (using server_modified)
+        if server_modified:
+            if modified_after and server_modified < modified_after:
+                self.logger.debug(f"Skipping {entry.name}: modified {server_modified} before cutoff {modified_after}")
+                return False
+            if modified_before and server_modified > modified_before:
+                self.logger.debug(f"Skipping {entry.name}: modified {server_modified} after cutoff {modified_before}")
+                return False
+
+        # Apply created date filters (using client_modified as proxy for creation date)
+        # If client_modified is not available, fall back to server_modified
+        created_date = client_modified or server_modified
+        if created_date:
+            if created_after and created_date < created_after:
+                self.logger.debug(f"Skipping {entry.name}: created {created_date} before cutoff {created_after}")
+                return False
+            if created_before and created_date > created_before:
+                self.logger.debug(f"Skipping {entry.name}: created {created_date} after cutoff {created_before}")
+                return False
+
+        return True
+
+    def _get_date_filters(self) -> Tuple[Optional[datetime], Optional[datetime], Optional[datetime], Optional[datetime]]:
+        """
+        Extract date filter values from sync_filters.
+
+        Returns:
+            Tuple of (modified_after, modified_before, created_after, created_before)
+        """
+        modified_after: Optional[datetime] = None
+        modified_before: Optional[datetime] = None
+        created_after: Optional[datetime] = None
+        created_before: Optional[datetime] = None
+
+        # Get modified date filter
+        modified_date_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
+        if modified_date_filter and not modified_date_filter.is_empty():
+            after_iso, before_iso = modified_date_filter.get_datetime_iso()
+            if after_iso:
+                modified_after = datetime.fromisoformat(after_iso).replace(tzinfo=timezone.utc)
+                self.logger.info(f"Applying modified date filter: after {modified_after}")
+            if before_iso:
+                modified_before = datetime.fromisoformat(before_iso).replace(tzinfo=timezone.utc)
+                self.logger.info(f"Applying modified date filter: before {modified_before}")
+
+        # Get created date filter
+        created_date_filter = self.sync_filters.get(SyncFilterKey.CREATED)
+        if created_date_filter and not created_date_filter.is_empty():
+            after_iso, before_iso = created_date_filter.get_datetime_iso()
+            if after_iso:
+                created_after = datetime.fromisoformat(after_iso).replace(tzinfo=timezone.utc)
+                self.logger.info(f"Applying created date filter: after {created_after}")
+            if before_iso:
+                created_before = datetime.fromisoformat(before_iso).replace(tzinfo=timezone.utc)
+                self.logger.info(f"Applying created date filter: before {created_before}")
+
+        return modified_after, modified_before, created_after, created_before
 
     async def _convert_dropbox_permissions_to_permissions(
         self,
@@ -844,9 +985,6 @@ class DropboxConnector(BaseConnector):
                     for user in batch
                 ]
 
-
-                print("Going to run sync for these users:", batch)
-
                 await asyncio.gather(*sync_tasks, return_exceptions=True)
 
                 # Small delay between batches to prevent overwhelming the API
@@ -916,6 +1054,8 @@ class DropboxConnector(BaseConnector):
                 self.logger.info(f"Retrieved sync point: {sync_point}")
                 self.logger.info(f"Cursor value: {cursor}")
 
+                modified_after, modified_before, created_after, created_before = self._get_date_filters()
+
                 # Reset batching and state for each folder sync
                 batch_records = []
                 batch_count = 0
@@ -943,7 +1083,8 @@ class DropboxConnector(BaseConnector):
                                         recursive=True
                                     )
                                 except Exception as e:
-                                    print("error in api call:", e)
+                                    self.logger.error("error in api call:", e)
+
                         if not result.success:
                             self.logger.error(f"[{sync_log_name}] Dropbox API call failed: {result.error}")
                             # Stop syncing this folder on API error
@@ -955,7 +1096,11 @@ class DropboxConnector(BaseConnector):
 
                         # 4. Process the entries from the current page
                         async for file_record, permissions, record_update in self._process_dropbox_items_generator(
-                            entries, user_id, user_email, current_record_group_id, folder_id is None
+                            entries, user_id, user_email, current_record_group_id, folder_id is None,
+                            modified_after=modified_after,
+                            modified_before=modified_before,
+                            created_after=created_after,
+                            created_before=created_before
                         ):
                             if record_update.is_deleted:
                                 await self._handle_record_updates(record_update)
@@ -1573,7 +1718,7 @@ class DropboxConnector(BaseConnector):
                 group_info = participant.get_group()
                 group_id = group_info.group_id
                 group_name = group_info.display_name
-                print(f"Extracted deleted group: {group_name} ({group_id})")
+                self.logger.info(f"Extracted deleted group: {group_name} ({group_id})")
                 break
 
         # Validate we have required information
@@ -2140,11 +2285,11 @@ class DropboxConnector(BaseConnector):
         for user in users:
             # Validate data first
             if not user.full_name or not user.full_name.strip():
-                print(f"⚠️ Skipping user with empty full_name: {user.email}")
+                self.logger.warning(f"⚠️ Skipping user with empty full_name: {user.email}")
                 continue
 
             if not user.source_user_id or not user.source_user_id.strip():
-                print(f"⚠️ Skipping user with empty source_user_id: {user.email}")
+                self.logger.warning(f"⚠️ Skipping user with empty source_user_id: {user.email}")
                 continue
 
             record_group = RecordGroup(
@@ -2653,10 +2798,160 @@ class DropboxConnector(BaseConnector):
         self.logger.info("Cleaning up Dropbox connector resources.")
         self.data_source = None
 
-    async def reindex_records(self, record_results: List[Record]) -> None:
-        """Reindex records - not implemented for Dropbox yet."""
-        self.logger.warning("Reindex not implemented for Dropbox connector")
-        pass
+    async def reindex_records(self, records: List[Record]) -> None:
+        """
+        Reindex records from Dropbox.
+
+        This method checks each record at the source for updates:
+        - If the record has changed (metadata, content, or permissions), it updates the DB
+        - If the record hasn't changed, it publishes a reindex event for the existing record
+        """
+        try:
+            if not records:
+                self.logger.info("No records to reindex")
+                return
+
+            self.logger.info(f"Starting reindex for {len(records)} Dropbox records")
+
+            # Ensure Dropbox client is initialized
+            if not self.data_source:
+                self.logger.error("Dropbox client not initialized. Call init() first.")
+                raise Exception("Dropbox client not initialized. Call init() first.")
+
+            # Check records at source for updates
+            org_id = self.data_entities_processor.org_id
+            updated_records = []
+            non_updated_records = []
+
+            for record in records:
+                try:
+                    updated_record_data = await self._check_and_fetch_updated_record(org_id, record)
+                    if updated_record_data:
+                        updated_record, permissions = updated_record_data
+                        updated_records.append((updated_record, permissions))
+                    else:
+                        non_updated_records.append(record)
+                except Exception as e:
+                    self.logger.error(f"Error checking record {record.id} at source: {e}")
+                    continue
+
+            # Update DB only for records that changed at source
+            if updated_records:
+                await self.data_entities_processor.on_new_records(updated_records)
+                self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
+
+            # Publish reindex events for non-updated records
+            if non_updated_records:
+                await self.data_entities_processor.reindex_existing_records(non_updated_records)
+                self.logger.info(f"Published reindex events for {len(non_updated_records)} non-updated records")
+
+        except Exception as e:
+            self.logger.error(f"Error during Dropbox reindex: {e}", exc_info=True)
+            raise
+
+    async def _check_and_fetch_updated_record(
+        self, org_id: str, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """
+        Fetch record from Dropbox and return data for reindexing if changed.
+
+        Args:
+            org_id: The organization ID
+            record: The record to check for updates
+
+        Returns:
+            Tuple of (updated_record, permissions) if the record has changed, None otherwise
+        """
+        try:
+            external_id = record.external_record_id
+            record_group_id = record.external_record_group_id
+
+            if not external_id:
+                self.logger.warning(f"Missing external_record_id for record {record.id}")
+                return None
+
+            # Get file record for additional info (path, etc.)
+            file_record = None
+            async with self.data_store_provider.transaction() as tx_store:
+                file_record = await tx_store.get_file_record_by_id(record.id)
+
+            if not file_record:
+                self.logger.warning(f"No file record found for record {record.id}")
+                return None
+
+            # Get a user with permission to access this file
+            user_with_permission = None
+            async with self.data_store_provider.transaction() as tx_store:
+                user_with_permission = await tx_store.get_first_user_with_permission_to_node(
+                    f"{CollectionNames.RECORDS.value}/{record.id}"
+                )
+
+            if not user_with_permission:
+                self.logger.warning(f"No user found with permission to record: {record.id}")
+                return None
+
+            # Get team member ID for API calls
+            members = [UserSelectorArg("email", user_with_permission.email)]
+            team_member_info = await self.data_source.team_members_get_info_v2(members=members)
+
+            if not team_member_info.success or not team_member_info.data.members_info:
+                self.logger.warning(f"Could not get team member info for user: {user_with_permission.email}")
+                return None
+
+            team_member_id = team_member_info.data.members_info[0].get_member_info().profile.team_member_id
+            user_email = user_with_permission.email
+
+            # Determine if this is a personal folder
+            is_person_folder = record_group_id and record_group_id.startswith("dbmid:")
+
+            # Determine team_folder_id for API call
+            team_folder_id = None
+            if record_group_id and not record_group_id.startswith("dbmid:"):
+                team_folder_id = record_group_id
+
+            # Fetch fresh metadata from Dropbox
+            # Use the file ID (external_id) to get the metadata
+            metadata_result = await self.data_source.files_get_metadata(
+                path=external_id,
+                team_member_id=team_member_id,
+                team_folder_id=team_folder_id
+            )
+
+            if not metadata_result or not metadata_result.success:
+                self.logger.warning(f"Could not fetch metadata for record {record.id}: {metadata_result.error if metadata_result else 'No response'}")
+                return None
+
+            entry = metadata_result.data
+
+            # Check if deleted
+            if isinstance(entry, DeletedMetadata):
+                self.logger.info(f"Record {record.id} has been deleted at source")
+                return None
+
+            # Process the entry using existing logic
+            record_update = await self._process_dropbox_entry(
+                entry=entry,
+                user_id=team_member_id,
+                user_email=user_email,
+                record_group_id=record_group_id,
+                is_person_folder=is_person_folder
+            )
+
+            if not record_update or record_update.is_deleted:
+                return None
+
+            # Only return data if there's an actual update (metadata, content, or permissions)
+            if record_update.is_updated:
+                self.logger.info(f"Record {external_id} has changed at source. Updating.")
+                # Ensure we keep the internal DB ID
+                record_update.record.id = record.id
+                return (record_update.record, record_update.new_permissions or [])
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Error checking Dropbox record {record.id} at source: {e}", exc_info=True)
+            return None
 
     # @classmethod
     # async def create_connector(
