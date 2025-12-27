@@ -21,7 +21,6 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.containers.indexing import IndexingAppContainer, initialize_container
 from app.services.messaging.kafka.handlers.record import RecordEventHandler
-from app.services.messaging.kafka.rate_limiter.rate_limiter import RateLimiter
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -38,7 +37,6 @@ container = IndexingAppContainer.init("indexing_service")
 container_lock = asyncio.Lock()
 
 MAX_CONCURRENT_TASKS = 5  # Maximum number of messages to process concurrently
-RATE_LIMIT_PER_SECOND = 2  # Maximum number of new tasks to start per second
 
 async def get_initialized_container() -> IndexingAppContainer:
     """Dependency provider for initialized container"""
@@ -156,13 +154,10 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
         logger.info("🚀 Starting Entity Kafka Consumer...")
         record_kafka_consumer_config = await KafkaUtils.create_record_kafka_consumer_config(app_container)
 
-        rate_limiter = RateLimiter(RATE_LIMIT_PER_SECOND)
-
         record_kafka_consumer = MessagingFactory.create_consumer(
             broker_type="kafka",
             logger=logger,
-            config=record_kafka_consumer_config,
-            rate_limiter=rate_limiter
+            config=record_kafka_consumer_config
         )
         record_message_handler = await KafkaUtils.create_record_message_handler(app_container)
         await record_kafka_consumer.start(record_message_handler)

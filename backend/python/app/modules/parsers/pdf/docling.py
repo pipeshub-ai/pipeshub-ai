@@ -31,17 +31,36 @@ class DoclingProcessor():
             InputFormat.MD: MarkdownFormatOption(),
         })
 
-    async def load_document(self, doc_name: str, content: bytes, page_number: int = None) -> BlocksContainer|bool:
+    async def parse_document(self, doc_name: str, content: bytes) -> ConversionResult:
+        """Parse document and return raw Docling result (no block conversion).
+        
+        This is the first phase of document processing - pure parsing without LLM calls.
+        """
         stream = BytesIO(content)
         source = DocumentStream(name=doc_name, stream=stream)
         conv_res: ConversionResult = await asyncio.to_thread(self.converter.convert, source)
         if conv_res.status.value != SUCCESS_STATUS:
-            raise ValueError(f"Failed to parse PDF: {conv_res.status}")
+            raise ValueError(f"Failed to parse document: {conv_res.status}")
+        return conv_res
 
+    async def create_blocks(self, conv_res: ConversionResult, page_number: int = None) -> BlocksContainer:
+        """Convert parsed Docling result to BlocksContainer.
+        
+        This is the second phase - involves LLM calls for table processing.
+        """
         doc = conv_res.document
         doc_to_blocks_converter = DoclingDocToBlocksConverter(logger=self.logger, config=self.config)
         block_containers = await doc_to_blocks_converter.convert(doc, page_number=page_number)
         return block_containers
+
+    async def load_document(self, doc_name: str, content: bytes, page_number: int = None) -> BlocksContainer|bool:
+        """Parse document and create blocks in one call (legacy method).
+        
+        For new code, prefer using parse_document() followed by create_blocks() 
+        to allow yielding progress events between phases.
+        """
+        conv_res = await self.parse_document(doc_name, content)
+        return await self.create_blocks(conv_res, page_number=page_number)
 
     def process_document(self) -> None:
         pass

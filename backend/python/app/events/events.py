@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 from io import BytesIO
+from typing import Any, AsyncGenerator, Dict
 from uuid import uuid4
 
 import aiohttp
@@ -155,9 +156,10 @@ class EventProcessor:
                 if not file_buffer.closed:
                     file_buffer.close()
 
-    async def on_event(self, event_data: dict) -> None:
+    async def on_event(self, event_data: dict) -> AsyncGenerator[Dict[str, Any], None]:
         """
-        Process events received from Kafka consumer
+        Process events received from Kafka consumer, yielding phase completion events.
+        
         Args:
             event_data: Dictionary containing:
                 - event_type: Type of event (create, update, delete)
@@ -166,6 +168,11 @@ class EventProcessor:
                 - signed_url: Signed URL to download the file
                 - connector_name: Name of the connector
                 - metadata_route: Route to get metadata
+        
+        Yields:
+            Dict with 'event' key:
+            - {'event': 'parsing_complete', 'data': {...}}
+            - {'event': 'indexing_complete', 'data': {...}}
         """
         try:
             # Extract event type and record ID
@@ -215,17 +222,17 @@ class EventProcessor:
                 if virtual_record_id is None:
                     virtual_record_id = str(uuid4())
                 self.logger.info("🚀 Processing Gmail Message")
-                result = await self.processor.process_gmail_message(
+                async for event in self.processor.process_gmail_message(
                     recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
                     orgId=org_id,
                     html_content=event_data.get("body"),
-                    virtual_record_id = virtual_record_id
-                )
-
-                return result
+                    virtual_record_id=virtual_record_id
+                ):
+                    yield event
+                return
 
             if signed_url:
                 self.logger.debug("Signed URL received")
@@ -283,6 +290,9 @@ class EventProcessor:
                                     processed_duplicate.get("_key"),
                                     doc.get("_key")
                                 )
+                                # Yield both events since we're using cached data
+                                yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+                                yield {"event": "indexing_complete", "data": {"record_id": record_id}}
                                 return
 
                             # Check if any duplicate is in progress
@@ -300,6 +310,9 @@ class EventProcessor:
                                     "indexingStatus": ProgressStatus.QUEUED.value,
                                 })
                                 await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+                                # Yield both events since we're queuing this record
+                                yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+                                yield {"event": "indexing_complete", "data": {"record_id": record_id}}
                                 return
                             else:
                                 # No file is being processed, we can proceed
@@ -319,57 +332,61 @@ class EventProcessor:
 
             if mime_type == MimeTypes.GOOGLE_SLIDES.value:
                 self.logger.info("🚀 Processing Google Slides")
-                result = await self.processor.process_pptx_document(
+                async for event in self.processor.process_pptx_document(
                     recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
                     orgId=org_id,
                     pptx_binary=file_content,
-                    virtual_record_id = virtual_record_id
-                )
-                return result
+                    virtual_record_id=virtual_record_id
+                ):
+                    yield event
+                return
 
             if mime_type == MimeTypes.GOOGLE_DOCS.value:
                 self.logger.info("🚀 Processing Google Docs")
-                result = await self.processor.process_docx_document(
+                async for event in self.processor.process_docx_document(
                     recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
                     orgId=org_id,
                     docx_binary=file_content,
-                    virtual_record_id = virtual_record_id
-                )
-                return result
+                    virtual_record_id=virtual_record_id
+                ):
+                    yield event
+                return
 
             if mime_type == MimeTypes.GOOGLE_SHEETS.value:
                 self.logger.info("🚀 Processing Google Sheets")
-                result = await self.processor.process_excel_document(
+                async for event in self.processor.process_excel_document(
                     recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
                     orgId=org_id,
                     excel_binary=file_content,
-                    virtual_record_id = virtual_record_id
-                )
-                return result
+                    virtual_record_id=virtual_record_id
+                ):
+                    yield event
+                return
 
             if mime_type == MimeTypes.HTML.value:
-                result = await self.processor.process_html_document(
+                async for event in self.processor.process_html_document(
                     recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
                     orgId=org_id,
                     html_binary=file_content,
-                    virtual_record_id = virtual_record_id,
-                )
-                return result
+                    virtual_record_id=virtual_record_id,
+                ):
+                    yield event
+                return
 
             if mime_type == MimeTypes.PLAIN_TEXT.value:
-                result = await self.processor.process_txt_document(
+                async for event in self.processor.process_txt_document(
                     recordName=record_name,
                     recordId=record_id,
                     version=record_version,
@@ -380,8 +397,9 @@ class EventProcessor:
                     recordType=record_type,
                     connectorName=connector,
                     origin=origin
-                )
-                return result
+                ):
+                    yield event
+                return
 
             if extension == ExtensionTypes.PDF.value or mime_type == MimeTypes.PDF.value:
                 # Check if document needs OCR before using docling
@@ -402,141 +420,162 @@ class EventProcessor:
                 if needs_ocr:
                     # Skip docling and use OCR handler directly
                     self.logger.info("🤖 PDF needs OCR, skipping Docling")
-                    result = await self.processor.process_pdf_document_with_ocr(
+                    async for event in self.processor.process_pdf_document_with_ocr(
                         recordName=record_name,
                         recordId=record_id,
                         version=record_version,
                         source=connector,
                         orgId=org_id,
                         pdf_binary=file_content,
-                        virtual_record_id = virtual_record_id
-                    )
+                        virtual_record_id=virtual_record_id
+                    ):
+                        yield event
                 else:
                     # Use docling for PDFs that don't need OCR
-                    result = await self.processor.process_pdf_with_docling(
+                    docling_failed = False
+                    async for event in self.processor.process_pdf_with_docling(
                         recordName=record_name,
                         recordId=record_id,
                         pdf_binary=file_content,
-                        virtual_record_id = virtual_record_id
-                    )
-                    if result is False:
-                        result = await self.processor.process_pdf_document_with_ocr(
+                        virtual_record_id=virtual_record_id
+                    ):
+                        if event.get("event") == "docling_failed":
+                            docling_failed = True
+                        else:
+                            yield event
+                    
+                    if docling_failed:
+                        async for event in self.processor.process_pdf_document_with_ocr(
                             recordName=record_name,
                             recordId=record_id,
                             version=record_version,
                             source=connector,
                             orgId=org_id,
                             pdf_binary=file_content,
-                            virtual_record_id = virtual_record_id
-                        )
+                            virtual_record_id=virtual_record_id
+                        ):
+                            yield event
 
             elif extension == ExtensionTypes.DOCX.value or mime_type == MimeTypes.DOCX.value:
-                result = await self.processor.process_docx_document(
+                async for event in self.processor.process_docx_document(
                     recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
                     orgId=org_id,
                     docx_binary=file_content,
-                    virtual_record_id = virtual_record_id
-                )
+                    virtual_record_id=virtual_record_id
+                ):
+                    yield event
 
             elif extension == ExtensionTypes.DOC.value or mime_type == MimeTypes.DOC.value:
-                result = await self.processor.process_doc_document(
+                async for event in self.processor.process_doc_document(
                     recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
                     orgId=org_id,
                     doc_binary=file_content,
-                    virtual_record_id = virtual_record_id
-                )
+                    virtual_record_id=virtual_record_id
+                ):
+                    yield event
+
             elif extension == ExtensionTypes.XLSX.value or mime_type == MimeTypes.XLSX.value:
-                result = await self.processor.process_excel_document(
+                async for event in self.processor.process_excel_document(
                     recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
                     orgId=org_id,
                     excel_binary=file_content,
-                    virtual_record_id = virtual_record_id
-                )
+                    virtual_record_id=virtual_record_id
+                ):
+                    yield event
+
             elif extension == ExtensionTypes.XLS.value or mime_type == MimeTypes.XLS.value:
-                result = await self.processor.process_xls_document(
+                async for event in self.processor.process_xls_document(
                     recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
                     orgId=org_id,
                     xls_binary=file_content,
-                    virtual_record_id = virtual_record_id
-                )
+                    virtual_record_id=virtual_record_id
+                ):
+                    yield event
+
             elif extension == ExtensionTypes.CSV.value or mime_type == MimeTypes.CSV.value:
-                result = await self.processor.process_csv_document(
+                async for event in self.processor.process_csv_document(
                     recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
                     orgId=org_id,
                     csv_binary=file_content,
-                    virtual_record_id = virtual_record_id,
+                    virtual_record_id=virtual_record_id,
                     origin=origin,
-                )
+                ):
+                    yield event
 
             elif extension == ExtensionTypes.HTML.value or mime_type == MimeTypes.HTML.value:
-                result = await self.processor.process_html_document(
+                async for event in self.processor.process_html_document(
                     recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
                     orgId=org_id,
                     html_binary=file_content,
-                    virtual_record_id = virtual_record_id,
-                )
+                    virtual_record_id=virtual_record_id,
+                ):
+                    yield event
 
             elif extension == ExtensionTypes.PPTX.value or mime_type == MimeTypes.PPTX.value:
-                result = await self.processor.process_pptx_document(
+                async for event in self.processor.process_pptx_document(
                     recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
                     orgId=org_id,
                     pptx_binary=file_content,
-                    virtual_record_id = virtual_record_id
-                )
+                    virtual_record_id=virtual_record_id
+                ):
+                    yield event
 
             elif extension == ExtensionTypes.PPT.value or mime_type == MimeTypes.PPT.value:
-                result = await self.processor.process_ppt_document(
+                async for event in self.processor.process_ppt_document(
                     recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
                     orgId=org_id,
                     ppt_binary=file_content,
-                    virtual_record_id = virtual_record_id
-                )
+                    virtual_record_id=virtual_record_id
+                ):
+                    yield event
 
             elif extension == ExtensionTypes.MD.value or mime_type == MimeTypes.MARKDOWN.value:
-                result = await self.processor.process_md_document(
+                async for event in self.processor.process_md_document(
                     recordName=record_name,
                     recordId=record_id,
                     md_binary=file_content,
-                    virtual_record_id = virtual_record_id
-                )
+                    virtual_record_id=virtual_record_id
+                ):
+                    yield event
 
             elif extension == ExtensionTypes.MDX.value or mime_type == MimeTypes.MDX.value:
-                result = await self.processor.process_mdx_document(
+                async for event in self.processor.process_mdx_document(
                     recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
                     orgId=org_id,
                     mdx_content=file_content,
-                    virtual_record_id = virtual_record_id
-                )
+                    virtual_record_id=virtual_record_id
+                ):
+                    yield event
 
             elif extension == ExtensionTypes.TXT.value or mime_type == MimeTypes.PLAIN_TEXT.value:
-                result = await self.processor.process_txt_document(
+                async for event in self.processor.process_txt_document(
                     recordName=record_name,
                     recordId=record_id,
                     version=record_version,
@@ -547,7 +586,8 @@ class EventProcessor:
                     recordType=record_type,
                     connectorName=connector,
                     origin=origin
-                )
+                ):
+                    yield event
 
             elif (
                  extension in {
@@ -564,11 +604,12 @@ class EventProcessor:
                 }
             ):
                 # Route image files to the image processor
-                result = await self.processor.process_image(
+                async for event in self.processor.process_image(
                     record_id,
                     file_content,
                     virtual_record_id,
-                )
+                ):
+                    yield event
 
             else:
                 raise Exception(f"Unsupported file extension: {extension}")
@@ -576,7 +617,6 @@ class EventProcessor:
             self.logger.info(
                 f"✅ Successfully processed document for record {record_id}"
             )
-            return result
 
         except Exception as e:
             # Let the error bubble up to Kafka consumer

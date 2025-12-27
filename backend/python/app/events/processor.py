@@ -2,6 +2,7 @@ import io
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any, AsyncGenerator, Dict
 
 from bs4 import BeautifulSoup
 from html_to_markdown import convert
@@ -106,7 +107,8 @@ class Processor:
         # Initialize Docling client for external service
         self.docling_client = DoclingClient()
 
-    async def process_image(self, record_id, content, virtual_record_id) -> None:
+    async def process_image(self, record_id, content, virtual_record_id) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process image content, yielding phase completion events."""
         try:
             # Initialize image parser
             self.logger.debug("📸 Processing image content")
@@ -142,6 +144,9 @@ class Processor:
                             "Failed to update indexing status", doc_id=record_id
                         )
 
+                    # Yield both events since we're skipping processing
+                    yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+                    yield {"event": "indexing_complete", "data": {"record_id": record_id}}
                     return
 
                 except DocumentProcessingError:
@@ -162,496 +167,506 @@ class Processor:
             if not parser:
                 raise Exception(f"Unsupported extension: {extension}")
 
-            block_containers = parser.parse_image(content,extension)
+            block_containers = parser.parse_image(content, extension)
             record = convert_record_dict_to_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
+            
+            # Signal parsing complete
+            yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+            
             ctx = TransformContext(record=record)
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
+            
+            # Signal indexing complete
+            yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+            
             self.logger.info("✅ Image processing completed successfully")
             return
         except Exception as e:
             self.logger.error(f"❌ Error processing image: {str(e)}")
             raise
 
-    async def process_google_slides(self, record_id, record_version, orgId, content, virtual_record_id) -> None:
-        """Process Google Slides presentation and extract structured content
+    # async def process_google_slides(self, record_id, record_version, orgId, content, virtual_record_id) -> AsyncGenerator[Dict[str, Any], None]:
+    #     """Process Google Slides presentation, yielding phase completion events.
 
-        Args:
-            record_id (str): ID of the Google Slides presentation
-            record_version (str): Version of the presentation
-            orgId (str): Organization ID
-        """
-        self.logger.info(
-            f"🚀 Starting Google Slides processing for record: {record_id}"
-        )
+    #     Args:
+    #         record_id (str): ID of the Google Slides presentation
+    #         record_version (str): Version of the presentation
+    #         orgId (str): Organization ID
+    #     """
+    #     self.logger.info(
+    #         f"🚀 Starting Google Slides processing for record: {record_id}"
+    #     )
 
-        try:
-            # Initialize Google Slides parser
-            self.logger.debug("📊 Processing Google Slides content")
-            # parser = self.parsers['google_slides']
-            # presentation_data = await parser.process_presentation(record_id)
-            presentation_data = content
-            if not presentation_data:
-                raise Exception("Failed to process presentation")
+    #     try:
+    #         # Initialize Google Slides parser
+    #         self.logger.debug("📊 Processing Google Slides content")
+    #         # parser = self.parsers['google_slides']
+    #         # presentation_data = await parser.process_presentation(record_id)
+    #         presentation_data = content
+    #         if not presentation_data:
+    #             raise Exception("Failed to process presentation")
 
-            # Extract text content from all slides
-            self.logger.info("📝 Extracting text content")
-            text_content = []
-            numbered_items = []
+    #         # Extract text content from all slides
+    #         self.logger.info("📝 Extracting text content")
+    #         text_content = []
+    #         numbered_items = []
 
-            for slide in presentation_data["slides"]:
-                slide_text = []
+    #         for slide in presentation_data["slides"]:
+    #             slide_text = []
 
-                # Process each element in the slide
-                for element in slide["elements"]:
-                    if element["type"] == "shape":
-                        text = element["text"]["content"].strip()
-                        if text:
-                            slide_text.append(text)
-                    elif element["type"] == "table":
-                        for cell in element["cells"]:
-                            cell_text = cell["text"]["content"].strip()
-                            if cell_text:
-                                slide_text.append(cell_text)
+    #             # Process each element in the slide
+    #             for element in slide["elements"]:
+    #                 if element["type"] == "shape":
+    #                     text = element["text"]["content"].strip()
+    #                     if text:
+    #                         slide_text.append(text)
+    #                 elif element["type"] == "table":
+    #                     for cell in element["cells"]:
+    #                         cell_text = cell["text"]["content"].strip()
+    #                         if cell_text:
+    #                             slide_text.append(cell_text)
 
-                # Join all text from the slide
-                full_slide_text = " ".join(slide_text)
-                if full_slide_text:
-                    text_content.append(full_slide_text)
+    #             # Join all text from the slide
+    #             full_slide_text = " ".join(slide_text)
+    #             if full_slide_text:
+    #                 text_content.append(full_slide_text)
 
-                # Create numbered item for the slide
-                numbered_items.append(
-                    {
-                        "number": slide["slideNumber"],
-                        "type": "slide",
-                        "content": full_slide_text,
-                        "elements": slide["elements"],
-                        "layout": slide["layout"],
-                        "masterObjectId": slide["masterObjectId"],
-                        "hasNotesPage": slide.get("hasNotesPage", False),
-                    }
-                )
+    #             # Create numbered item for the slide
+    #             numbered_items.append(
+    #                 {
+    #                     "number": slide["slideNumber"],
+    #                     "type": "slide",
+    #                     "content": full_slide_text,
+    #                     "elements": slide["elements"],
+    #                     "layout": slide["layout"],
+    #                     "masterObjectId": slide["masterObjectId"],
+    #                     "hasNotesPage": slide.get("hasNotesPage", False),
+    #                 }
+    #             )
 
-            # Join all text content with newlines
-            full_text_content = "\n".join(text for text in text_content if text)
+    #         # Join all text content with newlines
+    #         full_text_content = "\n".join(text for text in text_content if text)
 
-            # Extract metadata using domain extractor
-            self.logger.info("🎯 Extracting metadata from content")
-            domain_metadata = None
-            try:
-                metadata = await self.domain_extractor.extract_metadata(
-                    full_text_content, orgId
-                )
-                record = await self.domain_extractor.save_metadata_to_db(
-                    orgId, record_id, metadata, virtual_record_id
-                )
-                file = await self.arango_service.get_document(
-                    record_id, CollectionNames.FILES.value
-                )
-                domain_metadata = {**record, **file}
-            except Exception as e:
-                self.logger.error(f"❌ Error extracting metadata: {str(e)}")
+    #         # Extract metadata using domain extractor
+    #         self.logger.info("🎯 Extracting metadata from content")
+    #         domain_metadata = None
+    #         try:
+    #             metadata = await self.domain_extractor.extract_metadata(
+    #                 full_text_content, orgId
+    #             )
+    #             record = await self.domain_extractor.save_metadata_to_db(
+    #                 orgId, record_id, metadata, virtual_record_id
+    #             )
+    #             file = await self.arango_service.get_document(
+    #                 record_id, CollectionNames.FILES.value
+    #             )
+    #             domain_metadata = {**record, **file}
+    #         except Exception as e:
+    #             self.logger.error(f"❌ Error extracting metadata: {str(e)}")
 
-            # Format content for output
-            formatted_content = ""
-            for slide in presentation_data["slides"]:
-                formatted_content += f"[Slide {slide['slideNumber']}]\n"
-                for element in slide["elements"]:
-                    if element["type"] == "shape":
-                        text = element["text"]["content"].strip()
-                        if text:
-                            formatted_content += f"{text}\n"
-                    elif element["type"] == "table":
-                        formatted_content += (
-                            f"[Table with {len(element['cells'])} cells]\n"
-                        )
-                    elif element["type"] == "image":
-                        formatted_content += "[Image]\n"
-                    elif element["type"] == "video":
-                        formatted_content += "[Video]\n"
-                formatted_content += "\n"
+    #         # Format content for output
+    #         formatted_content = ""
+    #         for slide in presentation_data["slides"]:
+    #             formatted_content += f"[Slide {slide['slideNumber']}]\n"
+    #             for element in slide["elements"]:
+    #                 if element["type"] == "shape":
+    #                     text = element["text"]["content"].strip()
+    #                     if text:
+    #                         formatted_content += f"{text}\n"
+    #                 elif element["type"] == "table":
+    #                     formatted_content += (
+    #                         f"[Table with {len(element['cells'])} cells]\n"
+    #                     )
+    #                 elif element["type"] == "image":
+    #                     formatted_content += "[Image]\n"
+    #                 elif element["type"] == "video":
+    #                     formatted_content += "[Video]\n"
+    #             formatted_content += "\n"
 
-            # Prepare metadata
-            self.logger.debug("📋 Preparing metadata")
-            metadata = {
-                "domain_metadata": domain_metadata,
-                "recordId": record_id,
-                "version": record_version,
-                "presentation_metadata": presentation_data["metadata"],
-                "total_slides": presentation_data["summary"]["totalSlides"],
-                "has_notes": presentation_data["summary"]["hasNotes"],
-            }
+    #         # Prepare metadata
+    #         self.logger.debug("📋 Preparing metadata")
+    #         metadata = {
+    #             "domain_metadata": domain_metadata,
+    #             "recordId": record_id,
+    #             "version": record_version,
+    #             "presentation_metadata": presentation_data["metadata"],
+    #             "total_slides": presentation_data["summary"]["totalSlides"],
+    #             "has_notes": presentation_data["summary"]["hasNotes"],
+    #         }
 
-            # Create sentence data for indexing
-            self.logger.debug("📑 Creating semantic sentences")
-            sentence_data = []
+    #         # Create sentence data for indexing
+    #         self.logger.debug("📑 Creating semantic sentences")
+    #         sentence_data = []
 
-            for slide in presentation_data["slides"]:
-                slide_number = slide["slideNumber"]
+    #         for slide in presentation_data["slides"]:
+    #             slide_number = slide["slideNumber"]
 
-                # Process text elements
-                for element in slide["elements"]:
-                    if element["type"] == "shape":
-                        text = element["text"]["content"].strip()
-                        if text:
-                            # Split into sentences
-                            sentences = [
-                                s.strip() + "." for s in text.split(".") if s.strip()
-                            ]
-                            for sentence in sentences:
-                                sentence_data.append(
-                                    {
-                                        "text": sentence,
-                                        "metadata": {
-                                            **(domain_metadata or {}),
-                                            "recordId": record_id,
-                                            "blockType": "slide_text",
-                                            "pageNum": slide_number,
-                                            "totalSlides": slide["totalSlides"],
-                                            "elementId": element["id"],
-                                            "elementType": "shape",
-                                            "virtualRecordId": virtual_record_id,
-                                        },
-                                    }
-                                )
+    #             # Process text elements
+    #             for element in slide["elements"]:
+    #                 if element["type"] == "shape":
+    #                     text = element["text"]["content"].strip()
+    #                     if text:
+    #                         # Split into sentences
+    #                         sentences = [
+    #                             s.strip() + "." for s in text.split(".") if s.strip()
+    #                         ]
+    #                         for sentence in sentences:
+    #                             sentence_data.append(
+    #                                 {
+    #                                     "text": sentence,
+    #                                     "metadata": {
+    #                                         **(domain_metadata or {}),
+    #                                         "recordId": record_id,
+    #                                         "blockType": "slide_text",
+    #                                         "pageNum": slide_number,
+    #                                         "totalSlides": slide["totalSlides"],
+    #                                         "elementId": element["id"],
+    #                                         "elementType": "shape",
+    #                                         "virtualRecordId": virtual_record_id,
+    #                                     },
+    #                                 }
+    #                             )
 
-                    elif element["type"] == "table":
-                        # Process table cells
-                        for cell in element["cells"]:
-                            cell_text = cell["text"]["content"].strip()
-                            if cell_text:
-                                sentence_data.append(
-                                    {
-                                        "text": cell_text,
-                                        "metadata": {
-                                            **(domain_metadata or {}),
-                                            "recordId": record_id,
-                                            "blockType": "slide_table_cell",
-                                            "pageNum": slide_number,
-                                            "totalSlides": slide["totalSlides"],
-                                            "elementId": element["id"],
-                                            "rowIndex": cell["rowIndex"],
-                                            "columnIndex": cell["columnIndex"],
-                                            "virtualRecordId": virtual_record_id,
-                                        },
-                                    }
-                                )
+    #                 elif element["type"] == "table":
+    #                     # Process table cells
+    #                     for cell in element["cells"]:
+    #                         cell_text = cell["text"]["content"].strip()
+    #                         if cell_text:
+    #                             sentence_data.append(
+    #                                 {
+    #                                     "text": cell_text,
+    #                                     "metadata": {
+    #                                         **(domain_metadata or {}),
+    #                                         "recordId": record_id,
+    #                                         "blockType": "slide_table_cell",
+    #                                         "pageNum": slide_number,
+    #                                         "totalSlides": slide["totalSlides"],
+    #                                         "elementId": element["id"],
+    #                                         "rowIndex": cell["rowIndex"],
+    #                                         "columnIndex": cell["columnIndex"],
+    #                                         "virtualRecordId": virtual_record_id,
+    #                                     },
+    #                                 }
+    #                             )
 
-            self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
-            pipeline = self.indexing_pipeline
-            await pipeline.index_documents(sentence_data,record_id)
+    #         # Signal parsing complete
+    #         yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+            
+    #         self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
+    #         pipeline = self.indexing_pipeline
+    #         await pipeline.index_documents(sentence_data, record_id)
 
-            self.logger.info("✅ Google Slides processing completed successfully")
-            return {
-                "presentation_data": presentation_data,
-                "formatted_content": formatted_content,
-                "numbered_items": numbered_items,
-                "metadata": metadata,
-            }
+    #         # Signal indexing complete
+    #         yield {"event": "indexing_complete", "data": {"record_id": record_id}}
 
-        except Exception as e:
-            self.logger.error(
-                f"❌ Error processing Google Slides presentation: {str(e)}"
-            )
-            raise
+    #         self.logger.info("✅ Google Slides processing completed successfully")
 
-    async def process_google_docs(self, record_id, record_version, orgId, content, virtual_record_id) -> None:
-        """Process Google Docs document and extract structured content
+    #     except Exception as e:
+    #         self.logger.error(
+    #             f"❌ Error processing Google Slides presentation: {str(e)}"
+    #         )
+    #         raise
 
-        Args:
-            record_id (str): ID of the Google Doc
-            record_version (str): Version of the document
-        """
-        self.logger.info(f"🚀 Starting Google Docs processing for record: {record_id}")
+    # async def process_google_docs(self, record_id, record_version, orgId, content, virtual_record_id) -> AsyncGenerator[Dict[str, Any], None]:
+    #     """Process Google Docs document and extract structured content
 
-        try:
-            # Initialize Google Docs parser
-            self.logger.debug("📄 Processing Google Docs content")
-            # Extract content from the structured response
-            all_content = content.get("all_content", [])
-            headers = content.get("headers", [])
-            footers = content.get("footers", [])
+    #     Args:
+    #         record_id (str): ID of the Google Doc
+    #         record_version (str): Version of the document
+    #     """
+    #     self.logger.info(f"🚀 Starting Google Docs processing for record: {record_id}")
 
-            # Extract text content from all ordered content
-            self.logger.info("📝 Extracting text content")
-            text_content = []
-            for item in all_content:
-                if item["type"] == "paragraph":
-                    text_content.append(item["content"]["text"].strip())
-                elif item["type"] == "table":
-                    # Extract text from table cells
-                    for cell in item["content"]["cells"]:
-                        cell_text = " ".join(cell["content"]).strip()
-                        if cell_text:
-                            text_content.append(cell_text)
+    #     try:
+    #         # Initialize Google Docs parser
+    #         self.logger.debug("📄 Processing Google Docs content")
+    #         # Extract content from the structured response
+    #         all_content = content.get("all_content", [])
+    #         headers = content.get("headers", [])
+    #         footers = content.get("footers", [])
 
-            # Join all text content with newlines
-            full_text_content = "\n".join(text for text in text_content if text)
+    #         # Extract text content from all ordered content
+    #         self.logger.info("📝 Extracting text content")
+    #         text_content = []
+    #         for item in all_content:
+    #             if item["type"] == "paragraph":
+    #                 text_content.append(item["content"]["text"].strip())
+    #             elif item["type"] == "table":
+    #                 # Extract text from table cells
+    #                 for cell in item["content"]["cells"]:
+    #                     cell_text = " ".join(cell["content"]).strip()
+    #                     if cell_text:
+    #                         text_content.append(cell_text)
 
-            # Extract metadata using domain extractor
-            self.logger.info("🎯 Extracting metadata from content")
-            domain_metadata = None
-            try:
-                metadata = await self.domain_extractor.extract_metadata(
-                    full_text_content, orgId
-                )
-                record = await self.domain_extractor.save_metadata_to_db(
-                    orgId, record_id, metadata, virtual_record_id
-                )
-                file = await self.arango_service.get_document(
-                    record_id, CollectionNames.FILES.value
-                )
-                domain_metadata = {**record, **file}
-            except Exception as e:
-                self.logger.error(f"❌ Error extracting metadata: {str(e)}")
+    #         # Join all text content with newlines
+    #         full_text_content = "\n".join(text for text in text_content if text)
 
-            # Format content for output
-            formatted_content = ""
-            numbered_items = []
+    #         # Extract metadata using domain extractor
+    #         self.logger.info("🎯 Extracting metadata from content")
+    #         domain_metadata = None
+    #         try:
+    #             metadata = await self.domain_extractor.extract_metadata(
+    #                 full_text_content, orgId
+    #             )
+    #             record = await self.domain_extractor.save_metadata_to_db(
+    #                 orgId, record_id, metadata, virtual_record_id
+    #             )
+    #             file = await self.arango_service.get_document(
+    #                 record_id, CollectionNames.FILES.value
+    #             )
+    #             domain_metadata = {**record, **file}
+    #         except Exception as e:
+    #             self.logger.error(f"❌ Error extracting metadata: {str(e)}")
 
-            # Process all content for numbering and formatting
-            self.logger.debug("📝 Processing content elements")
-            for idx, item in enumerate(all_content, 1):
-                if item["type"] == "paragraph":
-                    element = item["content"]
-                    element_entry = {
-                        "number": idx,
-                        "content": element["text"].strip(),
-                        "type": "paragraph",
-                        "style": element.get("style", {}),
-                        "links": element.get("links", []),
-                        "start_index": item["start_index"],
-                        "end_index": item["end_index"],
-                    }
-                    numbered_items.append(element_entry)
-                    formatted_content += f"[{idx}] {element['text'].strip()}\n\n"
+    #         # Format content for output
+    #         formatted_content = ""
+    #         numbered_items = []
 
-                elif item["type"] == "table":
-                    table = item["content"]
-                    table_entry = {
-                        "number": f"T{idx}",
-                        "content": table,
-                        "type": "table",
-                        "rows": table["rows"],
-                        "columns": table["columns"],
-                        "start_index": item["start_index"],
-                        "end_index": item["end_index"],
-                    }
-                    numbered_items.append(table_entry)
-                    formatted_content += (
-                        f"[T{idx}] Table ({table['rows']}x{table['columns']})\n\n"
-                    )
+    #         # Process all content for numbering and formatting
+    #         self.logger.debug("📝 Processing content elements")
+    #         for idx, item in enumerate(all_content, 1):
+    #             if item["type"] == "paragraph":
+    #                 element = item["content"]
+    #                 element_entry = {
+    #                     "number": idx,
+    #                     "content": element["text"].strip(),
+    #                     "type": "paragraph",
+    #                     "style": element.get("style", {}),
+    #                     "links": element.get("links", []),
+    #                     "start_index": item["start_index"],
+    #                     "end_index": item["end_index"],
+    #                 }
+    #                 numbered_items.append(element_entry)
+    #                 formatted_content += f"[{idx}] {element['text'].strip()}\n\n"
 
-                elif item["type"] == "image":
-                    image = item["content"]
-                    image_entry = {
-                        "number": f"I{idx}",
-                        "type": "image",
-                        "source_uri": image["source_uri"],
-                        "size": image.get("size"),
-                        "start_index": item["start_index"],
-                        "end_index": item["end_index"],
-                    }
-                    numbered_items.append(image_entry)
-                    formatted_content += f"[I{idx}] Image\n\n"
+    #             elif item["type"] == "table":
+    #                 table = item["content"]
+    #                 table_entry = {
+    #                     "number": f"T{idx}",
+    #                     "content": table,
+    #                     "type": "table",
+    #                     "rows": table["rows"],
+    #                     "columns": table["columns"],
+    #                     "start_index": item["start_index"],
+    #                     "end_index": item["end_index"],
+    #                 }
+    #                 numbered_items.append(table_entry)
+    #                 formatted_content += (
+    #                     f"[T{idx}] Table ({table['rows']}x{table['columns']})\n\n"
+    #                 )
 
-            # Prepare metadata
-            self.logger.debug("📋 Preparing metadata")
-            metadata = {
-                "domain_metadata": domain_metadata,
-                "recordId": record_id,
-                "version": record_version,
-                "has_header": bool(headers),
-                "has_footer": bool(footers),
-                "image_count": len(
-                    [item for item in all_content if item["type"] == "image"]
-                ),
-                "table_count": len(
-                    [item for item in all_content if item["type"] == "table"]
-                ),
-                "paragraph_count": len(
-                    [item for item in all_content if item["type"] == "paragraph"]
-                ),
-            }
+    #             elif item["type"] == "image":
+    #                 image = item["content"]
+    #                 image_entry = {
+    #                     "number": f"I{idx}",
+    #                     "type": "image",
+    #                     "source_uri": image["source_uri"],
+    #                     "size": image.get("size"),
+    #                     "start_index": item["start_index"],
+    #                     "end_index": item["end_index"],
+    #                 }
+    #                 numbered_items.append(image_entry)
+    #                 formatted_content += f"[I{idx}] Image\n\n"
 
-            # Create sentence data for indexing
-            self.logger.debug("📑 Creating semantic sentences")
-            sentence_data = []
+    #         # Prepare metadata
+    #         self.logger.debug("📋 Preparing metadata")
+    #         metadata = {
+    #             "domain_metadata": domain_metadata,
+    #             "recordId": record_id,
+    #             "version": record_version,
+    #             "has_header": bool(headers),
+    #             "has_footer": bool(footers),
+    #             "image_count": len(
+    #                 [item for item in all_content if item["type"] == "image"]
+    #             ),
+    #             "table_count": len(
+    #                 [item for item in all_content if item["type"] == "table"]
+    #             ),
+    #             "paragraph_count": len(
+    #                 [item for item in all_content if item["type"] == "paragraph"]
+    #             ),
+    #         }
 
-            # Keep track of previous items for context
-            context_window = []
-            context_window_size = 3
+    #         # Create sentence data for indexing
+    #         self.logger.debug("📑 Creating semantic sentences")
+    #         sentence_data = []
 
-            for idx, item in enumerate(all_content, 1):
-                if item["type"] == "paragraph":
-                    text = item["content"]["text"].strip()
-                    if text:
-                        # Create context from previous items
-                        previous_context = " ".join(
-                            [
-                                prev["content"]["text"].strip()
-                                for prev in context_window
-                                if prev["type"] == "paragraph"
-                            ]
-                        )
+    #         # Keep track of previous items for context
+    #         context_window = []
+    #         context_window_size = 3
 
-                        # Current item's context
-                        full_context = {"previous": previous_context, "current": text}
+    #         for idx, item in enumerate(all_content, 1):
+    #             if item["type"] == "paragraph":
+    #                 text = item["content"]["text"].strip()
+    #                 if text:
+    #                     # Create context from previous items
+    #                     previous_context = " ".join(
+    #                         [
+    #                             prev["content"]["text"].strip()
+    #                             for prev in context_window
+    #                             if prev["type"] == "paragraph"
+    #                         ]
+    #                     )
 
-                        # Split into sentences (simple splitting, can be improved with NLP)
-                        sentences = [
-                            s.strip() + "." for s in text.split(".") if s.strip()
-                        ]
-                        for sentence in sentences:
-                            sentence_data.append(
-                                {
-                                    "text": sentence,
-                                    "metadata": {
-                                        **(domain_metadata or {}),
-                                        "recordId": record_id,
-                                        "blockType": "text",
-                                        "blockNum": [idx],
-                                        "blockText": json.dumps(full_context),
-                                        "start_index": item["start_index"],
-                                        "end_index": item["end_index"],
-                                        "virtualRecordId": virtual_record_id,
-                                    },
-                                }
-                            )
+    #                     # Current item's context
+    #                     full_context = {"previous": previous_context, "current": text}
 
-                        # Update context window
-                        context_window.append(item)
-                        if len(context_window) > context_window_size:
-                            context_window.pop(0)
+    #                     # Split into sentences (simple splitting, can be improved with NLP)
+    #                     sentences = [
+    #                         s.strip() + "." for s in text.split(".") if s.strip()
+    #                     ]
+    #                     for sentence in sentences:
+    #                         sentence_data.append(
+    #                             {
+    #                                 "text": sentence,
+    #                                 "metadata": {
+    #                                     **(domain_metadata or {}),
+    #                                     "recordId": record_id,
+    #                                     "blockType": "text",
+    #                                     "blockNum": [idx],
+    #                                     "blockText": json.dumps(full_context),
+    #                                     "start_index": item["start_index"],
+    #                                     "end_index": item["end_index"],
+    #                                     "virtualRecordId": virtual_record_id,
+    #                                 },
+    #                             }
+    #                         )
 
-                elif item["type"] == "table":
-                    # Process table cells as sentences
-                    for cell in item["content"]["cells"]:
-                        cell_text = " ".join(cell["content"]).strip()
-                        if cell_text:
-                            sentence_data.append(
-                                {
-                                    "text": cell_text,
-                                    "metadata": {
-                                        **(domain_metadata or {}),
-                                        "recordId": record_id,
-                                        "blockType": "table_cell",
-                                        "blockNum": [idx],
-                                        "row": cell["row"],
-                                        "column": cell["column"],
-                                        "start_index": cell["start_index"],
-                                        "end_index": cell["end_index"],
-                                        "virtualRecordId": virtual_record_id,
-                                    },
-                                }
-                            )
+    #                     # Update context window
+    #                     context_window.append(item)
+    #                     if len(context_window) > context_window_size:
+    #                         context_window.pop(0)
 
-            self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
-            pipeline = self.indexing_pipeline
-            await pipeline.index_documents(sentence_data,record_id)
+    #             elif item["type"] == "table":
+    #                 # Process table cells as sentences
+    #                 for cell in item["content"]["cells"]:
+    #                     cell_text = " ".join(cell["content"]).strip()
+    #                     if cell_text:
+    #                         sentence_data.append(
+    #                             {
+    #                                 "text": cell_text,
+    #                                 "metadata": {
+    #                                     **(domain_metadata or {}),
+    #                                     "recordId": record_id,
+    #                                     "blockType": "table_cell",
+    #                                     "blockNum": [idx],
+    #                                     "row": cell["row"],
+    #                                     "column": cell["column"],
+    #                                     "start_index": cell["start_index"],
+    #                                     "end_index": cell["end_index"],
+    #                                     "virtualRecordId": virtual_record_id,
+    #                                 },
+    #                             }
+    #                         )
 
-            self.logger.info("✅ Google Docs processing completed successfully")
-            return {
-                "formatted_content": formatted_content,
-                "numbered_items": numbered_items,
-                "metadata": metadata,
-            }
+    #         # Signal parsing complete
+    #         yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+            
+    #         self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
+    #         pipeline = self.indexing_pipeline
+    #         await pipeline.index_documents(sentence_data, record_id)
 
-        except Exception as e:
-            self.logger.error(f"❌ Error processing Google Docs document: {str(e)}")
-            raise
+    #         # Signal indexing complete
+    #         yield {"event": "indexing_complete", "data": {"record_id": record_id}}
 
-    async def process_google_sheets(self, record_id, record_version, orgId, content, virtual_record_id) -> None:
-        self.logger.info("🚀 Processing Google Sheets")
-        try:
-            # Initialize Google Docs parser
-            self.logger.debug("📄 Processing Google Sheets content")
+    #         self.logger.info("✅ Google Docs processing completed successfully")
 
-            all_sheets_result = content["all_sheet_results"]
-            content["parsed_result"]
+    #     except Exception as e:
+    #         self.logger.error(f"❌ Error processing Google Docs document: {str(e)}")
+    #         raise
 
-            combined_texts = []
-            row_counter = 1
-            domain_metadata = None
-            sentence_data = []
+    # async def process_google_sheets(self, record_id, record_version, orgId, content, virtual_record_id) -> AsyncGenerator[Dict[str, Any], None]:
+    #     self.logger.info("🚀 Processing Google Sheets")
+    #     try:
+    #         # Initialize Google Docs parser
+    #         self.logger.debug("📄 Processing Google Sheets content")
 
-            for sheet_result in all_sheets_result:
-                for table in sheet_result["tables"]:
-                    for row in table["rows"]:
-                        combined_texts.append(
-                            f"{row_counter}. {row['natural_language_text']}"
-                        )
-                        row_counter += 1
+    #         all_sheets_result = content["all_sheet_results"]
+    #         content["parsed_result"]
 
-            combined_text = "\n".join(combined_texts)
-            if combined_text:
-                try:
-                    self.logger.info("🎯 Extracting metadata from Excel content")
-                    metadata = await self.domain_extractor.extract_metadata(
-                        combined_text, orgId
-                    )
-                    record = await self.domain_extractor.save_metadata_to_db(
-                        orgId, record_id, metadata, virtual_record_id
-                    )
-                    file = await self.arango_service.get_document(
-                        record_id, CollectionNames.FILES.value
-                    )
+    #         combined_texts = []
+    #         row_counter = 1
+    #         domain_metadata = None
+    #         sentence_data = []
 
-                    domain_metadata = {**record, **file}
-                except Exception as e:
-                    self.logger.error(f"❌ Error extracting metadata: {str(e)}")
-                    domain_metadata = None
+    #         for sheet_result in all_sheets_result:
+    #             for table in sheet_result["tables"]:
+    #                 for row in table["rows"]:
+    #                     combined_texts.append(
+    #                         f"{row_counter}. {row['natural_language_text']}"
+    #                     )
+    #                     row_counter += 1
 
-            for sheet_idx, sheet_result in enumerate(all_sheets_result, 1):
-                self.logger.info(f"sheet_name: {sheet_result['sheet_name']}")
-                for table in sheet_result["tables"]:
-                    for row in table["rows"]:
-                        row_data = {
-                            k: (v.isoformat() if isinstance(v, datetime) else v)
-                            for k, v in row["raw_data"].items()
-                        }
-                        block_num = [int(row["row_num"])] if row["row_num"] else [0]
-                        sentence_data.append(
-                            {
-                                "text": row["natural_language_text"],
-                                "metadata": {
-                                    **domain_metadata,
-                                    "recordId": record_id,
-                                    "sheetName": sheet_result["sheet_name"],
-                                    "sheetNum": sheet_idx,
-                                    "blockNum": block_num,
-                                    "blockType": "table_row",
-                                    "blockText": json.dumps(row_data),
-                                    "virtualRecordId": virtual_record_id,
-                                },
-                            }
-                        )
+    #         combined_text = "\n".join(combined_texts)
+    #         if combined_text:
+    #             try:
+    #                 self.logger.info("🎯 Extracting metadata from Excel content")
+    #                 metadata = await self.domain_extractor.extract_metadata(
+    #                     combined_text, orgId
+    #                 )
+    #                 record = await self.domain_extractor.save_metadata_to_db(
+    #                     orgId, record_id, metadata, virtual_record_id
+    #                 )
+    #                 file = await self.arango_service.get_document(
+    #                     record_id, CollectionNames.FILES.value
+    #                 )
 
-            self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
-            pipeline = self.indexing_pipeline
-            await pipeline.index_documents(sentence_data, record_id)
+    #                 domain_metadata = {**record, **file}
+    #             except Exception as e:
+    #                 self.logger.error(f"❌ Error extracting metadata: {str(e)}")
+    #                 domain_metadata = None
 
-            self.logger.info("✅ Google sheets processing completed successfully")
-            return {
-                "formatted_content": combined_text,
-                "numbered_items": [],
-                "metadata": metadata,
-            }
-        except Exception as e:
-            self.logger.error(f"❌ Error processing Google Sheets document: {str(e)}")
-            raise
+    #         for sheet_idx, sheet_result in enumerate(all_sheets_result, 1):
+    #             self.logger.info(f"sheet_name: {sheet_result['sheet_name']}")
+    #             for table in sheet_result["tables"]:
+    #                 for row in table["rows"]:
+    #                     row_data = {
+    #                         k: (v.isoformat() if isinstance(v, datetime) else v)
+    #                         for k, v in row["raw_data"].items()
+    #                     }
+    #                     block_num = [int(row["row_num"])] if row["row_num"] else [0]
+    #                     sentence_data.append(
+    #                         {
+    #                             "text": row["natural_language_text"],
+    #                             "metadata": {
+    #                                 **domain_metadata,
+    #                                 "recordId": record_id,
+    #                                 "sheetName": sheet_result["sheet_name"],
+    #                                 "sheetNum": sheet_idx,
+    #                                 "blockNum": block_num,
+    #                                 "blockType": "table_row",
+    #                                 "blockText": json.dumps(row_data),
+    #                                 "virtualRecordId": virtual_record_id,
+    #                             },
+    #                         }
+    #                     )
+
+    #         # Signal parsing complete
+    #         yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+            
+    #         self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
+    #         pipeline = self.indexing_pipeline
+    #         await pipeline.index_documents(sentence_data, record_id)
+
+    #         # Signal indexing complete
+    #         yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+
+    #         self.logger.info("✅ Google sheets processing completed successfully")
+    #     except Exception as e:
+    #         self.logger.error(f"❌ Error processing Google Sheets document: {str(e)}")
+    #         raise
+
 
     async def process_gmail_message(
         self, recordName, recordId, version, source, orgId, html_content, virtual_record_id
-    ) -> None:
-
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process Gmail message, yielding phase completion events."""
         self.logger.info("🚀 Processing Gmail Message")
 
         try:
-
-            await self.process_html_document(
+            async for event in self.process_html_document(
                 recordName=recordName,
                 recordId=recordId,
                 version=version,
@@ -659,7 +674,8 @@ class Processor:
                 orgId=orgId,
                 html_binary=html_content,
                 virtual_record_id=virtual_record_id
-            )
+            ):
+                yield event
 
             self.logger.info("✅ Gmail Message processing completed successfully using markdown conversion.")
 
@@ -667,7 +683,8 @@ class Processor:
             self.logger.error(f"❌ Error processing Gmail Message document: {str(e)}")
             raise
 
-    async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id) -> None|bool:
+    async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process PDF with Docling, yielding phase completion events."""
         self.logger.info(f"🚀 Starting PDF document processing for record: {recordName}")
         try:
             self.logger.debug("📄 Processing PDF binary content using external Docling service")
@@ -675,10 +692,24 @@ class Processor:
             # Use external Docling service
             record_name = recordName if recordName.endswith(".pdf") else f"{recordName}.pdf"
 
-            block_containers = await self.docling_client.process_pdf(record_name, pdf_binary)
+            # Phase 1: Parse PDF (no LLM calls)
+            parse_result = await self.docling_client.parse_pdf(record_name, pdf_binary)
+            if parse_result is None:
+                self.logger.error(f"❌ External Docling service failed to parse {recordName}")
+                # Signal failure so caller can try OCR fallback
+                yield {"event": "docling_failed", "data": {"record_id": recordId}}
+                return
+
+            # Signal parsing complete after Docling parsing
+            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+
+            # Phase 2: Create blocks (involves LLM calls for tables)
+            block_containers = await self.docling_client.create_blocks(parse_result)
             if block_containers is None:
-                self.logger.error(f"❌ External Docling service failed to process {recordName}")
-                return False
+                self.logger.error(f"❌ External Docling service failed to create blocks for {recordName}")
+                # Signal failure so caller can try OCR fallback
+                yield {"event": "docling_failed", "data": {"record_id": recordId}}
+                return
 
             record = await self.arango_service.get_document(
                 recordId, CollectionNames.RECORDS.value
@@ -691,9 +722,14 @@ class Processor:
             record = convert_record_dict_to_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
+            
             ctx = TransformContext(record=record)
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
+            
+            # Signal indexing complete
+            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+            
             self.logger.info(f"✅ PDF processing completed for record: {recordName}, using external Docling service")
             return
         except Exception as e:
@@ -702,8 +738,8 @@ class Processor:
 
     async def process_pdf_document_with_ocr(
         self, recordName, recordId, version, source, orgId, pdf_binary, virtual_record_id
-    ) -> None:
-        """Process PDF document with automatic OCR selection based on environment settings"""
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process PDF document with OCR, yielding phase completion events."""
         self.logger.info(
             f"🚀 Starting PDF document processing for record: {recordName}"
         )
@@ -793,10 +829,8 @@ class Processor:
                 pages = ocr_result.get("pages", [])
                 self.logger.info(f"📄 Processing {len(pages)} pages from VLM OCR")
 
-                all_blocks = []
-                all_block_groups = []
-                block_index_offset = 0
-                block_group_index_offset = 0
+                # Phase 1: Parse all pages with Docling (no LLM calls yet)
+                all_conv_results = []
                 processor = DoclingProcessor(logger=self.logger, config=self.config_service)
 
                 for page in pages:
@@ -807,18 +841,31 @@ class Processor:
                         self.logger.debug(f"⏭️ Skipping empty page {page_number}")
                         continue
 
-                    # Process each page through DoclingProcessor with page number
+                    # Parse each page through DoclingProcessor (no LLM calls)
                     page_filename = f"{Path(recordName).stem}_page_{page_number}.md"
                     md_bytes = page_markdown.encode('utf-8')
 
                     try:
-                        page_block_containers = await processor.load_document(
-                            page_filename,
-                            md_bytes,
-                            page_number=page_number
-                        )
+                        conv_res = await processor.parse_document(page_filename, md_bytes)
+                        all_conv_results.append((page_number, conv_res))
                     except Exception as e:
-                        self.logger.error(f"❌ Failed to process page {page_number}: {str(e)}")
+                        self.logger.error(f"❌ Failed to parse page {page_number}: {str(e)}")
+                        raise
+
+                # Signal parsing complete after all pages are parsed
+                yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+
+                # Phase 2: Create blocks for all pages (involves LLM calls for tables)
+                all_blocks = []
+                all_block_groups = []
+                block_index_offset = 0
+                block_group_index_offset = 0
+
+                for page_number, conv_res in all_conv_results:
+                    try:
+                        page_block_containers = await processor.create_blocks(conv_res, page_number=page_number)
+                    except Exception as e:
+                        self.logger.error(f"❌ Failed to create blocks for page {page_number}: {str(e)}")
                         raise
 
                     if page_block_containers:
@@ -866,6 +913,9 @@ class Processor:
                 )
                 await pipeline.apply(ctx)
 
+                # Signal indexing complete
+                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                
                 self.logger.info("✅ PDF processing completed successfully using VLM OCR")
                 return
             # Extract domain metadata from paragraphs
@@ -924,10 +974,17 @@ class Processor:
             record = convert_record_dict_to_record(record)
             record.block_containers = BlocksContainer(blocks=blocks, block_groups=block_groups)
             record.virtual_record_id = virtual_record_id
+            
+            # Signal parsing complete
+            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+            
             ctx = TransformContext(record=record)
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
 
+            # Signal indexing complete
+            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+            
             self.logger.info("✅ PDF processing completed successfully")
             return
 
@@ -937,23 +994,23 @@ class Processor:
 
     async def process_doc_document(
         self, recordName, recordId, version, source, orgId, doc_binary, virtual_record_id
-    ) -> None:
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process DOC document, yielding phase completion events."""
         self.logger.info(
             f"🚀 Starting DOC document processing for record: {recordName}"
         )
-        # Implement DOC processing logic here
+        # Convert DOC to DOCX and delegate
         parser = self.parsers[ExtensionTypes.DOC.value]
         doc_result = parser.convert_doc_to_docx(doc_binary)
-        await self.process_docx_document(
+        async for event in self.process_docx_document(
             recordName, recordId, version, source, orgId, doc_result, virtual_record_id
-        )
-
-        return {"status": "success", "message": "DOC processed successfully"}
+        ):
+            yield event
 
     async def process_docx_document(
         self, recordName, recordId, version, source, orgId, docx_binary, virtual_record_id
-    ) -> None:
-        """Process DOCX document and extract structured content
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process DOCX document, yielding phase completion events.
 
         Args:
             recordName (str): Name of the record
@@ -972,8 +1029,16 @@ class Processor:
             # Initialize DocxParser and parse content
             self.logger.debug("📄 Processing DOCX content")
 
-            processor = DoclingProcessor(logger=self.logger,config=self.config_service)
-            block_containers = await processor.load_document(recordName, docx_binary)
+            processor = DoclingProcessor(logger=self.logger, config=self.config_service)
+            
+            # Phase 1: Parse document with Docling (no LLM calls)
+            conv_res = await processor.parse_document(recordName, docx_binary)
+            
+            # Signal parsing complete after Docling parsing
+            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+            
+            # Phase 2: Create blocks (involves LLM calls for tables)
+            block_containers = await processor.create_blocks(conv_res)
 
             if block_containers is False:
                 raise Exception("Failed to process DOCX document. It might contain scanned pages.")
@@ -988,9 +1053,14 @@ class Processor:
             record = convert_record_dict_to_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
+            
             ctx = TransformContext(record=record)
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
+            
+            # Signal indexing complete
+            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+            
             self.logger.info("✅ Docx/Doc processing completed successfully using docling")
 
         except Exception as e:
@@ -999,8 +1069,8 @@ class Processor:
 
     async def process_excel_document(
         self, recordName, recordId, version, source, orgId, excel_binary, virtual_record_id
-    ) -> None:
-        """Process Excel document and extract structured content"""
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process Excel document, yielding phase completion events."""
         self.logger.info(
             f"🚀 Starting Excel document processing for record: {recordName}"
         )
@@ -1012,8 +1082,19 @@ class Processor:
             if not excel_binary:
                 self.logger.info(f"No Excel binary found for record: {recordName}")
                 await self._mark_record(recordId, ProgressStatus.EMPTY)
+                yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
                 return
-            blocks_containers = await parser.parse(excel_binary, llm)
+            
+            # Phase 1: Load workbook (no LLM calls)
+            parser.load_workbook_from_binary(excel_binary)
+            
+            # Signal parsing complete after workbook is loaded
+            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+            
+            # Phase 2: Create blocks (involves LLM calls for summaries)
+            blocks_containers = await parser.create_blocks(llm)
+            
             record = await self.arango_service.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
@@ -1023,9 +1104,14 @@ class Processor:
             record = convert_record_dict_to_record(record)
             record.block_containers = blocks_containers
             record.virtual_record_id = virtual_record_id
+            
             ctx = TransformContext(record=record)
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
+            
+            # Signal indexing complete
+            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+            
             self.logger.info("✅ Excel processing completed successfully.")
         except Exception as e:
             self.logger.error(f"❌ Error processing Excel document: {str(e)}")
@@ -1033,8 +1119,8 @@ class Processor:
 
     async def process_xls_document(
         self, recordName, recordId, version, source, orgId, xls_binary, virtual_record_id
-    ) -> None:
-        """Process XLS document and extract structured content"""
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process XLS document, yielding phase completion events."""
         self.logger.info(
             f"🚀 Starting XLS document processing for record: {recordName}"
         )
@@ -1045,11 +1131,11 @@ class Processor:
             xlsx_binary = xls_parser.convert_xls_to_xlsx(xls_binary)
 
             # Process the converted XLSX using the Excel parser
-            result = await self.process_excel_document(
+            async for event in self.process_excel_document(
                 recordName, recordId, version, source, orgId, xlsx_binary, virtual_record_id
-            )
+            ):
+                yield event
             self.logger.debug("📑 XLS document processed successfully")
-            return result
 
         except Exception as e:
             self.logger.error(f"❌ Error processing XLS document: {str(e)}")
@@ -1057,8 +1143,8 @@ class Processor:
 
     async def process_csv_document(
         self, recordName, recordId, version, source, orgId, csv_binary, virtual_record_id, origin
-    ) -> None:
-        """Process CSV document and extract structured content
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process CSV document, yielding phase completion events.
 
         Args:
             recordName (str): Name of the record
@@ -1111,6 +1197,8 @@ class Processor:
             if csv_result is None:
                 self.logger.info(f"Unable to decode CSV file with any supported encoding for record: {recordName}. Setting indexing status to EMPTY.")
                 await self._mark_record(recordId, ProgressStatus.EMPTY)
+                yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
                 return
 
             self.logger.debug("📑 CSV result processed")
@@ -1128,12 +1216,19 @@ class Processor:
                 record = convert_record_dict_to_record(record)
                 record.virtual_record_id = virtual_record_id
 
+                # Signal parsing complete after CSV is parsed (before LLM block creation)
+                yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+
+                # Create blocks (involves LLM calls for row descriptions and summaries)
                 block_containers = await parser.get_blocks_from_csv_result(csv_result, llm)
                 record.block_containers = block_containers
 
                 ctx = TransformContext(record=record)
                 pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
                 await pipeline.apply(ctx)
+                
+                # Signal indexing complete
+                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
 
 
             self.logger.info("✅ CSV processing completed successfully")
@@ -1178,8 +1273,8 @@ class Processor:
 
     async def process_html_document(
         self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id
-    ) -> None:
-        """Process HTML document by converting to markdown and using markdown processing"""
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process HTML document, yielding phase completion events."""
         self.logger.info(
             f"🚀 Starting HTML document processing for record: {recordName}"
         )
@@ -1209,12 +1304,13 @@ class Processor:
             md_binary = markdown.encode("utf-8")
 
             # Use the existing markdown processing function
-            await self.process_md_document(
+            async for event in self.process_md_document(
                 recordName=recordName,
                 recordId=recordId,
                 md_binary=md_binary,
                 virtual_record_id=virtual_record_id
-            )
+            ):
+                yield event
 
             self.logger.info("✅ HTML processing completed successfully using markdown conversion.")
 
@@ -1224,8 +1320,8 @@ class Processor:
 
     async def process_mdx_document(
         self, recordName: str, recordId: str, version: str, source: str, orgId: str, mdx_content: str, virtual_record_id
-    ) -> None:
-        """Process MDX document by converting it to MD and then processing it as markdown
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process MDX document, yielding phase completion events.
 
         Args:
             recordName (str): Name of the record
@@ -1234,9 +1330,6 @@ class Processor:
             source (str): Source of the record
             orgId (str): Organization ID
             mdx_content (str): Content of the MDX file
-
-        Returns:
-            dict: Processing status and message
         """
         self.logger.info(
             f"🚀 Starting MDX document processing for record: {recordName}"
@@ -1247,15 +1340,15 @@ class Processor:
         md_content = parser.convert_mdx_to_md(mdx_content)
 
         # Process the converted markdown content
-        await self.process_md_document(
+        async for event in self.process_md_document(
             recordName, recordId, md_content, virtual_record_id
-        )
-
-        return {"status": "success", "message": "MDX processed successfully"}
+        ):
+            yield event
 
     async def process_md_document(
         self, recordName, recordId, md_binary, virtual_record_id
-    ) -> None:
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process Markdown document, yielding phase completion events."""
         self.logger.info(
             f"🚀 Starting Markdown document processing for record: {recordName}"
         )
@@ -1273,6 +1366,8 @@ class Processor:
                 try:
                     await self._mark_record(recordId, ProgressStatus.EMPTY)
                     self.logger.info("✅ HTML processing completed successfully using markdown conversion.")
+                    yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+                    yield {"event": "indexing_complete", "data": {"record_id": recordId}}
                     return
                 except DocumentProcessingError:
                     raise
@@ -1310,7 +1405,14 @@ class Processor:
             processor = DoclingProcessor(logger=self.logger,config=self.config_service)
             filename_without_ext = Path(recordName).stem
 
-            block_containers = await processor.load_document(f"{filename_without_ext}.md", md_bytes)
+            # Phase 1: Parse document with Docling (no LLM calls)
+            conv_res = await processor.parse_document(f"{filename_without_ext}.md", md_bytes)
+            
+            # Signal parsing complete after Docling parsing
+            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+            
+            # Phase 2: Create blocks (involves LLM calls for tables)
+            block_containers = await processor.create_blocks(conv_res)
 
             record = await self.arango_service.get_document(
                 recordId, CollectionNames.RECORDS.value
@@ -1341,9 +1443,14 @@ class Processor:
 
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
+            
             ctx = TransformContext(record=record)
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
+            
+            # Signal indexing complete
+            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+            
             self.logger.info("✅ MD processing completed successfully using docling")
             return
         except Exception as e:
@@ -1352,8 +1459,8 @@ class Processor:
 
     async def process_txt_document(
         self, recordName, recordId, version, source, orgId, txt_binary, virtual_record_id, recordType, connectorName, origin
-    ) -> None:
-        """Process TXT document and extract structured content"""
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process TXT document, yielding phase completion events."""
         self.logger.info(
             f"🚀 Starting TXT document processing for record: {recordName}"
         )
@@ -1378,12 +1485,13 @@ class Processor:
                     "Unable to decode text file with any supported encoding"
                 )
 
-            await self.process_md_document(
+            async for event in self.process_md_document(
                 recordName=recordName,
                 recordId=recordId,
                 md_binary=text_content,
                 virtual_record_id=virtual_record_id
-            )
+            ):
+                yield event
             self.logger.info("✅ TXT processing completed successfully")
             return
         except Exception as e:
@@ -1392,8 +1500,8 @@ class Processor:
 
     async def process_pptx_document(
         self, recordName, recordId, version, source, orgId, pptx_binary, virtual_record_id
-    ) -> None:
-        """Process PPTX document and extract structured content
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process PPTX document, yielding phase completion events.
 
         Args:
             recordName (str): Name of the record
@@ -1412,7 +1520,16 @@ class Processor:
             self.logger.debug("📄 Processing PPTX content")
 
             processor = DoclingProcessor(logger=self.logger, config=self.config_service)
-            block_containers = await processor.load_document(recordName, pptx_binary)
+            
+            # Phase 1: Parse document with Docling (no LLM calls)
+            conv_res = await processor.parse_document(recordName, pptx_binary)
+            
+            # Signal parsing complete after Docling parsing
+            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+            
+            # Phase 2: Create blocks (involves LLM calls for tables)
+            block_containers = await processor.create_blocks(conv_res)
+            
             if block_containers is False:
                 raise Exception(("Failed to process PPTX document. It might contain scanned pages."))
             record = await self.arango_service.get_document(
@@ -1424,9 +1541,14 @@ class Processor:
             record = convert_record_dict_to_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
+            
             ctx = TransformContext(record=record)
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
+            
+            # Signal indexing complete
+            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+            
             self.logger.info("✅ PPTX processing completed successfully using docling")
             return
         except Exception as e:
@@ -1435,8 +1557,8 @@ class Processor:
 
     async def process_ppt_document(
         self, recordName, recordId, version, source, orgId, ppt_binary, virtual_record_id
-    ) -> None:
-        """Process PPT document and extract structured content
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process PPT document, yielding phase completion events.
 
         Args:
             recordName (str): Name of the record
@@ -1451,9 +1573,8 @@ class Processor:
         )
         parser = self.parsers[ExtensionTypes.PPT.value]
         ppt_result = parser.convert_ppt_to_pptx(ppt_binary)
-        await self.process_pptx_document(
+        async for event in self.process_pptx_document(
             recordName, recordId, version, source, orgId, ppt_result, virtual_record_id
-        )
-
-        return {"status": "success", "message": "PPT processed successfully"}
+        ):
+            yield event
 

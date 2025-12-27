@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime
 from logging import Logger
-from typing import Optional
+from typing import Any, AsyncGenerator, Dict, Optional
 
 import aiohttp  # type: ignore
 from tenacity import retry, stop_after_attempt, wait_exponential  # type: ignore
@@ -116,7 +116,14 @@ class RecordEventHandler(BaseEventService):
 
 
 
-    async def process_event(self, event_type: str, payload: dict) -> bool:
+    async def process_event(self, event_type: str, payload: dict) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process record events, yielding phase completion events.
+        
+        Yields:
+            Dict with 'event' key:
+            - {'event': 'parsing_complete', 'data': {...}}
+            - {'event': 'indexing_complete', 'data': {...}}
+        """
         start_time = datetime.now()
         record_id = None
         message_id = f"{event_type}-unknown"
@@ -131,11 +138,11 @@ class RecordEventHandler(BaseEventService):
             message_id = f"{event_type}-{record_id}"
             if not event_type:
                 self.logger.error(f"Missing event_type in message {payload}")
-                return False
+                return
 
             if not record_id:
                 self.logger.error(f"Missing record_id in message {payload}")
-                return False
+                return
 
             record = await self.event_processor.arango_service.get_document(
                 record_id, CollectionNames.RECORDS.value
@@ -147,19 +154,20 @@ class RecordEventHandler(BaseEventService):
                 f"Extension: {extension}, Mime Type: {mime_type}"
             )
 
-            # Handle delete event
+            # Handle delete event - no parsing/indexing phases
             if event_type == EventTypes.DELETE_RECORD.value:
                 await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
-                return True
+                # Yield both events since delete is complete
+                yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+                yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                return
 
             if event_type == EventTypes.UPDATE_RECORD.value:
-                # await self.scheduler.schedule_event({"eventType": event_type, "payload": payload})
-                # self.logger.info(f"Scheduled update for record {record_id}")
                 await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
 
             if record is None:
                 self.logger.error(f"❌ Record {record_id} not found in database")
-                return False
+                return
 
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
@@ -185,7 +193,10 @@ class RecordEventHandler(BaseEventService):
 
             if event_type == EventTypes.NEW_RECORD.value and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
                 self.logger.info(f"🔍 Embeddings already exist for record {record_id} with virtual_record_id {virtual_record_id}")
-                return True
+                # Yield both events since already complete
+                yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+                yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                return
 
             supported_mime_types = [
                 MimeTypes.GMAIL.value,
@@ -242,7 +253,10 @@ class RecordEventHandler(BaseEventService):
                     docs, CollectionNames.RECORDS.value
                 )
 
-                return True
+                # Yield both events for unsupported file types
+                yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+                yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                return
 
             # Update with new metadata fields
             doc.update(
@@ -285,13 +299,16 @@ class RecordEventHandler(BaseEventService):
                     else:
                         event_data_for_processor["payload"]["buffer"] = response["data"]
 
-                    await self.event_processor.on_event(event_data_for_processor)
+                    # Yield events from the event processor
+                    async for event in self.event_processor.on_event(event_data_for_processor):
+                        yield event
+                    
                     processing_time = (datetime.now() - start_time).total_seconds()
                     self.logger.info(
                         f"✅ Successfully processed document for event: {event_type}. "
                         f"Record: {record_id}, Time: {processing_time:.2f}s"
                     )
-                    return True
+                    return
                 except Exception as e:
                     error_occurred = True
                     error_msg = f"Failed to process signed URL: {str(e)}"
@@ -306,13 +323,16 @@ class RecordEventHandler(BaseEventService):
                         "eventType": event_type,
                         "payload": payload # The original payload
                     }
-                    await self.event_processor.on_event(event_data_for_processor)
+                    # Yield events from the event processor
+                    async for event in self.event_processor.on_event(event_data_for_processor):
+                        yield event
+                    
                     processing_time = (datetime.now() - start_time).total_seconds()
                     self.logger.info(
                         f"✅ Successfully processed document for event: {event_type}. "
                         f"Record: {record_id}, Time: {processing_time:.2f}s"
                     )
-                    return True
+                    return
                 except Exception as e:
                     error_occurred = True
                     error_msg = f"Failed to process signed URL: {str(e)}"
@@ -340,13 +360,16 @@ class RecordEventHandler(BaseEventService):
 
                     event_data_for_processor["payload"]["buffer"] = response["data"]
 
-                    await self.event_processor.on_event(event_data_for_processor)
+                    # Yield events from the event processor
+                    async for event in self.event_processor.on_event(event_data_for_processor):
+                        yield event
+                    
                     processing_time = (datetime.now() - start_time).total_seconds()
                     self.logger.info(
                         f"✅ Successfully processed document for event: {event_type}. "
                         f"Record: {record_id}, Time: {processing_time:.2f}s"
                     )
-                    return True
+                    return
                 except Exception as e:
                     error_occurred = True
                     error_msg = f"Failed to process signed URL: {str(e)}"
@@ -378,7 +401,7 @@ class RecordEventHandler(BaseEventService):
                 virtual_record_id = record.get("virtualRecordId") if record else None
                 self.logger.info(f"🔄 Current record {record_id} has failed, triggering next queued duplicate")
                 await self._trigger_next_queued_duplicate(record_id,virtual_record_id)
-                return False
+                return
 
             if record is None:
                 return
@@ -393,15 +416,6 @@ class RecordEventHandler(BaseEventService):
                 if record is None:
                     self.logger.warning(f"Record {record_id} not found in database")
                     return
-
-                # if record is None:
-                #     self.logger.warning(f"Record {record_id} not found in database")
-                #     self.logger.warning(f"Triggering next queued duplicate for record {record_id}")
-                #     if md5_checksum and size_in_bytes:
-                #         await self._trigger_next_queued_duplicate(md5_checksum, size_in_bytes, None)
-                #     else:
-                #         self.logger.warning(f"Missing md5Checksum or sizeInBytes, skipping next queued duplicate")
-                #     return
 
                 indexing_status = record.get("indexingStatus")
                 virtual_record_id = record.get("virtualRecordId")
