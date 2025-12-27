@@ -16,7 +16,7 @@ from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.sources.box.connector import BoxConnector
 
 
-async def example_box_sync():
+async def example_box_sync() -> None:
     """
     Example function demonstrating how to use the Box connector.
     """
@@ -78,7 +78,7 @@ async def example_box_sync():
         logger.info("Box connector cleanup completed")
 
 
-async def example_box_sync_with_config():
+async def example_box_sync_with_config() -> None:
     """
     Example showing how to configure Box connector with specific settings.
     """
@@ -109,7 +109,7 @@ async def example_box_sync_with_config():
     logger.info("5. Run the connector with: await box_connector.run_sync()")
 
 
-async def example_webhook_handling():
+async def example_webhook_handling() -> None:
     """
     Example showing how to handle Box webhooks.
     """

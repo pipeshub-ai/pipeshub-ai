@@ -3,7 +3,7 @@ import mimetypes
 import uuid
 from datetime import datetime, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import AsyncGenerator, Dict, List, Optional, Tuple, Any
 
 from aiohttp import ClientSession
 from aiolimiter import AsyncLimiter
@@ -273,7 +273,7 @@ class BoxConnector(BaseConnector):
                 self.logger.info(f"Fetching access token from {token_url}")
 
                 async with session.post(token_url, data=data) as response:
-                    if response.status != 200:
+                    if response.status != HttpStatusCode.OK.value:
                         error_text = await response.text()
                         self.logger.error(
                             f"Failed to fetch access token. Status: {response.status}, "
@@ -516,7 +516,7 @@ class BoxConnector(BaseConnector):
 
             if not response.success:
                 # Handle 404 no permission to view collabs
-                if response.status_code == 404:
+                if response.status_code == HttpStatusCode.NOT_FOUND.value:
                     self.logger.debug(f"No collaborations found or accessible for {item_type} {item_id} (404).")
                 else:
                     self.logger.debug(f"Could not fetch permissions for {item_type} {item_id}: {response.error}")
@@ -1242,7 +1242,7 @@ class BoxConnector(BaseConnector):
             'unshared'
         }
 
-        def get_val(obj, key, default=None):
+        def get_val(obj: Any, key: str, default: Any = None) -> Any:
             if obj is None:
                 return default
             if isinstance(obj, dict):
