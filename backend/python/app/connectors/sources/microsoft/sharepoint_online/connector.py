@@ -29,6 +29,7 @@ from msgraph.generated.models.list_item import ListItem
 from msgraph.generated.models.site import Site
 from msgraph.generated.models.site_page import SitePage
 from msgraph.generated.models.subscription import Subscription
+from msgraph.generated.sites.item.pages.pages_request_builder import PagesRequestBuilder
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -1479,11 +1480,39 @@ class SharePointConnector(BaseConnector):
         try:
             encoded_site_id = self._construct_site_url(site_id)
 
+            # Get sync point for pages
+            sync_point_key = generate_record_sync_point_key(
+                SharePointRecordType.PAGE.value,
+                RecordGroupType.SHAREPOINT_SITE.value,
+                site_id
+            )
+
+            sync_point = await self.page_sync_point.read_sync_point(sync_point_key)
+            last_sync_time = sync_point.get('lastSyncTime') if sync_point else None
+
+
+            sync_start_time = datetime.now(timezone.utc).isoformat()
+
+
+            # Build OData filter for modified pages
+            request_config = None
+            if last_sync_time:
+                query_params = PagesRequestBuilder.PagesRequestBuilderGetQueryParameters(
+                    filter=f"lastModifiedDateTime ge {last_sync_time}",
+                    orderby=["lastModifiedDateTime asc"]
+                )
+                request_config = PagesRequestBuilder.PagesRequestBuilderGetRequestConfiguration(
+                    query_parameters=query_params
+                )
+
             async with self.rate_limiter:
                 try:
                     pages_response = await self._safe_api_call(
-                        self.client.sites.by_site_id(encoded_site_id).pages.get()
+                        self.client.sites.by_site_id(encoded_site_id).pages.get(
+                            request_configuration=request_config
+                        )
                     )
+
                 except Exception as pages_error:
                     if any(term in str(pages_error).lower() for term in [HttpStatusCode.FORBIDDEN.value, "accessdenied", HttpStatusCode.NOT_FOUND.value, "notfound"]):
                         self.logger.debug(f"Pages not accessible for site {site_id}: {pages_error}")
@@ -1493,10 +1522,17 @@ class SharePointConnector(BaseConnector):
 
             if not pages_response or not pages_response.value:
                 self.logger.debug(f"No pages found for site {site_id}")
+                # Still update sync point even if no pages found
+                await self.page_sync_point.update_sync_point(
+                    sync_point_key,
+                    sync_point_data={"lastSyncTime": sync_start_time}
+                )
                 return
 
             pages = pages_response.value
             self.logger.debug(f"Found {len(pages)} pages in site")
+
+            pages_processed_count = 0
 
             for page in pages:
                 try:
@@ -1516,11 +1552,9 @@ class SharePointConnector(BaseConnector):
                     created_by = getattr(page, 'created_by', None)
 
                     if created_by:
-                        # Check User Display Name
                         user_identity = getattr(created_by, 'user', None)
                         display_name = getattr(user_identity, 'display_name', '').lower() if user_identity else ''
 
-                        # "System Account" is the standard display name for internal SharePoint operations
                         if display_name == 'system account':
                             is_system_page = True
 
@@ -1528,9 +1562,7 @@ class SharePointConnector(BaseConnector):
                         self.logger.info(f"⏭️ Skipping System Account/Template page: '{page_name}'")
                         continue
 
-
                     existing_record = None
-                    # Get existing record for change detection
                     async with self.data_store_provider.transaction() as tx_store:
                         existing_record = await tx_store.get_record_by_external_id(
                             connector_id=self.connector_id,
@@ -1543,9 +1575,11 @@ class SharePointConnector(BaseConnector):
                     content_changed = False
 
                     if existing_record:
-                        # Check for changes
-                        is_updated = True  # Placeholder logic - need to compare timestamps or content hashes
-                        content_changed = True  # Placeholder logic - If a page is coming in it means it has been updated - will implement full logic later
+                        # Use eTag for change detection (same pattern as drive items)
+                        current_etag = getattr(page, 'e_tag', None)
+                        if existing_record.external_revision_id != current_etag:
+                            is_updated = True
+                            content_changed = True
 
 
                     page_record = await self._create_page_record(page, site_id, site_name, existing_record)
@@ -1566,14 +1600,23 @@ class SharePointConnector(BaseConnector):
                             new_permissions=permissions
                         ))
                         self.stats['pages_processed'] += 1
+                        pages_processed_count += 1
 
                 except Exception as page_error:
                     page_name = getattr(page, 'title', getattr(page, 'name', 'unknown'))
                     self.logger.warning(f"Error processing page '{page_name}': {page_error}")
                     continue
 
+            # ✅ Save sync point with the time we captured BEFORE starting
+            await self.page_sync_point.update_sync_point(
+                sync_point_key,
+                sync_point_data={"lastSyncTime": sync_start_time}
+            )
+            self.logger.info(f"✅ Processed {pages_processed_count} pages for site {site_name}")
+
         except Exception as e:
             self.logger.error(f"❌ Error processing pages for site {site_id}: {e}")
+            # Don't update sync point on error - will retry from last successful point
 
     async def _create_page_record(self, page: SitePage, site_id: str, site_name: str, existing_record: Optional[SharePointPageRecord] = None) -> Optional[SharePointPageRecord]:
         """
@@ -3136,10 +3179,263 @@ class SharePointConnector(BaseConnector):
             self.logger.error(f"❌ Error during SharePoint connector cleanup: {e}")
 
     async def reindex_records(self, records: List[Record]) -> None:
-        """Reindex records - not implemented for SharePoint yet."""
-        # self.logger.warning("Reindex not implemented for SharePoint connector")
+        """Reindex records for SharePoint."""
+        try:
+            if not records:
+                self.logger.info("No records to reindex")
+                return
 
-        self.logger.info("reindex records method not implemented for SharePoint as of yet please check again later")
+            self.logger.info(f"Starting reindex for {len(records)} SharePoint records")
+
+            if not self.msgraph_client:
+                self.logger.error("MS Graph client not initialized. Call init() first.")
+                raise Exception("MS Graph client not initialized. Call init() first.")
+
+            # Get all active users for permissions
+            users = await self.data_entities_processor.get_all_active_users()
+
+            # Check records at source for updates
+            updated_records = []
+            non_updated_records = []
+
+            for record in records:
+                try:
+                    updated_record_data = await self._check_and_fetch_updated_record(record, users)
+                    if updated_record_data:
+                        updated_record, permissions = updated_record_data
+                        updated_records.append((updated_record, permissions))
+                    else:
+                        non_updated_records.append(record)
+                except Exception as e:
+                    self.logger.error(f"Error checking record {record.id} at source: {e}")
+                    continue
+
+            # Update DB only for records that changed at source
+            if updated_records:
+                await self.data_entities_processor.on_new_records(updated_records)
+                self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
+
+            # Publish reindex events for non updated records
+            if non_updated_records:
+                await self.data_entities_processor.reindex_existing_records(non_updated_records)
+                self.logger.info(f"Published reindex events for {len(non_updated_records)} non updated records")
+
+        except Exception as e:
+            self.logger.error(f"Error during SharePoint reindex: {e}", exc_info=True)
+            raise
+
+    async def _check_and_fetch_updated_record(
+        self, record: Record, users: List[AppUser]
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch record from MS Graph and return data for reindexing if changed."""
+        try:
+            record_type = record.record_type
+            external_record_id = record.external_record_id
+
+            if not external_record_id:
+                self.logger.warning(f"Missing external_record_id for record {record.id}")
+                return None
+
+            # Handle different record types
+            if record_type == RecordType.FILE:
+                return await self._check_and_fetch_updated_file_record(record, users)
+            elif record_type == RecordType.SHAREPOINT_PAGE:
+                return await self._check_and_fetch_updated_page_record(record)
+            elif record_type == RecordType.SHAREPOINT_LIST_ITEM:
+                return await self._check_and_fetch_updated_list_item_record(record)
+            else:
+                self.logger.warning(f"Unsupported record type for reindex: {record_type}")
+                return None
+
+        except Exception as e:
+            self.logger.error(f"Error checking SharePoint record {record.id} at source: {e}")
+            return None
+
+    async def _check_and_fetch_updated_file_record(
+        self, record: Record, users: List[AppUser]
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Check and fetch updated file record from a SharePoint drive."""
+        try:
+            drive_id = record.external_record_group_id
+            item_id = record.external_record_id
+
+            if not drive_id or not item_id:
+                self.logger.warning(f"Missing drive_id or item_id for file record {record.id}")
+                return None
+
+            # Fetch fresh item from MS Graph
+            async with self.rate_limiter:
+                item = await self._safe_api_call(
+                    self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).get()
+                )
+
+            if not item:
+                self.logger.warning(f"File item {item_id} not found at source")
+                return None
+
+            # Check if item is deleted
+            if hasattr(item, 'deleted') and item.deleted is not None:
+                self.logger.info(f"File item {item_id} has been deleted at source")
+                return None
+
+            # Get the site_id from the drive to fetch permissions
+            # We need to extract site_id from parent_reference or use a cached mapping
+            site_id = None
+            if hasattr(item, 'parent_reference') and item.parent_reference:
+                site_id = getattr(item.parent_reference, 'site_id', None)
+
+            # Use existing logic to detect changes and create FileRecord
+            record_update = await self._process_drive_item(
+                item=item,
+                site_id=site_id or "",
+                drive_id=drive_id,
+                users=users
+            )
+
+            if not record_update or record_update.is_deleted:
+                return None
+
+            # Only return data if there's an actual update
+            if record_update.is_updated:
+                self.logger.info(f"File record {item_id} has changed at source. Updating.")
+                # Ensure we keep the internal DB ID
+                record_update.record.id = record.id
+                return (record_update.record, record_update.new_permissions or [])
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Error checking SharePoint file record {record.id} at source: {e}")
+            return None
+
+    async def _check_and_fetch_updated_page_record(
+        self, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Check and fetch updated page record from SharePoint."""
+        try:
+            site_id = record.external_record_group_id
+            page_id = record.external_record_id
+
+            if not site_id or not page_id:
+                self.logger.warning(f"Missing site_id or page_id for page record {record.id}")
+                return None
+
+            encoded_site_id = self._construct_site_url(site_id)
+
+            # Fetch fresh page from MS Graph
+            async with self.rate_limiter:
+                try:
+                    page = await self._safe_api_call(
+                        self.client.sites.by_site_id(encoded_site_id).pages.by_base_site_page_id(page_id).get()
+                    )
+                except Exception as page_error:
+                    if any(term in str(page_error).lower() for term in [HttpStatusCode.FORBIDDEN.value, "accessdenied", HttpStatusCode.NOT_FOUND.value, "notfound"]):
+                        self.logger.warning(f"Page {page_id} not accessible or not found at source")
+                        return None
+                    raise page_error
+
+            if not page:
+                self.logger.warning(f"Page {page_id} not found at source")
+                return None
+
+            # Check for changes using eTag
+            current_etag = getattr(page, 'e_tag', None)
+            is_updated = record.external_revision_id != current_etag
+
+            if not is_updated:
+                return None
+
+            self.logger.info(f"Page record {page_id} has changed at source. Updating.")
+
+            # Get site name for page record creation
+            site_name = ""
+            try:
+                async with self.rate_limiter:
+                    site_response = await self._safe_api_call(
+                        self.client.sites.by_site_id(encoded_site_id).get()
+                    )
+                if site_response:
+                    site_name = getattr(site_response, 'display_name', '') or getattr(site_response, 'name', '')
+            except Exception:
+                pass
+
+            # Create updated page record
+            page_record = await self._create_page_record(page, site_id, site_name, record)
+
+            if not page_record:
+                return None
+
+            # Get permissions
+            permissions = await self._get_page_permissions(site_id, page_id)
+
+            # Ensure we keep the internal DB ID
+            page_record.id = record.id
+
+            return (page_record, permissions)
+
+        except Exception as e:
+            self.logger.error(f"Error checking SharePoint page record {record.id} at source: {e}")
+            return None
+
+    async def _check_and_fetch_updated_list_item_record(
+        self, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Check and fetch updated list item record from SharePoint."""
+        try:
+            # Extract site_id and list_id from semantic_metadata
+            semantic_metadata = getattr(record, 'semantic_metadata', {}) or {}
+            site_id = semantic_metadata.get('site_id')
+            list_id = semantic_metadata.get('list_id')
+            item_id = record.external_record_id
+
+            if not site_id or not list_id or not item_id:
+                self.logger.warning(f"Missing site_id, list_id, or item_id for list item record {record.id}")
+                return None
+
+            encoded_site_id = self._construct_site_url(site_id)
+
+            # Fetch fresh list item from MS Graph
+            async with self.rate_limiter:
+                try:
+                    item = await self._safe_api_call(
+                        self.client.sites.by_site_id(encoded_site_id).lists.by_list_id(list_id).items.by_list_item_id(item_id).get()
+                    )
+                except Exception as item_error:
+                    if any(term in str(item_error).lower() for term in [HttpStatusCode.FORBIDDEN.value, "accessdenied", HttpStatusCode.NOT_FOUND.value, "notfound"]):
+                        self.logger.warning(f"List item {item_id} not accessible or not found at source")
+                        return None
+                    raise item_error
+
+            if not item:
+                self.logger.warning(f"List item {item_id} not found at source")
+                return None
+
+            # Check for changes using eTag
+            current_etag = getattr(item, 'e_tag', None)
+            is_updated = record.external_revision_id != current_etag
+
+            if not is_updated:
+                return None
+
+            self.logger.info(f"List item record {item_id} has changed at source. Updating.")
+
+            # Create updated list item record
+            list_item_record = await self._create_list_item_record(item, site_id, list_id)
+
+            if not list_item_record:
+                return None
+
+            # Get permissions
+            permissions = await self._get_list_item_permissions(site_id, list_id, item_id)
+
+            # Ensure we keep the internal DB ID
+            list_item_record.id = record.id
+
+            return (list_item_record, permissions)
+
+        except Exception as e:
+            self.logger.error(f"Error checking SharePoint list item record {record.id} at source: {e}")
+            return None
 
     async def get_filter_options(
         self,
