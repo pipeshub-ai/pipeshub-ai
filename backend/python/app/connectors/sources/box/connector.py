@@ -3,7 +3,7 @@ import mimetypes
 import uuid
 from datetime import datetime, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, Optional, Tuple, Any
+from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
 from aiohttp import ClientSession
 from aiolimiter import AsyncLimiter
@@ -1242,7 +1242,7 @@ class BoxConnector(BaseConnector):
             'unshared'
         }
 
-        def get_val(obj: Any, key: str, default: Any = None) -> Any:
+        def get_val(obj, key, default=None):
             if obj is None:
                 return default
             if isinstance(obj, dict):
