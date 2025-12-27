@@ -10,8 +10,6 @@ All methods support optional transaction parameter for atomic operations.
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from app.config.constants.arangodb import Connectors
-
 if TYPE_CHECKING:
     from app.models.entities import (
         AppRole,

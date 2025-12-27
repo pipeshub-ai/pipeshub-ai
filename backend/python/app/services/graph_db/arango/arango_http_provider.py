@@ -370,7 +370,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> bool:
         """
         Batch create edges - FULLY ASYNC.
-        
+
         Uses UPSERT to avoid duplicates - matches on _from and _to.
 
         Args:
@@ -398,11 +398,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
             bind_vars = {"edges": edges, "@collection": collection}
 
             results = await self.http_client.execute_aql(
-                batch_query, 
+                batch_query,
                 bind_vars,
                 txn_id=transaction
             )
-            
+
             self.logger.info(
                 f"✅ Successfully created {len(results)} edges in collection '{collection}'."
             )
@@ -910,7 +910,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             """
 
             results = await self.http_client.execute_aql(
-                query, 
+                query,
                 bind_vars={"path": path},
                 txn_id=transaction
             )
@@ -1351,7 +1351,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Execute query with organization parameter
             results = await self.http_client.execute_aql(
-                query, 
+                query,
                 bind_vars={"org_id": org_id, "active": active}
             )
 
@@ -1414,7 +1414,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             """
 
             results = await self.http_client.execute_aql(
-                query, 
+                query,
                 bind_vars={
                     "email": email,
                     "connector_id": connector_id
@@ -1862,7 +1862,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 RETURN doc
             """
             results = await self.http_client.execute_aql(
-                query, 
+                query,
                 bind_vars={"@collection": collection},
                 txn_id=transaction
             )
@@ -2564,7 +2564,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             """
             try:
                 users = await self.http_client.execute_aql(
-                    user_query, 
+                    user_query,
                     bind_vars={"emails": unique_emails},
                     txn_id=transaction
                 )
@@ -2674,7 +2674,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 edge_key = str(uuid.uuid4())
 
             self.logger.info(f"Permission data is {permission_data}")
-            
+
             # Create edge document with proper formatting
             # Direction: User/Group/Org → Record (reversed from old direction)
             edge = {
@@ -2790,7 +2790,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 REMOVE a IN {CollectionNames.ANYONE.value}
             """
             await self.http_client.execute_aql(
-                query, 
+                query,
                 bind_vars={"file_key": file_key, "org_id": org_id},
                 txn_id=transaction
             )
@@ -2804,7 +2804,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Get all permission IDs from new permissions
             new_permission_ids = list({p.get("id") for p in permissions_data})
             self.logger.info(f"🚀 New permission IDs: {new_permission_ids}")
-            
+
             # Find permissions that exist but are not in new permissions
             permissions_to_remove = [
                 perm
@@ -2919,7 +2919,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         }
                         # Store/update permission
                         await self.batch_upsert_nodes(
-                            [permission_data], 
+                            [permission_data],
                             collection=CollectionNames.ANYONE.value,
                             transaction=transaction
                         )
@@ -3406,7 +3406,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             """
 
             results = await self.http_client.execute_aql(
-                query, 
+                query,
                 bind_vars={"external_file_id": external_file_id},
                 txn_id=transaction
             )
@@ -3877,7 +3877,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             """
 
             results = await self.http_client.execute_aql(
-                query, 
+                query,
                 bind_vars={
                     "from_key": from_key,
                     "@collection": collection
@@ -3931,7 +3931,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             """
 
             results = await self.http_client.execute_aql(
-                query, 
+                query,
                 bind_vars={
                     "from_key": from_key,
                     "@edge_collection": edge_collection,

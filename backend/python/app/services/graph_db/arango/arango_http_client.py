@@ -20,6 +20,9 @@ HTTP_NO_CONTENT = 204
 HTTP_NOT_FOUND = 404
 HTTP_CONFLICT = 409
 
+# ArangoDB Error Code Constants
+ARANGO_ERROR_DOCUMENT_NOT_FOUND = 1202
+
 
 class ArangoHTTPClient:
     """Fully async HTTP client for ArangoDB REST API"""
@@ -552,13 +555,13 @@ class ArangoHTTPClient:
             return 0
 
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
-        
+
         # ArangoDB batch delete endpoint
         url = f"{self.base_url}/_db/{self.database}/_api/document/{collection}"
-        
+
         # Construct full document IDs
         document_ids = [f"{collection}/{key}" for key in keys]
-        
+
         try:
             async with self.session.delete(
                 url,
@@ -567,17 +570,17 @@ class ArangoHTTPClient:
             ) as resp:
                 if resp.status in [HTTP_OK, HTTP_ACCEPTED]:
                     results = await resp.json()
-                    
+
                     # Results is an array of deletion results
                     deleted_count = 0
                     errors = []
-                    
+
                     for idx, result in enumerate(results):
                         # Check if this deletion was successful
                         if result.get("error"):
                             # Handle 404 as success (document already deleted)
                             error_num = result.get("errorNum")
-                            if error_num == 1202:  # Document not found
+                            if error_num == ARANGO_ERROR_DOCUMENT_NOT_FOUND:  # Document not found
                                 deleted_count += 1
                                 self.logger.debug(f"Document {document_ids[idx]} already deleted (404)")
                             else:
@@ -585,20 +588,20 @@ class ArangoHTTPClient:
                                 errors.append(f"Document {document_ids[idx]}: (errorNum={error_num}) {error_msg}")
                         else:
                             deleted_count += 1
-                    
+
                     if errors:
                         error_details = "; ".join(errors)
                         self.logger.error(f"❌ Batch delete had {len(errors)} error(s): {error_details}")
                         raise Exception(f"Batch delete failed with {len(errors)} error(s): {error_details}")
-                    
+
                     self.logger.info(f"✅ Batch deleted {deleted_count} documents from {collection}")
                     return deleted_count
-                    
+
                 else:
                     error_text = await resp.text()
                     self.logger.error(f"❌ Batch delete failed with status {resp.status}: {error_text}")
                     raise Exception(f"Batch delete failed: HTTP {resp.status} - {error_text}")
-                    
+
         except Exception as e:
             self.logger.error(f"❌ Batch delete failed: {str(e)}")
             raise
