@@ -23,6 +23,20 @@ export const deleteRecordSchema = z.object({
 
 export const reindexRecordSchema = z.object({
   params: z.object({ recordId: z.string().min(1) }),
+  body: z
+    .object({
+      depth: z.number().int().min(-1).max(100).optional(),
+    })
+    .optional(),
+});
+
+export const reindexRecordGroupSchema = z.object({
+  params: z.object({ recordGroupId: z.string().min(1) }),
+  body: z
+    .object({
+      depth: z.number().int().min(-1).max(100).optional(),
+    })
+    .optional(),
 });
 
 export const reindexFailedRecordSchema = z.object({

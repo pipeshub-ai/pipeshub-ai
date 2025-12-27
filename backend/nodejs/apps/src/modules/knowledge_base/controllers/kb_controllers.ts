@@ -41,13 +41,6 @@ const logger = Logger.getInstance({
 });
 
 // Types and helpers for active connector validation
-interface ConnectorInfo {
-  _key: string;
-}
-
-interface ActiveConnectorsResponse {
-  connectors: ConnectorInfo[];
-}
 
 const normalizeAppName = (value: string): string =>
   value.replace(' ', '').toLowerCase();
@@ -57,24 +50,31 @@ const validateActiveConnector = async (
   appConfig: AppConfig,
   headers: Record<string, string>,
 ): Promise<void> => {
-  const activeAppsResponse = await executeConnectorCommand(
-    `${appConfig.connectorBackend}/api/v1/connectors/active`,
+  // Use the connector instance endpoint which checks existence and user access
+  // This is better than checking active connectors because:
+  // 1. It validates the connector exists (regardless of active status)
+  // 2. It checks user access permissions
+  // 3. For reindexing failed records, we should allow inactive connectors too
+
+  const connectorResponse = await executeConnectorCommand(
+    `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
     HttpMethod.GET,
     headers,
   );
 
-  if (activeAppsResponse.statusCode !== 200) {
-    throw new InternalServerError('Failed to get active connectors');
+  if (connectorResponse.statusCode === 404) {
+    throw new BadRequestError(`Connector ${connectorId} not found or access denied`);
   }
 
-  const data = activeAppsResponse.data as ActiveConnectorsResponse;
-  const connectors = data?.connectors || [];
-
-  const isAllowed = connectors.some((connector) => connector._key === connectorId);
-
-  if (!isAllowed) {
-    throw new BadRequestError(`Connector ${connectorId} not allowed`);
+  if (connectorResponse.statusCode !== 200) {
+    throw new InternalServerError(
+      `Failed to validate connector: ${connectorResponse.statusCode}`,
+    );
   }
+
+  logger.debug('Connector validation successful', {
+    connectorId,
+  });
 };
 
 export const createKnowledgeBase =
@@ -1801,6 +1801,7 @@ export const reindexRecord =
     try {
       const { recordId } = req.params as { recordId: string };
       const { userId, orgId } = req.user || {};
+      const { depth = 0 } = req.body || {};
 
       // Validate user authentication
       if (!userId || !orgId) {
@@ -1809,11 +1810,12 @@ export const reindexRecord =
         );
       }
 
-      // Call the Python service to get record
+      // Call the Python service to reindex record
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/records/${recordId}/reindex`,
         HttpMethod.POST,
         req.headers as Record<string, string>,
+        { depth },
       );
 
       handleConnectorResponse(
@@ -1823,7 +1825,7 @@ export const reindexRecord =
         'Record not reindexed',
       );
 
-      // Log successful retrieval
+      // Log successful reindex
       logger.info('Record reindexed successfully');
     } catch (error: any) {
       logger.error('Error reindexing record', {
@@ -1832,7 +1834,53 @@ export const reindexRecord =
       });
       const handleError = handleBackendError(error, 'reindex record');
       next(handleError);
-      return; // Added return statement
+      return;
+    }
+  };
+
+export const reindexRecordGroup =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { recordGroupId } = req.params as { recordGroupId: string };
+      const { userId, orgId } = req.user || {};
+      const { depth = 0 } = req.body || {};
+
+      // Validate user authentication
+      if (!userId || !orgId) {
+        throw new UnauthorizedError(
+          'User not authenticated or missing organization ID',
+        );
+      }
+
+      // Call the Python service to reindex record group
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/record-groups/${recordGroupId}/reindex`,
+        HttpMethod.POST,
+        req.headers as Record<string, string>,
+        { depth },
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Record group not found',
+        'Record group not reindexed',
+      );
+
+      // Log successful reindex
+      logger.info('Record group reindexed successfully', {
+        recordGroupId,
+        depth,
+      });
+    } catch (error: any) {
+      logger.error('Error reindexing record group', {
+        recordGroupId: req.params.recordGroupId,
+        error,
+      });
+      const handleError = handleBackendError(error, 'reindex record group');
+      next(handleError);
+      return;
     }
   };
 
