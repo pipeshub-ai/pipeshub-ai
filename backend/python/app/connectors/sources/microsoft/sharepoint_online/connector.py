@@ -3356,8 +3356,8 @@ class SharePointConnector(BaseConnector):
                     )
                 if site_response:
                     site_name = getattr(site_response, 'display_name', '') or getattr(site_response, 'name', '')
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.warning(f"Could not fetch site name for site {site_id}: {e}")
 
             # Create updated page record
             page_record = await self._create_page_record(page, site_id, site_name, record)
