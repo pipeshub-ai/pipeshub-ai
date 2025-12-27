@@ -2203,12 +2203,29 @@ class BaseArangoService:
                 "permissions": []
             }
 
-    async def reindex_single_record(self, record_id: str, user_id: str, org_id: str, request: Request) -> Dict:
+    async def reindex_single_record(self, record_id: str, user_id: str, org_id: str, request: Request, depth: int = 0) -> Dict:
         """
-        Reindex a single record with permission checks and event publishing
+        Reindex a single record with permission checks and event publishing.
+        If the record is a folder and depth > 0, also reindex children up to specified depth.
+
+        Args:
+            record_id: Record ID to reindex
+            user_id: External user ID doing the reindex
+            org_id: Organization ID
+            request: FastAPI request object
+            depth: Depth of children to reindex (-1 = unlimited/max 100, other negatives = 0,
+                   0 = only this record, 1 = direct children, etc.)
         """
         try:
-            self.logger.info(f"🔄 Starting reindex for record {record_id} by user {user_id}")
+            self.logger.info(f"🔄 Starting reindex for record {record_id} by user {user_id} with depth {depth}")
+
+            # Handle negative depth: -1 means unlimited (set to max 100), other negatives are invalid (set to 0)
+            if depth == -1:
+                depth = 100
+                self.logger.info(f"Depth was -1 (unlimited), setting to maximum limit: {depth}")
+            elif depth < 0:
+                self.logger.warning(f"Invalid negative depth {depth}, setting to 0 (single record only)")
+                depth = 0
 
             # Get record to determine connector type
             record = await self.get_document(record_id, CollectionNames.RECORDS.value)
@@ -2227,9 +2244,10 @@ class BaseArangoService:
                 }
 
             connector_name = record.get("connectorName", "")
+            connector_id = record.get("connectorId", "")
             origin = record.get("origin", "")
 
-            self.logger.info(f"📋 Record details - Origin: {origin}, Connector: {connector_name}")
+            self.logger.info(f"📋 Record details - Origin: {origin}, Connector: {connector_name}, ConnectorId: {connector_id}")
 
             # Get user
             user = await self.get_user_by_user_id(user_id)
@@ -2266,7 +2284,8 @@ class BaseArangoService:
 
             elif origin == OriginTypes.CONNECTOR.value:
                 # Connector record - check connector-specific permissions
-                user_role = await self._check_record_permissions(record_id, user_key)
+                permission_result = await self._check_record_permissions(record_id, user_key)
+                user_role = permission_result.get("permission")
 
                 if not user_role or user_role not in ["OWNER", "WRITER","READER"]:
                     return {
@@ -2287,12 +2306,31 @@ class BaseArangoService:
             file_record = await self.get_document(record_id, CollectionNames.FILES.value) if record.get("recordType") == "FILE" else await self.get_document(record_id, CollectionNames.MAILS.value)
 
             self.logger.info(f"📋 File record: {file_record}")
+
+            # Determine if we should use batch reindex (depth > 0)
+            use_batch_reindex = depth != 0
+
             # Create and publish reindex event
             try:
-                payload = await self._create_reindex_event_payload(record, file_record,user_id,request)
-                await self._publish_record_event("newRecord",payload)
+                if use_batch_reindex:
+                    # Publish connector reindex event for batch processing
+                    connector_normalized = connector_name.replace(" ", "").lower()
+                    event_type = f"{connector_normalized}.reindex"
 
-                self.logger.info(f"✅ Published reindex event for record {record_id}")
+                    payload = {
+                        "orgId": org_id,
+                        "recordId": record_id,
+                        "depth": depth,
+                        "connectorId": connector_id
+                    }
+
+                    await self._publish_sync_event(event_type, payload)
+                    self.logger.info(f"✅ Published {event_type} event for record {record_id} with depth {depth}")
+                else:
+                    # Single record reindex - use existing newRecord event
+                    payload = await self._create_reindex_event_payload(record, file_record, user_id, request)
+                    await self._publish_record_event("newRecord", payload)
+                    self.logger.info(f"✅ Published reindex event for record {record_id}")
 
                 return {
                     "success": True,
@@ -2317,6 +2355,676 @@ class BaseArangoService:
                 "success": False,
                 "code": 500,
                 "reason": f"Internal error: {str(e)}"
+            }
+
+    async def reindex_failed_connector_records(self, user_id: str, org_id: str, connector: str, origin: str) -> Dict:
+        """
+        Reindex all failed records for a specific connector with permission check
+        Just validates permissions and publishes a single reindexFailed event
+        Args:
+            user_id: External user ID doing the reindex
+            org_id: Organization ID
+            connector: Connector name (GOOGLE_DRIVE, GOOGLE_MAIL, KNOWLEDGE_BASE)
+            origin: Origin type (CONNECTOR, UPLOAD)
+        Returns:
+            Dict: Result with success status and event publication info
+        """
+        try:
+            self.logger.info(f"🔄 Starting failed records reindex for {connector} by user {user_id}")
+
+            # Get user
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": f"User not found: {user_id}"
+                }
+
+            user_key = user.get('_key')
+
+            # Check if user has permission to reindex connector records
+            permission_check = await self._check_connector_reindex_permissions(
+                user_key, org_id, connector, origin
+            )
+
+            if not permission_check["allowed"]:
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": permission_check["reason"]
+                }
+
+            try:
+                connector_normalized = connector.replace("_", "").lower()
+                event_type = f"{connector_normalized}.reindex"
+
+                payload = {
+                    "orgId": org_id,
+                    "statusFilters": ["FAILED"]
+                }
+
+                await self._publish_sync_event(event_type, payload)
+
+                self.logger.info(f"✅ Published {event_type} event for {connector}")
+
+                return {
+                    "success": True,
+                    "connector": connector,
+                    "origin": origin,
+                    "user_permission_level": permission_check["permission_level"],
+                    "event_published": True,
+                    "message": f"Successfully initiated reindex of failed {connector} records"
+                }
+
+            except Exception as event_error:
+                self.logger.error(f"❌ Failed to publish reindex event: {str(event_error)}")
+                return {
+                    "success": False,
+                    "code": 500,
+                    "reason": f"Failed to publish reindex event: {str(event_error)}"
+                }
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to reindex failed connector records: {str(e)}")
+            return {
+                "success": False,
+                "code": 500,
+                "reason": f"Internal error: {str(e)}"
+            }
+
+    async def reindex_record_group_records(
+        self,
+        record_group_id: str,
+        depth: int,
+        user_id: str,
+        org_id: str
+    ) -> Dict:
+        """
+        Reindex all records in a record group up to a specified depth
+        Validates permissions and publishes a reindex event
+
+        Args:
+            record_group_id: Record group ID
+            depth: Depth for traversing children (0 = only direct records)
+            user_id: External user ID doing the reindex
+            org_id: Organization ID
+
+        Returns:
+            Dict: Result with success status and event publication info
+        """
+        try:
+            self.logger.info(f"🔄 Starting record group reindex for {record_group_id} with depth {depth} by user {user_id}")
+
+            # Handle negative depth: -1 means unlimited (set to max 100), other negatives are invalid (set to 0)
+            if depth == -1:
+                depth = 100
+                self.logger.info(f"Depth was -1 (unlimited), setting to maximum limit: {depth}")
+            elif depth < 0:
+                self.logger.warning(f"Invalid negative depth {depth}, setting to 0 (direct records only)")
+                depth = 0
+
+            # Get record group
+            record_group = await self.get_document(record_group_id, CollectionNames.RECORD_GROUPS.value)
+            if not record_group:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": f"Record group not found: {record_group_id}"
+                }
+
+            connector_id = record_group.get("connectorId", "")
+            connector_name = record_group.get("connectorName", "")
+            if not connector_id or not connector_name:
+                return {
+                    "success": False,
+                    "code": 400,
+                    "reason": "Record group does not have a connector id or name"
+                }
+
+            # Get user
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": f"User not found: {user_id}"
+                }
+
+            user_key = user.get('_key')
+
+            # Check if user has permission to access the record group
+            permission_check = await self._check_record_group_permissions(
+                record_group_id, user_key, org_id
+            )
+
+            if not permission_check["allowed"]:
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": permission_check["reason"]
+                }
+
+            try:
+                connector_normalized = connector_name.replace(" ", "").lower()
+                event_type = f"{connector_normalized}.reindex"
+
+                payload = {
+                    "orgId": org_id,
+                    "recordGroupId": record_group_id,
+                    "depth": depth,
+                    "connectorId": connector_id
+                }
+
+                await self._publish_sync_event(event_type, payload)
+
+                self.logger.info(f"✅ Published {event_type} event for record group {record_group_id}")
+
+                return {
+                    "success": True,
+                    "connector": connector_id,
+                    "eventPublished": True,
+                    "message": f"Successfully initiated reindex of record group {record_group_id} with depth {depth}"
+                }
+
+            except Exception as event_error:
+                self.logger.error(f"❌ Failed to publish reindex event: {str(event_error)}")
+                return {
+                    "success": False,
+                    "code": 500,
+                    "reason": f"Failed to publish reindex event: {str(event_error)}"
+                }
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to reindex record group records: {str(e)}")
+            return {
+                "success": False,
+                "code": 500,
+                "reason": f"Internal error: {str(e)}"
+            }
+
+    async def get_records_by_record_group(
+        self,
+        record_group_id: str,
+        connector_id: str,
+        org_id: str,
+        depth: int,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> List[Record]:
+        """
+        Get all records belonging to a record group up to a specified depth.
+        Includes:
+        - Records directly in the group
+        - Records in nested record groups up to depth levels
+
+        Args:
+            record_group_id: Record group ID
+            connector_id: Connector ID (all records in group are from same connector)
+            org_id: Organization ID (for security filtering)
+            depth: Depth for traversing children and nested record groups (0 = only direct records)
+            limit: Maximum number of records to return (for pagination)
+            offset: Number of records to skip (for pagination)
+            transaction: Optional database transaction
+
+        Returns:
+            List[Record]: List of properly typed Record instances
+        """
+        try:
+            self.logger.info(
+                f"Retrieving records for record group {record_group_id}, "
+                f"connector {connector_id}, org {org_id}, depth {depth}, "
+                f"limit: {limit}, offset: {offset}"
+            )
+
+            # Validate depth - ensure it's non-negative
+            if depth < 0:
+                depth = 0
+
+            # Handle limit/offset for pagination
+            # Note: ArangoDB LIMIT syntax requires both offset and count: LIMIT offset, count
+            limit_clause = ""
+            if limit is not None:
+                limit_clause = "LIMIT @offset, @limit"
+            elif offset > 0:
+                self.logger.warning(
+                    f"Offset {offset} provided without limit - offset will be ignored. "
+                    "Provide a limit value to use pagination."
+                )
+
+            collection_to_types = defaultdict(list)
+            for record_type, collection in RECORD_TYPE_COLLECTION_MAPPING.items():
+                collection_to_types[collection].append(record_type)
+
+            # Build dynamic typeDoc conditions
+            type_doc_conditions = []
+            bind_vars = {
+                "record_group_id": record_group_id,
+                "connector_id": connector_id,
+                "org_id": org_id,
+                "depth": depth,
+            }
+
+            folder_filter = '''
+                LET targetDoc = FIRST(
+                    FOR v IN 1..1 OUTBOUND record._id @@is_of_type
+                        LIMIT 1
+                        RETURN v
+                )
+
+                // If the record connects to a file collection, verify isFile == true
+                // For any other type (webpage, ticket, etc.), automatically accept
+                LET isValidRecord = (
+                    targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
+                        ? targetDoc.isFile == true
+                        : true  // Not a file (webpage, ticket, etc.) - accept it
+                )
+
+                FILTER isValidRecord
+            '''
+
+            # Build conditional children traversal based on depth
+            # If depth is 0, skip children traversal entirely
+            nested_groups_traversal = ""
+
+            if depth > 0:
+                nested_groups_traversal = """
+                // Get nested record groups (child record groups) up to depth levels
+                // Start at 1..@depth to exclude the starting record group itself (already handled by directRecords)
+                LET nestedRecordGroups = (
+                    FOR nestedRg, rgEdge, path IN 1..@depth INBOUND recordGroup._id @@inherit_permissions
+                        FILTER IS_SAME_COLLECTION("recordGroups", nestedRg)
+                        FILTER nestedRg.orgId == @org_id OR nestedRg.orgId == null
+                        RETURN nestedRg
+                )
+                """
+            else:
+                nested_groups_traversal = "LET nestedRecordGroups = []"
+
+            for collection, record_types in collection_to_types.items():
+                if len(record_types) == 1:
+                    type_check = f"record.recordType == @type_{record_types[0].lower()}"
+                    bind_vars[f"type_{record_types[0].lower()}"] = record_types[0]
+                else:
+                    type_checks = []
+                    for rt in record_types:
+                        type_checks.append(f"record.recordType == @type_{rt.lower()}")
+                        bind_vars[f"type_{rt.lower()}"] = rt
+                    type_check = " || ".join(type_checks)
+
+                condition = f"""({type_check}) ? (
+                        FOR edge IN {CollectionNames.IS_OF_TYPE.value}
+                            FILTER edge._from == record._id
+                            LET doc = DOCUMENT(edge._to)
+                            FILTER doc != null
+                            RETURN doc
+                    )[0]"""
+                type_doc_conditions.append(condition)
+
+            type_doc_expr = " :\n                    ".join(type_doc_conditions)
+            if type_doc_expr:
+                type_doc_expr += " :\n                    null"
+            else:
+                type_doc_expr = "null"
+
+            # Main query: Get records from record group and traverse nested record groups
+            query = f"""
+            LET recordGroup = DOCUMENT(@@record_group_collection, @record_group_id)
+            FILTER recordGroup != null
+            FILTER recordGroup.orgId == @org_id
+
+            // Get all records directly connected to the record group
+            LET directRecords = (
+                FOR record, edge IN 1..1 INBOUND recordGroup._id @@inherit_permissions
+                    FILTER IS_SAME_COLLECTION("records", record)
+                    FILTER record.connectorId == @connector_id
+                    FILTER record.isDeleted != true
+                    FILTER record.orgId == @org_id OR record.orgId == null
+                    FILTER record.origin == "CONNECTOR"
+                    {folder_filter}
+                    RETURN record
+            )
+
+            {nested_groups_traversal}
+
+            // Get records from nested record groups
+            LET nestedRecords = (
+                FOR nestedRg IN nestedRecordGroups
+                    FOR record, edge IN 1..1 INBOUND nestedRg._id @@inherit_permissions
+                        FILTER IS_SAME_COLLECTION("records", record)
+                        FILTER record.connectorId == @connector_id
+                        FILTER record.isDeleted != true
+                        FILTER record.orgId == @org_id OR record.orgId == null
+                        FILTER record.origin == "CONNECTOR"
+                        {folder_filter}
+                        RETURN record
+            )
+
+            // Combine and deduplicate
+            LET allRecords = UNION_DISTINCT(
+                directRecords,
+                nestedRecords
+            )
+
+            // Sort and paginate
+            FOR record IN allRecords
+                SORT record._key
+                {limit_clause}
+
+                LET typeDoc = (
+                    {type_doc_expr}
+                )
+
+                RETURN {{
+                    record: record,
+                    typeDoc: typeDoc
+                }}
+            """
+
+            bind_vars.update({
+                "@record_group_collection": CollectionNames.RECORD_GROUPS.value,
+                "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+            })
+
+            if limit is not None:
+                bind_vars["limit"] = limit
+                bind_vars["offset"] = offset
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars=bind_vars)
+
+            # Convert to typed records
+            typed_records = []
+            for result in cursor:
+                record = self._create_typed_record_from_arango(
+                    result["record"],
+                    result.get("typeDoc")
+                )
+                typed_records.append(record)
+
+            self.logger.info(
+                f"✅ Successfully retrieved {len(typed_records)} typed records "
+                f"for record group {record_group_id}, connector {connector_id}"
+            )
+            return typed_records
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to retrieve records by record group {record_group_id}, connector {connector_id}: {str(e)}",
+                exc_info=True
+            )
+            return []
+
+    async def get_records_by_parent_record(
+        self,
+        parent_record_id: str,
+        connector_id: str,
+        org_id: str,
+        depth: int,
+        include_parent: bool = True,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> List[Record]:
+        """
+        Get all child records of a parent record (folder) up to a specified depth.
+        Uses graph traversal on recordRelations edge collection.
+
+        Args:
+            parent_record_id: Record ID of the parent (folder)
+            connector_id: Connector ID (all records should be from same connector)
+            org_id: Organization ID (for security filtering)
+            depth: Depth for traversing children (-1 = unlimited, 0 = only parent,
+                   1 = direct children, 2 = children + grandchildren, etc.)
+            include_parent: Whether to include the parent record itself
+            limit: Maximum number of records to return (for pagination)
+            offset: Number of records to skip (for pagination)
+            transaction: Optional database transaction
+
+        Returns:
+            List[Record]: List of properly typed Record instances
+        """
+        try:
+            self.logger.info(
+                f"Retrieving child records for parent {parent_record_id}, "
+                f"connector {connector_id}, org {org_id}, depth {depth}, "
+                f"include_parent: {include_parent}, limit: {limit}, offset: {offset}"
+            )
+
+            # Early return if depth=0 and include_parent=false (nothing to return)
+            if depth == 0 and not include_parent:
+                return []
+
+            # Handle limit/offset for pagination
+            limit_clause = ""
+            if limit is not None:
+                limit_clause = "LIMIT @offset, @limit"
+            elif offset > 0:
+                self.logger.warning(
+                    f"Offset {offset} provided without limit - offset will be ignored."
+                )
+
+            # Determine max traversal depth (use 100 as practical unlimited)
+            # For depth=0, we set max_depth=0 so the child traversal returns nothing
+            max_depth = 100 if depth == -1 else depth
+
+            bind_vars = {
+                "record_id": f"{CollectionNames.RECORDS.value}/{parent_record_id}",
+                "max_depth": max_depth,
+                "connector_id": connector_id,
+                "org_id": org_id,
+                "include_parent": include_parent,
+            }
+
+            if limit is not None:
+                bind_vars["limit"] = limit
+                bind_vars["offset"] = offset
+
+            # Single unified query that handles all depth cases
+            # When max_depth=0, the child traversal (1..@max_depth) returns empty
+            # When include_parent=false, parentResult is empty
+            query = f"""
+            LET startRecord = DOCUMENT(@record_id)
+            FILTER startRecord != null
+
+            // Get parent record with its typed record if include_parent is true
+            LET parentResult = @include_parent ? (
+                LET parentTypedRecord = FIRST(
+                    FOR rec IN 1..1 OUTBOUND startRecord {CollectionNames.IS_OF_TYPE.value}
+                        LIMIT 1
+                        RETURN rec
+                )
+                // Only return parent if it matches filters and has typed record
+                FILTER parentTypedRecord != null
+                FILTER startRecord.connectorId == @connector_id
+                FILTER startRecord.orgId == @org_id OR startRecord.orgId == null
+                FILTER startRecord.isDeleted != true
+                RETURN {{
+                    record: startRecord,
+                    typedRecord: parentTypedRecord,
+                    depth: 0
+                }}
+            ) : []
+
+            // Get all children using graph traversal
+            // When max_depth=0, this returns empty (1..0 is invalid range)
+            LET childResults = @max_depth > 0 ? (
+                FOR v, e, p IN 1..@max_depth OUTBOUND startRecord {CollectionNames.RECORD_RELATIONS.value}
+                    OPTIONS {{bfs: true, uniqueVertices: "global"}}
+
+                    FILTER v.connectorId == @connector_id
+                    FILTER v.orgId == @org_id OR v.orgId == null
+                    FILTER v.isDeleted != true
+
+                    LET typedRecord = FIRST(
+                        FOR rec IN 1..1 OUTBOUND v {CollectionNames.IS_OF_TYPE.value}
+                            LIMIT 1
+                            RETURN rec
+                    )
+
+                    FILTER typedRecord != null
+
+                    RETURN {{
+                        record: v,
+                        typedRecord: typedRecord,
+                        depth: LENGTH(p.vertices) - 1
+                    }}
+            ) : []
+
+            // Combine parent and children
+            LET allResults = APPEND(parentResult, childResults)
+
+            // Sort by depth then by key, and apply pagination
+            FOR result IN allResults
+                SORT result.depth, result.record._key
+                {limit_clause}
+                RETURN result
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars=bind_vars)
+
+            # Convert to typed records
+            typed_records = []
+            for result in cursor:
+                record = self._create_typed_record_from_arango(
+                    result["record"],
+                    result.get("typedRecord")
+                )
+                typed_records.append(record)
+
+            self.logger.info(
+                f"✅ Successfully retrieved {len(typed_records)} typed records "
+                f"for parent record {parent_record_id} with depth {depth}"
+            )
+            return typed_records
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to retrieve records by parent record {parent_record_id}: {str(e)}",
+                exc_info=True
+            )
+            return []
+
+    async def _check_record_group_permissions(
+        self,
+        record_group_id: str,
+        user_key: str,
+        org_id: str
+    ) -> Dict:
+        """
+        Check if user has permission to access a record group
+
+        Returns:
+            Dict with 'allowed' (bool) and 'reason' (str) keys
+        """
+        try:
+            # Query to check if user has permission to the record group
+            # Check multiple paths: direct, via groups, via org, etc.
+            query = """
+            LET userDoc = DOCUMENT(@@user_collection, @user_key)
+            FILTER userDoc != null
+
+            LET recordGroup = DOCUMENT(@@record_group_collection, @record_group_id)
+            FILTER recordGroup != null
+            FILTER recordGroup.orgId == @org_id
+
+            // Direct user -> record group permission
+            LET directPermission = (
+                FOR perm IN @@permission
+                    FILTER perm._from == userDoc._id
+                    FILTER perm._to == recordGroup._id
+                    FILTER perm.type == "USER"
+                    RETURN perm.role
+            )
+
+            // User -> group -> record group permission
+            LET groupPermission = (
+                FOR group, userToGroupEdge IN 1..1 ANY userDoc._id @@permission
+                    FILTER userToGroupEdge.type == "USER"
+                    FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+
+                    FOR perm IN @@permission
+                        FILTER perm._from == group._id
+                        FILTER perm._to == recordGroup._id
+                        FILTER perm.type IN ["GROUP", "ROLE"]
+                        RETURN perm.role
+            )
+
+            // User -> org -> record group permission
+            LET orgPermission = (
+                FOR org, belongsEdge IN 1..1 ANY userDoc._id @@belongs_to
+                    FILTER belongsEdge.entityType == "ORGANIZATION"
+
+                    FOR perm IN @@permission
+                        FILTER perm._from == org._id
+                        FILTER perm._to == recordGroup._id
+                        FILTER perm.type == "ORG"
+                        RETURN perm.role
+            )
+
+            LET allPermissions = UNION_DISTINCT(directPermission, groupPermission, orgPermission)
+            LET hasPermission = LENGTH(allPermissions) > 0
+
+            // Get the highest role (OWNER > WRITER > READER > COMMENTER)
+            // Priority order: OWNER (highest) > WRITER > READER > COMMENTER (lowest)
+            LET rolePriority = {
+                "OWNER": 4,
+                "WRITER": 3,
+                "READER": 2,
+                "COMMENTER": 1
+            }
+
+            LET userRole = LENGTH(allPermissions) > 0 ? (
+                // Find the role with highest priority
+                FIRST(
+                    FOR perm IN allPermissions
+                        SORT rolePriority[perm] DESC
+                        LIMIT 1
+                        RETURN perm
+                )
+            ) : null
+
+            RETURN {
+                allowed: hasPermission,
+                role: userRole
+            }
+            """
+
+            bind_vars = {
+                "@user_collection": CollectionNames.USERS.value,
+                "@record_group_collection": CollectionNames.RECORD_GROUPS.value,
+                "@permission": CollectionNames.PERMISSION.value,
+                "@belongs_to": CollectionNames.BELONGS_TO.value,
+                "user_key": user_key,
+                "record_group_id": record_group_id,
+                "org_id": org_id
+            }
+
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+            result = next(cursor, None)
+
+            if result and result.get("allowed"):
+                return {
+                    "allowed": True,
+                    "role": result.get("role"),
+                    "reason": "User has permission to access record group"
+                }
+            else:
+                return {
+                    "allowed": False,
+                    "role": None,
+                    "reason": "User does not have permission to access this record group"
+                }
+
+        except Exception as e:
+            self.logger.error(f"Error checking record group permissions: {str(e)}")
+            return {
+                "allowed": False,
+                "role": None,
+                "reason": f"Error checking permissions: {str(e)}"
             }
 
     # Todo: This implementation should work irrespective of the connector type. It should not depend on the connector type.
@@ -3292,6 +4000,39 @@ class BaseArangoService:
                         RETURN userToRgEdge.role
             )
 
+            // 2.6 Check inherited recordGroup permissions (record -> recordGroup hierarchy via inherit_permissions)
+            // This handles any recordGroup hierarchy (spaces, folders, etc.) where permissions are inherited
+            LET inherited_record_group_permission = FIRST(
+                // Traverse up the recordGroup hierarchy (0 to 5 levels) from record
+                FOR recordGroup, inheritEdge, path IN 0..5 OUTBOUND record_from @@inherit_permissions
+                    FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                    // Check if user has direct permission on any recordGroup in the hierarchy
+                    FOR perm IN @@permission
+                        FILTER perm._from == user_from
+                        FILTER perm._to == recordGroup._id
+                        FILTER perm.type == "USER"
+                        RETURN perm.role
+            )
+
+            // 2.7 Check group -> inherited recordGroup permission
+            LET group_inherited_record_group_permission = FIRST(
+                // Traverse up the recordGroup hierarchy from record
+                FOR recordGroup, inheritEdge, path IN 0..5 OUTBOUND record_from @@inherit_permissions
+                    FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                    // Check if user's group has permission on any recordGroup in the hierarchy
+                    FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
+                        FILTER userToGroupEdge.type == "USER"
+                        FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+
+                        FOR perm IN @@permission
+                            FILTER perm._from == group._id
+                            FILTER perm._to == recordGroup._id
+                            FILTER perm.type IN ["GROUP", "ROLE"]
+                            RETURN perm.role
+            )
+
             // 3. Check domain/organization permissions
 
             LET domain_permission = FIRST(
@@ -3377,6 +4118,8 @@ class BaseArangoService:
             // Return the highest permission level found (in order of precedence)
             LET final_permission = (
                 direct_permission ? direct_permission :
+                inherited_record_group_permission ? inherited_record_group_permission :
+                group_inherited_record_group_permission ? group_inherited_record_group_permission :
                 group_permission ? group_permission :
                 record_group_permission ? record_group_permission :
                 direct_user_record_group_permission ? direct_user_record_group_permission :
@@ -3392,6 +4135,8 @@ class BaseArangoService:
                 permission: final_permission,
                 source: (
                     direct_permission ? "DIRECT" :
+                    inherited_record_group_permission ? "INHERITED_RECORD_GROUP" :
+                    group_inherited_record_group_permission ? "GROUP_INHERITED_RECORD_GROUP" :
                     group_permission ? "GROUP" :
                     record_group_permission ? "RECORD_GROUP" :
                     direct_user_record_group_permission ? "DIRECT_USER_RECORD_GROUP" :
@@ -3423,11 +4168,18 @@ class BaseArangoService:
             if result and result.get("permission"):
                 permission = result["permission"]
                 source = result["source"]
-                self.logger.info(f"✅ Drive permission found: {permission} (via {source})")
-                return permission
+                self.logger.info(f"✅ Permission found: {permission} (via {source})")
+                return {
+                    "permission": permission,
+                    "source": source
+                }
             else:
-                self.logger.warning(f"⚠️ No Drive permissions found for user {user_key} on record {record_id}")
-                return None
+                self.logger.warning(f"⚠️ No permissions found for user {user_key} on record {record_id}")
+                self.logger.warning(f"⚠️ Query returned: {result}")
+                return {
+                    "permission": None,
+                    "source": "NONE"
+                }
 
         except Exception as e:
             self.logger.error(f"❌ Failed to check permissions: {str(e)}")
@@ -4291,7 +5043,16 @@ class BaseArangoService:
         try:
             self.logger.info(f"Retrieving records for connector {connector_id} with status filters: {status_filters}, limit: {limit}, offset: {offset}")
 
-            limit_clause = "LIMIT @offset, @limit" if limit else ""
+            # Handle limit/offset for pagination
+            # Note: ArangoDB LIMIT syntax requires both offset and count: LIMIT offset, count
+            limit_clause = ""
+            if limit is not None:
+                limit_clause = "LIMIT @offset, @limit"
+            elif offset > 0:
+                self.logger.warning(
+                    f"Offset {offset} provided without limit - offset will be ignored. "
+                    "Provide a limit value to use pagination."
+                )
 
             # Group record types by their collection
             collection_to_types = defaultdict(list)
@@ -4355,7 +5116,7 @@ class BaseArangoService:
                 }}
             """
 
-            if limit:
+            if limit is not None:
                 bind_vars["limit"] = limit
                 bind_vars["offset"] = offset
 
