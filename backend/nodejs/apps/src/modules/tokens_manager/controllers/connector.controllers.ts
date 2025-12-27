@@ -873,6 +873,77 @@ export const getConnectorInstanceFilterOptions =
   };
 
 /**
+ * Get dynamic filter field options for a connector instance.
+ */
+export const getFilterFieldOptions =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorId, filterKey } = req.params;
+      const { page, limit, search, cursor } = req.query;
+
+      if (!connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+
+      if (!filterKey) {
+        throw new BadRequestError('Filter key is required');
+      }
+
+      logger.info(`Getting filter field options for instance ${connectorId}, filter ${filterKey}`);
+
+      const isAdmin = await isUserAdmin(req);
+      logger.info(`User admin status: ${isAdmin} for userId: ${req.user?.userId}, orgId: ${req.user?.orgId}`);
+      
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+        'X-Is-Admin': isAdmin ? 'true' : 'false',
+      };
+      
+      logger.info(`Forwarding to Python with X-Is-Admin header: ${headers['X-Is-Admin']}`);
+
+      // Build query string with cursor support
+      const queryParams = new URLSearchParams();
+      if (page) queryParams.append('page', String(page));
+      if (limit) queryParams.append('limit', String(limit));
+      if (search) queryParams.append('search', String(search));
+      if (cursor) queryParams.append('cursor', String(cursor));
+      const queryString = queryParams.toString() ? `?${queryParams.toString()}` : '';
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/filters/${filterKey}/options${queryString}`,
+        HttpMethod.GET,
+        headers,
+      );
+
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Getting filter field options',
+        'Filter field options not found'
+      );
+    } catch (error: any) {
+      logger.error('Error getting filter field options', {
+        error: error.message,
+        connectorId: req.params.connectorId,
+        filterKey: req.params.filterKey,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handledError = handleBackendError(
+        error,
+        'get filter field options',
+      );
+      next(handledError);
+    }
+  };
+
+/**
  * Save filter options for a connector instance.
  */
 export const saveConnectorInstanceFilterOptions =

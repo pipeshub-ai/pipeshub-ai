@@ -31,6 +31,7 @@ interface SyncSectionProps {
   formErrors: Record<string, string>;
   onFieldChange: (section: string, fieldName: string, value: any) => void;
   saving: boolean;
+  readOnly?: boolean; // If true, show read-only view (no editing)
 }
 
 const SyncSection: React.FC<SyncSectionProps> = ({
@@ -39,6 +40,7 @@ const SyncSection: React.FC<SyncSectionProps> = ({
   formErrors,
   onFieldChange,
   saving,
+  readOnly = false,
 }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
@@ -121,6 +123,7 @@ const SyncSection: React.FC<SyncSectionProps> = ({
             value={formData.selectedStrategy || sync.supportedStrategies[0] || ''}
             onChange={(e) => onFieldChange('sync', 'selectedStrategy', e.target.value)}
             label="Select Sync Strategy"
+            disabled={readOnly}
             sx={{
               borderRadius: 1.25,
               '& .MuiSelect-select': {
@@ -207,7 +210,7 @@ const SyncSection: React.FC<SyncSectionProps> = ({
           <ScheduledSyncConfig
             value={formData.scheduledConfig || {}}
             onChange={(value) => onFieldChange('sync', 'scheduledConfig', value)}
-            disabled={saving}
+            disabled={saving || readOnly}
           />
         </Paper>
       )}
@@ -275,6 +278,7 @@ const SyncSection: React.FC<SyncSectionProps> = ({
                   value={formData[field.name]}
                   onChange={(value) => onFieldChange('sync', field.name, value)}
                   error={formErrors[field.name]}
+                  disabled={readOnly}
                 />
               </Grid>
             ))}
