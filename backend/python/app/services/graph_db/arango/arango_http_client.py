@@ -535,7 +535,7 @@ class ArangoHTTPClient:
         txn_id: Optional[str] = None
     ) -> int:
         """
-        Batch delete documents.
+        Batch delete documents using ArangoDB's batch deletion endpoint.
 
         Args:
             collection: Collection name
@@ -543,45 +543,65 @@ class ArangoHTTPClient:
             txn_id: Optional transaction ID
 
         Returns:
-            int: Number of documents deleted
+            int: Number of documents successfully deleted
 
         Raises:
-            Exception: If any document deletion fails
+            Exception: If batch deletion fails with errors
         """
-        deleted_count = 0
+        if not keys:
+            return 0
+
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
-        errors = []
-
-        for key in keys:
-            url = f"{self.base_url}/_db/{self.database}/_api/document/{collection}/{key}"
-
-            try:
-                async with self.session.delete(url, headers=headers) as resp:
-                    if resp.status in [HTTP_OK, HTTP_ACCEPTED, HTTP_NO_CONTENT]:
-                        # Try to parse response for error checking
-                        try:
-                            result = await resp.json()
-                            self._check_response_for_errors(result, f"Delete document {key}")
-                            deleted_count += 1
-                        except Exception as e:
-                            # If error checking raised exception, add to errors list
-                            if "failed" in str(e).lower():
-                                errors.append(f"Document {key}: {str(e)}")
-                            else:
-                                # Response might be empty for successful deletes
+        
+        # ArangoDB batch delete endpoint
+        url = f"{self.base_url}/_db/{self.database}/_api/document/{collection}"
+        
+        # Construct full document IDs
+        document_ids = [f"{collection}/{key}" for key in keys]
+        
+        try:
+            async with self.session.delete(
+                url,
+                headers=headers,
+                json=document_ids  # Send array of document IDs in request body
+            ) as resp:
+                if resp.status in [HTTP_OK, HTTP_ACCEPTED]:
+                    results = await resp.json()
+                    
+                    # Results is an array of deletion results
+                    deleted_count = 0
+                    errors = []
+                    
+                    for idx, result in enumerate(results):
+                        # Check if this deletion was successful
+                        if result.get("error"):
+                            # Handle 404 as success (document already deleted)
+                            error_num = result.get("errorNum")
+                            if error_num == 1202:  # Document not found
                                 deleted_count += 1
-                    else:
-                        error = await resp.text()
-                        errors.append(f"Document {key}: (status={resp.status}) {error}")
-            except Exception as e:
-                errors.append(f"Document {key}: {str(e)}")
-
-        if errors:
-            error_details = "; ".join(errors)
-            self.logger.error(f"❌ Batch delete had {len(errors)} error(s): {error_details}")
-            raise Exception(f"Batch delete failed with {len(errors)} error(s): {error_details}")
-
-        return deleted_count
+                                self.logger.debug(f"Document {document_ids[idx]} already deleted (404)")
+                            else:
+                                error_msg = result.get("errorMessage", "Unknown error")
+                                errors.append(f"Document {document_ids[idx]}: (errorNum={error_num}) {error_msg}")
+                        else:
+                            deleted_count += 1
+                    
+                    if errors:
+                        error_details = "; ".join(errors)
+                        self.logger.error(f"❌ Batch delete had {len(errors)} error(s): {error_details}")
+                        raise Exception(f"Batch delete failed with {len(errors)} error(s): {error_details}")
+                    
+                    self.logger.info(f"✅ Batch deleted {deleted_count} documents from {collection}")
+                    return deleted_count
+                    
+                else:
+                    error_text = await resp.text()
+                    self.logger.error(f"❌ Batch delete failed with status {resp.status}: {error_text}")
+                    raise Exception(f"Batch delete failed: HTTP {resp.status} - {error_text}")
+                    
+        except Exception as e:
+            self.logger.error(f"❌ Batch delete failed: {str(e)}")
+            raise
 
     # ==================== Edge Operations ====================
 

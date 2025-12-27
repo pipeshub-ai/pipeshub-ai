@@ -389,15 +389,15 @@ class GraphTransactionStore(TransactionStore):
                     collection=CollectionNames.DOMAINS.value, transaction=self.txn)
 
     async def create_anyone(self, anyone: List[Anyone]) -> None:
-        return await self.graph_provider.batch_upsert_nodes([anyone.to_arango_base_anyone() for anyone in anyone],
+        return await self.graph_provider.batch_upsert_nodes([anyone_item.to_arango_base_anyone() for anyone_item in anyone],
                     collection=CollectionNames.ANYONE.value, transaction=self.txn)
 
     async def create_anyone_with_link(self, anyone_with_link: List[AnyoneWithLink]) -> None:
-        return await self.graph_provider.batch_upsert_nodes([anyone_with_link.to_arango_base_anyone_with_link() for anyone_with_link in anyone_with_link],
+        return await self.graph_provider.batch_upsert_nodes([anyone_with_link_item.to_arango_base_anyone_with_link() for anyone_with_link_item in anyone_with_link],
                     collection=CollectionNames.ANYONE_WITH_LINK.value, transaction=self.txn)
 
     async def create_anyone_same_org(self, anyone_same_org: List[AnyoneSameOrg]) -> None:
-        return await self.graph_provider.batch_upsert_nodes([anyone_same_org.to_arango_base_anyone_same_org() for anyone_same_org in anyone_same_org],
+        return await self.graph_provider.batch_upsert_nodes([anyone_same_org_item.to_arango_base_anyone_same_org() for anyone_same_org_item in anyone_same_org],
                     collection=CollectionNames.ANYONE_SAME_ORG.value, transaction=self.txn)
 
     async def create_sync_point(self, sync_point_key: str, sync_point_data: Dict) -> None:
@@ -563,5 +563,5 @@ class GraphDataStore(DataStoreProvider):
     async def execute_in_transaction(self, func, *args, **kwargs) -> None:
         """Execute function within graph database transaction"""
         async with self.transaction() as tx_store:
-            return func(tx_store, *args, **kwargs)
+            return await func(tx_store, *args, **kwargs)
 

@@ -73,7 +73,7 @@ class IGraphDBProvider(ABC):
             write (List[str]): Collections/tables to write to
 
         Returns:
-            Any: Transaction object (database-specific)
+            str: Transaction ID
         """
         pass
 
@@ -294,7 +294,7 @@ class IGraphDBProvider(ABC):
         edge_collection: str,
         to_collection: str,
         transaction: Optional[str] = None
-    ) -> None:
+    ) -> int:
         """
         Delete edges between a node and nodes in a specific collection.
 
@@ -598,7 +598,7 @@ class IGraphDBProvider(ABC):
         limit: Optional[int] = None,
         offset: int = 0,
         transaction: Optional[str] = None
-    ) -> List[Dict]:
+    ) -> List['Record']:
         """
         Get records by their indexing status.
 
@@ -624,7 +624,7 @@ class IGraphDBProvider(ABC):
         org_id: str,
         user_id: str,
         transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+    ) -> Optional['Record']:
         """
         Get a record by conversation index (for email/chat connectors).
 
@@ -1173,7 +1173,7 @@ class IGraphDBProvider(ABC):
         key: str,
         collection: str,
         transaction: Optional[str] = None
-    ) -> bool:
+    ) -> None:
         """
         Remove sync point by syncPointKey field.
 

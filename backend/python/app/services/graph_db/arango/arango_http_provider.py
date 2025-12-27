@@ -6,7 +6,6 @@ This replaces the synchronous python-arango SDK with async HTTP calls.
 
 All operations are non-blocking and use aiohttp for async I/O.
 """
-import hashlib
 import uuid
 from logging import Logger
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -1570,7 +1569,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
 
             groupData = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
-            groups = [AppUserGroup.from_arango_base_user_group(group_data) for group_data in groupData]
+            groups = [AppUserGroup.from_arango_base_user_group(group_data_item) for group_data_item in groupData]
 
             self.logger.info(
                 f"✅ Successfully retrieved {len(groups)} user groups for connector {connector_id}"
@@ -1665,7 +1664,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         3. Creates IS_OF_TYPE edge
         """
         record_ids = [r.id for r in records]
-        duplicates = [x for x in record_ids if record_ids.count(x) > 1]
+        seen = set()
+        duplicates = {x for x in record_ids if x in seen or seen.add(x)}
         if duplicates:
             self.logger.warning(f"DUPLICATE RECORD IDS IN BATCH: {duplicates}")
 
