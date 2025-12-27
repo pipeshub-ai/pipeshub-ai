@@ -87,7 +87,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
                 connector_id = app.get("_key")
                 app_group = app.get("appGroup", "")
 
-                if accountType == AccountType.ENTERPRISE.value or accountType == AccountType.BUSINESS.value or "google" in app_group.lower():
+                if (accountType == AccountType.ENTERPRISE.value or accountType == AccountType.BUSINESS.value) and "google" in app_group.lower():
                     if app["type"].lower() == Connectors.GOOGLE_DRIVE.value.lower() and app["scope"] == ConnectorScopes.TEAM.value:
                         await initialize_enterprise_google_account_services_fn(org_id, app_container,connector_id, ['drive'])
                     elif app["type"].lower() == Connectors.GOOGLE_MAIL.value.lower() and app["scope"] == ConnectorScopes.TEAM.value:
@@ -96,10 +96,10 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
                         await initialize_individual_google_account_services_fn(org_id, app_container,connector_id, ['drive'])
                     elif app["type"].lower() == Connectors.GOOGLE_MAIL.value.lower() and app["scope"] == ConnectorScopes.PERSONAL.value:
                         await initialize_individual_google_account_services_fn(org_id, app_container,connector_id, ['gmail'])
-                elif accountType == AccountType.INDIVIDUAL.value or "google" in app_group.lower():
-                    if app["type"].lower() == Connectors.GOOGLE_DRIVE.value.lower() and app["scope"] == ConnectorScopes.PERSONAL.value:
+                elif accountType == AccountType.INDIVIDUAL.value and "google" in app_group.lower():
+                    if app["type"].lower() == Connectors.GOOGLE_DRIVE.value.lower() and app["scope"] == ConnectorScopes.TEAM.value:
                         await initialize_individual_google_account_services_fn(org_id, app_container,connector_id, ['drive'])
-                    elif app["type"].lower() == Connectors.GOOGLE_MAIL.value.lower() and app["scope"] == ConnectorScopes.PERSONAL.value:
+                    elif app["type"].lower() == Connectors.GOOGLE_MAIL.value.lower() and app["scope"] == ConnectorScopes.TEAM.value:
                         await initialize_individual_google_account_services_fn(org_id, app_container,connector_id, ['gmail'])
                 else:
                     logger.error("Account Type not valid")
