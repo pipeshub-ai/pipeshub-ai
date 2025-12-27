@@ -53,11 +53,6 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorScope,
     DocumentationLink,
 )
-from app.connectors.core.registry.filters import (
-    FilterCategory,
-    FilterField,
-    FilterType,
-)
 from app.connectors.sources.microsoft.common.apps import SharePointOnlineApp
 from app.connectors.sources.microsoft.common.msgraph_client import (
     MSGraphClient,
@@ -177,22 +172,22 @@ class SiteMetadata:
             field_type="URL",
             max_length=2000
         ))
-        .add_filter_field(FilterField(
-            name="site_urls",
-            display_name="Site URLs",
-            description="Filter specific sites by URL.",
-            filter_type=FilterType.LIST,
-            category=FilterCategory.SYNC,
-            default_value=[]
-        ))
-        .add_filter_field(FilterField(
-            name="page_urls",
-            display_name="Page URLs",
-            description="Filter specific pages by URL.",
-            filter_type=FilterType.LIST,
-            category=FilterCategory.SYNC,
-            default_value=[]
-        ))
+        # .add_filter_field(FilterField(
+        #     name="site_urls",
+        #     display_name="Site URLs",
+        #     description="Filter specific sites by URL.",
+        #     filter_type=FilterType.LIST,
+        #     category=FilterCategory.SYNC,
+        #     default_value=[]
+        # ))
+        # .add_filter_field(FilterField(
+        #     name="page_urls",
+        #     display_name="Page URLs",
+        #     description="Filter specific pages by URL.",
+        #     filter_type=FilterType.LIST,
+        #     category=FilterCategory.SYNC,
+        #     default_value=[]
+        # ))
         # .add_filter_field(CommonFields.modified_date_filter("Filter pages and blogposts by modification date."))
         # .add_filter_field(CommonFields.created_date_filter("Filter pages and blogposts by creation date."))
         # .add_filter_field(CommonFields.enable_manual_sync_filter())
