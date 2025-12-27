@@ -3896,19 +3896,29 @@ async def handle_oauth_callback(
         except Exception as cache_err:
             logger.warning(f"Could not refresh config cache: {cache_err}")
 
-        # Schedule token refresh
+        # Schedule token refresh using the singleton service instance
         try:
-            from app.connectors.core.base.token_service.token_refresh_service import (
-                TokenRefreshService,
+            from app.connectors.core.base.token_service.startup_service import (
+                startup_service,
             )
-            refresh_service = TokenRefreshService(
-                container.key_value_store(),
-                arango_service
-            )
-            await refresh_service.schedule_token_refresh(connector_id, connector_type, token)
-            logger.info(f"Scheduled token refresh for instance {connector_id}")
+            refresh_service = startup_service.get_token_refresh_service()
+            if refresh_service:
+                await refresh_service.schedule_token_refresh(connector_id, connector_type, token)
+                logger.info(f"✅ Scheduled token refresh for instance {connector_id}")
+            else:
+                logger.warning(f"⚠️ Token refresh service not initialized, cannot schedule refresh for {connector_id}")
+                # Fallback: create temporary service to schedule refresh
+                from app.connectors.core.base.token_service.token_refresh_service import (
+                    TokenRefreshService,
+                )
+                temp_service = TokenRefreshService(
+                    container.key_value_store(),
+                    arango_service
+                )
+                await temp_service.schedule_token_refresh(connector_id, connector_type, token)
+                logger.info(f"✅ Scheduled token refresh using temporary service for instance {connector_id}")
         except Exception as sched_err:
-            logger.warning(f"Could not schedule token refresh: {sched_err}")
+            logger.error(f"❌ Could not schedule token refresh for {connector_id}: {sched_err}", exc_info=True)
 
         # Update instance authentication status
         updates = {

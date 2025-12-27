@@ -76,8 +76,10 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
     totalLoaded?: number;
   }>>({});
   const [loadingOptions, setLoadingOptions] = useState<Record<string, boolean>>({});
+  // Track input values in ref for instant updates without lag
+  const inputValuesRef = useRef<Record<string, string>>({});
   const fetchingFieldsRef = useRef<Set<string>>(new Set()); // Track fields currently being fetched
-  const searchTimeoutRefs = useRef<Record<string, NodeJS.Timeout | null>>({}); // Store timeout refs per field
+  const searchTimeoutRefs = useRef<Record<string, NodeJS.Timeout | null>>({}); // Store timeout refs per field for debouncing
   const scrollPositionsRef = useRef<Record<string, number>>({}); // Store scroll positions per field
   const listboxRefs = useRef<Record<string, HTMLElement | null>>({}); // Store listbox refs per field
   const MAX_OPTIONS_IN_MEMORY = 5000; // Maximum options to keep in memory for performance
@@ -151,6 +153,10 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
           };
         });
 
+        // Keep input value visible after search (don't clear it)
+        // User can continue typing to refine search
+        // Input will be preserved as-is with the search term visible
+        
         // Restore scroll position after state update
         if (append && listboxRefs.current[fieldName] && scrollPositionsRef.current[fieldName] !== undefined) {
           // Use requestAnimationFrame to ensure DOM has updated
@@ -353,6 +359,8 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
       const { [fieldName]: _, ...rest } = prev;
       return rest;
     });
+    // Clear input value ref
+    delete inputValuesRef.current[fieldName];
     fetchingFieldsRef.current.delete(fieldName);
     // Clear search timeout
     if (searchTimeoutRefs.current[fieldName]) {
@@ -388,51 +396,149 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
 
     const handleOpen = () => {
       setAutocompleteOpen((prev) => ({ ...prev, [field.name]: true }));
-      // Fetch options when opening if:
-      // 1. No options loaded yet, OR
-      // 2. There are selected values but they're not in the current options (might need to fetch to display them)
+      
+      // Fetch with current search term (if any) or all paginated options
+      // This allows user to continue with their previous search or start fresh
+      const currentInputValue = inputValuesRef.current[field.name] || '';
+      const currentSearchTerm = fieldOptions?.searchTerm || '';
+      
+      // Always fetch when opening to ensure fresh data
       const needsFetch = !fieldOptions || 
         fieldOptions.options.length === 0 ||
         (selectedValues.length > 0 && selectedValues.some(val => {
-          // Handle both old format (string id) and new format ({id, label} object)
           const valId = typeof val === 'string' ? val : ((val && typeof val === 'object' && 'id' in val) ? val.id : String(val));
           return !autocompleteOptions.find(opt => opt.id === valId);
         }));
       
       if (needsFetch) {
-        // Reset scroll position when opening fresh
+        // Reset scroll position when opening
         scrollPositionsRef.current[field.name] = 0;
-        const searchTerm = fieldOptions?.searchTerm || '';
-        fetchDynamicOptions(field.name, searchTerm);
+        // Fetch with current input value (user's search term) or empty for all options
+        fetchDynamicOptions(field.name, currentInputValue.trim());
       }
     };
 
     const handleClose = () => {
       setAutocompleteOpen((prev) => ({ ...prev, [field.name]: false }));
+      
+      // Clear any pending timeouts when closing
+      if (searchTimeoutRefs.current[field.name]) {
+        clearTimeout(searchTimeoutRefs.current[field.name]!);
+        searchTimeoutRefs.current[field.name] = null;
+      }
+      
+      // Keep search term visible so user knows what was searched
+      // User can manually clear if needed
+      // Do NOT clear search term from state - let user clear it manually
     };
     
     const handleInputChange = (event: any, newInputValue: string, reason: string) => {
-      // Only fetch on input change, not on selection
-      if (reason === 'input') {
-        // Clear previous timeout for this field
+      // Always update ref immediately for tracking (no re-render, no lag)
+      inputValuesRef.current[field.name] = newInputValue;
+      
+      if (reason === 'clear') {
+        // Clear button clicked - immediately reset to paginated view (no search)
+        delete inputValuesRef.current[field.name];
+        
+        // Clear any existing timeout
         if (searchTimeoutRefs.current[field.name]) {
           clearTimeout(searchTimeoutRefs.current[field.name]!);
+          searchTimeoutRefs.current[field.name] = null;
         }
         
-        // Debounce search - fetch after user stops typing
+        // Reset to paginated view without search filter
+        setDynamicOptions((prev) => {
+          const { [field.name]: _, ...rest } = prev;
+          return rest;
+        });
+        scrollPositionsRef.current[field.name] = 0;
+        fetchDynamicOptions(field.name, '');
+      } else if (reason === 'input') {
+        // User is typing - debounce the search API call
+        // Clear any existing timeout to restart debounce timer
+        if (searchTimeoutRefs.current[field.name]) {
+          clearTimeout(searchTimeoutRefs.current[field.name]!);
+          searchTimeoutRefs.current[field.name] = null;
+        }
+        
+        // Debounce search for both empty and non-empty input
         searchTimeoutRefs.current[field.name] = setTimeout(() => {
-          if (newInputValue !== fieldOptions?.searchTerm) {
-            // Reset options when search term changes (new search)
+          // Get the current value from ref (latest typed value)
+          const currentInputValue = inputValuesRef.current[field.name] || '';
+          const trimmedValue = currentInputValue.trim();
+          const currentSearchTerm = fieldOptions?.searchTerm || '';
+          
+          // Only fetch if search term changed
+          if (trimmedValue !== currentSearchTerm) {
+            // Reset options to show loading state
             setDynamicOptions((prev) => {
               const { [field.name]: _, ...rest } = prev;
               return rest;
             });
-            // Reset scroll position for new search
             scrollPositionsRef.current[field.name] = 0;
-            fetchDynamicOptions(field.name, newInputValue);
+            
+            // Fetch with trimmed search term
+            // Empty string = paginated all options, non-empty = filtered search
+            fetchDynamicOptions(field.name, trimmedValue);
           }
+          
           searchTimeoutRefs.current[field.name] = null;
-        }, 300);
+        }, 300); // 300ms debounce - faster response, less lag
+      } else if (reason === 'reset') {
+        // Option selected - keep input value for user to see what they searched
+        // They can manually clear if needed
+      }
+    };
+
+    // Handle keyboard shortcuts
+    const handleKeyDown = (event: React.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        // ESC key: clear search and reset to paginated view
+        event.preventDefault();
+        event.stopPropagation();
+        
+        // Clear input ref
+        delete inputValuesRef.current[field.name];
+        
+        // Clear any pending timeout
+        if (searchTimeoutRefs.current[field.name]) {
+          clearTimeout(searchTimeoutRefs.current[field.name]!);
+          searchTimeoutRefs.current[field.name] = null;
+        }
+        
+        // Reset to paginated view if there was a search
+        if (fieldOptions?.searchTerm || inputValuesRef.current[field.name]) {
+          setDynamicOptions((prev) => {
+            const { [field.name]: _, ...rest } = prev;
+            return rest;
+          });
+          scrollPositionsRef.current[field.name] = 0;
+          fetchDynamicOptions(field.name, '');
+        }
+      } else if (event.key === 'Enter') {
+        // Enter key: trigger immediate search (skip debounce)
+        event.preventDefault();
+        event.stopPropagation();
+        
+        // Clear any pending timeout to trigger immediate search
+        if (searchTimeoutRefs.current[field.name]) {
+          clearTimeout(searchTimeoutRefs.current[field.name]!);
+          searchTimeoutRefs.current[field.name] = null;
+        }
+        
+        // Get current input and trigger immediate search
+        const currentInput = inputValuesRef.current[field.name] || '';
+        const trimmedInput = currentInput.trim();
+        const currentSearchTerm = fieldOptions?.searchTerm || '';
+        
+        if (trimmedInput !== currentSearchTerm) {
+          setDynamicOptions((prev) => {
+            const { [field.name]: _, ...rest } = prev;
+            return rest;
+          });
+          scrollPositionsRef.current[field.name] = 0;
+          fetchDynamicOptions(field.name, trimmedInput);
+        }
       }
     };
 
@@ -595,6 +701,8 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
                 value={selectedOptions}
                 onChange={handleChange}
                 onInputChange={handleInputChange}
+                clearOnBlur={false}
+                clearOnEscape
                 loading={isLoading}
                 getOptionLabel={(option) => {
                   try {
@@ -618,50 +726,87 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
                   const valueId = typeof value === 'string' ? value : (value?.id || '');
                   return optionId === valueId;
                 }}
-                renderInput={(params) => (
-                  <TextField
-                    {...params}
-                    label={field.displayName}
-                    placeholder={field.description || `Select ${field.displayName.toLowerCase()}`}
-                    error={!!errorParam}
-                    helperText={errorParam}
-                    variant="outlined"
-                    size="small"
-                    InputProps={{
-                      ...params.InputProps,
-                      endAdornment: (
-                        <>
-                          {isLoading ? <CircularProgress size={20} /> : null}
-                          {params.InputProps.endAdornment}
-                        </>
-                      ),
-                    }}
-                    sx={{
-                      '& .MuiOutlinedInput-root': {
-                        borderRadius: 1.25,
-                        backgroundColor: isDark
-                          ? alpha(theme.palette.background.paper, 0.6)
-                          : alpha(theme.palette.background.paper, 0.8),
-                        transition: 'all 0.2s',
-                        '&:hover': {
+                renderInput={(params) => {
+                  // Create dynamic helper text based on current state
+                  const hasActiveSearch = fieldOptions?.searchTerm && fieldOptions.searchTerm.trim() !== '';
+                  const currentInputValue = inputValuesRef.current[field.name] || '';
+                  const currentTrimmed = currentInputValue.trim();
+                  let helperText = errorParam;
+                  
+                  if (!errorParam) {
+                    if (isLoading && hasActiveSearch) {
+                      helperText = `🔍 Searching for: "${fieldOptions.searchTerm}"...`;
+                    } else if (isLoading) {
+                      helperText = `⏳ Loading options...`;
+                    } else if (hasActiveSearch) {
+                      const resultCount = fieldOptions.options.length;
+                      const moreIndicator = fieldOptions.hasMore ? '+' : '';
+                      helperText = `✓ Showing ${resultCount}${moreIndicator} results for: "${fieldOptions.searchTerm}" • Type to refine search`;
+                    } else if (field.description) {
+                      helperText = `${field.description} • Type to search with auto-complete`;
+                    } else {
+                      helperText = 'Type to search and filter options automatically';
+                    }
+                  }
+                  
+                  return (
+                    <TextField
+                      {...params}
+                      label={field.displayName}
+                      placeholder="Type to search..."
+                      error={!!errorParam}
+                      helperText={helperText}
+                      variant="outlined"
+                      size="small"
+                      onKeyDown={handleKeyDown}
+                      InputProps={{
+                        ...params.InputProps,
+                        endAdornment: (
+                          <>
+                            {isLoading ? <CircularProgress size={20} /> : null}
+                            {params.InputProps.endAdornment}
+                          </>
+                        ),
+                      }}
+                      sx={{
+                        '& .MuiOutlinedInput-root': {
+                          borderRadius: 1.25,
                           backgroundColor: isDark
-                            ? alpha(theme.palette.background.paper, 0.8)
-                            : alpha(theme.palette.background.paper, 1),
+                            ? alpha(theme.palette.background.paper, 0.6)
+                            : alpha(theme.palette.background.paper, 0.8),
+                          transition: 'all 0.2s',
+                          // Highlight border when search is active
+                          ...(hasActiveSearch && {
+                            borderColor: alpha(theme.palette.info.main, 0.5),
+                          }),
+                          '&:hover': {
+                            backgroundColor: isDark
+                              ? alpha(theme.palette.background.paper, 0.8)
+                              : alpha(theme.palette.background.paper, 1),
+                          },
+                          '&.Mui-focused': {
+                            backgroundColor: isDark
+                              ? alpha(theme.palette.background.paper, 0.9)
+                              : theme.palette.background.paper,
+                          },
                         },
-                        '&.Mui-focused': {
-                          backgroundColor: isDark
-                            ? alpha(theme.palette.background.paper, 0.9)
-                            : theme.palette.background.paper,
+                        '& .MuiOutlinedInput-input': {
+                          fontSize: '0.875rem',
+                          padding: '6px 10px !important',
+                          fontWeight: 400,
                         },
-                      },
-                      '& .MuiOutlinedInput-input': {
-                        fontSize: '0.875rem',
-                        padding: '6px 10px !important',
-                        fontWeight: 400,
-                      },
-                    }}
-                  />
-                )}
+                        '& .MuiFormHelperText-root': {
+                          fontSize: '0.7rem',
+                          marginTop: '4px',
+                          ...(hasActiveSearch && !errorParam && {
+                            color: theme.palette.info.main,
+                            fontWeight: 500,
+                          }),
+                        },
+                      }}
+                    />
+                  );
+                }}
                 renderTags={(val, getTagProps) =>
                   val.map((option, index) => {
                     const label = typeof option === 'string' 
@@ -718,31 +863,82 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
                     : true;
                   const showLoadMore = fieldOptions?.hasMore && canLoadMore;
                   const showSearchMessage = fieldOptions?.totalLoaded && fieldOptions.totalLoaded >= MAX_OPTIONS_IN_MEMORY && fieldOptions.hasMore;
+                  const hasActiveSearch = fieldOptions?.searchTerm && fieldOptions.searchTerm.trim() !== '';
+                  const hasResults = options.length > 0;
                   
                   return (
                     <Paper {...other}>
                       {children}
+                      
+                      {/* Show search status indicator */}
+                      {hasActiveSearch && (
+                        <Box sx={{ 
+                          px: 1.5, 
+                          py: 0.75,
+                          borderTop: `1px solid ${alpha(theme.palette.divider, 0.1)}`,
+                          bgcolor: alpha(theme.palette.info.main, 0.05),
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                        }}>
+                          <Typography variant="caption" sx={{ fontSize: '0.7rem', color: 'text.secondary', fontWeight: 500 }}>
+                            🔍 Filtered by: &quot;{fieldOptions.searchTerm}&quot;
+                          </Typography>
+                          {hasResults && (
+                            <Typography variant="caption" sx={{ fontSize: '0.7rem', color: 'text.secondary' }}>
+                              {options.length} result{options.length !== 1 ? 's' : ''}
+                            </Typography>
+                          )}
+                        </Box>
+                      )}
+                      
+                      {/* Load more button */}
                       {showLoadMore && (
-                        <Box sx={{ p: 1, textAlign: 'center', borderTop: `1px solid ${alpha(theme.palette.divider, 0.1)}` }}>
+                        <Box sx={{ p: 1, textAlign: 'center', borderTop: !hasActiveSearch ? `1px solid ${alpha(theme.palette.divider, 0.1)}` : 'none' }}>
                           <Button
                             size="small"
                             onClick={handleLoadMore}
                             disabled={isLoading}
-                            sx={{ textTransform: 'none' }}
+                            sx={{ 
+                              textTransform: 'none',
+                              fontSize: '0.75rem',
+                              py: 0.5,
+                            }}
                           >
                             {isLoading ? 'Loading...' : `Load More (${fieldOptions?.totalLoaded || 0} loaded)`}
                           </Button>
                         </Box>
                       )}
+                      
+                      {/* Memory limit message */}
                       {showSearchMessage && (
                         <Box sx={{ 
                           p: 1.5, 
                           textAlign: 'center', 
                           borderTop: `1px solid ${alpha(theme.palette.divider, 0.1)}`,
-                          bgcolor: alpha(theme.palette.info.main, 0.08),
+                          bgcolor: alpha(theme.palette.warning.main, 0.08),
+                        }}>
+                          <Typography variant="caption" sx={{ fontSize: '0.7rem', color: 'text.secondary', display: 'block' }}>
+                            ⚠️ {fieldOptions.totalLoaded}+ options loaded (memory limit reached)
+                          </Typography>
+                          <Typography variant="caption" sx={{ fontSize: '0.65rem', color: 'text.secondary', mt: 0.5, display: 'block' }}>
+                            Type to search and find specific items
+                          </Typography>
+                        </Box>
+                      )}
+                      
+                      {/* No results message when searching */}
+                      {hasActiveSearch && !hasResults && !isLoading && (
+                        <Box sx={{ 
+                          p: 2, 
+                          textAlign: 'center',
+                          borderTop: `1px solid ${alpha(theme.palette.divider, 0.1)}`,
                         }}>
                           <Typography variant="caption" sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>
-                            {fieldOptions.totalLoaded}+ options loaded. Use search to find specific items.
+                            No results found for &quot;{fieldOptions.searchTerm}&quot;
+                          </Typography>
+                          <Typography variant="caption" sx={{ fontSize: '0.7rem', color: 'text.secondary', display: 'block', mt: 0.5 }}>
+                            Try a different search term or clear the filter
                           </Typography>
                         </Box>
                       )}

@@ -265,15 +265,6 @@ class ConfluenceConnector(BaseConnector):
             # Initialize data source
             self.data_source = ConfluenceDataSource(self.external_client)
 
-            self.sync_filters, self.indexing_filters = await load_connector_filters(
-                self.config_service, "confluence", self.connector_id, self.logger
-            )
-
-            # Test connection
-            if not await self.test_connection_and_access():
-                self.logger.error("❌ Confluence connector connection test failed")
-                return False
-
             self.logger.info("✅ Confluence connector initialized successfully")
             return True
 
@@ -370,6 +361,11 @@ class ConfluenceConnector(BaseConnector):
             # Ensure client is initialized
             if not self.external_client or not self.data_source:
                 raise Exception("Confluence client not initialized. Call init() first.")
+
+            # Load sync and indexing filters
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "confluence", self.connector_id, self.logger
+            )
 
             # Step 1: Sync users
             await self._sync_users()

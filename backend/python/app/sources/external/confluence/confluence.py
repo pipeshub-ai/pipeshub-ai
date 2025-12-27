@@ -7879,7 +7879,7 @@ class ConfluenceDataSource:
 
         # Build CQL query for space search with fuzzy matching
         # Format: type=space and space.title ~ "term"
-        cql = f'type=space and space.title ~ "{search_term}"'
+        cql = f'type=space and space.title ~ "{search_term}*"'
 
         _query: Dict[str, Any] = {
             'cql': cql,
@@ -7943,7 +7943,7 @@ class ConfluenceDataSource:
         _headers: Dict[str, Any] = dict(headers or {})
 
         # Build CQL query for page search with fuzzy matching
-        cql_parts = [f'title ~ "{search_term}"', 'type=page']
+        cql_parts = [f'title ~ "{search_term}*"', 'type=page']
         if space_id:
             cql_parts.append(f'space.id={space_id}')
 
@@ -8011,7 +8011,7 @@ class ConfluenceDataSource:
         _headers: Dict[str, Any] = dict(headers or {})
 
         # Build CQL query for blogpost search with fuzzy matching
-        cql_parts = [f'title ~ "{search_term}"', 'type=blogpost']
+        cql_parts = [f'title ~ "{search_term}*"', 'type=blogpost']
         if space_id:
             cql_parts.append(f'space.id={space_id}')
 
