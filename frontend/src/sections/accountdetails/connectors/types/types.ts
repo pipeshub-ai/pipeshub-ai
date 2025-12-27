@@ -70,6 +70,26 @@ interface SyncCustomField extends BaseField {
 export type FilterOperator = string;
 export type FilterValue = string | number | boolean | string[] | DatetimeRange | EpochDatetimeRange | null;
 
+// Option source types
+type OptionSourceType = 'manual' | 'static' | 'dynamic';
+
+// Filter option for dynamic/static options
+interface FilterOption {
+  id: string;
+  label: string;
+}
+
+// Filter options response
+interface FilterOptionsResponse {
+  success: boolean;
+  options: FilterOption[];
+  page: number;
+  limit: number;
+  hasMore: boolean;
+  cursor?: string;  // Optional cursor for cursor-based pagination (API-specific)
+  message?: string;
+}
+
 export interface DatetimeRange {
   start: string | number;
   end: string | number;
@@ -101,6 +121,7 @@ interface FilterSchemaField extends BaseField {
   category?: 'sync' | 'indexing';
   defaultOperator?: string;
   operators?: string[];
+  optionSourceType?: OptionSourceType;
 }
 
 // Filter custom field
@@ -365,5 +386,8 @@ export type {
   ConditionalDisplayConfig,
   ConnectorStatsData,
   ConnectorStatsResponse,
-  ConnectorToggleType
+  ConnectorToggleType,
+  FilterOption,
+  FilterOptionsResponse,
+  OptionSourceType
 };

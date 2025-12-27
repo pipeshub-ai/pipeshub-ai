@@ -4,7 +4,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, Optional, Tuple, Union
+from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple, Union
 
 from aiolimiter import AsyncLimiter
 from dropbox.exceptions import ApiError
@@ -1086,6 +1086,17 @@ class DropboxIndividualConnector(BaseConnector):
     async def cleanup(self) -> None:
         self.logger.info("Cleaning up Dropbox Individual connector resources.")
         self.data_source = None
+
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None
+    ) -> NoReturn:
+        """Dropbox Individual connector does not support dynamic filter options."""
+        raise NotImplementedError("Dropbox Individual connector does not support dynamic filter options")
 
     @classmethod
     async def create_connector(

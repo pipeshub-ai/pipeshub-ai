@@ -118,6 +118,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
     }
   }, [connector, renameValue, handleRenameInstance, handleRenameClose, setRenameError]);
 
+  const [configMode, setConfigMode] = React.useState<'auth' | 'sync' | 'syncSettings' | null>(null);
 
   // Loading state with skeleton
   if (loading) {
@@ -406,7 +407,16 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
                   connector={connector}
                   isAuthenticated={isAuthenticated}
                   isEnablingWithFilters={isEnablingWithFilters}
-                  onToggle={handleToggleConnector}
+                  onToggle={(enabled, type) => {
+                    if (enabled && type === 'sync') {
+                      // When enabling sync, open config dialog in enable mode
+                      setConfigMode('sync');
+                      handleConfigureClick();
+                    } else {
+                      // For disabling, use the normal toggle handler
+                      handleToggleConnector(enabled, type);
+                    }
+                  }}
                   hideAuthenticate={hideAuthenticate}
                 />
               </Grid>
@@ -418,8 +428,25 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
                   isAuthenticated={isAuthenticated}
                   loading={loading}
                   onAuthenticate={handleAuthenticate}
-                  onConfigure={handleConfigureClick}
-                  onToggle={handleToggleConnector}
+                  onConfigureAuth={() => {
+                    setConfigMode('auth');
+                    handleConfigureClick();
+                  }}
+                  onConfigureSync={() => {
+                    // Sync Settings button: always use syncSettingsMode (only filters, never toggle)
+                    setConfigMode('syncSettings');
+                    handleConfigureClick();
+                  }}
+                  onToggle={(enabled, type) => {
+                    if (enabled && type === 'sync') {
+                      // When enabling sync, open config dialog in enable mode
+                      setConfigMode('sync');
+                      handleConfigureClick();
+                    } else {
+                      // For disabling, use the normal toggle handler
+                      handleToggleConnector(enabled, type);
+                    }
+                  }}
                   onDelete={() => setDeleteOpen(true)}
                   onRename={() => {
                     setRenameValue(connector.name || '');
@@ -476,8 +503,18 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
         {configDialogOpen && (
           <ConnectorConfigForm
             connector={connector}
-            onClose={handleConfigClose}
-            onSuccess={handleConfigSuccess}
+            onClose={() => {
+              handleConfigClose();
+              setConfigMode(null);
+            }}
+            onSuccess={() => {
+              handleConfigSuccess();
+              setConfigMode(null);
+            }}
+            enableMode={configMode === 'sync' && !connector.isActive}
+            authOnly={configMode === 'auth'}
+            syncOnly={configMode === 'sync' && connector.isActive}
+            syncSettingsMode={configMode === 'syncSettings'}
           />
         )}
 

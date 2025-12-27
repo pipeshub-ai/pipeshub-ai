@@ -3,7 +3,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
 
 from aiolimiter import AsyncLimiter
 from azure.identity.aio import ClientSecretCredential
@@ -1236,6 +1236,17 @@ class OneDriveConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error checking OneDrive record {record.id} at source: {e}")
             return None
+
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None
+    ) -> NoReturn:
+        """OneDrive connector does not support dynamic filter options."""
+        raise NotImplementedError("OneDrive connector does not support dynamic filter options")
 
     async def get_signed_url(self, record: Record) -> str:
         """

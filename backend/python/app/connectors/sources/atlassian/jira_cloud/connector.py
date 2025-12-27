@@ -1,7 +1,7 @@
 import re
 from dataclasses import dataclass
 from logging import Logger
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NoReturn, Optional, Tuple
 
 import aiohttp
 from fastapi.responses import StreamingResponse
@@ -620,6 +620,17 @@ class JiraConnector(BaseConnector):
         """Reindex records - not implemented for Jira yet."""
         self.logger.warning("Reindex not implemented for Jira connector")
         pass
+
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None
+    ) -> NoReturn:
+        """Jira connector does not support dynamic filter options."""
+        raise NotImplementedError("Jira connector does not support dynamic filter options")
 
     async def handle_webhook_notification(self, notification: Dict) -> None:
         pass

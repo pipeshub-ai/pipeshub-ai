@@ -3,7 +3,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
 
 from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
@@ -1381,6 +1381,17 @@ class OutlookConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error during Outlook reindex: {e}")
             raise
+
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None
+    ) -> NoReturn:
+        """Outlook connector does not support dynamic filter options."""
+        raise NotImplementedError("Outlook connector does not support dynamic filter options")
 
     async def _reindex_user_records(
         self, user_email: str, records: List[Record]
