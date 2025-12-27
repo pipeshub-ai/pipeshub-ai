@@ -52,9 +52,33 @@ class ExcelParser:
         self.min_wait = 1  # seconds
         self.max_wait = 10  # seconds
 
+    def load_workbook_from_binary(self, file_binary: bytes) -> None:
+        """Load workbook from binary (no LLM calls).
+        
+        This is the first phase of Excel processing - pure parsing without LLM calls.
+        """
+        self.file_binary = file_binary
+        if self.file_binary:
+            self.workbook = load_workbook(io.BytesIO(file_binary), data_only=True)
+
+    async def create_blocks(self, llm: BaseChatModel) -> BlocksContainer:
+        """Create blocks from loaded workbook (involves LLM calls).
+        
+        This is the second phase - involves LLM calls for table summaries and row descriptions.
+        Must call load_workbook_from_binary() first.
+        """
+        try:
+            return await self.get_blocks_from_workbook(llm)
+        finally:
+            if self.workbook:
+                self.workbook.close()
+
     async def parse(self, file_binary: bytes, llm: BaseChatModel) -> BlocksContainer:
         """
         Parse Excel file and extract all content including sheets, cells, formulas, etc.
+        
+        For new code, prefer using load_workbook_from_binary() followed by create_blocks() 
+        to allow yielding progress events between phases.
 
         Returns:
             Dict containing parsed content with structure:
@@ -68,14 +92,7 @@ class ExcelParser:
             }
         """
         try:
-            self.file_binary = file_binary
-            # Load workbook from binary or file path
-            if self.file_binary:
-
-                self.workbook = load_workbook(
-                    io.BytesIO(self.file_binary), data_only=True
-                )
-
+            self.load_workbook_from_binary(file_binary)
             return await self.get_blocks_from_workbook(llm)
 
         except Exception:
