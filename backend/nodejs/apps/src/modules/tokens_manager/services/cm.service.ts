@@ -3,6 +3,7 @@ import { ARANGO_DB_NAME, MONGO_DB_NAME } from '../../../libs/enums/db.enum';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { loadConfigurationManagerConfig } from '../../configuration_manager/config/config';
 import { configPaths } from '../../configuration_manager/paths/paths';
+import { normalizeUrl } from '../utils/utils';
 
 // Define interfaces for all service configurations
 export interface SmtpConfig {
@@ -230,7 +231,7 @@ export class ConfigService {
     parsedUrl.auth = {
       ...parsedUrl.auth,
       endpoint:
-        parsedUrl.auth?.endpoint ||
+        normalizeUrl(parsedUrl.auth?.endpoint) ||
         `http://localhost:${process.env.PORT ?? 3000}`,
     };
 
@@ -254,7 +255,7 @@ export class ConfigService {
     parsedUrl.communication = {
       ...parsedUrl.communication,
       endpoint:
-        parsedUrl.communication?.endpoint ||
+        normalizeUrl(parsedUrl.communication?.endpoint) ||
         `http://localhost:${process.env.PORT ?? 3000}`,
     };
 
@@ -278,7 +279,7 @@ export class ConfigService {
     parsedUrl.kb = {
       ...parsedUrl.kb,
       endpoint:
-        parsedUrl.kb?.endpoint ||
+        normalizeUrl(parsedUrl.kb?.endpoint) ||
         `http://localhost:${process.env.PORT ?? 3000}`,
     };
 
@@ -302,7 +303,7 @@ export class ConfigService {
     parsedUrl.es = {
       ...parsedUrl.es,
       endpoint:
-        parsedUrl.es?.endpoint ||
+        normalizeUrl(parsedUrl.es?.endpoint) ||
         `http://localhost:${process.env.PORT ?? 3000}`,
     };
 
@@ -326,7 +327,7 @@ export class ConfigService {
     parsedUrl.cm = {
       ...parsedUrl.cm,
       endpoint:
-        parsedUrl.cm?.endpoint ||
+        normalizeUrl(parsedUrl.cm?.endpoint) ||
         `http://localhost:${process.env.PORT ?? 3000}`,
     };
 
@@ -350,7 +351,7 @@ export class ConfigService {
     parsedUrl.tokenBackend = {
       ...parsedUrl.tokenBackend,
       endpoint:
-        parsedUrl.tokenBackend?.endpoint ||
+        normalizeUrl(parsedUrl.tokenBackend?.endpoint) ||
         `http://localhost:${process.env.PORT ?? 3000}`,
     };
 
@@ -373,10 +374,10 @@ export class ConfigService {
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.connectors = {
       ...parsedUrl.connectors,
-      endpoint: parsedUrl.connectors?.endpoint || process.env.CONNECTOR_BACKEND,
+      endpoint: normalizeUrl(parsedUrl.connectors?.endpoint) || normalizeUrl(process.env.CONNECTOR_BACKEND!),
       publicEndpoint:
-        parsedUrl.connectors?.publicEndpoint ||
-        process.env.CONNECTOR_PUBLIC_BACKEND,
+        normalizeUrl(parsedUrl.connectors?.publicEndpoint) ||
+        normalizeUrl(process.env.CONNECTOR_PUBLIC_BACKEND!),
     };
 
     // Save the updated object back to configPaths.endpoint
@@ -392,7 +393,7 @@ export class ConfigService {
       '{}';
 
     let parsedUrl = JSON.parse(url);
-    return parsedUrl.connectors.publicEndpoint || process.env.CONNECTOR_PUBLIC_BACKEND;
+    return normalizeUrl(parsedUrl.connectors.publicEndpoint) || normalizeUrl(process.env.CONNECTOR_PUBLIC_BACKEND!);
   }
 
   public async getIndexingUrl(): Promise<string> {
@@ -405,7 +406,7 @@ export class ConfigService {
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.indexing = {
       ...parsedUrl.indexing,
-      endpoint: parsedUrl.indexing?.endpoint || process.env.INDEXING_BACKEND,
+      endpoint: normalizeUrl(parsedUrl.indexing?.endpoint) || normalizeUrl(process.env.INDEXING_BACKEND!),
     };
 
     // Save the updated object back to configPaths.endpoint
@@ -426,7 +427,7 @@ export class ConfigService {
     parsedUrl.iam = {
       ...parsedUrl.iam,
       endpoint:
-        parsedUrl.iam?.endpoint ||
+        normalizeUrl(parsedUrl.iam?.endpoint) ||
         `http://localhost:${process.env.PORT ?? 3000}`,
     };
 
@@ -449,7 +450,7 @@ export class ConfigService {
     parsedUrl.storage = {
       ...parsedUrl.storage,
       endpoint:
-        parsedUrl.storage?.endpoint ||
+        normalizeUrl(parsedUrl.storage?.endpoint) ||
         `http://localhost:${process.env.PORT ?? 3000}`,
     };
 
@@ -473,8 +474,8 @@ export class ConfigService {
     parsedUrl.frontend = {
       ...parsedUrl.frontend,
       publicEndpoint:
-        parsedUrl.frontend?.publicEndpoint ||
-        process.env.FRONTEND_PUBLIC_URL ||
+        normalizeUrl(parsedUrl.frontend?.publicEndpoint) ||
+        normalizeUrl(process.env.FRONTEND_PUBLIC_URL!) ||
         `http://localhost:${process.env.PORT ?? 3000}`,
     };
 
@@ -498,8 +499,8 @@ export class ConfigService {
     parsedUrl.queryBackend = {
       ...parsedUrl.queryBackend,
       endpoint:
-        parsedUrl.queryBackend?.endpoint ||
-        process.env.QUERY_BACKEND ||
+        normalizeUrl(parsedUrl.queryBackend?.endpoint) ||
+        normalizeUrl(process.env.QUERY_BACKEND!) ||
         `http://localhost:8000`,
     };
 
@@ -523,7 +524,7 @@ export class ConfigService {
     parsedUrl.storage = {
       ...parsedUrl.storage,
       endpoint:
-        parsedUrl.storage?.endpoint ||
+        normalizeUrl(parsedUrl.storage?.endpoint) ||
         `http://localhost:${process.env.PORT ?? 3000}`,
     };
 
