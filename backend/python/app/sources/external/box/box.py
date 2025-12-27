@@ -67,7 +67,7 @@ class BoxDataSource:
 
     async def _get_client(self) -> BoxClient:
         """Get or create Box client."""
-        # 1. FIX: If we have a specific client set (e.g., impersonating a user), return it.
+        # 1. If we have a specific client set (e.g., impersonating a user), return it.
         if self._client:
             return self._client
 
@@ -81,7 +81,6 @@ class BoxDataSource:
     async def set_as_user_context(self, user_id: str) -> None:
         """
         Set the As-User context for subsequent API calls.
-        
         Args:
             user_id: The Box user ID to impersonate
         """
@@ -95,14 +94,14 @@ class BoxDataSource:
 
             self._client = base_client.with_extra_headers(extra_headers={"As-User": user_id})
             self._current_as_user = user_id
-            
+
         except Exception as e:
             raise Exception(f"Failed to set As-User context: {e}")
 
     async def clear_as_user_context(self) -> None:
         """Clear the As-User context."""
         try:
-            # 4. FIX: Reset _client to None so _get_client() falls back to the Admin client
+            # 4. Reset _client to None so _get_client() falls back to the Admin client
             self._client = None
             self._current_as_user = None
         except Exception as e:
@@ -1202,12 +1201,12 @@ class BoxDataSource:
             elif access == 'collaborators':
                 access_enum = UpdateFileByIdSharedLinkAccessField.COLLABORATORS
 
-            # FIX 3: Create the specific update object required by Box SDK
+            # 3: Create the specific update object required by Box SDK
             shared_link_payload = UpdateFileByIdSharedLink(
                 access=access_enum
             )
 
-            # FIX 4: Call update_file_by_id instead of create_shared_link
+            # 4: Call update_file_by_id instead of create_shared_link
             # Note: We do NOT pass **kwargs here because the SDK method doesn't accept arbitrary args
             response = await loop.run_in_executor(
                 None,
@@ -1250,12 +1249,12 @@ class BoxDataSource:
             elif access == 'collaborators':
                 access_enum = UpdateFolderByIdSharedLinkAccessField.COLLABORATORS
 
-            # FIX 3: Create payload
+            # 3: Create payload
             shared_link_payload = UpdateFolderByIdSharedLink(
                 access=access_enum
             )
 
-            # FIX 4: Call update_folder_by_id
+            # 4: Call update_folder_by_id
             response = await loop.run_in_executor(
                 None,
                 lambda: manager.update_folder_by_id(
