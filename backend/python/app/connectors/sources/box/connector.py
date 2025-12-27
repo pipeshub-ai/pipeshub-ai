@@ -148,7 +148,8 @@ class BoxConnector(BaseConnector):
     # Box API constants
     BASE_URL = "https://api.box.com"
     TOKEN_ENDPOINT = "/oauth2/token"
-
+    HTTP_OK = 200
+    HTTP_NOT_FOUND = 404
     current_user_id: Optional[str] = None
 
     def __init__(
@@ -273,7 +274,7 @@ class BoxConnector(BaseConnector):
                 self.logger.info(f"Fetching access token from {token_url}")
 
                 async with session.post(token_url, data=data) as response:
-                    if response.status != HttpStatusCode.OK.value:
+                    if response.status != self.HTTP_OK:
                         error_text = await response.text()
                         self.logger.error(
                             f"Failed to fetch access token. Status: {response.status}, "
@@ -516,7 +517,7 @@ class BoxConnector(BaseConnector):
 
             if not response.success:
                 # Handle 404 no permission to view collabs
-                if response.status_code == HttpStatusCode.NOT_FOUND.value:
+                if response.status_code == self.HTTP_NOT_FOUND:
                     self.logger.debug(f"No collaborations found or accessible for {item_type} {item_id} (404).")
                 else:
                     self.logger.debug(f"Could not fetch permissions for {item_type} {item_id}: {response.error}")
