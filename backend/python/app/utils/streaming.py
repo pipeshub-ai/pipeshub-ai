@@ -1417,8 +1417,10 @@ async def call_aiter_llm_stream(
                 # Add the reflection message to the messages list
                 updated_messages = messages.copy()
 
+                # Ensure response_text is a string for AIMessage (can be dict from structured output)
+                ai_message_content = response_text if isinstance(response_text, str) else json.dumps(response_text)
                 ai_message = AIMessage(
-                    content=response_text,
+                    content=ai_message_content,
                 )
                 updated_messages.append(ai_message)
 
