@@ -290,53 +290,6 @@ async def execute_tool_calls(
             messages.append(ai)
             break
 
-        # Check if LLM incorrectly made a tool call for unknown tools (e.g., tool name "json")
-        # This happens when the model wraps the final answer in a tool call instead of returning it directly
-        valid_tool_names = [t.name for t in tools]
-
-        # If there are any invalid tool calls, use reflection to guide the LLM
-        invalid_tool_calls = [call for call in ai.tool_calls if call.get("name") not in valid_tool_names]
-
-        if invalid_tool_calls:
-            logger.warning(
-                "execute_tool_calls: detected invalid tool calls: %s. Using reflection to guide LLM.",
-                [call.get("name") for call in invalid_tool_calls]
-            )
-
-            # Add the AI message with invalid tool calls
-            messages.append(ai)
-
-            # Create reflection messages for each invalid tool call
-            for call in invalid_tool_calls:
-                call_id = call.get("id")
-                tool_name = call.get("name")
-
-                reflection_message = (
-                    f"Error: Tool '{tool_name}' is not a valid tool. "
-                    f"Available tools are: {', '.join(valid_tool_names)}. "
-                    "Please provide your final answer directly as a JSON object with the following structure: "
-                    '{"answer": "your answer here", "reason": "reasoning", "confidence": "High/Medium/Low", '
-                    '"answerMatchType": "Derived From Blocks/Exact Match/etc", "blockNumbers": [list of block numbers]}. '
-                    "Do NOT wrap your response in any tool call."
-                )
-
-                messages.append(
-                    ToolMessage(
-                        content=reflection_message,
-                        tool_call_id=call_id
-                    )
-                )
-
-                logger.info(
-                    "execute_tool_calls: added reflection message for invalid tool '%s' with call_id=%s",
-                    tool_name,
-                    call_id
-                )
-
-            # Continue the loop to let the LLM try again with the reflection
-            hops += 1
-            continue
-
         tools_executed = True
         logger.debug(
             "execute_tool_calls: tool_calls_detected count=%d",
@@ -418,7 +371,8 @@ async def execute_tool_calls(
 
         # Execute all tools in parallel
         tool_results_inner = await asyncio.gather(*tool_tasks, return_exceptions=False)
-
+        
+        records = []
         # Process results and yield events
         for tool_result in tool_results_inner:
             tool_name = tool_result.get("tool_name", "unknown")
@@ -441,6 +395,8 @@ async def execute_tool_calls(
                         "record_info": tool_result.get("record_info", {})
                     }
                 }
+                if "records" in tool_result:
+                    records.extend(tool_result.get("records", []))
             else:
                 logger.warning(
                     "execute_tool_calls: tool error result name=%s call_id=%s error=%s",
@@ -456,14 +412,6 @@ async def execute_tool_calls(
                         "call_id": call_id
                     }
                 }
-
-        # Handle both old single-record format and new multi-record format
-        records = []
-        for tool_result in tool_results_inner:
-            if tool_result.get("ok"):
-                # New format: multiple records
-                if "records" in tool_result:
-                    records.extend(tool_result.get("records", []))
 
         # First, add the AI message with tool calls to messages
         messages.append(ai)
