@@ -1124,7 +1124,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     await self.ensure_user_app_relation(user["email"], org_id)
 
             # List and store groups
-            groups = await self.gmail_admin_service.list_groups(org_id)
+            groups = await self.gmail_admin_service.list_groups(org_id, self.connector_id)
             if groups:
                 self.logger.info("🚀 Found %s groups", len(groups))
 

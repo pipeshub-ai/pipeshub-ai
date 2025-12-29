@@ -5,7 +5,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from langchain.chat_models.base import BaseChatModel
+from langchain_core.language_models.chat_models import BaseChatModel
 from pydantic import BaseModel
 
 from app.api.routes.chatbot import get_llm_for_chat
@@ -18,7 +18,6 @@ from app.modules.retrieval.retrieval_service import RetrievalService
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 router = APIRouter()
-
 
 class ChatQuery(BaseModel):
     query: str

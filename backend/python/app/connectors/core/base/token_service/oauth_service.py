@@ -282,7 +282,8 @@ class OAuthProvider:
         state = self.config.generate_state()
         session_data: Dict[str, Any] = {
             "created_at": datetime.utcnow().isoformat(),
-            "state": state
+            "state": state,
+            "used_codes": []  # Start fresh with empty used_codes for new auth flow
         }
         if use_pkce:
             code_verifier = self._gen_code_verifier()
@@ -299,6 +300,8 @@ class OAuthProvider:
         config = await self.key_value_store.get_key(self.credentials_path)
         if not isinstance(config, dict):
             config = {}
+        # Replace entire oauth session data - this clears any old state, codes, etc.
+        # This is important for re-authentication to ensure fresh start
         config['oauth'] = session_data
         await self.key_value_store.create_key(self.credentials_path, config)
         return self._get_authorization_url(state=state, **extra)
@@ -311,31 +314,42 @@ class OAuthProvider:
         oauth_data = config.get('oauth', {}) or {}
         stored_state = oauth_data.get("state")
 
-        # Check if we already have valid credentials (duplicate callback protection)
-        existing_credentials = config.get('credentials')
-        if existing_credentials and existing_credentials.get('access_token'):
-            # We already processed this callback successfully, return existing token
-            self.token = OAuthToken.from_dict(existing_credentials)
-            return self.token
-
-        # Validate state
+        # Validate state first (must match for security)
         if not stored_state or stored_state != state:
-            # Idempotent handling: if credentials already exist, treat as success
+            # Check if this is a duplicate callback (code already used, credentials exist)
+            # This handles browser refreshes or duplicate callback attempts
             existing_creds = config.get('credentials')
-            if isinstance(existing_creds, dict) and existing_creds.get('access_token'):
+            used_codes = oauth_data.get("used_codes", [])
+
+            # Only treat as success if:
+            # 1. Credentials exist AND
+            # 2. This specific code was already used (indicates duplicate callback)
+            if isinstance(existing_creds, dict) and existing_creds.get('access_token') and code in used_codes:
                 try:
                     token = OAuthToken.from_dict(existing_creds)
+                    self.token = token
+                    return token
                 except (TypeError, ValueError, KeyError):
                     # If stored creds are malformed, fall back to error
                     raise ValueError("Invalid or expired state")
-                self.token = token
-                return token
-            # No existing credentials -> genuine invalid/expired state
+
+            # State mismatch and not a duplicate callback -> genuine error
             raise ValueError("Invalid or expired state")
 
-        # Check if this code has already been used (prevent duplicate usage)
+        # Check if this specific code has already been used (prevent duplicate code usage)
         used_codes = oauth_data.get("used_codes", [])
         if code in used_codes:
+            # This code was already used - check if we have valid credentials from it
+            existing_creds = config.get('credentials')
+            if isinstance(existing_creds, dict) and existing_creds.get('access_token'):
+                # Return existing credentials from this code (duplicate callback protection)
+                try:
+                    token = OAuthToken.from_dict(existing_creds)
+                    self.token = token
+                    return token
+                except (TypeError, ValueError, KeyError):
+                    pass
+            # Code was used but no valid credentials - treat as error
             raise ValueError("Authorization code has already been used")
 
         try:
@@ -346,11 +360,17 @@ class OAuthProvider:
             used_codes.append(code)
             oauth_data["used_codes"] = used_codes
 
-            # Clean up OAuth state and store credentials
-            config['oauth'] = None  # remove transient state after successful exchange
-
-            # Store the new token (use the refresh_token from the response if available)
+            # Store the new token FIRST before clearing OAuth state
+            # This ensures credentials are updated even if something fails during cleanup
             config['credentials'] = token.to_dict()
+
+            # Clean up OAuth transient state after successful exchange
+            # Clear state and code_verifier, but keep used_codes temporarily
+            # to prevent duplicate callback with same code
+            config['oauth'] = {
+                "used_codes": used_codes  # Keep used codes to prevent replay attacks
+            }
+
             await self.key_value_store.create_key(self.credentials_path, config)
 
             return token

@@ -3,16 +3,34 @@ import json
 import logging
 import os
 import re
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
+from typing import (
+    Any,
+    AsyncGenerator,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+)
 
 import aiohttp
 from fastapi import HTTPException
-from langchain.chat_models.base import BaseChatModel
-from langchain.output_parsers import PydanticOutputParser
+from langchain_anthropic import ChatAnthropic
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_mistralai import ChatMistralAI
+from langchain_openai import AzureChatOpenAI, ChatOpenAI
+from pydantic import BaseModel
 
 from app.config.constants.http_status_code import HttpStatusCode
-from app.modules.qna.prompt_templates import AnswerWithMetadataJSON
+from app.modules.qna.prompt_templates import (
+    AnswerWithMetadataDict,
+    AnswerWithMetadataJSON,
+)
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import (
@@ -46,6 +64,32 @@ else:
 MAX_TOKENS_THRESHOLD = 80000
 TOOL_EXECUTION_TOKEN_RATIO = 0.5
 MAX_REFLECTION_RETRIES_DEFAULT = 2
+
+# TypeVar for generic schema types in structured output functions
+SchemaT = TypeVar('SchemaT', bound=BaseModel)
+
+# Legacy Anthropic models that don't support structured output
+# New models (claude-4+) support it by default, so only list older ones here
+ANTHROPIC_LEGACY_MODEL_PATTERNS = [
+    "claude-3",
+    "claude-sonnet-4-20250514",
+    "claude-opus-4-20250514",
+    "claude-2",
+    "claude-1",
+    "claude-instant",
+]
+
+
+def supports_human_message_after_tool(llm: BaseChatModel) -> bool:
+    """
+    Check if the LLM provider supports adding a HumanMessage after ToolMessages.
+
+    Some providers (e.g., MistralAI) do not support this message ordering pattern.
+    """
+    # MistralAI does not support Human message after Tool message
+    if isinstance(llm, ChatMistralAI):
+        return False
+    return True
 
 
 # Create a logger for this module
@@ -123,7 +167,7 @@ def _stringify_content(content: Union[str, list, dict, None]) -> str:
         # Fallback to stringification for other types
         return str(content)
 
-async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None]:
+async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str | dict, None]:
     """Async iterator for LLM streaming that normalizes content to text.
 
     The LLM provider may return content as a string or a list of content parts
@@ -142,19 +186,29 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None
                 if not part:
                     continue
                 parts.append(part)
-                content = getattr(part, "content", None)
+
+                if isinstance(part, dict):
+                    yield part
+                    continue
+                else:
+                    content = getattr(part, "content", None)
                 text = _stringify_content(content)
                 if text:
                     yield text
         else:
-            # Non-streaming – yield whole blob once
+            logger.info("Using non-streaming mode")
             response = await llm.ainvoke(messages, config=config)
             content = getattr(response, "content", response)
             parts.append(response)
 
-            text = _stringify_content(content)
-            if text:
-                yield text
+            if isinstance(content, dict):
+                yield content
+            else:
+                text = _stringify_content(content)
+                if text:
+                    yield text
+                else:
+                    logger.info("No content found in response")
     except Exception as e:
         logger.error(f"Error in aiter_llm_stream: {str(e)}", exc_info=True)
         raise
@@ -199,7 +253,10 @@ async def execute_tool_calls(
     if not tools:
         raise ValueError("Tools are required")
 
-    llm_with_tools = bind_tools_for_llm(llm, tools)
+    llm_to_pass = bind_tools_for_llm(llm, tools)
+    if not llm_to_pass:
+        logger.warning("Failed to bind tools for LLM, so using structured output")
+        llm_to_pass = _apply_structured_output(llm,schema=AnswerWithMetadataDict)
 
     hops = 0
     tools_executed = False
@@ -209,9 +266,8 @@ async def execute_tool_calls(
         # with error handling for provider-level tool failures
         try:
             # Measure LLM invocation latency
-
             ai = None
-            async for event in call_aiter_llm_stream(llm_with_tools, messages, final_results, records=[], target_words_per_chunk=target_words_per_chunk):
+            async for event in call_aiter_llm_stream(llm_to_pass, messages, final_results, records=[], target_words_per_chunk=target_words_per_chunk, original_llm=llm):
                 if event.get("event") == "complete" or event.get("event") == "error":
                     yield event
                     return
@@ -219,7 +275,6 @@ async def execute_tool_calls(
                     ai = event.get("data").get("ai")
                 else:
                     yield event
-
 
             ai = AIMessage(
                 content = ai.content,
@@ -444,7 +499,6 @@ async def execute_tool_calls(
                 org_id=org_id,
                 user_id=user_id,
                 limit=vector_db_limit,
-
                 filter_groups=None,
                 virtual_record_ids_from_tool=virtual_record_ids,
             )
@@ -506,7 +560,7 @@ async def execute_tool_calls(
 
         hops += 1
 
-    if len(tool_results)>0:
+    if len(tool_results) > 0 and supports_human_message_after_tool(llm):
         messages.append(HumanMessage(content="""Strictly follow the citation guidelines mentioned in the prompt above."""))
 
     yield {
@@ -848,8 +902,6 @@ async def handle_json_mode(
     """
     Handle JSON mode streaming.
     """
-
-
     # Fast-path: if the last message is already an AI answer (e.g., from invalid tool call conversion), stream it directly
     try:
         last_msg = messages[-1] if messages else None
@@ -906,7 +958,9 @@ async def handle_json_mode(
 
     try:
         logger.debug("handle_json_mode: Starting LLM stream")
-        async for token in call_aiter_llm_stream(llm, messages,final_results,records,target_words_per_chunk):
+        llm_with_structured_output = _apply_structured_output(llm,schema=AnswerWithMetadataDict)
+
+        async for token in call_aiter_llm_stream(llm_with_structured_output, messages,final_results,records,target_words_per_chunk):
             yield token
     except Exception as exc:
         yield {
@@ -1189,7 +1243,6 @@ def _initialize_answer_parser_regex() -> Tuple[re.Pattern, re.Pattern, re.Patter
     word_iter = re.compile(r'\S+').finditer
     return answer_key_re, cite_block_re, incomplete_cite_re, word_iter
 
-
 async def call_aiter_llm_stream(
     llm,
     messages,
@@ -1198,6 +1251,7 @@ async def call_aiter_llm_stream(
     target_words_per_chunk=1,
     reflection_retry_count=0,
     max_reflection_retries=MAX_REFLECTION_RETRIES_DEFAULT,
+    original_llm=None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Stream LLM response and parse answer field from JSON, emitting chunks and final event."""
     state = AnswerParserState()
@@ -1205,8 +1259,45 @@ async def call_aiter_llm_stream(
 
     parts = []
     async for token in aiter_llm_stream(llm, messages,parts):
-        state.full_json_buf += token
+        if isinstance(token, dict):
+            state.full_json_buf = token
 
+            answer = token.get("answer", "")
+            if answer:
+                state.answer_buf = answer
+
+                                # Check for incomplete citations at the end of the answer
+                safe_answer = answer
+                if incomplete_match := incomplete_cite_re.search(answer):
+                    # Only process up to the incomplete citation
+                    safe_answer = answer[:incomplete_match.start()]
+
+                # Only process if we have new content beyond what we've already emitted
+                if len(safe_answer) <= state.emit_upto:
+                    # Nothing safe to emit yet, wait for more content
+                    continue
+
+                state.emit_upto = len(safe_answer)
+                normalized, cites = normalize_citations_and_chunks(
+                            safe_answer, final_results, records
+                        )
+
+                chunk_text = normalized[state.prev_norm_len:]
+                state.prev_norm_len = len(normalized)
+
+                if chunk_text:  # Only yield if there's actual content to emit
+                    yield {
+                        "event": "answer_chunk",
+                        "data": {
+                            "chunk": chunk_text,
+                            "accumulated": normalized,
+                            "citations": cites,
+                        },
+                    }
+
+            continue
+
+        state.full_json_buf += token
         # Look for the start of the "answer" field
         if not state.answer_buf:
             match = answer_key_re.search(state.full_json_buf)
@@ -1222,8 +1313,6 @@ async def call_aiter_llm_stream(
             if end_idx != -1:
                 state.answer_done = True
                 state.answer_buf = state.answer_buf[:end_idx]
-
-
         # Stream answer in word-based chunks
         if state.answer_buf:
             # Process words from current emit position
@@ -1276,37 +1365,41 @@ async def call_aiter_llm_stream(
                         break
 
     ai = None
+    tool_calls_happened = True
     for part in parts:
+        if isinstance(part, dict):
+            logger.info("part is a dict, breaking from loop")
+            tool_calls_happened = False
+            break
         if ai is None:
             ai = part
         else:
             ai += part
 
-    tool_calls = getattr(ai, 'tool_calls', [])
-    if tool_calls:
-        yield {
-            "event": "tool_calls",
-            "data": {
-                "ai": ai,
-            },
-        }
-        return
+    if tool_calls_happened:
+        tool_calls = getattr(ai, 'tool_calls', [])
+        if tool_calls:
+            yield {
+                "event": "tool_calls",
+                "data": {
+                    "ai": ai,
+                },
+            }
+            logger.info("tool_calls detected, returning")
+            return
 
     # Try to parse the full JSON buffer
     try:
+        response_text = state.full_json_buf
+        if  isinstance(response_text, str):
+            response_text = cleanup_content(response_text)
 
-        response_text = state.full_json_buf.strip()
-        if '</think>' in response_text:
-                response_text = response_text.split('</think>')[-1]
-        if response_text.startswith("```json"):
-            response_text = response_text.replace("```json", "", 1)
-        if response_text.endswith("```"):
-            response_text = response_text.rsplit("```", 1)[0]
-        response_text = response_text.strip()
         try:
-            parsed = parser.parse(response_text)
+            if isinstance(response_text, str):
+                parsed = parser.parse(response_text)
+            else:
+                parsed = AnswerWithMetadataJSON.model_validate(response_text)
         except Exception as e:
-
             # JSON parsing failed - use reflection to guide the LLM
             if reflection_retry_count < max_reflection_retries:
                 yield {"event": "restreaming","data": {}}
@@ -1323,15 +1416,16 @@ async def call_aiter_llm_stream(
                 ))
                 # Add the reflection message to the messages list
                 updated_messages = messages.copy()
-                if ai is not None:
-                    ai_message = AIMessage(
-                        content=ai.content,
-                    )
-                    updated_messages.append(ai_message)
+
+                ai_message = AIMessage(
+                    content=response_text,
+                )
+                updated_messages.append(ai_message)
 
                 updated_messages.append(reflection_message)
 
-                # Recursively call the function with updated messages
+                if original_llm:
+                    llm = _apply_structured_output(original_llm,schema=AnswerWithMetadataDict)
                 async for event in call_aiter_llm_stream(
                     llm,
                     updated_messages,
@@ -1340,6 +1434,7 @@ async def call_aiter_llm_stream(
                     target_words_per_chunk,
                     reflection_retry_count + 1,
                     max_reflection_retries,
+                    original_llm=original_llm,
                 ):
                     yield event
                 return
@@ -1382,14 +1477,180 @@ async def call_aiter_llm_stream(
             },
         }
     except Exception as e:
+        logger.error("Error in call_aiter_llm_stream", exc_info=True)
         yield {"event": "error","data": {"error": f"Error in call_aiter_llm_stream: {str(e)}"}}
         return
 
-
-
-def bind_tools_for_llm(llm: BaseChatModel, tools: List[object]) -> BaseChatModel:
+def bind_tools_for_llm(llm, tools: List[object]) -> BaseChatModel|bool:
+    """
+    Bind tools to the LLM.
+    """
     try:
         return llm.bind_tools(tools)
+    except Exception:
+        logger.warning("Tool binding failed, using llm without tools.")
+        return False
+
+def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
+    if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI)):
+
+        additional_kwargs = {}
+        if isinstance(llm, ChatAnthropic):
+            model_str = getattr(llm, 'model', None)
+            if not model_str:
+                logger.warning("model name not found, using non-structured LLM")
+                return llm
+            is_legacy_model = any(pattern in model_str for pattern in ANTHROPIC_LEGACY_MODEL_PATTERNS)
+            if is_legacy_model:
+                logger.info("Legacy Anthropic model detected, using non-structured LLM")
+                return llm
+
+            additional_kwargs["stream"] = True
+
+        additional_kwargs["method"] = "json_schema"
+
+        try:
+            model_with_structure = llm.with_structured_output(
+                schema,
+                **additional_kwargs
+            )
+            logger.info("Using structured output")
+            return model_with_structure
+        except Exception as e:
+            logger.warning("Failed to apply structured output, falling back to default. Error: %s", str(e))
+            logger.info("Using non-structured LLM")
+
+    logger.info("Using non-structured LLM")
+    return llm
+
+
+def cleanup_content(response_text: str) -> str:
+    response_text = response_text.strip()
+    if '</think>' in response_text:
+            response_text = response_text.split('</think>')[-1]
+    if response_text.startswith("```json"):
+        response_text = response_text.replace("```json", "", 1)
+    if response_text.endswith("```"):
+        response_text = response_text.rsplit("```", 1)[0]
+    response_text = response_text.strip()
+    return response_text
+
+
+async def invoke_with_structured_output_and_reflection(
+    llm: BaseChatModel,
+    messages: List,
+    schema: Type[SchemaT],
+    max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
+) -> Optional[SchemaT]:
+    """
+    Invoke LLM with structured output and automatic reflection on parse failure.
+
+    Args:
+        llm: The LangChain chat model to use
+        messages: List of messages to send to the LLM
+        schema: Pydantic model class to validate the response against
+        max_retries: Maximum number of reflection retries on parse failure
+
+    Returns:
+        Validated Pydantic model instance, or None if parsing fails after all retries
+    """
+    llm_with_structured_output = _apply_structured_output(llm, schema=schema)
+
+    try:
+        response = await llm_with_structured_output.ainvoke(messages)
     except Exception as e:
-        logger.warning(f"Failed to bind tools for LLM: {e}")
-        return llm
+        logger.error(f"LLM invocation failed: {e}")
+        return None
+
+    # Try to parse the response
+    parsed_response = None
+    try:
+
+        if isinstance(response, dict):
+            if 'content' in response:
+                # Response is a dict with 'content' key (e.g., Bedrock non-structured response)
+                logger.debug("Response is a dict with 'content' key, extracting content for parsing")
+                response_content = response['content']
+                response_text = cleanup_content(response_content)
+                logger.debug(f"Cleaned response content length: {len(response_text)} chars")
+                parsed_response = schema.model_validate_json(response_text)
+                logger.debug("Dict with content response validated successfully")
+            else:
+                logger.debug("Response is a dict, validating directly")
+                response_content = json.dumps(response)
+                parsed_response = schema.model_validate(response)
+                logger.debug("Dict response validated successfully")
+        else:
+            if hasattr(response, 'content'):
+                # Response is an AIMessage or string
+                logger.debug("Response is AIMessage, extracting content for parsing")
+                response_content = response.content
+                response_text = cleanup_content(response_content)
+                logger.debug(f"Cleaned response content length: {len(response_text)} chars")
+                parsed_response = schema.model_validate_json(response_text)
+                logger.debug("AIMessage/string response validated successfully")
+            else:
+                # Response is already a Pydantic model
+                logger.debug("Response is a Pydantic model, extracting and validating")
+                response_content = response.model_dump_json()
+                parsed_response = schema.model_validate(response.model_dump())
+                logger.debug("Pydantic model response validated successfully")
+
+        return parsed_response
+
+    except Exception as parse_error:
+        # Attempt reflection: ask LLM to correct its response
+        logger.warning(f"Initial parse failed: {parse_error}. Attempting reflection...")
+
+        reflection_messages = list(messages)  # Copy the original messages
+
+        # Add the failed response to context
+        reflection_messages.append(AIMessage(content=response_content))
+
+        reflection_prompt = f"""Your previous response could not be parsed correctly.
+Error: {str(parse_error)}
+
+Please correct your response to match the expected JSON schema. Ensure all fields are properly formatted and all required fields are present.
+Respond only with valid JSON that matches the schema."""
+
+        reflection_messages.append(HumanMessage(content=reflection_prompt))
+
+        for attempt in range(max_retries):
+            try:
+                reflection_response = await llm_with_structured_output.ainvoke(reflection_messages)
+                if isinstance(reflection_response, dict):
+                    if 'content' in reflection_response:
+                        # Response is a dict with 'content' key (e.g., Bedrock non-structured response)
+                        logger.debug("Reflection response is a dict with 'content' key, extracting content for parsing")
+                        reflection_content = reflection_response['content']
+                        reflection_text = cleanup_content(reflection_content)
+                        logger.debug(f"Cleaned reflection content length: {len(reflection_text)} chars")
+                        parsed_response = schema.model_validate_json(reflection_text)
+                    else:
+                        logger.debug("Reflection response is a dict, validating directly")
+                        reflection_content = json.dumps(reflection_response)
+                        parsed_response = schema.model_validate(reflection_response)
+                else:
+                    if hasattr(reflection_response, 'content'):
+                        logger.debug("Reflection response is AIMessage, extracting content")
+                        reflection_content = reflection_response.content
+                        reflection_text = cleanup_content(reflection_content)
+                        logger.debug(f"Cleaned reflection content length: {len(reflection_text)} chars")
+                        parsed_response = schema.model_validate_json(reflection_text)
+                    else:
+                        logger.debug("Reflection response is a Pydantic model, extracting and validating")
+                        reflection_content = reflection_response.model_dump_json()
+                        parsed_response = schema.model_validate(reflection_response.model_dump())
+
+                logger.info(f"Reflection successful on attempt {attempt + 1}")
+                return parsed_response
+
+            except Exception as reflection_error:
+                logger.warning(f"Reflection attempt {attempt + 1} failed: {reflection_error}")
+                if attempt < max_retries - 1:
+                    # Update messages for next retry
+                    reflection_messages.append(AIMessage(content=reflection_content))
+                    reflection_messages.append(HumanMessage(content=f"Still incorrect. Error: {str(reflection_error)}. Please try again."))
+
+        logger.error("All reflection attempts failed")
+        return None

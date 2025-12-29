@@ -838,6 +838,20 @@ class JiraConnector(BaseConnector):
         auth_header = internal_client.headers.get("Authorization", "")
         current_token = auth_header.replace("Bearer ", "").strip() if auth_header.startswith("Bearer ") else ""
 
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None
+    ) -> NoReturn:
+        """Jira connector does not support dynamic filter options."""
+        raise NotImplementedError("Jira connector does not support dynamic filter options")
+
+    async def handle_webhook_notification(self, notification: Dict) -> None:
+        pass
+
         # Update client's token if it changed (mutation)
         if current_token != fresh_token:
             self.logger.debug("🔄 Updating client with refreshed access token")

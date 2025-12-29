@@ -45,6 +45,7 @@ import {
   getOAuthAuthorizationUrl,
   handleOAuthCallback,
   getConnectorInstanceFilterOptions,
+  getFilterFieldOptions,
   saveConnectorInstanceFilterOptions,
   toggleConnectorInstance,
   getConnectorSchema,
@@ -169,6 +170,26 @@ const saveConnectorInstanceFilterOptionsSchema = z.object({
   }),
   params: z.object({
     connectorId: z.string().min(1, 'Connector ID is required'),
+  }),
+});
+
+/**
+ * Schema for getting filter field options (dynamic with pagination)
+ */
+const getFilterFieldOptionsSchema = z.object({
+  params: z.object({
+    connectorId: z.string().min(1, 'Connector ID is required'),
+    filterKey: z.string().min(1, 'Filter key is required'),
+  }),
+  query: z.object({
+    page: z
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
+      .optional(),
+    limit: z
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
+      .optional(),
+    search: z.string().optional(),
+    cursor: z.string().optional(),
   }),
 });
 
@@ -452,6 +473,18 @@ export function createConnectorRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(saveConnectorInstanceFilterOptionsSchema),
     saveConnectorInstanceFilterOptions(config)
+  );
+
+  /**
+   * GET /instances/:connectorId/filters/:filterKey/options
+   * Get dynamic filter field options with pagination for a specific filter
+   */
+  router.get(
+    '/:connectorId/filters/:filterKey/options',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(getFilterFieldOptionsSchema),
+    getFilterFieldOptions(config)
   );
 
   // ============================================================================

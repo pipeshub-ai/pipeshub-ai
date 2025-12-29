@@ -15,15 +15,11 @@ import {
   IconButton,
   Chip,
   Stack,
-  Paper,
-  Grid,
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import { useAccountType } from 'src/hooks/use-account-type';
-import settingsIcon from '@iconify-icons/mdi/settings';
 import closeIcon from '@iconify-icons/mdi/close';
 import saveIcon from '@iconify-icons/eva/save-outline';
-import { createScrollableContainerStyle } from 'src/sections/qna/chatbot/utils/styles/scrollbar';
 import { useConnectorConfig } from '../../hooks/use-connector-config';
 import AuthSection from './auth-section';
 import SyncSection from './sync-section';
@@ -31,13 +27,16 @@ import FiltersSection from './filters-section';
 import ConfigStepper from './config-stepper';
 import { Connector } from '../../types/types';
 import { isNoneAuthType } from '../../utils/auth';
-import { FieldRenderer } from '../field-renderers';
 
 interface ConnectorConfigFormProps {
   connector: Connector;
   onClose: () => void;
   onSuccess?: () => void;
   initialInstanceName?: string;
+  enableMode?: boolean; // If true, opened from toggle - show filters and sync, then enable
+  authOnly?: boolean; // If true, show only auth section
+  syncOnly?: boolean; // If true, show only filters and sync (when connector is active) - DEPRECATED
+  syncSettingsMode?: boolean; // If true, opened from Sync Settings button - only filters, never toggle
 }
 
 const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
@@ -45,6 +44,10 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
   onClose,
   onSuccess,
   initialInstanceName,
+  enableMode = false,
+  authOnly = false,
+  syncOnly = false,
+  syncSettingsMode = false,
 }) => {
   const theme = useTheme();
   const { isBusiness, isIndividual, loading: accountTypeLoading } = useAccountType();
@@ -110,7 +113,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     handlePrivateKeyChange,
     certificateInputRef,
     privateKeyInputRef,
-  } = useConnectorConfig({ connector, onClose, onSuccess, initialInstanceName });
+  } = useConnectorConfig({ connector, onClose, onSuccess, initialInstanceName, enableMode, authOnly, syncOnly, syncSettingsMode });
 
   // Handler for removing filters
   const handleRemoveFilter = useCallback(
@@ -127,16 +130,42 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     [connectorConfig?.config?.filters?.sync?.schema?.fields?.length]
   );
   const steps = useMemo(
-    () =>
-      isNoAuthType
+    () => {
+      // Auth only mode: only authentication
+      if (authOnly) {
+        return ['Authentication'];
+      }
+      // Sync Settings mode: filters (if available) and sync settings (always shown)
+      // This mode is for viewing sync settings (filters + sync) - never toggle, view-only
+      if (syncSettingsMode) {
+        return hasFilters ? ['Filters', 'Sync Settings'] : ['Sync Settings'];
+      }
+      // Enable mode or sync only mode: filters and sync (skip auth)
+      if (enableMode || syncOnly) {
+        return hasFilters ? ['Filters', 'Sync Settings'] : ['Sync Settings'];
+      }
+      // Create mode: only auth (skip filters and sync)
+      if (isCreateMode) {
+        return ['Authentication'];
+      }
+      // Edit mode: show all steps based on auth type and filters
+      return isNoAuthType
         ? hasFilters
           ? ['Filters', 'Sync Settings']
           : ['Sync Settings']
         : hasFilters
           ? ['Authentication', 'Filters', 'Sync Settings']
-          : ['Authentication', 'Sync Settings'],
-    [isNoAuthType, hasFilters]
+          : ['Authentication', 'Sync Settings'];
+    },
+    [authOnly, syncSettingsMode, enableMode, syncOnly, isCreateMode, isNoAuthType, hasFilters]
   );
+
+  // Ensure activeStep doesn't exceed steps length
+  useEffect(() => {
+    if (activeStep >= steps.length) {
+      // This will be handled by the hook, but we can add a safeguard here if needed
+    }
+  }, [activeStep, steps.length]);
 
   // Memoize fade gradients to avoid recalculation
   const topFadeGradient = useMemo(
@@ -208,6 +237,182 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
   }, [activeStep, checkScroll]);
 
   const renderStepContent = useCallback(() => {
+    // Auth only mode: show only authentication
+    if (authOnly) {
+      return (
+        <AuthSection
+          connector={connector}
+          connectorConfig={connectorConfig}
+          formData={formData.auth}
+          formErrors={formErrors.auth}
+          conditionalDisplay={conditionalDisplay}
+          accountTypeLoading={accountTypeLoading}
+          isBusiness={isBusiness}
+          adminEmail={adminEmail}
+          adminEmailError={adminEmailError}
+          selectedFile={selectedFile}
+          fileName={fileName}
+          fileError={fileError}
+          jsonData={jsonData}
+          onAdminEmailChange={handleAdminEmailChange}
+          onFileUpload={handleFileUpload}
+          onFileChange={handleFileChange}
+          fileInputRef={fileInputRef}
+          certificateFile={certificateFile}
+          certificateFileName={certificateFileName}
+          certificateError={certificateError}
+          certificateData={certificateData}
+          privateKeyFile={privateKeyFile}
+          privateKeyFileName={privateKeyFileName}
+          privateKeyError={privateKeyError}
+          privateKeyData={privateKeyData}
+          onCertificateUpload={handleCertificateUpload}
+          onCertificateChange={handleCertificateChange}
+          onPrivateKeyUpload={handlePrivateKeyUpload}
+          onPrivateKeyChange={handlePrivateKeyChange}
+          certificateInputRef={certificateInputRef}
+          privateKeyInputRef={privateKeyInputRef}
+          onFieldChange={handleFieldChange}
+          isCreateMode={isCreateMode}
+          instanceName={instanceName}
+          instanceNameError={instanceNameError}
+          onInstanceNameChange={setInstanceName}
+        />
+      );
+    }
+    // Sync Settings mode: show filters (if available) and sync settings (always shown)
+    // This mode is for viewing sync settings (filters + sync) - never toggle, view-only
+    if (syncSettingsMode) {
+      // If filters are available, show them as the first step
+      if (hasFilters) {
+        switch (activeStep) {
+          case 0:
+            return (
+              <FiltersSection
+                connectorConfig={connectorConfig}
+                formData={formData.filters}
+                formErrors={formErrors.filters}
+                onFieldChange={handleFieldChange}
+                onRemoveFilter={handleRemoveFilter}
+                connectorId={connector._key}
+                readOnly
+              />
+            );
+          case 1:
+            return (
+              <SyncSection
+                connectorConfig={connectorConfig}
+                formData={formData.sync}
+                formErrors={formErrors.sync}
+                onFieldChange={handleFieldChange}
+                saving={saving}
+                readOnly
+              />
+            );
+          default:
+            return null;
+        }
+      }
+      // If no filters, show sync settings as the only step
+      return (
+        <SyncSection
+          connectorConfig={connectorConfig}
+          formData={formData.sync}
+          formErrors={formErrors.sync}
+          onFieldChange={handleFieldChange}
+          saving={saving}
+          readOnly
+        />
+      );
+    }
+    // Enable mode or sync only mode: show filters and sync only (skip auth)
+    if (enableMode || syncOnly) {
+      if (hasFilters) {
+        switch (activeStep) {
+          case 0:
+            return (
+              <FiltersSection
+                connectorConfig={connectorConfig}
+                formData={formData.filters}
+                formErrors={formErrors.filters}
+                onFieldChange={handleFieldChange}
+                onRemoveFilter={handleRemoveFilter}
+                connectorId={connector._key}
+              />
+            );
+          case 1:
+            return (
+              <SyncSection
+                connectorConfig={connectorConfig}
+                formData={formData.sync}
+                formErrors={formErrors.sync}
+                onFieldChange={handleFieldChange}
+                saving={saving}
+              />
+            );
+          default:
+            return null;
+        }
+      }
+      // No filters, only sync
+      return (
+        <SyncSection
+          connectorConfig={connectorConfig}
+          formData={formData.sync}
+          formErrors={formErrors.sync}
+          onFieldChange={handleFieldChange}
+          saving={saving}
+        />
+      );
+    }
+
+    // Create mode: show auth only
+    if (isCreateMode) {
+      return (
+        <AuthSection
+          connector={connector}
+          connectorConfig={connectorConfig}
+          formData={formData.auth}
+          formErrors={formErrors.auth}
+          conditionalDisplay={conditionalDisplay}
+          accountTypeLoading={accountTypeLoading}
+          isBusiness={isBusiness}
+          isCreateMode={isCreateMode}
+          instanceName={instanceName || ''}
+          instanceNameError={instanceNameError}
+          onInstanceNameChange={setInstanceName}
+          // Google Workspace Business OAuth props
+          adminEmail={adminEmail}
+          adminEmailError={adminEmailError}
+          selectedFile={selectedFile}
+          fileName={fileName}
+          fileError={fileError}
+          jsonData={jsonData}
+          onAdminEmailChange={handleAdminEmailChange}
+          onFileUpload={handleFileUpload}
+          onFileChange={handleFileChange}
+          fileInputRef={fileInputRef}
+          // SharePoint Certificate OAuth props
+          certificateFile={certificateFile}
+          certificateFileName={certificateFileName}
+          certificateError={certificateError}
+          certificateData={certificateData}
+          privateKeyFile={privateKeyFile}
+          privateKeyFileName={privateKeyFileName}
+          privateKeyError={privateKeyError}
+          privateKeyData={privateKeyData}
+          onCertificateUpload={handleCertificateUpload}
+          onCertificateChange={handleCertificateChange}
+          onPrivateKeyUpload={handlePrivateKeyUpload}
+          onPrivateKeyChange={handlePrivateKeyChange}
+          certificateInputRef={certificateInputRef}
+          privateKeyInputRef={privateKeyInputRef}
+          onFieldChange={handleFieldChange}
+        />
+      );
+    }
+
+    // Edit mode: show all steps based on auth type
     if (isNoAuthType) {
       // For 'NONE' authType, show filters (if available) then sync step
       if (hasFilters) {
@@ -220,6 +425,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
                 formErrors={formErrors.filters}
                 onFieldChange={handleFieldChange}
                 onRemoveFilter={handleRemoveFilter}
+                connectorId={connector._key}
               />
             );
           case 1:
@@ -302,6 +508,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
               formErrors={formErrors.filters}
               onFieldChange={handleFieldChange}
               onRemoveFilter={handleRemoveFilter}
+              connectorId={connector._key}
             />
           );
         case 2:
@@ -378,6 +585,11 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
         return null;
     }
   }, [
+    authOnly,
+    syncSettingsMode,
+    enableMode,
+    syncOnly,
+    isCreateMode,
     isNoAuthType,
     hasFilters,
     activeStep,
@@ -415,7 +627,6 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     handlePrivateKeyChange,
     certificateInputRef,
     privateKeyInputRef,
-    isCreateMode,
     instanceName,
     instanceNameError,
     setInstanceName,
@@ -633,6 +844,32 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           </Alert>
         )}
 
+        {/* View-only mode notification for Sync Settings */}
+        {syncSettingsMode && (
+          <Alert
+            severity="info"
+            icon={<Iconify icon="mdi:information-outline" width={20} height={20} sx={{ color: theme.palette.info.main }} />}
+            sx={{
+              mx: 2.5,
+              mt: saveError ? 1.5 : 2,
+              mb: 0,
+              borderRadius: 1.5,
+              flexShrink: 0,
+              bgcolor: isDark ? alpha(theme.palette.info.main, 0.1) : alpha(theme.palette.info.main, 0.05),
+              border: isDark ? `1px solid ${alpha(theme.palette.info.main, 0.2)}` : `1px solid ${alpha(theme.palette.info.main, 0.15)}`,
+              alignItems: 'center',
+            }}
+          >
+            <AlertTitle sx={{ fontWeight: 600, fontSize: '0.8125rem', mb: 0.25 }}>
+              View-Only Mode
+            </AlertTitle>
+            <Typography variant="body2" sx={{ fontSize: '0.75rem', lineHeight: 1.5 }}>
+              You are viewing the current sync settings (filters and sync configuration) in read-only mode. 
+              Changes can be made while enabling the connector sync.
+            </Typography>
+          </Alert>
+        )}
+
         {/* Top fade indicator */}
         {showTopFade && (
           <Box
@@ -693,7 +930,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
         >
           <Box sx={{ p: 2 }}>
             <Stack spacing={0.5}>
-              <ConfigStepper activeStep={activeStep} steps={steps} />
+              {steps.length > 1 && <ConfigStepper activeStep={activeStep} steps={steps} />}
               <Box>{renderStepContent()}</Box>
             </Stack>
           </Box>
@@ -838,43 +1075,59 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
               Next
             </Button>
           ) : (
-            <Button
-              variant="contained"
-              color="primary"
-              onClick={handleSave}
-              disabled={saving || isConnectorActive}
-              startIcon={
-                saving ? (
-                  <CircularProgress size={14} color="inherit" />
-                ) : (
-                  <Iconify icon={saveIcon} width={14} height={14} />
-                )
-              }
-              sx={{
-                textTransform: 'none',
-                fontWeight: 500,
-                px: 3,
-                py: 0.625,
-                borderRadius: 1,
-                fontSize: '0.8125rem',
-                boxShadow: isDark ? `0 2px 8px ${alpha(theme.palette.primary.main, 0.3)}` : 'none',
-                '&:hover': {
-                  boxShadow: isDark
-                    ? `0 4px 12px ${alpha(theme.palette.primary.main, 0.4)}`
-                    : `0 2px 8px ${alpha(theme.palette.primary.main, 0.2)}`,
-                },
-                '&:active': {
-                  boxShadow: 'none',
-                },
-                '&:disabled': {
-                  boxShadow: 'none',
-                  opacity: isConnectorActive ? 0.5 : 0.38,
-                },
-                transition: 'all 0.2s ease',
-              }}
-            >
-              {saving ? 'Saving...' : 'Save Configuration'}
-            </Button>
+            !syncSettingsMode && (
+              <Button
+                variant="contained"
+                color="primary"
+                onClick={handleSave}
+                disabled={saving}
+                startIcon={
+                  saving ? (
+                    <CircularProgress size={14} color="inherit" />
+                  ) : (
+                    <Iconify icon={saveIcon} width={14} height={14} />
+                  )
+                }
+                sx={{
+                  textTransform: 'none',
+                  fontWeight: 500,
+                  px: 3,
+                  py: 0.625,
+                  borderRadius: 1,
+                  fontSize: '0.8125rem',
+                  boxShadow: isDark ? `0 2px 8px ${alpha(theme.palette.primary.main, 0.3)}` : 'none',
+                  '&:hover': {
+                    boxShadow: isDark
+                      ? `0 4px 12px ${alpha(theme.palette.primary.main, 0.4)}`
+                      : `0 2px 8px ${alpha(theme.palette.primary.main, 0.2)}`,
+                  },
+                  '&:active': {
+                    boxShadow: 'none',
+                  },
+                  '&:disabled': {
+                    boxShadow: 'none',
+                    opacity: isConnectorActive && !enableMode ? 0.5 : 0.38,
+                  },
+                  transition: 'all 0.2s ease',
+                }}
+              >
+                {saving
+                  ? enableMode
+                    ? 'Saving & Enabling...'
+                    : syncOnly
+                      ? 'Saving Filters & Sync...'
+                      : authOnly
+                        ? 'Saving Auth...'
+                        : 'Saving...'
+                  : enableMode
+                    ? 'Save Filters & Enable Sync'
+                    : syncOnly
+                      ? 'Save Filters & Sync'
+                      : authOnly
+                        ? 'Save Auth Settings'
+                        : 'Save Configuration'}
+              </Button>
+            )
           )}
         </Box>
       </DialogActions>

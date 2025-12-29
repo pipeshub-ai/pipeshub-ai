@@ -44,6 +44,10 @@ class StartupService:
         except Exception as e:
             self.logger.error(f"Error shutting down startup services: {e}")
 
+    def get_token_refresh_service(self) -> Optional[TokenRefreshService]:
+        """Get the token refresh service instance"""
+        return self._token_refresh_service
+
 
 # Global startup service instance
 startup_service = StartupService()

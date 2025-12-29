@@ -20,6 +20,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -41,8 +42,11 @@ from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterField,
     FilterOperator,
+    FilterOption,
+    FilterOptionsResponse,
     FilterType,
     IndexingFilterKey,
+    OptionSourceType,
     SyncFilterKey,
     load_connector_filters,
 )
@@ -69,7 +73,6 @@ from app.sources.external.confluence.confluence import ConfluenceDataSource
 # Confluence Cloud OAuth URLs
 AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
 TOKEN_URL = "https://auth.atlassian.com/oauth/token"
-HTTP_STATUS_200 = 200
 
 # Time offset (in hours) applied to date filters to handle timezone differences
 # between the application and Confluence server, ensuring no data is missed during sync
@@ -117,27 +120,30 @@ CONTENT_EXPAND_PARAMS = (
         .with_agent_support(True)
         .add_filter_field(FilterField(
             name="space_keys",
-            display_name="Space Keys",
-            description="Filter pages and blogposts by space key",
+            display_name="Space Name",
+            description="Filter pages and blogposts by space name",
             filter_type=FilterType.LIST,
             category=FilterCategory.SYNC,
-            default_value=[]
+            default_value=[],
+            option_source_type=OptionSourceType.DYNAMIC
         ))
         .add_filter_field(FilterField(
             name="page_ids",
-            display_name="Page IDs",
-            description="Filter specific pages by ID.",
+            display_name="Page Name",
+            description="Filter specific pages by their name.",
             filter_type=FilterType.LIST,
             category=FilterCategory.SYNC,
-            default_value=[]
+            default_value=[],
+            option_source_type=OptionSourceType.DYNAMIC
         ))
         .add_filter_field(FilterField(
             name="blogpost_ids",
-            display_name="Blogpost IDs",
-            description="Filter specific blogposts by ID.",
+            display_name="Blogpost Name",
+            description="Filter specific blogposts by their name.",
             filter_type=FilterType.LIST,
             category=FilterCategory.SYNC,
-            default_value=[]
+            default_value=[],
+            option_source_type=OptionSourceType.DYNAMIC
         ))
         .add_filter_field(CommonFields.modified_date_filter("Filter pages and blogposts by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter pages and blogposts by creation date."))
@@ -259,15 +265,6 @@ class ConfluenceConnector(BaseConnector):
             # Initialize data source
             self.data_source = ConfluenceDataSource(self.external_client)
 
-            self.sync_filters, self.indexing_filters = await load_connector_filters(
-                self.config_service, "confluence", self.connector_id, self.logger
-            )
-
-            # Test connection
-            if not await self.test_connection_and_access():
-                self.logger.error("❌ Confluence connector connection test failed")
-                return False
-
             self.logger.info("✅ Confluence connector initialized successfully")
             return True
 
@@ -329,7 +326,7 @@ class ConfluenceConnector(BaseConnector):
                 limit=1
             )
 
-            if not response or response.status != HTTP_STATUS_200:
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
                 self.logger.error(f"Connection test failed with status: {response.status if response else 'No response'}")
                 return False
 
@@ -364,6 +361,11 @@ class ConfluenceConnector(BaseConnector):
             # Ensure client is initialized
             if not self.external_client or not self.data_source:
                 raise Exception("Confluence client not initialized. Call init() first.")
+
+            # Load sync and indexing filters
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "confluence", self.connector_id, self.logger
+            )
 
             # Step 1: Sync users
             await self._sync_users()
@@ -422,7 +424,7 @@ class ConfluenceConnector(BaseConnector):
                 )
 
                 # Check response
-                if not response or response.status != HTTP_STATUS_200:
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch users: {response.status if response else 'No response'}")
                     break
 
@@ -495,7 +497,7 @@ class ConfluenceConnector(BaseConnector):
                 )
 
                 # Check response
-                if not response or response.status != HTTP_STATUS_200:
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch groups: {response.status if response else 'No response'}")
                     break
 
@@ -597,7 +599,7 @@ class ConfluenceConnector(BaseConnector):
                 )
 
                 # Check response
-                if not response or response.status != HTTP_STATUS_200:
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch spaces: {response.status if response else 'No response'}")
                     break
 
@@ -811,7 +813,7 @@ class ConfluenceConnector(BaseConnector):
                     )
 
                 # Check response
-                if not response or response.status != HTTP_STATUS_200:
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch {content_type}s: {response.status if response else 'No response'}")
                     break
 
@@ -1055,7 +1057,7 @@ class ConfluenceConnector(BaseConnector):
                 limit=batch_size
             )
 
-            if not response or response.status != HTTP_STATUS_200:
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
                 self.logger.warning(f"⚠️ Failed to fetch audit logs: {response.status if response else 'No response'}")
                 break
 
@@ -1149,7 +1151,7 @@ class ConfluenceConnector(BaseConnector):
                     expand="version,space,history.lastUpdated,ancestors"
                 )
 
-                if not response or response.status != HTTP_STATUS_200:
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.warning(f"⚠️ Failed to search content by titles: {response.status if response else 'No response'}")
                     continue
 
@@ -1253,7 +1255,7 @@ class ConfluenceConnector(BaseConnector):
                 )
 
                 # Check response
-                if not response or response.status != HTTP_STATUS_200:
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.warning(f"⚠️ Failed to fetch permissions for space {space_name}: {response.status if response else 'No response'}")
                     break
 
@@ -1306,7 +1308,7 @@ class ConfluenceConnector(BaseConnector):
             )
 
             # Check response
-            if not response or response.status != HTTP_STATUS_200:
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
                 self.logger.warning(f"⚠️ Failed to fetch permissions for page {page_id}: {response.status if response else 'No response'}")
                 return []
 
@@ -1398,7 +1400,7 @@ class ConfluenceConnector(BaseConnector):
                     break
 
                 # Check response
-                if not response or response.status != HTTP_STATUS_200:
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.warning(f"⚠️ Failed to fetch {comment_type} comments for page {page_title}: {response.status if response else 'No response'}")
                     break
 
@@ -1503,7 +1505,7 @@ class ConfluenceConnector(BaseConnector):
                     )
 
                 # Check response
-                if not response or response.status != HTTP_STATUS_200:
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
                     break
 
                 response_data = response.json()
@@ -2282,7 +2284,7 @@ class ConfluenceConnector(BaseConnector):
                 )
 
                 # Check response
-                if not response or response.status != HTTP_STATUS_200:
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.warning(f"⚠️ Failed to fetch members for group {group_name}: {response.status if response else 'No response'}")
                     break
 
@@ -2549,7 +2551,7 @@ class ConfluenceConnector(BaseConnector):
                 )
 
             # Check response
-            if not response or response.status != HTTP_STATUS_200:
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Content not found: {page_id}"
@@ -2617,7 +2619,7 @@ class ConfluenceConnector(BaseConnector):
                 )
 
             # Check response
-            if not response or response.status != HTTP_STATUS_200:
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Comment not found: {comment_id}"
@@ -2791,7 +2793,7 @@ class ConfluenceConnector(BaseConnector):
                 body_format="storage"
             )
 
-            if not response or response.status != HTTP_STATUS_200:
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
                 self.logger.warning(f"Page {page_id} not found at source, may have been deleted")
                 return None
 
@@ -2840,7 +2842,7 @@ class ConfluenceConnector(BaseConnector):
                 body_format="storage"
             )
 
-            if not response or response.status != HTTP_STATUS_200:
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
                 self.logger.warning(f"Blogpost {blogpost_id} not found at source, may have been deleted")
                 return None
 
@@ -2898,7 +2900,7 @@ class ConfluenceConnector(BaseConnector):
                     body_format="storage"
                 )
 
-            if not response or response.status != HTTP_STATUS_200:
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
                 self.logger.warning(f"Comment {comment_id} not found at source, may have been deleted")
                 return None
 
@@ -2965,7 +2967,7 @@ class ConfluenceConnector(BaseConnector):
                 include_version=True
             )
 
-            if not response or response.status != HTTP_STATUS_200:
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
                 self.logger.warning(f"Attachment {attachment_id} not found at source, may have been deleted")
                 return None
 
@@ -3013,6 +3015,334 @@ class ConfluenceConnector(BaseConnector):
         """Cleanup resources."""
         self.logger.info("Cleaning up Confluence connector resources")
         # Add cleanup logic if needed
+
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None
+    ) -> FilterOptionsResponse:
+        """
+        Get dynamic filter options for Confluence filters with cursor-based pagination.
+
+        Supports:
+        - space_keys: All available Confluence spaces
+        - page_ids: Pages (with CQL fuzzy search when search term provided)
+        - blogpost_ids: Blogposts (with CQL fuzzy search when search term provided)
+
+        Args:
+            filter_key: Filter field name
+            page: Page number (for API compatibility, not used with cursor)
+            limit: Items per page
+            search: Search text to filter options (uses CQL fuzzy matching)
+            cursor: Cursor for pagination (Confluence uses cursor-based pagination)
+
+        Returns:
+            FilterOptionsResponse with options and pagination metadata
+        """
+        if filter_key == "space_keys":
+            return await self._get_space_options(page, limit, search, cursor)
+        elif filter_key == "page_ids":
+            return await self._get_page_options(page, limit, search, cursor)
+        elif filter_key == "blogpost_ids":
+            return await self._get_blogpost_options(page, limit, search, cursor)
+        else:
+            raise ValueError(f"Unsupported filter key: {filter_key}")
+
+    async def _get_space_options(
+        self,
+        page: int,
+        limit: int,
+        search: Optional[str],
+        cursor: Optional[str]
+    ) -> FilterOptionsResponse:
+        """Fetch available Confluence spaces with cursor-based pagination.
+
+        Uses CQL search for fuzzy matching when search term is provided,
+        otherwise uses v2 API for listing all spaces.
+        """
+        # Get fresh datasource with refreshed OAuth token
+        datasource = await self._get_fresh_datasource()
+
+        spaces_list = []
+        next_cursor = None
+
+        if search:
+            # Use CQL search for fuzzy matching on space name/key
+            spaces_response = await datasource.search_spaces_cql(
+                search_term=search,
+                limit=limit,
+                cursor=cursor
+            )
+
+            if not spaces_response or spaces_response.status != HttpStatusCode.SUCCESS.value:
+                raise RuntimeError(
+                    f"Failed to search spaces: HTTP {spaces_response.status if spaces_response else 'No response'}"
+                )
+
+            response_data = spaces_response.json()
+
+            # CQL search returns results with nested 'space' object
+            # Note: CQL response space object has key and name but NOT id
+            for result in response_data.get("results", []):
+                space = result.get("space", {})
+                space_key = space.get("key")
+                space_name = space.get("name") or space.get("title")
+
+                # CQL response doesn't include space id, so we use key as identifier
+                if space_key and space_name:
+                    spaces_list.append({
+                        "id": space_key,  # Use key as id since CQL doesn't return id
+                        "key": space_key,
+                        "name": space_name
+                    })
+
+            # Extract cursor from next link
+            next_cursor_link = response_data.get("_links", {}).get("next")
+            if next_cursor_link:
+                try:
+                    parsed = urlparse(next_cursor_link)
+                    query_params = parse_qs(parsed.query)
+                    next_cursor = query_params.get("cursor", [None])[0]
+                except Exception as e:
+                    self.logger.warning(f"Failed to extract cursor from next link: {e}")
+        else:
+            # Use v2 API to list all spaces (no search term)
+            spaces_response = await datasource.get_spaces(
+                cursor=cursor,
+                limit=limit,
+                status="current"
+            )
+
+            if not spaces_response or spaces_response.status != HttpStatusCode.SUCCESS.value:
+                raise RuntimeError(
+                    f"Failed to fetch spaces: HTTP {spaces_response.status if spaces_response else 'No response'}"
+                )
+
+            response_data = spaces_response.json()
+            spaces_list = response_data.get("results", [])
+
+            # Extract cursor from next link
+            next_cursor_link = response_data.get("_links", {}).get("next")
+            if next_cursor_link:
+                try:
+                    parsed = urlparse(next_cursor_link)
+                    query_params = parse_qs(parsed.query)
+                    next_cursor = query_params.get("cursor", [None])[0]
+                except Exception as e:
+                    self.logger.warning(f"Failed to extract cursor from next link: {e}")
+
+        # Convert to FilterOption objects
+        # Use key as id since the filter is "space_keys" and backend expects keys
+        options = [
+            FilterOption(
+                id=space.get("key"),  # Frontend will use this value, backend expects keys
+                key=space.get("id"),
+                label=space.get("name")
+            )
+            for space in spaces_list
+            if space.get("key") and space.get("name")
+        ]
+
+        # Return success response
+        return FilterOptionsResponse(
+            success=True,
+            options=options,
+            page=page,
+            limit=limit,
+            has_more=next_cursor is not None,
+            cursor=next_cursor
+        )
+
+    async def _get_page_options(
+        self,
+        page: int,
+        limit: int,
+        search: Optional[str],
+        cursor: Optional[str]
+    ) -> FilterOptionsResponse:
+        """Fetch pages with cursor-based pagination.
+
+        Uses CQL search for fuzzy title matching when search term is provided,
+        otherwise uses v2 API for listing all pages.
+        """
+        # Get fresh datasource with refreshed OAuth token
+        datasource = await self._get_fresh_datasource()
+
+        pages_list = []
+        next_cursor = None
+
+        if search:
+            # Use CQL search for fuzzy title matching
+            pages_response = await datasource.search_pages_cql(
+                search_term=search,
+                limit=limit,
+                cursor=cursor
+            )
+
+            if not pages_response or pages_response.status != HttpStatusCode.SUCCESS.value:
+                raise RuntimeError(
+                    f"Failed to search pages: HTTP {pages_response.status if pages_response else 'No response'}"
+                )
+
+            response_data = pages_response.json()
+
+            # CQL search returns results with nested 'content' object
+            for result in response_data.get("results", []):
+                content = result.get("content", {})
+                if content.get("id") and content.get("title") and content.get("type") == "page":
+                    pages_list.append(content)
+
+            # Extract cursor from next link
+            next_cursor_link = response_data.get("_links", {}).get("next")
+            if next_cursor_link:
+                try:
+                    parsed = urlparse(next_cursor_link)
+                    query_params = parse_qs(parsed.query)
+                    next_cursor = query_params.get("cursor", [None])[0]
+                except Exception as e:
+                    self.logger.warning(f"Failed to extract cursor from next link: {e}")
+        else:
+            # Use v2 API to list all pages (no search term)
+            pages_response = await datasource.get_pages(
+                cursor=cursor,
+                limit=limit,
+                status=["current"]
+            )
+
+            if not pages_response or pages_response.status != HttpStatusCode.SUCCESS.value:
+                raise RuntimeError(
+                    f"Failed to fetch pages: HTTP {pages_response.status if pages_response else 'No response'}"
+                )
+
+            response_data = pages_response.json()
+            pages_list = response_data.get("results", [])
+
+            # Extract cursor from next link
+            next_cursor_link = response_data.get("_links", {}).get("next")
+            if next_cursor_link:
+                try:
+                    parsed = urlparse(next_cursor_link)
+                    query_params = parse_qs(parsed.query)
+                    next_cursor = query_params.get("cursor", [None])[0]
+                except Exception as e:
+                    self.logger.warning(f"Failed to extract cursor from next link: {e}")
+
+        # Convert to FilterOption objects
+        options = [
+            FilterOption(
+                id=p.get("id"),
+                key=p.get("id"),
+                label=p.get('title')
+            )
+            for p in pages_list
+            if p.get("id") and p.get("title")
+        ]
+
+        return FilterOptionsResponse(
+            success=True,
+            options=options,
+            page=page,
+            limit=limit,
+            has_more=next_cursor is not None,
+            cursor=next_cursor
+        )
+
+    async def _get_blogpost_options(
+        self,
+        page: int,
+        limit: int,
+        search: Optional[str],
+        cursor: Optional[str]
+    ) -> FilterOptionsResponse:
+        """Fetch blogposts with cursor-based pagination.
+
+        Uses CQL search for fuzzy title matching when search term is provided,
+        otherwise uses v2 API for listing all blogposts.
+        """
+        # Get fresh datasource with refreshed OAuth token
+        datasource = await self._get_fresh_datasource()
+
+        blogposts_list = []
+        next_cursor = None
+
+        if search:
+            # Use CQL search for fuzzy title matching
+            blogposts_response = await datasource.search_blogposts_cql(
+                search_term=search,
+                limit=limit,
+                cursor=cursor
+            )
+
+            if not blogposts_response or blogposts_response.status != HttpStatusCode.SUCCESS.value:
+                raise RuntimeError(
+                    f"Failed to search blogposts: HTTP {blogposts_response.status if blogposts_response else 'No response'}"
+                )
+
+            response_data = blogposts_response.json()
+
+            # CQL search returns results with nested 'content' object
+            for result in response_data.get("results", []):
+                content = result.get("content", {})
+                if content.get("id") and content.get("title") and content.get("type") == "blogpost":
+                    blogposts_list.append(content)
+
+            # Extract cursor from next link
+            next_cursor_link = response_data.get("_links", {}).get("next")
+            if next_cursor_link:
+                try:
+                    parsed = urlparse(next_cursor_link)
+                    query_params = parse_qs(parsed.query)
+                    next_cursor = query_params.get("cursor", [None])[0]
+                except Exception as e:
+                    self.logger.warning(f"Failed to extract cursor from next link: {e}")
+        else:
+            # Use v2 API to list all blogposts (no search term)
+            blogposts_response = await datasource.get_blog_posts(
+                cursor=cursor,
+                limit=limit,
+                status=["current"]
+            )
+
+            if not blogposts_response or blogposts_response.status != HttpStatusCode.SUCCESS.value:
+                raise RuntimeError(
+                    f"Failed to fetch blogposts: HTTP {blogposts_response.status if blogposts_response else 'No response'}"
+                )
+
+            response_data = blogposts_response.json()
+            blogposts_list = response_data.get("results", [])
+
+            # Extract cursor from next link
+            next_cursor_link = response_data.get("_links", {}).get("next")
+            if next_cursor_link:
+                try:
+                    parsed = urlparse(next_cursor_link)
+                    query_params = parse_qs(parsed.query)
+                    next_cursor = query_params.get("cursor", [None])[0]
+                except Exception as e:
+                    self.logger.warning(f"Failed to extract cursor from next link: {e}")
+
+        # Convert to FilterOption objects
+        options = [
+            FilterOption(
+                id=bp.get("id"),
+                key=bp.get("id"),
+                label=bp.get('title')
+            )
+            for bp in blogposts_list
+            if bp.get("id") and bp.get("title")
+        ]
+
+        return FilterOptionsResponse(
+            success=True,
+            options=options,
+            page=page,
+            limit=limit,
+            has_more=next_cursor is not None,
+            cursor=next_cursor
+        )
 
     async def handle_webhook_notification(self, notification: Dict) -> None:
         """Handle webhook notifications (not implemented)."""

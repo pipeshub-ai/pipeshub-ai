@@ -7840,6 +7840,205 @@ class ConfluenceDataSource:
         resp = await self._client.execute(req)
         return resp
 
+    async def search_spaces_cql(
+        self,
+        search_term: Optional[str] = None,
+        limit: int = 25,
+        cursor: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None
+    ) -> HTTPResponse:
+        """Search spaces using CQL for fuzzy matching.
+
+        Uses the Confluence v1 REST API search endpoint with CQL query
+        to support fuzzy search by space name or key.
+
+        HTTP GET /wiki/rest/api/search
+
+        Args:
+            search_term: Search term for space name/key (uses ~ for fuzzy match)
+            limit: Max results per page (default 25)
+            cursor: Pagination cursor from previous response
+            headers: Additional headers
+
+        Returns:
+            HTTPResponse with matching spaces:
+            {
+                "results": [
+                    {
+                        "space": {"id": "...", "key": "...", "name": "..."},
+                        ...
+                    }
+                ],
+                "_links": {"next": "..."}
+            }
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+
+        _headers: Dict[str, Any] = dict(headers or {})
+
+        # Build CQL query for space search with fuzzy matching
+        # Format: type=space and space.title ~ "term"
+        cql = f'type=space and space.title ~ "{search_term}*"'
+
+        _query: Dict[str, Any] = {
+            'cql': cql,
+            'limit': limit
+        }
+        if cursor is not None:
+            _query['cursor'] = cursor
+
+        # Use REST API v1 for CQL search
+        v1_base_url = self.base_url.split('/wiki')[0] + '/wiki'
+        url = f"{v1_base_url}/rest/api/search"
+
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def search_pages_cql(
+        self,
+        search_term: str,
+        space_id: Optional[str] = None,
+        limit: int = 25,
+        cursor: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None
+    ) -> HTTPResponse:
+        """Search pages using CQL for fuzzy title matching.
+
+        Uses the Confluence v1 REST API search endpoint with CQL query
+        to support fuzzy search by page title.
+
+        HTTP GET /wiki/rest/api/search
+
+        Args:
+            search_term: Search term for page title (uses ~ for fuzzy match)
+            space_id: Optional space ID to filter pages
+            limit: Max results per page (default 25)
+            cursor: Pagination cursor from previous response
+            headers: Additional headers
+
+        Returns:
+            HTTPResponse with matching pages:
+            {
+                "results": [
+                    {
+                        "content": {"id": "...", "title": "...", "type": "page"},
+                        ...
+                    }
+                ],
+                "_links": {"next": "..."}
+            }
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+
+        _headers: Dict[str, Any] = dict(headers or {})
+
+        # Build CQL query for page search with fuzzy matching
+        cql_parts = [f'title ~ "{search_term}*"', 'type=page']
+        if space_id:
+            cql_parts.append(f'space.id={space_id}')
+
+        cql = ' and '.join(cql_parts)
+
+        _query: Dict[str, Any] = {
+            'cql': cql,
+            'limit': limit
+        }
+        if cursor is not None:
+            _query['cursor'] = cursor
+
+        # Use REST API v1 for CQL search
+        v1_base_url = self.base_url.split('/wiki')[0] + '/wiki'
+        url = f"{v1_base_url}/rest/api/search"
+
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def search_blogposts_cql(
+        self,
+        search_term: str,
+        space_id: Optional[str] = None,
+        limit: int = 25,
+        cursor: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None
+    ) -> HTTPResponse:
+        """Search blogposts using CQL for fuzzy title matching.
+
+        Uses the Confluence v1 REST API search endpoint with CQL query
+        to support fuzzy search by blogpost title.
+
+        HTTP GET /wiki/rest/api/search
+
+        Args:
+            search_term: Search term for blogpost title (uses ~ for fuzzy match)
+            space_id: Optional space ID to filter blogposts
+            limit: Max results per page (default 25)
+            cursor: Pagination cursor from previous response
+            headers: Additional headers
+
+        Returns:
+            HTTPResponse with matching blogposts:
+            {
+                "results": [
+                    {
+                        "content": {"id": "...", "title": "...", "type": "blogpost"},
+                        ...
+                    }
+                ],
+                "_links": {"next": "..."}
+            }
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+
+        _headers: Dict[str, Any] = dict(headers or {})
+
+        # Build CQL query for blogpost search with fuzzy matching
+        cql_parts = [f'title ~ "{search_term}*"', 'type=blogpost']
+        if space_id:
+            cql_parts.append(f'space.id={space_id}')
+
+        cql = ' and '.join(cql_parts)
+
+        _query: Dict[str, Any] = {
+            'cql': cql,
+            'limit': limit
+        }
+        if cursor is not None:
+            _query['cursor'] = cursor
+
+        # Use REST API v1 for CQL search
+        v1_base_url = self.base_url.split('/wiki')[0] + '/wiki'
+        url = f"{v1_base_url}/rest/api/search"
+
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
 # ---- Helpers used by generated methods ----
 
 def _format_cql_date_with_offset(iso_date: str, offset_hours: int = 0) -> str:
