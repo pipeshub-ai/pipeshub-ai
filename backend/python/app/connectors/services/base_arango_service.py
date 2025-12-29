@@ -8875,78 +8875,45 @@ class BaseArangoService:
             # Prepare normalized lowercase variants for robust comparison (handles Unicode diacritics)
             name_variants = self._normalized_name_variants_lower(folder_name)
 
-            if parent_folder_id:
-                # Look for folder in specific parent folder
-                # Folders are now represented by RECORDS documents, so edge is from records/{parent_folder_id}
-                query = """
-                FOR edge IN @@record_relations
-                    FILTER edge._from == @parent_from
-                    FILTER edge.relationshipType == "PARENT_CHILD"
-                    LET folder_record = DOCUMENT(edge._to)
-                    FILTER folder_record != null
-                    FILTER folder_record.connectorId == @kb_id
-                    // Verify it's a folder by checking associated FILES document via IS_OF_TYPE edge
-                    LET folder_file = FIRST(
-                        FOR isEdge IN @@is_of_type
-                            FILTER isEdge._from == folder_record._id
-                            LET f = DOCUMENT(isEdge._to)
-                            FILTER f != null AND f.isFile == false
-                            RETURN f
-                    )
-                    FILTER folder_file != null
-                    LET folder_name_l = LOWER(folder_record.recordName)
-                    FILTER folder_name_l IN @name_variants
-                    RETURN {
-                        _key: folder_record._key,
-                        name: folder_record.recordName,
-                        recordGroupId: folder_record.connectorId,
-                        orgId: folder_record.orgId
-                    }
-                """
+            # Determine the parent reference based on whether we're in a folder or KB root
+            # Folders are now represented by RECORDS documents, so use records/{parent_folder_id}
+            # For KB root, use recordGroups/{kb_id}
+            parent_from = f"records/{parent_folder_id}" if parent_folder_id else f"recordGroups/{kb_id}"
 
-                cursor = db.aql.execute(query, bind_vars={
-                    "parent_from": f"records/{parent_folder_id}",
-                    "name_variants": name_variants,
-                    "kb_id": kb_id,
-                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
-                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
-                })
-            else:
-                # Look for folder in KB root
-                # Folders are now represented by RECORDS documents, so edge is from recordGroups/{kb_id} to records/{folder_id}
-                query = """
-                FOR edge IN @@record_relations
-                    FILTER edge._from == @kb_from
-                    FILTER edge.relationshipType == "PARENT_CHILD"
-                    LET folder_record = DOCUMENT(edge._to)
-                    FILTER folder_record != null
-                    FILTER folder_record.connectorId == @kb_id
-                    // Verify it's a folder by checking associated FILES document via IS_OF_TYPE edge
-                    LET folder_file = FIRST(
-                        FOR isEdge IN @@is_of_type
-                            FILTER isEdge._from == folder_record._id
-                            LET f = DOCUMENT(isEdge._to)
-                            FILTER f != null AND f.isFile == false
-                            RETURN f
-                    )
-                    FILTER folder_file != null
-                    LET folder_name_l = LOWER(folder_record.recordName)
-                    FILTER folder_name_l IN @name_variants
-                    RETURN {
-                        _key: folder_record._key,
-                        name: folder_record.recordName,
-                        recordGroupId: folder_record.connectorId,
-                        orgId: folder_record.orgId
-                    }
-                """
+            # Single query for both cases (parent folder or KB root)
+            query = """
+            FOR edge IN @@record_relations
+                FILTER edge._from == @parent_from
+                FILTER edge.relationshipType == "PARENT_CHILD"
+                LET folder_record = DOCUMENT(edge._to)
+                FILTER folder_record != null
+                FILTER folder_record.connectorId == @kb_id
+                // Verify it's a folder by checking associated FILES document via IS_OF_TYPE edge
+                LET folder_file = FIRST(
+                    FOR isEdge IN @@is_of_type
+                        FILTER isEdge._from == folder_record._id
+                        LET f = DOCUMENT(isEdge._to)
+                        FILTER f != null AND f.isFile == false
+                        RETURN f
+                )
+                FILTER folder_file != null
+                LET folder_name_l = LOWER(folder_record.recordName)
+                FILTER folder_name_l IN @name_variants
+                RETURN {
+                    _key: folder_record._key,
+                    name: folder_record.recordName,
+                    recordGroupId: folder_record.connectorId,
+                    orgId: folder_record.orgId
+                }
+            """
 
-                cursor = db.aql.execute(query, bind_vars={
-                    "kb_from": f"recordGroups/{kb_id}",
-                    "name_variants": name_variants,
-                    "kb_id": kb_id,
-                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
-                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
-                })
+            cursor = db.aql.execute(query, bind_vars={
+                "parent_from": parent_from,
+                "name_variants": name_variants,
+                "kb_id": kb_id,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+            })
 
             result = next(cursor, None)
 
@@ -9015,7 +8982,7 @@ class BaseArangoService:
         Create folder with proper RECORDS document and IS_OF_TYPE edge.
 
         Creates:
-        1. RECORDS document (recordType="FOLDER")
+        1. RECORDS document (recordType="FILES")
         2. FILES document (isFile=False)
         3. IS_OF_TYPE edge (RECORDS -> FILES)
         4. RECORD_RELATIONS edges (RECORDS -> RECORDS for parent-child)

@@ -14,7 +14,7 @@ CURRENT STRUCTURE (INCORRECT):
 
 NEW STRUCTURE (CORRECT):
 - Folder has document in FILES collection (isFile=false) - for file metadata
-- Folder has document in RECORDS collection (recordType="FOLDER") - for record metadata
+- Folder has document in RECORDS collection (recordType="FILE") - for record metadata
 - IS_OF_TYPE edge: RECORDS -> FILES (folder record -> folder file)
 - RECORD_RELATIONS edges: RECORDS -> RECORDS (parent-child between records)
 - BELONGS_TO edges: RECORDS -> RECORD_GROUPS (KB)
@@ -22,7 +22,7 @@ NEW STRUCTURE (CORRECT):
 Migration Steps:
 1. Find all folders (FILES with isFile=false) that don't have RECORDS documents
 2. For each folder:
-   - Create a RECORDS document with recordType="FOLDER"
+   - Create a RECORDS document with recordType="FILE"
    - Create IS_OF_TYPE edge from RECORDS to FILES
    - Update RECORD_RELATIONS edges to use RECORDS instead of FILES
    - Update BELONGS_TO edges to use RECORDS instead of FILES
@@ -50,7 +50,7 @@ class FolderHierarchyMigrationService:
     Service for migrating folder hierarchy to correct structure.
 
     This service ensures that all folders in knowledge bases have proper:
-    - RECORDS documents with recordType="FOLDER"
+    - RECORDS documents with recordType="FILE"
     - IS_OF_TYPE edges connecting RECORDS to FILES
     - RECORD_RELATIONS edges between RECORDS (not FILES)
     - BELONGS_TO edges from RECORDS (not FILES)
