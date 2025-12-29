@@ -237,6 +237,8 @@ record_schema = {
             "virtualRecordId": {"type": ["string", "null"], "default": None},
             "previewRenderable": {"type": ["boolean", "null"], "default": True},
             "isShared": {"type": ["boolean", "null"], "default": False},
+            "isDependentNode": {"type": "boolean", "default": False},
+            "parentNodeId": {"type": ["string", "null"], "default": None},
         },
         "required": [
             "recordName",
