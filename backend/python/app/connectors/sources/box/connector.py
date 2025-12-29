@@ -3,7 +3,7 @@ import mimetypes
 import uuid
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
 from aiohttp import ClientSession
 from aiolimiter import AsyncLimiter
@@ -783,14 +783,14 @@ class BoxConnector(BaseConnector):
     async def _reconcile_deleted_groups(self, active_box_ids: set) -> None:
         """
         Compares Box IDs against DB IDs and deletes stale groups.
-        Uses the existing 'get_user_groups' from base_arango_service.
         """
         try:
-            # 1. Get all groups currently in the DB for this connector
-            db_groups = await self.data_store_provider.arango_service.get_user_groups(
-                connector_id=self.connector_id,
-                org_id=self.data_entities_processor.org_id
-            )
+            # 1. Get all groups currently in the DB for this connector using Transaction Store
+            async with self.data_store_provider.transaction() as tx_store:
+                db_groups = await tx_store.get_user_groups(
+                    connector_id=self.connector_id,
+                    org_id=self.data_entities_processor.org_id
+                )
 
             # 2. Identify groups in DB that are NOT in the active_box_ids set
             stale_groups = [
@@ -1243,7 +1243,7 @@ class BoxConnector(BaseConnector):
             'unshared'
         }
 
-        def get_val(obj, key, default=None) -> Any:
+        def get_val(obj: Optional[object], key: str, default: Optional[object] = None) -> Optional[object]:
             if obj is None:
                 return default
             if isinstance(obj, dict):
@@ -1321,11 +1321,12 @@ class BoxConnector(BaseConnector):
                     if internal_user:
                         user_id = getattr(internal_user, 'id', None)
                         if user_id:
-                            await self.data_store_provider.arango_service.remove_user_access_to_record(
-                                connector_id=self.connector_id,
-                                external_id=file_id,
-                                user_id=user_id
-                            )
+                            async with self.data_store_provider.transaction() as tx_store:
+                                await tx_store.remove_user_access_to_record(
+                                    connector_id=self.connector_id,
+                                    external_id=file_id,
+                                    user_id=user_id
+                                )
                         else:
                             self.logger.warning("⚠️ User found but has no Internal ID")
                     else:
