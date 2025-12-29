@@ -211,7 +211,7 @@ class DoclingClient:
         # Configure httpx with proper connection settings (shorter timeout for parsing)
         timeout_config = httpx.Timeout(
             connect=30.0,
-            read=self.timeout,  # 10 minutes for parsing
+            read=self.timeout,  # 40 minutes for parsing
             write=30.0,
             pool=30.0
         )
