@@ -159,7 +159,7 @@ class EventProcessor:
     async def on_event(self, event_data: dict) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Process events received from Kafka consumer, yielding phase completion events.
-        
+
         Args:
             event_data: Dictionary containing:
                 - event_type: Type of event (create, update, delete)
@@ -168,7 +168,7 @@ class EventProcessor:
                 - signed_url: Signed URL to download the file
                 - connector_name: Name of the connector
                 - metadata_route: Route to get metadata
-        
+
         Yields:
             Dict with 'event' key:
             - {'event': 'parsing_complete', 'data': {...}}
@@ -443,7 +443,7 @@ class EventProcessor:
                             docling_failed = True
                         else:
                             yield event
-                    
+
                     if docling_failed:
                         async for event in self.processor.process_pdf_document_with_ocr(
                             recordName=record_name,

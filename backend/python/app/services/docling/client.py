@@ -190,11 +190,11 @@ class DoclingClient:
     async def parse_pdf(self, record_name: str, pdf_binary: bytes) -> Optional[str]:
         """
         Parse PDF using the external Docling service (phase 1 - no block creation).
-        
+
         Args:
             record_name: Name of the record/document
             pdf_binary: Binary PDF data
-            
+
         Returns:
             Serialized parse result (JSON-encoded document) if successful, None if failed
         """
@@ -290,11 +290,11 @@ class DoclingClient:
     async def create_blocks(self, parse_result: str, page_number: int = None) -> Optional[BlocksContainer]:
         """
         Create blocks from parse result using the external Docling service (phase 2).
-        
+
         Args:
             parse_result: Serialized parse result from parse_pdf
             page_number: Optional page number for page-specific processing
-            
+
         Returns:
             BlocksContainer if successful, None if failed
         """

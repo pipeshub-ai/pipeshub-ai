@@ -34,7 +34,7 @@ class DoclingProcessor():
 
     async def parse_document(self, doc_name: str, content: bytes) -> DoclingDocument:
         """Parse document and return raw Docling result (no block conversion).
-        
+
         This is the first phase of document processing - pure parsing without LLM calls.
         """
         stream = BytesIO(content)
@@ -42,13 +42,13 @@ class DoclingProcessor():
         conv_res: ConversionResult = await asyncio.to_thread(self.converter.convert, source)
         if conv_res.status.value != SUCCESS_STATUS:
             raise ValueError(f"Failed to parse document: {conv_res.status}")
-        
+
         doc = conv_res.document
         return doc
 
     async def create_blocks(self, doc: DoclingDocument, page_number: int = None) -> BlocksContainer:
         """Convert parsed Docling result to BlocksContainer.
-        
+
         This is the second phase - involves LLM calls for table processing.
         """
         doc_to_blocks_converter = DoclingDocToBlocksConverter(logger=self.logger, config=self.config)
@@ -57,8 +57,8 @@ class DoclingProcessor():
 
     async def load_document(self, doc_name: str, content: bytes, page_number: int = None) -> BlocksContainer|bool:
         """Parse document and create blocks in one call (legacy method).
-        
-        For new code, prefer using parse_document() followed by create_blocks() 
+
+        For new code, prefer using parse_document() followed by create_blocks()
         to allow yielding progress events between phases.
         """
         conv_res = await self.parse_document(doc_name, content)

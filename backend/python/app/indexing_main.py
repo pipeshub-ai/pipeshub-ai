@@ -117,14 +117,14 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
                 # Track whether we received the indexing_complete event to verify full recovery
                 parsing_complete = False
                 indexing_complete = False
-                
+
                 async for event in record_message_handler({
                     "eventType": event_type,
                     "payload": payload
                 }):
                     event_name = event.get("event", "unknown")
                     logger.debug(f"   Recovery event: {event_name}")
-                    
+
                     if event_name == "parsing_complete":
                         parsing_complete = True
                     elif event_name == "indexing_complete":

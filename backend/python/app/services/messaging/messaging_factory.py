@@ -8,7 +8,9 @@ from app.services.messaging.kafka.config.kafka_config import (
     KafkaProducerConfig,
 )
 from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsumer
-from app.services.messaging.kafka.consumer.indexing_consumer import IndexingKafkaConsumer
+from app.services.messaging.kafka.consumer.indexing_consumer import (
+    IndexingKafkaConsumer,
+)
 from app.services.messaging.kafka.producer.producer import KafkaMessagingProducer
 
 
@@ -37,7 +39,7 @@ class MessagingFactory:
         consumer_type: str = "simple",
     ) -> IMessagingConsumer:
         """Create a messaging consumer
-        
+
         Args:
             logger: Logger instance
             config: Kafka consumer configuration
@@ -45,14 +47,14 @@ class MessagingFactory:
             consumer_type: Type of consumer to create:
                 - "simple": Basic consumer with single semaphore (default)
                 - "indexing": Dual-semaphore consumer for indexing pipeline
-        
+
         Returns:
             IMessagingConsumer instance
         """
         if broker_type.lower() == "kafka":
             if config is None:
                 raise ValueError("Kafka consumer config is required")
-            
+
             if consumer_type == "indexing":
                 return IndexingKafkaConsumer(logger, config)
             else:

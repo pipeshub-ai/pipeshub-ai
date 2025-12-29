@@ -1,6 +1,4 @@
 import io
-import json
-from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict
 
@@ -171,17 +169,17 @@ class Processor:
             record = convert_record_dict_to_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
-            
+
             # Signal parsing complete
             yield {"event": "parsing_complete", "data": {"record_id": record_id}}
-            
+
             ctx = TransformContext(record=record)
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
-            
+
             # Signal indexing complete
             yield {"event": "indexing_complete", "data": {"record_id": record_id}}
-            
+
             self.logger.info("✅ Image processing completed successfully")
             return
         except Exception as e:
@@ -254,14 +252,14 @@ class Processor:
             record = convert_record_dict_to_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
-            
+
             ctx = TransformContext(record=record)
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
-            
+
             # Signal indexing complete
             yield {"event": "indexing_complete", "data": {"record_id": recordId}}
-            
+
             self.logger.info(f"✅ PDF processing completed for record: {recordName}, using external Docling service")
             return
         except Exception as e:
@@ -447,7 +445,7 @@ class Processor:
 
                 # Signal indexing complete
                 yield {"event": "indexing_complete", "data": {"record_id": recordId}}
-                
+
                 self.logger.info("✅ PDF processing completed successfully using VLM OCR")
                 return
             # Extract domain metadata from paragraphs
@@ -506,17 +504,17 @@ class Processor:
             record = convert_record_dict_to_record(record)
             record.block_containers = BlocksContainer(blocks=blocks, block_groups=block_groups)
             record.virtual_record_id = virtual_record_id
-            
+
             # Signal parsing complete
             yield {"event": "parsing_complete", "data": {"record_id": recordId}}
-            
+
             ctx = TransformContext(record=record)
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
 
             # Signal indexing complete
             yield {"event": "indexing_complete", "data": {"record_id": recordId}}
-            
+
             self.logger.info("✅ PDF processing completed successfully")
             return
 
@@ -562,13 +560,13 @@ class Processor:
             self.logger.debug("📄 Processing DOCX content")
 
             processor = DoclingProcessor(logger=self.logger, config=self.config_service)
-            
+
             # Phase 1: Parse document with Docling (no LLM calls)
             conv_res = await processor.parse_document(recordName, docx_binary)
-            
+
             # Signal parsing complete after Docling parsing
             yield {"event": "parsing_complete", "data": {"record_id": recordId}}
-            
+
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(conv_res)
 
@@ -585,14 +583,14 @@ class Processor:
             record = convert_record_dict_to_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
-            
+
             ctx = TransformContext(record=record)
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
-            
+
             # Signal indexing complete
             yield {"event": "indexing_complete", "data": {"record_id": recordId}}
-            
+
             self.logger.info("✅ Docx/Doc processing completed successfully using docling")
 
         except Exception as e:
@@ -617,16 +615,16 @@ class Processor:
                 yield {"event": "parsing_complete", "data": {"record_id": recordId}}
                 yield {"event": "indexing_complete", "data": {"record_id": recordId}}
                 return
-            
+
             # Phase 1: Load workbook (no LLM calls)
             parser.load_workbook_from_binary(excel_binary)
-            
+
             # Signal parsing complete after workbook is loaded
             yield {"event": "parsing_complete", "data": {"record_id": recordId}}
-            
+
             # Phase 2: Create blocks (involves LLM calls for summaries)
             blocks_containers = await parser.create_blocks(llm)
-            
+
             record = await self.arango_service.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
@@ -636,14 +634,14 @@ class Processor:
             record = convert_record_dict_to_record(record)
             record.block_containers = blocks_containers
             record.virtual_record_id = virtual_record_id
-            
+
             ctx = TransformContext(record=record)
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
-            
+
             # Signal indexing complete
             yield {"event": "indexing_complete", "data": {"record_id": recordId}}
-            
+
             self.logger.info("✅ Excel processing completed successfully.")
         except Exception as e:
             self.logger.error(f"❌ Error processing Excel document: {str(e)}")
@@ -758,7 +756,7 @@ class Processor:
                 ctx = TransformContext(record=record)
                 pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
                 await pipeline.apply(ctx)
-                
+
                 # Signal indexing complete
                 yield {"event": "indexing_complete", "data": {"record_id": recordId}}
 
@@ -939,10 +937,10 @@ class Processor:
 
             # Phase 1: Parse document with Docling (no LLM calls)
             conv_res = await processor.parse_document(f"{filename_without_ext}.md", md_bytes)
-            
+
             # Signal parsing complete after Docling parsing
             yield {"event": "parsing_complete", "data": {"record_id": recordId}}
-            
+
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(conv_res)
 
@@ -975,14 +973,14 @@ class Processor:
 
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
-            
+
             ctx = TransformContext(record=record)
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
-            
+
             # Signal indexing complete
             yield {"event": "indexing_complete", "data": {"record_id": recordId}}
-            
+
             self.logger.info("✅ MD processing completed successfully using docling")
             return
         except Exception as e:
@@ -1052,16 +1050,16 @@ class Processor:
             self.logger.debug("📄 Processing PPTX content")
 
             processor = DoclingProcessor(logger=self.logger, config=self.config_service)
-            
+
             # Phase 1: Parse document with Docling (no LLM calls)
             conv_res = await processor.parse_document(recordName, pptx_binary)
-            
+
             # Signal parsing complete after Docling parsing
             yield {"event": "parsing_complete", "data": {"record_id": recordId}}
-            
+
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(conv_res)
-            
+
             if block_containers is False:
                 raise Exception(("Failed to process PPTX document. It might contain scanned pages."))
             record = await self.arango_service.get_document(
@@ -1073,14 +1071,14 @@ class Processor:
             record = convert_record_dict_to_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
-            
+
             ctx = TransformContext(record=record)
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
-            
+
             # Signal indexing complete
             yield {"event": "indexing_complete", "data": {"record_id": recordId}}
-            
+
             self.logger.info("✅ PPTX processing completed successfully using docling")
             return
         except Exception as e:

@@ -118,7 +118,7 @@ class RecordEventHandler(BaseEventService):
 
     async def process_event(self, event_type: str, payload: dict) -> AsyncGenerator[Dict[str, Any], None]:
         """Process record events, yielding phase completion events.
-        
+
         Yields:
             Dict with 'event' key:
             - {'event': 'parsing_complete', 'data': {...}}
@@ -302,7 +302,7 @@ class RecordEventHandler(BaseEventService):
                     # Yield events from the event processor
                     async for event in self.event_processor.on_event(event_data_for_processor):
                         yield event
-                    
+
                     processing_time = (datetime.now() - start_time).total_seconds()
                     self.logger.info(
                         f"✅ Successfully processed document for event: {event_type}. "
@@ -326,7 +326,7 @@ class RecordEventHandler(BaseEventService):
                     # Yield events from the event processor
                     async for event in self.event_processor.on_event(event_data_for_processor):
                         yield event
-                    
+
                     processing_time = (datetime.now() - start_time).total_seconds()
                     self.logger.info(
                         f"✅ Successfully processed document for event: {event_type}. "
@@ -363,7 +363,7 @@ class RecordEventHandler(BaseEventService):
                     # Yield events from the event processor
                     async for event in self.event_processor.on_event(event_data_for_processor):
                         yield event
-                    
+
                     processing_time = (datetime.now() - start_time).total_seconds()
                     self.logger.info(
                         f"✅ Successfully processed document for event: {event_type}. "

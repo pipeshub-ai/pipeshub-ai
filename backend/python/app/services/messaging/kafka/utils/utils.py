@@ -143,7 +143,7 @@ class KafkaUtils:
     @staticmethod
     async def create_record_message_handler(app_container: IndexingAppContainer) -> Callable[[Dict[str, Any]], AsyncGenerator[Dict[str, Any], None]]:
         """Create a message handler for record events.
-        
+
         Returns an async generator function that yields events during processing:
         - 'parsing_complete': When document parsing is done
         - 'indexing_complete': When indexing pipeline is done
@@ -162,7 +162,7 @@ class KafkaUtils:
 
         async def handle_record_message(message: Dict[str, Any]) -> AsyncGenerator[Dict[str, Any], None]:
             """Handle incoming record messages, yielding events during processing.
-            
+
             Yields:
                 Dict with 'event' key indicating phase completion:
                 - {'event': 'parsing_complete', 'data': {...}}

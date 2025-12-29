@@ -1,10 +1,8 @@
 import asyncio
 import base64
-import json
 from typing import Optional
 
 import uvicorn
-from docling.datamodel.document import ConversionResult
 from docling_core.types.doc.document import DoclingDocument
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -15,7 +13,7 @@ from app.modules.parsers.pdf.docling import DoclingProcessor
 from app.utils.logger import create_logger
 
 PDF_PROCESSING_TIMEOUT_SECONDS = 40 * 60
-PDF_PARSING_TIMEOUT_SECONDS = 40 * 60 
+PDF_PARSING_TIMEOUT_SECONDS = 40 * 60
 
 
 class ProcessRequest(BaseModel):
@@ -97,14 +95,14 @@ class DoclingService:
 
     async def parse_pdf_only(self, record_name: str, pdf_binary: bytes) -> DoclingDocument:
         """Parse PDF and return ConversionResult (no block creation, no LLM calls).
-        
+
         This is phase 1 of two-phase processing.
         """
         try:
             self.logger.info(f"🚀 Parsing PDF (phase 1): {record_name}")
             if self.processor is None:
                 raise RuntimeError("DoclingService not initialized: processor is None")
-            
+
             doc = await self.processor.parse_document(record_name, pdf_binary)
             self.logger.info(f"✅ Successfully parsed PDF: {record_name}")
             return doc
@@ -117,19 +115,19 @@ class DoclingService:
         self, doc: DoclingDocument, page_number: Optional[int] = None
     ) -> BlocksContainer:
         """Create blocks from DoclingDocument (involves LLM calls for tables).
-        
+
         This is phase 2 of two-phase processing.
         """
         try:
             self.logger.info("🚀 Creating blocks from parse result (phase 2)")
             if self.processor is None:
                 raise RuntimeError("DoclingService not initialized: processor is None")
-            
+
             block_containers = await self.processor.create_blocks(doc, page_number=page_number)
-            
+
             if block_containers is False:
                 raise ValueError("DoclingProcessor returned False - block creation failed")
-            
+
             self.logger.info("✅ Successfully created blocks from parse result")
             return block_containers
 
@@ -251,7 +249,7 @@ def serialize_blocks_container(blocks_container: BlocksContainer) -> dict:
 
 def serialize_docling_doc(doc: DoclingDocument) -> str:
     """Serialize DoclingDocument to JSON string.
-    
+
     Uses the DoclingDocument's export_to_dict method for safe JSON serialization,
     avoiding pickle's security vulnerabilities.
     """
@@ -263,7 +261,7 @@ def serialize_docling_doc(doc: DoclingDocument) -> str:
 
 def deserialize_docling_doc(serialized: str) -> DoclingDocument:
     """Deserialize JSON string to DoclingDocument.
-    
+
     Returns a DoclingDocument since that's what
     the create_blocks method actually needs.
     """

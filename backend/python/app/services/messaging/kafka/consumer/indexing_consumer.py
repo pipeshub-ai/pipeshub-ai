@@ -22,11 +22,11 @@ class IndexingEvent:
 
 class IndexingKafkaConsumer(IMessagingConsumer):
     """Kafka consumer with dual-semaphore control for indexing pipeline.
-    
+
     This consumer is designed for the indexing service where messages go through
     two phases: parsing and indexing. Each phase has its own semaphore to control
     concurrency independently.
-    
+
     The message handler must be an async generator that yields events:
     - {'event': 'parsing_complete', ...} - when parsing phase is done
     - {'event': 'indexing_complete', ...} - when indexing phase is done
@@ -95,7 +95,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         message_handler: Callable[[Dict[str, Any]], AsyncGenerator[Dict[str, Any], None]]  # type: ignore
     ) -> None:
         """Start consuming messages with the provided handler
-        
+
         Args:
             message_handler: Async generator function that yields events during processing.
             Expected events: 'parsing_complete', 'indexing_complete'
@@ -185,9 +185,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
     def __parse_message(self, message) -> Optional[Dict[str, Any]]:
         """Parse the Kafka message value into a dictionary.
-        
+
         Handles bytes decoding, JSON parsing, and double-encoded JSON.
-        
+
         Returns:
             Parsed message dictionary or None if parsing fails.
         """
@@ -232,7 +232,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
     async def __start_processing_task(self, message, topic_partition: TopicPartition) -> None:
         """Start a new task for processing a message with dual semaphore control.
-        
+
         Acquires BOTH parsing and indexing semaphores before starting processing.
         This ensures that when an event is consumed, it has a guaranteed path
         through both parsing and indexing phases.
@@ -258,11 +258,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
     async def __process_message_wrapper(self, message, topic_partition: TopicPartition) -> None:
         """Wrapper to handle async task cleanup and semaphore release based on yielded events.
-        
+
         Iterates over events yielded by the message handler:
         - 'parsing_complete': releases parsing semaphore
         - 'indexing_complete': releases indexing semaphore
-        
+
         Ensures semaphores are released even on error via finally block.
         """
         topic = message.topic
