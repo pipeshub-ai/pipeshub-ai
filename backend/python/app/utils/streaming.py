@@ -1404,12 +1404,13 @@ async def call_aiter_llm_stream(
             if reflection_retry_count < max_reflection_retries:
                 yield {"event": "restreaming","data": {}}
                 yield {"event": "status", "data": {"status": "processing", "message": "Rethinking..."}}
+                parse_error = str(e)
                 logger.warning(
-                    "call_aiter_llm_stream: JSON parsing failed for LLM response. Using reflection to guide LLM to proper format. Retry count: %d.",
-                    reflection_retry_count,
+                    "JSON parsing failed for LLM response with error: %s. Using reflection to guide LLM to proper format. Retry count: %d.",
+                    parse_error,
+                    reflection_retry_count
                 )
 
-                parse_error = str(e)
                 # Create reflection message to guide the LLM
                 reflection_message = HumanMessage(
                     content=(f"""The previous response failed validation with the following error: {parse_error}. {format_instructions}"""
