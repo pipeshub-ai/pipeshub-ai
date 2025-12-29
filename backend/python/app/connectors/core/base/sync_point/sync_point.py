@@ -34,12 +34,13 @@ class SyncPoint(ISyncPoint):
 
     async def create_sync_point(self, sync_point_key: str, sync_point_data: Dict[str, Any]) -> Dict[str, Any]:
         full_sync_point_key = self._get_full_sync_point_key(sync_point_key)
+        # Flatten the document by merging sync_point_data into the top level
         document_data = {
             "orgId": self.org_id,
             "connectorId": self.connector_id,
             "syncPointKey": full_sync_point_key,
-            "syncPointData": sync_point_data,
-            "syncDataPointType": self.sync_data_point_type.value
+            "syncDataPointType": self.sync_data_point_type.value,
+            **sync_point_data  # Merge sync_point_data at the top level
         }
 
         async with self.data_store_provider.transaction() as tx_store:
@@ -52,7 +53,12 @@ class SyncPoint(ISyncPoint):
             full_sync_point_key = self._get_full_sync_point_key(sync_point_key)
             sync_point = await tx_store.get_sync_point(full_sync_point_key)
 
-            return sync_point.get('syncPointData', {}) if sync_point else {}
+            if not sync_point:
+                return {}
+
+            # Return all fields except metadata fields (flattened structure)
+            metadata_fields = {'orgId', 'connectorId', 'syncPointKey', 'syncDataPointType', '_key', '_id', '_rev'}
+            return {k: v for k, v in sync_point.items() if k not in metadata_fields}
 
     async def update_sync_point(self, sync_point_key: str, sync_point_data: Dict[str, Any]) -> Dict[str, Any]:
         return await self.create_sync_point(sync_point_key, sync_point_data)

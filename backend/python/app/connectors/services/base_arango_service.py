@@ -5039,11 +5039,11 @@ class BaseArangoService:
                 **sync_point_data,
                 "syncPointKey": sync_point_key  # Ensure the key is in the document
             }
-
+            # this is done (REPLACE MERGE(UNSET(OLD, 'syncPointData'), @document_data)) because we want to remove the syncPointData key if it exists (from old nested structure)
             query = """
             UPSERT { syncPointKey: @sync_point_key }
             INSERT @document_data
-            UPDATE @document_data
+            REPLACE MERGE(UNSET(OLD, 'syncPointData'), @document_data)
             IN @@collection
             RETURN { action: OLD ? "updated" : "inserted", key: NEW._key }
             """
