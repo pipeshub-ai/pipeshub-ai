@@ -4264,13 +4264,13 @@ class BaseArangoService:
             return None
 
     async def get_record_by_issue_key(
-        self, connector_name: Connectors, issue_key: str, transaction: Optional[TransactionDatabase] = None
+        self, connector_id: str, issue_key: str, transaction: Optional[TransactionDatabase] = None
     ) -> Optional[Record]:
         """
         Get Jira issue record by issue key (e.g., PROJ-123) by searching weburl pattern.
 
         Args:
-            connector_name (Connectors): Connector name (should be JIRA)
+            connector_id (str): Connector ID
             issue_key (str): Jira issue key (e.g., "PROJ-123")
             transaction (Optional[TransactionDatabase]): Optional database transaction
 
@@ -4279,13 +4279,13 @@ class BaseArangoService:
         """
         try:
             self.logger.info(
-                "🚀 Retrieving record for Jira issue key %s %s", connector_name, issue_key
+                "🚀 Retrieving record for Jira issue key %s %s", connector_id, issue_key
             )
 
             # Search for record where weburl contains "/browse/{issue_key}" and record_type is TICKET
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.connectorName == @connector_name
+                FILTER record.connectorId == @connector_id
                     AND record.recordType == @record_type
                     AND record.webUrl != null
                     AND CONTAINS(record.webUrl, @browse_pattern)
@@ -4297,7 +4297,7 @@ class BaseArangoService:
             cursor = db.aql.execute(
                 query,
                 bind_vars={
-                    "connector_name": connector_name.value,
+                    "connector_id": connector_id,
                     "record_type": "TICKET",
                     "browse_pattern": browse_pattern
                 }
@@ -4306,24 +4306,24 @@ class BaseArangoService:
 
             if result:
                 self.logger.info(
-                    "✅ Successfully retrieved record for Jira issue key %s %s", connector_name, issue_key
+                    "✅ Successfully retrieved record for Jira issue key %s %s", connector_id, issue_key
                 )
                 return Record.from_arango_base_record(result)
             else:
                 self.logger.warning(
-                    "⚠️ No record found for Jira issue key %s %s", connector_name, issue_key
+                    "⚠️ No record found for Jira issue key %s %s", connector_id, issue_key
                 )
                 return None
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to retrieve record for Jira issue key %s %s: %s", connector_name, issue_key, str(e)
+                "❌ Failed to retrieve record for Jira issue key %s %s: %s", connector_id, issue_key, str(e)
             )
             return None
 
     async def get_records_by_parent(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         parent_external_record_id: str,
         record_type: Optional[str] = None,
         transaction: Optional[TransactionDatabase] = None
@@ -4333,7 +4333,7 @@ class BaseArangoService:
         Optionally filter by record_type.
 
         Args:
-            connector_name (Connectors): Connector name
+            connector_id (str): Connector ID
             parent_external_record_id (str): Parent record's external ID
             record_type (Optional[str]): Optional filter by record type (e.g., "COMMENT", "FILE", "TICKET")
             transaction (Optional[TransactionDatabase]): Optional database transaction
@@ -4344,19 +4344,19 @@ class BaseArangoService:
         try:
             self.logger.debug(
                 "🚀 Retrieving child records for parent %s %s (record_type: %s)",
-                connector_name, parent_external_record_id, record_type or "all"
+                connector_id, parent_external_record_id, record_type or "all"
             )
 
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
                 FILTER record.externalParentId != null
                     AND record.externalParentId == @parent_id
-                    AND record.connectorName == @connector_name
+                    AND record.connectorId == @connector_id
             """
 
             bind_vars = {
                 "parent_id": parent_external_record_id,
-                "connector_name": connector_name.value
+                "connector_id": connector_id
             }
 
             if record_type:
@@ -4373,14 +4373,14 @@ class BaseArangoService:
 
             self.logger.debug(
                 "✅ Successfully retrieved %d child record(s) for parent %s %s",
-                len(records), connector_name, parent_external_record_id
+                len(records), connector_id, parent_external_record_id
             )
             return records
 
         except Exception as e:
             self.logger.error(
                 "❌ Failed to retrieve child records for parent %s %s: %s",
-                connector_name, parent_external_record_id, str(e)
+                connector_id, parent_external_record_id, str(e)
             )
             return []
 

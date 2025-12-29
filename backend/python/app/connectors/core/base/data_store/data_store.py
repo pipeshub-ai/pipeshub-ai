@@ -65,14 +65,14 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_record_by_issue_key(self, connector_name: Connectors, issue_key: str) -> Optional[Record]:
+    async def get_record_by_issue_key(self, connector_id: str, issue_key: str) -> Optional[Record]:
         """Get record by Jira issue key (e.g., PROJ-123) by searching weburl pattern."""
         pass
 
     @abstractmethod
     async def get_records_by_parent(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         parent_external_record_id: str,
         record_type: Optional[str] = None
     ) -> List[Record]:
@@ -80,7 +80,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_records_by_status(self, org_id: str, connector_name: Connectors, status_filters: List[str], limit: Optional[int] = None, offset: int = 0) -> List[Record]:
+    async def get_records_by_status(self, org_id: str, connector_id: str, status_filters: List[str], limit: Optional[int] = None, offset: int = 0) -> List[Record]:
         """Get records by their indexing status with pagination support. Returns typed Record instances."""
         pass
 
