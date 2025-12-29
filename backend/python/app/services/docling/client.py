@@ -196,7 +196,7 @@ class DoclingClient:
             pdf_binary: Binary PDF data
             
         Returns:
-            Serialized parse result (base64-encoded pickle) if successful, None if failed
+            Serialized parse result (JSON-encoded document) if successful, None if failed
         """
         # Validate pdf_binary type
         if not isinstance(pdf_binary, bytes):

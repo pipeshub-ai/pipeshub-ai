@@ -11,6 +11,7 @@ from docling.document_converter import (
     PdfFormatOption,
     WordFormatOption,
 )
+from docling_core.types.doc.document import DoclingDocument
 
 from app.models.blocks import BlocksContainer
 from app.utils.converters.docling_doc_to_blocks import DoclingDocToBlocksConverter
@@ -31,7 +32,7 @@ class DoclingProcessor():
             InputFormat.MD: MarkdownFormatOption(),
         })
 
-    async def parse_document(self, doc_name: str, content: bytes) -> ConversionResult:
+    async def parse_document(self, doc_name: str, content: bytes) -> DoclingDocument:
         """Parse document and return raw Docling result (no block conversion).
         
         This is the first phase of document processing - pure parsing without LLM calls.
@@ -41,14 +42,15 @@ class DoclingProcessor():
         conv_res: ConversionResult = await asyncio.to_thread(self.converter.convert, source)
         if conv_res.status.value != SUCCESS_STATUS:
             raise ValueError(f"Failed to parse document: {conv_res.status}")
-        return conv_res
+        
+        doc = conv_res.document
+        return doc
 
-    async def create_blocks(self, conv_res: ConversionResult, page_number: int = None) -> BlocksContainer:
+    async def create_blocks(self, doc: DoclingDocument, page_number: int = None) -> BlocksContainer:
         """Convert parsed Docling result to BlocksContainer.
         
         This is the second phase - involves LLM calls for table processing.
         """
-        doc = conv_res.document
         doc_to_blocks_converter = DoclingDocToBlocksConverter(logger=self.logger, config=self.config)
         block_containers = await doc_to_blocks_converter.convert(doc, page_number=page_number)
         return block_containers

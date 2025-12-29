@@ -1,10 +1,11 @@
 import asyncio
 import base64
-import pickle
+import json
 from typing import Optional
 
 import uvicorn
 from docling.datamodel.document import ConversionResult
+from docling_core.types.doc.document import DoclingDocument
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -14,8 +15,7 @@ from app.modules.parsers.pdf.docling import DoclingProcessor
 from app.utils.logger import create_logger
 
 PDF_PROCESSING_TIMEOUT_SECONDS = 40 * 60
-PDF_PARSING_TIMEOUT_SECONDS = 40 * 60  # 10 minutes for parsing only
-# ConfigService will be injected via dependency injection
+PDF_PARSING_TIMEOUT_SECONDS = 40 * 60 
 
 
 class ProcessRequest(BaseModel):
@@ -37,12 +37,12 @@ class ParseRequest(BaseModel):
 
 class ParseResponse(BaseModel):
     success: bool
-    parse_result: Optional[str] = None  # base64 encoded pickled ConversionResult
+    parse_result: Optional[str] = None  # JSON-encoded document data
     error: Optional[str] = None
 
 
 class CreateBlocksRequest(BaseModel):
-    parse_result: str  # base64 encoded pickled ConversionResult
+    parse_result: str  # JSON-encoded document data
     page_number: Optional[int] = None
 
 
@@ -95,7 +95,7 @@ class DoclingService:
             self.logger.error(f"❌ Error processing PDF {record_name}: {str(e)}")
             raise
 
-    async def parse_pdf_only(self, record_name: str, pdf_binary: bytes) -> ConversionResult:
+    async def parse_pdf_only(self, record_name: str, pdf_binary: bytes) -> DoclingDocument:
         """Parse PDF and return ConversionResult (no block creation, no LLM calls).
         
         This is phase 1 of two-phase processing.
@@ -105,18 +105,18 @@ class DoclingService:
             if self.processor is None:
                 raise RuntimeError("DoclingService not initialized: processor is None")
             
-            conv_res = await self.processor.parse_document(record_name, pdf_binary)
+            doc = await self.processor.parse_document(record_name, pdf_binary)
             self.logger.info(f"✅ Successfully parsed PDF: {record_name}")
-            return conv_res
+            return doc
 
         except Exception as e:
             self.logger.error(f"❌ Error parsing PDF {record_name}: {str(e)}")
             raise
 
     async def create_blocks_from_parse_result(
-        self, conv_res: ConversionResult, page_number: int = None
+        self, doc: DoclingDocument, page_number: Optional[int] = None
     ) -> BlocksContainer:
-        """Create blocks from ConversionResult (involves LLM calls for tables).
+        """Create blocks from DoclingDocument (involves LLM calls for tables).
         
         This is phase 2 of two-phase processing.
         """
@@ -125,7 +125,7 @@ class DoclingService:
             if self.processor is None:
                 raise RuntimeError("DoclingService not initialized: processor is None")
             
-            block_containers = await self.processor.create_blocks(conv_res, page_number=page_number)
+            block_containers = await self.processor.create_blocks(doc, page_number=page_number)
             
             if block_containers is False:
                 raise ValueError("DoclingProcessor returned False - block creation failed")
@@ -249,22 +249,28 @@ def serialize_blocks_container(blocks_container: BlocksContainer) -> dict:
         raise TypeError(f"Failed to serialize BlocksContainer: {e}") from e
 
 
-def serialize_conversion_result(conv_res: ConversionResult) -> str:
-    """Serialize ConversionResult to base64-encoded pickle string"""
+def serialize_docling_doc(doc: DoclingDocument) -> str:
+    """Serialize DoclingDocument to JSON string.
+    
+    Uses the DoclingDocument's export_to_dict method for safe JSON serialization,
+    avoiding pickle's security vulnerabilities.
+    """
     try:
-        pickled = pickle.dumps(conv_res)
-        return base64.b64encode(pickled).decode('utf-8')
+        return doc.model_dump_json()
     except Exception as e:
-        raise TypeError(f"Failed to serialize ConversionResult: {e}") from e
+        raise TypeError(f"Failed to serialize DoclingDocument: {e}") from e
 
 
-def deserialize_conversion_result(serialized: str) -> ConversionResult:
-    """Deserialize base64-encoded pickle string to ConversionResult"""
+def deserialize_docling_doc(serialized: str) -> DoclingDocument:
+    """Deserialize JSON string to DoclingDocument.
+    
+    Returns a DoclingDocument since that's what
+    the create_blocks method actually needs.
+    """
     try:
-        pickled = base64.b64decode(serialized)
-        return pickle.loads(pickled)
+        return DoclingDocument.model_validate_json(serialized)
     except Exception as e:
-        raise TypeError(f"Failed to deserialize ConversionResult: {e}") from e
+        raise TypeError(f"Failed to deserialize DoclingDocument: {e}") from e
 
 
 @app.post("/parse-pdf", response_model=ParseResponse)
@@ -285,7 +291,7 @@ async def parse_pdf_endpoint(request: ParseRequest) -> ParseResponse:
             raise HTTPException(status_code=500, detail="Docling service not available")
 
         # Parse the PDF with timeout
-        conv_res = await asyncio.wait_for(
+        doc = await asyncio.wait_for(
             docling_service.parse_pdf_only(
                 request.record_name,
                 pdf_binary
@@ -293,8 +299,8 @@ async def parse_pdf_endpoint(request: ParseRequest) -> ParseResponse:
             timeout=PDF_PARSING_TIMEOUT_SECONDS
         )
 
-        # Serialize ConversionResult to base64-encoded pickle
-        serialized_result = await asyncio.to_thread(serialize_conversion_result, conv_res)
+        # Serialize ConversionResult document to JSON
+        serialized_result = await asyncio.to_thread(serialize_docling_doc, doc)
 
         return ParseResponse(
             success=True,
@@ -319,9 +325,9 @@ async def parse_pdf_endpoint(request: ParseRequest) -> ParseResponse:
 async def create_blocks_endpoint(request: CreateBlocksRequest) -> CreateBlocksResponse:
     """Create blocks from parse result (phase 2 - involves LLM calls)"""
     try:
-        # Deserialize the ConversionResult
+        # Deserialize the DoclingDocument from JSON
         try:
-            conv_res = await asyncio.to_thread(deserialize_conversion_result, request.parse_result)
+            doc = await asyncio.to_thread(deserialize_docling_doc, request.parse_result)
         except Exception as e:
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
@@ -335,7 +341,7 @@ async def create_blocks_endpoint(request: CreateBlocksRequest) -> CreateBlocksRe
         # Create blocks with timeout
         block_containers = await asyncio.wait_for(
             docling_service.create_blocks_from_parse_result(
-                conv_res,
+                doc,
                 page_number=request.page_number
             ),
             timeout=PDF_PROCESSING_TIMEOUT_SECONDS

@@ -114,19 +114,17 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
                     logger.info(f"   Treating as NEW_RECORD (version={version}, virtualRecordId={virtual_record_id})")
 
                 # Process the record using the same handler that processes Kafka messages
-                success = await record_message_handler({
+                # record_message_handler returns an async generator, so we need to consume it
+                async for event in record_message_handler({
                     "eventType": event_type,
                     "payload": payload
-                })
+                }):
+                    event_name = event.get("event", "unknown")
+                    logger.debug(f"   Recovery event: {event_name}")
 
-                if success:
-                    logger.info(
-                        f"✅ [{idx}/{len(in_progress_records)}] Successfully recovered record: {record_name}"
-                    )
-                else:
-                    logger.warning(
-                        f"⚠️ [{idx}/{len(in_progress_records)}] Failed to recover record: {record_name}"
-                    )
+                logger.info(
+                    f"✅ [{idx}/{len(in_progress_records)}] Successfully recovered record: {record_name}"
+                )
 
             except Exception as e:
                 logger.error(
@@ -157,7 +155,8 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
         record_kafka_consumer = MessagingFactory.create_consumer(
             broker_type="kafka",
             logger=logger,
-            config=record_kafka_consumer_config
+            config=record_kafka_consumer_config,
+            consumer_type="indexing"
         )
         record_message_handler = await KafkaUtils.create_record_message_handler(app_container)
         await record_kafka_consumer.start(record_message_handler)
