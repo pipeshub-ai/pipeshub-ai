@@ -355,19 +355,18 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             processed_record = await self._process_record(record, [], tx_store)
 
-            # Skip publishing re-indexing events for records with AUTO_INDEX_OFF status
-            if hasattr(record, 'indexing_status') and record.indexing_status == IndexingStatus.AUTO_INDEX_OFF.value:
+            # Skip publishing update events for records with AUTO_INDEX_OFF status
+            if hasattr(processed_record, 'indexing_status') and processed_record.indexing_status == IndexingStatus.AUTO_INDEX_OFF.value:
                 self.logger.debug(
-                    f"Skipping automatic indexing event for record {record.id} "
-                    f"with AUTO_INDEX_OFF status"
+                    f"Skipping content update event for record {record.id} with AUTO_INDEX_OFF status"
                 )
+                return
 
-            else:
-                await self.messaging_producer.send_message(
-                    "record-events",
-                    {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
-                    key=record.id
-                )
+            await self.messaging_producer.send_message(
+                "record-events",
+                {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
+                key=record.id
+            )
 
     async def on_record_metadata_update(self, record: Record) -> None:
         async with self.data_store_provider.transaction() as tx_store:
@@ -637,6 +636,9 @@ class DataSourceEntitiesProcessor:
                         self.logger.info(f"Updating existing user group with id: {user_group.id}")
                         user_group.updated_at = get_epoch_timestamp_in_ms()
 
+                        # To Delete the previously existing edges to user group and create new permissions
+                        await tx_store.delete_edges_to(to_key=f"{CollectionNames.GROUPS.value}/{user_group.id}", collection=CollectionNames.PERMISSION.value)
+
                     # 1. Upsert the user group document
                     # (This uses batch_upsert_user_groups and the to_arango... method)
                     await tx_store.batch_upsert_user_groups([user_group])
@@ -712,6 +714,9 @@ class DataSourceEntitiesProcessor:
                         role.id = existing_app_role.id
                         self.logger.info(f"Updating existing app role with id: {role.id}")
                         role.updated_at = get_epoch_timestamp_in_ms()
+
+                        # To Delete the previously existing edges to app role and create new permissions
+                        await tx_store.delete_edges_to(to_key=f"{CollectionNames.ROLES.value}/{role.id}", collection=CollectionNames.PERMISSION.value)
 
                     # 1. Upsert the app role document
                     await tx_store.batch_upsert_app_roles([role])

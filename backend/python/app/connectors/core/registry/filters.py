@@ -223,6 +223,7 @@ class SyncFilterKey(str, Enum):
     FOLDER_IDS = "folder_ids"
     FOLDERS = "folders"
     PROJECT_IDS = "project_ids"
+    PROJECT_KEYS = "project_keys"
     SITE_IDS = "site_ids"
     CHANNEL_IDS = "channel_ids"
 
@@ -273,6 +274,8 @@ class IndexingFilterKey(str, Enum):
     PAGE_ATTACHMENTS = "page_attachments"
     BLOGPOST_COMMENTS = "blogpost_comments"
     BLOGPOST_ATTACHMENTS = "blogpost_attachments"
+    ISSUE_COMMENTS = "issue_comments"
+    ISSUE_ATTACHMENTS = "issue_attachments"
 
 
 # Type to operators mapping (for validation and UI)
