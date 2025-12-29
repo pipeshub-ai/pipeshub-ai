@@ -661,39 +661,26 @@ class BoxConnector(BaseConnector):
 
     async def _get_app_users_by_emails(self, emails: List[str]) -> List[AppUser]:
         """
-        Get AppUser objects by their email addresses from database.
-
-        Args:
-            emails: List of user email addresses
-
-        Returns:
-            List of AppUser objects found in database
+        Get AppUser objects by their email addresses directly from the database.
         """
         if not emails:
             return []
 
         try:
-            # Fetch all users from database
-            all_app_users = await self.data_entities_processor.get_all_app_users(
-                connector_id=self.connector_id
-            )
-
-            self.logger.debug(f"Fetched {len(all_app_users)} total users from database for email lookup")
-
-            # Create email lookup set
-            email_set = set(emails)
-
-            # Filter users by email
-            filtered_users = [user for user in all_app_users if user.email in email_set]
+            async with self.data_store_provider.transaction() as tx_store:
+                filtered_users = await tx_store.get_app_users_by_emails(
+                    connector_id=self.connector_id,
+                    emails=emails
+                )
 
             if len(filtered_users) < len(emails):
                 missing_count = len(emails) - len(filtered_users)
-                self.logger.debug(f"  ⚠️ {missing_count} user(s) not found in database")
+                self.logger.debug(f"⚠️ {missing_count} user(s) not found in database for provided emails")
 
             return filtered_users
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get users by emails: {e}")
+            self.logger.error(f"❌ Failed to get users by emails: {e}", exc_info=True)
             return []
 
     async def _sync_user_groups(self) -> None:
@@ -703,6 +690,13 @@ class BoxConnector(BaseConnector):
         """
         try:
             self.logger.info("Syncing Box groups...")
+
+            all_users = await self.data_entities_processor.get_all_app_users(
+                connector_id=self.connector_id
+            )
+            user_map = {u.email.lower(): u for u in all_users if u.email}
+            
+            self.logger.info(f"Pre-fetched {len(user_map)} users for group sync lookup.")
 
             # Track all IDs found in Box
             found_box_group_ids = set()
@@ -729,13 +723,11 @@ class BoxConnector(BaseConnector):
                 for group in groups_data:
                     group_id = group.get('id')
 
-                    # Add to tracker
                     if group_id:
                         found_box_group_ids.add(group_id)
 
                     group_name = group.get('name', '')
 
-                    # Create AppUserGroup
                     app_user_group = AppUserGroup(
                         app_name=self.connector_name,
                         connector_id=self.connector_id,
@@ -750,22 +742,23 @@ class BoxConnector(BaseConnector):
                         group_id=group_id,
                         limit=1000
                     )
-                    # self.logger.info(f"Syncing group {group_name} with members {members_response}")
 
-                    user_emails = []
+                    group_member_users = []
+                    
                     if members_response.success:
                         memberships = members_response.data.get('entries', []) if members_response.data else []
                         for membership in memberships:
-                            user = membership.get('user', {})
-                            email = user.get('login')
+                            user_info = membership.get('user', {})
+                            email = user_info.get('login')
+                            
                             if email:
-                                user_emails.append(email)
+                                # Lookup user in our pre-fetched map
+                                found_user = user_map.get(email.lower())
+                                if found_user:
+                                    group_member_users.append(found_user)
 
-                    # Get AppUser objects for members
-                    app_users = await self._get_app_users_by_emails(user_emails)
-
-                    # Sync group and memberships
-                    await self.data_entities_processor.on_new_user_groups([(app_user_group, app_users)])
+                    # Sync group and memberships using the in-memory list
+                    await self.data_entities_processor.on_new_user_groups([(app_user_group, group_member_users)])
 
                 offset += limit
 
