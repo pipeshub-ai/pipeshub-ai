@@ -166,17 +166,8 @@ class EventService:
 
             connector = self._get_connector(connector_id)
             if not connector:
-                # Try to initialize the connector if it's not already initialized
-                self.logger.info(f"{connector_name.capitalize()} {connector_id} connector not initialized, attempting to initialize...")
-                init_success = await self._handle_init(connector_name, payload)
-                if not init_success:
-                    self.logger.error(f"{connector_name.capitalize()} {connector_id} connector failed to initialize")
-                    return False
-                # Try to get the connector again after initialization
-                connector = self._get_connector(connector_id)
-                if not connector:
-                    self.logger.error(f"{connector_name.capitalize()} {connector_id} connector still not available after initialization")
-                    return False
+                self.logger.error(f"{connector_name.capitalize()} {connector_id} connector not initialized")
+                return False
 
             connector_app_name = connector.app.get_app_name()
             # Get connector enum value

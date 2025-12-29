@@ -51,6 +51,7 @@ from app.connectors.core.base.token_service.oauth_service import (
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.services.base_arango_service import BaseArangoService
+from app.connectors.services.kafka_service import KafkaService
 from app.connectors.sources.google.admin.admin_webhook_handler import (
     AdminWebhookHandler,
 )
@@ -146,6 +147,11 @@ async def get_arango_service(request: Request) -> BaseArangoService:
     container: ConnectorAppContainer = request.app.container
     arango_service = await container.arango_service()
     return arango_service
+
+async def get_kafka_service(request: Request) -> KafkaService:
+    container: ConnectorAppContainer = request.app.container
+    kafka_service = container.kafka_service()
+    return kafka_service
 
 async def get_drive_webhook_handler(request: Request) -> Optional[AbstractDriveWebhookHandler]:
     try:
@@ -2274,6 +2280,7 @@ async def reindex_record_group(
     record_group_id: str,
     request: Request,
     arango_service: BaseArangoService = Depends(get_arango_service),
+    kafka_service: KafkaService = Depends(get_kafka_service),
 ) -> Dict:
     """
     Reindex all records in a record group up to a specified depth
@@ -2295,6 +2302,7 @@ async def reindex_record_group(
 
         logger.info(f"🔄 Attempting to reindex record group {record_group_id} with depth {depth}")
 
+        # Get record group data and validate permissions (does not publish events)
         result = await arango_service.reindex_record_group_records(
             record_group_id=record_group_id,
             depth=depth,
@@ -2302,21 +2310,52 @@ async def reindex_record_group(
             org_id=org_id
         )
 
-        if result["success"]:
-            logger.info(f"✅ Successfully initiated reindex for record group {record_group_id}")
+        if not result["success"]:
+            logger.error(f"❌ Failed to reindex record group {record_group_id}: {result.get('reason')}")
+            raise HTTPException(
+                status_code=result.get("code", 500),
+                detail=result.get("reason", "Failed to reindex record group")
+            )
+
+        # Publish reindex event (router is responsible for event publishing)
+        connector_id = result.get("connectorId")
+        connector_name = result.get("connectorName")
+        depth = result.get("depth", depth)
+
+        try:
+            connector_normalized = connector_name.replace(" ", "").lower()
+            event_type = f"{connector_normalized}.reindex"
+
+            payload = {
+                "orgId": org_id,
+                "recordGroupId": record_group_id,
+                "depth": depth,
+                "connectorId": connector_id
+            }
+
+            # Publish event directly using KafkaService
+            timestamp = get_epoch_timestamp_in_ms()
+            event = {
+                "eventType": event_type,
+                "timestamp": timestamp,
+                "payload": payload
+            }
+            await kafka_service.publish_event("sync-events", event)
+            logger.info(f"✅ Published {event_type} event for record group {record_group_id}")
+
             return {
                 "success": True,
                 "message": f"Reindex initiated for record group {record_group_id} with depth {depth}",
                 "recordGroupId": record_group_id,
                 "depth": depth,
-                "connector": result.get("connector"),
-                "eventPublished": result.get("eventPublished")
+                "connector": connector_id,
+                "eventPublished": True
             }
-        else:
-            logger.error(f"❌ Failed to reindex record group {record_group_id}: {result.get('reason')}")
+        except Exception as event_error:
+            logger.error(f"❌ Failed to publish reindex event: {str(event_error)}")
             raise HTTPException(
-                status_code=result.get("code", 500),
-                detail=result.get("reason", "Failed to reindex record group")
+                status_code=500,
+                detail=f"Failed to publish reindex event: {str(event_error)}"
             )
 
     except HTTPException:

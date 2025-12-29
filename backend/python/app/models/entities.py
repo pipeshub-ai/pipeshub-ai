@@ -214,6 +214,7 @@ class FileRecord(Record):
             org_id=arango_base_record["orgId"],
             record_name=arango_base_record["recordName"],
             record_type=RecordType(arango_base_record["recordType"]),
+            external_revision_id=arango_base_record.get("externalRevisionId", None),
             external_record_id=arango_base_record["externalRecordId"],
             version=arango_base_record["version"],
             origin=OriginTypes(arango_base_record["origin"]),

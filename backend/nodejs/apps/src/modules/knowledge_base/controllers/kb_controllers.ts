@@ -41,6 +41,13 @@ const logger = Logger.getInstance({
 });
 
 // Types and helpers for active connector validation
+interface ConnectorInfo {
+  _key: string;
+}
+
+interface ActiveConnectorsResponse {
+  connectors: ConnectorInfo[];
+}
 
 const normalizeAppName = (value: string): string =>
   value.replace(' ', '').toLowerCase();
@@ -50,26 +57,23 @@ const validateActiveConnector = async (
   appConfig: AppConfig,
   headers: Record<string, string>,
 ): Promise<void> => {
-  // Use the connector instance endpoint which checks existence and user access
-  // This is better than checking active connectors because:
-  // 1. It validates the connector exists (regardless of active status)
-  // 2. It checks user access permissions
-  // 3. For reindexing failed records, we should allow inactive connectors too
-
-  const connectorResponse = await executeConnectorCommand(
-    `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
+  const activeAppsResponse = await executeConnectorCommand(
+    `${appConfig.connectorBackend}/api/v1/connectors/active`,
     HttpMethod.GET,
     headers,
   );
 
-  if (connectorResponse.statusCode === 404) {
-    throw new BadRequestError(`Connector ${connectorId} not found or access denied`);
+  if (activeAppsResponse.statusCode !== 200) {
+    throw new InternalServerError('Failed to get active connectors');
   }
 
-  if (connectorResponse.statusCode !== 200) {
-    throw new InternalServerError(
-      `Failed to validate connector: ${connectorResponse.statusCode}`,
-    );
+  const data = activeAppsResponse.data as ActiveConnectorsResponse;
+  const connectors = data?.connectors || [];
+
+  const isAllowed = connectors.some((connector) => connector._key === connectorId);
+
+  if (!isAllowed) {
+    throw new BadRequestError(`Connector ${connectorId} not allowed`);
   }
 
   logger.debug('Connector validation successful', {

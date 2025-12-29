@@ -2444,8 +2444,8 @@ class BaseArangoService:
         org_id: str
     ) -> Dict:
         """
-        Reindex all records in a record group up to a specified depth
-        Validates permissions and publishes a reindex event
+        Get record group data and validate permissions for reindexing.
+        Does NOT publish events - that should be done by the caller (router).
 
         Args:
             record_group_id: Record group ID
@@ -2454,10 +2454,10 @@ class BaseArangoService:
             org_id: Organization ID
 
         Returns:
-            Dict: Result with success status and event publication info
+            Dict: Result with success status and connector information
         """
         try:
-            self.logger.info(f"🔄 Starting record group reindex for {record_group_id} with depth {depth} by user {user_id}")
+            self.logger.info(f"🔄 Validating record group reindex for {record_group_id} with depth {depth} by user {user_id}")
 
             # Handle negative depth: -1 means unlimited (set to MAX_REINDEX_DEPTH), other negatives are invalid (set to 0)
             if depth == -1:
@@ -2508,38 +2508,17 @@ class BaseArangoService:
                     "reason": permission_check["reason"]
                 }
 
-            try:
-                connector_normalized = connector_name.replace(" ", "").lower()
-                event_type = f"{connector_normalized}.reindex"
-
-                payload = {
-                    "orgId": org_id,
-                    "recordGroupId": record_group_id,
-                    "depth": depth,
-                    "connectorId": connector_id
-                }
-
-                await self._publish_sync_event(event_type, payload)
-
-                self.logger.info(f"✅ Published {event_type} event for record group {record_group_id}")
-
-                return {
-                    "success": True,
-                    "connector": connector_id,
-                    "eventPublished": True,
-                    "message": f"Successfully initiated reindex of record group {record_group_id} with depth {depth}"
-                }
-
-            except Exception as event_error:
-                self.logger.error(f"❌ Failed to publish reindex event: {str(event_error)}")
-                return {
-                    "success": False,
-                    "code": 500,
-                    "reason": f"Failed to publish reindex event: {str(event_error)}"
-                }
+            # Return success with connector information (caller will publish event)
+            return {
+                "success": True,
+                "connectorId": connector_id,
+                "connectorName": connector_name,
+                "depth": depth,
+                "recordGroupId": record_group_id
+            }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to reindex record group records: {str(e)}")
+            self.logger.error(f"❌ Failed to validate record group reindex: {str(e)}")
             return {
                 "success": False,
                 "code": 500,
@@ -2566,7 +2545,8 @@ class BaseArangoService:
             record_group_id: Record group ID
             connector_id: Connector ID (all records in group are from same connector)
             org_id: Organization ID (for security filtering)
-            depth: Depth for traversing children and nested record groups (0 = only direct records)
+            depth: Depth for traversing children and nested record groups (-1 = unlimited,
+                   0 = only direct records, 1 = direct + 1 level nested, etc.)
             limit: Maximum number of records to return (for pagination)
             offset: Number of records to skip (for pagination)
             transaction: Optional database transaction
@@ -2581,9 +2561,15 @@ class BaseArangoService:
                 f"limit: {limit}, offset: {offset}"
             )
 
-            # Validate depth - ensure it's non-negative
-            if depth < 0:
-                depth = 0
+            # Validate depth - must be >= -1
+            if depth < -1:
+                raise ValueError(
+                    f"Depth must be >= -1 (where -1 means unlimited). Got: {depth}"
+                )
+
+            # Determine max traversal depth (use 100 as practical unlimited)
+            # For depth=0, we set max_depth=0 so nested groups traversal returns nothing
+            max_depth = 100 if depth == -1 else (0 if depth < 0 else depth)
 
             # Handle limit/offset for pagination
             # Note: ArangoDB LIMIT syntax requires both offset and count: LIMIT offset, count
@@ -2606,7 +2592,7 @@ class BaseArangoService:
                 "record_group_id": record_group_id,
                 "connector_id": connector_id,
                 "org_id": org_id,
-                "depth": depth,
+                "max_depth": max_depth,
             }
 
             folder_filter = '''
@@ -2627,24 +2613,7 @@ class BaseArangoService:
                 FILTER isValidRecord
             '''
 
-            # Build conditional children traversal based on depth
-            # If depth is 0, skip children traversal entirely
-            nested_groups_traversal = ""
-
-            if depth > 0:
-                nested_groups_traversal = """
-                // Get nested record groups (child record groups) up to depth levels
-                // Start at 1..@depth to exclude the starting record group itself (already handled by directRecords)
-                LET nestedRecordGroups = (
-                    FOR nestedRg, rgEdge, path IN 1..@depth INBOUND recordGroup._id @@inherit_permissions
-                        FILTER IS_SAME_COLLECTION("recordGroups", nestedRg)
-                        FILTER nestedRg.orgId == @org_id OR nestedRg.orgId == null
-                        RETURN nestedRg
-                )
-                """
-            else:
-                nested_groups_traversal = "LET nestedRecordGroups = []"
-
+            # Build dynamic typeDoc conditions
             for collection, record_types in collection_to_types.items():
                 if len(record_types) == 1:
                     type_check = f"record.recordType == @type_{record_types[0].lower()}"
@@ -2671,30 +2640,31 @@ class BaseArangoService:
             else:
                 type_doc_expr = "null"
 
-            # Main query: Get records from record group and traverse nested record groups
+            # Main query: Unified traversal approach
+            # Collect all record groups (starting + nested) then get records from all groups
             query = f"""
             LET recordGroup = DOCUMENT(@@record_group_collection, @record_group_id)
             FILTER recordGroup != null
             FILTER recordGroup.orgId == @org_id
 
-            // Get all records directly connected to the record group
-            LET directRecords = (
-                FOR record, edge IN 1..1 INBOUND recordGroup._id @@inherit_permissions
-                    FILTER IS_SAME_COLLECTION("records", record)
-                    FILTER record.connectorId == @connector_id
-                    FILTER record.isDeleted != true
-                    FILTER record.orgId == @org_id OR record.orgId == null
-                    FILTER record.origin == "CONNECTOR"
-                    {folder_filter}
-                    RETURN record
-            )
+            // Collect all record groups: starting group + nested groups up to max_depth
+            // When max_depth is 0, only include the starting record group
+            // When max_depth > 0, traverse nested groups (1..@max_depth)
+            LET allRecordGroups = @max_depth > 0 ? UNION_DISTINCT(
+                [recordGroup],
+                FOR nestedRg, rgEdge, path IN 1..@max_depth INBOUND recordGroup._id @@inherit_permissions
+                    FILTER IS_SAME_COLLECTION("recordGroups", nestedRg)
+                    FILTER nestedRg.orgId == @org_id OR nestedRg.orgId == null
+                    RETURN nestedRg
+            ) : [recordGroup]
 
-            {nested_groups_traversal}
-
-            // Get records from nested record groups
-            LET nestedRecords = (
-                FOR nestedRg IN nestedRecordGroups
-                    FOR record, edge IN 1..1 INBOUND nestedRg._id @@inherit_permissions
+            // Get all records from all record groups in a single unified traversal
+            // Using OPTIONS for better performance with uniqueVertices
+            // Note: A record could be connected to multiple record groups, so we need deduplication
+            LET allRecordsRaw = (
+                FOR rg IN allRecordGroups
+                    FOR record, edge IN 1..1 INBOUND rg._id @@inherit_permissions
+                        OPTIONS {{bfs: true, uniqueVertices: "global"}}
                         FILTER IS_SAME_COLLECTION("records", record)
                         FILTER record.connectorId == @connector_id
                         FILTER record.isDeleted != true
@@ -2704,10 +2674,11 @@ class BaseArangoService:
                         RETURN record
             )
 
-            // Combine and deduplicate
-            LET allRecords = UNION_DISTINCT(
-                directRecords,
-                nestedRecords
+            // Deduplicate records by _id (equivalent to UNION_DISTINCT in original)
+            LET allRecords = (
+                FOR record IN allRecordsRaw
+                    COLLECT recordId = record._id INTO groups
+                    RETURN groups[0].record
             )
 
             // Sort and paginate
@@ -2795,6 +2766,12 @@ class BaseArangoService:
                 f"connector {connector_id}, org {org_id}, depth {depth}, "
                 f"include_parent: {include_parent}, limit: {limit}, offset: {offset}"
             )
+
+            # Validate depth - must be >= -1
+            if depth < -1:
+                raise ValueError(
+                    f"Depth must be >= -1 (where -1 means unlimited). Got: {depth}"
+                )
 
             # Early return if depth=0 and include_parent=false (nothing to return)
             if depth == 0 and not include_parent:
