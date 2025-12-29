@@ -254,22 +254,6 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             self.processed_messages[topic_partition] = []
         self.processed_messages[topic_partition].append(offset)
 
-    async def __start_processing_task(self, message, topic_partition: TopicPartition) -> None:
-        """Start a new task for processing a message with semaphore control"""
-        # Wait for a semaphore slot to become available
-        await self.semaphore.acquire()
-
-        # Create and start a new task
-        task = asyncio.create_task(self.__process_message_wrapper(message, topic_partition))
-        self.active_tasks.add(task)
-
-        # Clean up completed tasks
-        self.__cleanup_completed_tasks()
-
-        # Log current task count
-        self.logger.debug(
-            f"Active tasks: {len(self.active_tasks)}/{self.max_concurrent_tasks}"
-        )
 
     async def __process_message_wrapper(self, message, topic_partition: TopicPartition) -> None:
         """Wrapper to handle async task cleanup and semaphore release"""
