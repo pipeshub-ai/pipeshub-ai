@@ -418,7 +418,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.get_folder_by_id(folder_id))
-            return BoxResponse(success=True, data=response.to_dict())
+            return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -476,7 +476,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.update_folder_by_id(folder_id, name=name, parent=parent))
-            return BoxResponse(success=True, data=response.to_dict())
+            return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -505,7 +505,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.create_folder(name, parent))
-            return BoxResponse(success=True, data=response.to_dict())
+            return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -549,7 +549,7 @@ class BoxDataSource:
                 None,
                 lambda: manager.get_folder_items(folder_id, **params)
             )
-            return BoxResponse(success=True, data=response.to_dict())
+            return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -578,7 +578,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.copy_folder(folder_id, parent))
-            return BoxResponse(success=True, data=response.to_dict())
+            return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -746,7 +746,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.get_users(limit=limit, offset=offset))
-            return BoxResponse(success=True, data=response.to_dict())
+            return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -771,7 +771,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.get_groups())
-            return BoxResponse(success=True, data=response.to_dict())
+            return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -912,7 +912,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.get_group_memberships(group_id))
-            return BoxResponse(success=True, data=response.to_dict())
+            return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -1001,7 +1001,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.create_collaboration(item_id, item_type, accessible_by, role))
-            return BoxResponse(success=True, data=response.to_dict())
+            return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -1029,7 +1029,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.get_collaboration_by_id(collaboration_id))
-            return BoxResponse(success=True, data=response.to_dict())
+            return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -1058,7 +1058,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.update_collaboration(collaboration_id, role=role))
-            return BoxResponse(success=True, data=response.to_dict())
+            return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -1114,7 +1114,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.get_file_collaborations(file_id))
-            return BoxResponse(success=True, data=response.to_dict())
+            return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -1142,7 +1142,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.get_folder_collaborations(folder_id))
-            return BoxResponse(success=True, data=response.to_dict())
+            return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -1167,7 +1167,7 @@ class BoxDataSource:
                 # Handle additional parameters from kwargs
                 pass
             response = await loop.run_in_executor(None, lambda: manager.get_pending_collaborations())
-            return BoxResponse(success=True, data=response.to_dict())
+            return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -3999,7 +3999,7 @@ class BoxDataSource:
             response = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: client.folders.get_folder_by_id("0")
             )
-            return BoxResponse(success=True, data=response.to_dict())
+            return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
@@ -4010,7 +4010,7 @@ class BoxDataSource:
             response = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: client.folders.get_folder_by_id(folder_id)
             )
-            return BoxResponse(success=True, data=response.to_dict())
+            return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 

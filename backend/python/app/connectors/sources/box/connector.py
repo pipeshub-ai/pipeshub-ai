@@ -350,6 +350,27 @@ class BoxConnector(BaseConnector):
         # Fallback to current time
         return int(datetime.now(timezone.utc).timestamp() * 1000)
 
+    def _to_dict(self, obj: Optional[object]) -> Dict[str, Optional[object]]:
+        """
+        Safely converts Box SDK objects or mixed responses to dictionary.
+        Returns Dict[str, Optional[object]] to satisfy strict linter (ANN401).
+        """
+        if obj is None:
+            return {}
+        
+        if isinstance(obj, dict):
+            return obj
+            
+        if hasattr(obj, 'to_dict') and callable(getattr(obj, 'to_dict')):
+            return obj.to_dict()
+            
+        if hasattr(obj, 'response_object'):
+            val = getattr(obj, 'response_object')
+            if isinstance(val, dict):
+                return val
+                
+        return {}
+
     async def _process_box_entry(
         self,
         entry: Dict,
@@ -523,7 +544,8 @@ class BoxConnector(BaseConnector):
                     self.logger.debug(f"Could not fetch permissions for {item_type} {item_id}: {response.error}")
                 return permissions
 
-            collaborations = response.data.get('entries', []) if response.data else []
+            data = self._to_dict(response.data)
+            collaborations = data.get('entries', [])
 
             for collab in collaborations:
                 accessible_by = collab.get('accessible_by', {})
@@ -628,7 +650,8 @@ class BoxConnector(BaseConnector):
                     self.logger.error(f"Failed to fetch users: {response.error}")
                     break
 
-                users_data = response.data.get('entries', []) if response.data else []
+                data = self._to_dict(response.data)
+                users_data = data.get('entries', [])
 
                 if not users_data:
                     break
@@ -661,23 +684,28 @@ class BoxConnector(BaseConnector):
 
     async def _get_app_users_by_emails(self, emails: List[str]) -> List[AppUser]:
         """
-        Get AppUser objects by their email addresses directly from the database.
+        Get AppUser objects by their email addresses.
+        Uses singular fetches since batch fetch is unavailable on tx_store.
         """
         if not emails:
             return []
 
+        found_users = []
         try:
             async with self.data_store_provider.transaction() as tx_store:
-                filtered_users = await tx_store.get_app_users_by_emails(
-                    connector_id=self.connector_id,
-                    emails=emails
-                )
-
-            if len(filtered_users) < len(emails):
-                missing_count = len(emails) - len(filtered_users)
+                for email in emails:
+                    user = await tx_store.get_app_user_by_email(
+                        connector_id=self.connector_id,
+                        email=email
+                    )
+                    if user:
+                        found_users.append(user)
+            
+            if len(found_users) < len(emails):
+                missing_count = len(emails) - len(found_users)
                 self.logger.debug(f"⚠️ {missing_count} user(s) not found in database for provided emails")
 
-            return filtered_users
+            return found_users
 
         except Exception as e:
             self.logger.error(f"❌ Failed to get users by emails: {e}", exc_info=True)
@@ -715,7 +743,8 @@ class BoxConnector(BaseConnector):
                     self.logger.error(f"Failed to fetch groups: {response.error}")
                     break
 
-                groups_data = response.data.get('entries', []) if response.data else []
+                data = self._to_dict(response.data)
+                groups_data = data.get('entries', [])
 
                 if not groups_data:
                     break
@@ -746,7 +775,8 @@ class BoxConnector(BaseConnector):
                     group_member_users = []
                     
                     if members_response.success:
-                        memberships = members_response.data.get('entries', []) if members_response.data else []
+                        members_data = self._to_dict(members_response.data) 
+                        memberships = members_data.get('entries', [])
                         for membership in memberships:
                             user_info = membership.get('user', {})
                             email = user_info.get('login')
@@ -828,7 +858,7 @@ class BoxConnector(BaseConnector):
                     self.logger.warning(f"Could not fetch root folder for user {user.email}: {response.error}")
                     continue
 
-                root_folder = response.data if response.data else {}
+                root_folder = self._to_dict(response.data)
 
                 # Create RecordGroup for user's drive (their "All Files" root storage)
                 record_group = RecordGroup(
@@ -943,7 +973,7 @@ class BoxConnector(BaseConnector):
                 self.logger.error(f"Failed to fetch items for folder {folder_id}: {response.error}")
                 break
 
-            data = response.data
+            data = self._to_dict(response.data)
             items = data.get('entries', [])
             total_count = data.get('total_count', 0)
 
@@ -1098,8 +1128,8 @@ class BoxConnector(BaseConnector):
                 )
 
                 if response.success:
-                    data = response.data
-                    next_stream_pos = getattr(data, 'next_stream_position', None)
+                    data = self._to_dict(response.data)
+                    next_stream_pos = data.get('next_stream_position')
 
                     if next_stream_pos:
                         await self.box_cursor_sync_point.update_sync_point(
@@ -1193,9 +1223,9 @@ class BoxConnector(BaseConnector):
                          continue
                     break
 
-                data = response.data if response.data else {}
-                events = getattr(data, 'entries', [])
-                next_stream_position = getattr(data, 'next_stream_position', None)
+                data = self._to_dict(response.data)
+                events = data.get('entries', [])
+                next_stream_position = data.get('next_stream_position')
 
                 if events:
                     self.logger.info(f"📥 [Incremental] Fetched {len(events)} new events from Box.")
@@ -1280,20 +1310,18 @@ class BoxConnector(BaseConnector):
                         user_response = await self.data_source.users_get_user_by_id(removed_user_box_id)
 
                         if user_response.success and user_response.data:
-                            user_data = user_response.data
-                            # Handle both Dict and Object responses
-                            if isinstance(user_data, dict):
-                                removed_email = user_data.get('login')
-                            else:
-                                removed_email = getattr(user_data, 'login', None)
+                            user_data = self._to_dict(user_response.data)
+                            removed_email = user_data.get('login')
                         else:
                             self.logger.warning(f"⚠️ Failed to fetch user details for ID {removed_user_box_id}: {user_response.error}")
 
                     except AttributeError:
                         try:
+                            # Fallback attempt
                             user_response = await self.data_source.users_get_user(removed_user_box_id)
-                            if user_response.success and user_response.data:
-                                removed_email = user_response.data.get('login')
+                            if user_response.success:
+                                user_data = self._to_dict(user_response.data)
+                                removed_email = user_data.get('login')
                         except Exception as e:
                              self.logger.error(f"❌ Failed to resolve Box ID {removed_user_box_id} (Fallback): {e}")
 
@@ -1394,22 +1422,13 @@ class BoxConnector(BaseConnector):
                 if isinstance(res, Exception) or not getattr(res, 'success', False):
                     continue
 
-                file_obj = res.data
-
-                # 5: Convert SDK Object to Dictionary
-                # _process_box_entry EXPECTS a Dict. We must convert the SDK object.
-                file_entry = {}
-                if hasattr(file_obj, 'to_dict'):
-                    file_entry = file_obj.to_dict()
-                elif hasattr(file_obj, 'response_object'):
-                    file_entry = file_obj.response_object
-                elif isinstance(file_obj, dict):
-                    file_entry = file_obj
-                else:
-                    self.logger.warning(f"Could not convert File Object {type(file_obj)} to dict")
+                file_entry = self._to_dict(res.data)
+                
+                if not file_entry:
+                    self.logger.warning("Converted file entry is empty")
                     continue
 
-                # 3. Reuse existing _process_box_entry logic with the clean Dict
+                # 3. Reuse existing _process_box_entry logic
                 update_obj = await self._process_box_entry(
                     entry=file_entry,
                     user_id=owner_id,
@@ -1481,13 +1500,11 @@ class BoxConnector(BaseConnector):
             return None
 
         # 1. Determine the user context
-        # In our sync logic, external_record_group_id IS the User ID who owns/sees the file.
         context_user_id = record.external_record_group_id
 
         try:
             # 2. Set As-User Context
             if context_user_id:
-                # self.logger.info(f"🎭 Impersonating user {context_user_id} to fetch URL for {record.record_name}")
                 await self.data_source.set_as_user_context(context_user_id)
 
             # 3. Try to get existing file info
@@ -1497,50 +1514,34 @@ class BoxConnector(BaseConnector):
 
             download_url = None
 
-            if response.success and response.data:
-                file_data = response.data
-
-                # Check for shared link safely
-                shared_link = None
-                if isinstance(file_data, dict):
-                    shared_link = file_data.get('shared_link')
-                else:
-                    shared_link = getattr(file_data, 'shared_link', None)
-
-                if shared_link:
-                    if isinstance(shared_link, dict):
-                        download_url = shared_link.get('download_url')
-                    else:
-                        download_url = getattr(shared_link, 'download_url', None)
+            if response.success:
+                file_data = self._to_dict(response.data)
+                
+                # shared_link might be None, dict, or Object (if _to_dict was shallow, though it usually handles it)
+                shared_link = file_data.get('shared_link')
+                if isinstance(shared_link, dict):
+                    download_url = shared_link.get('download_url')
+                elif hasattr(shared_link, 'download_url'):
+                    # Fallback for SDK objects that survived
+                    download_url = getattr(shared_link, 'download_url', None)
 
             # 4. If no URL found, create a temporary shared link
             if not download_url:
-                # self.logger.info(f"No existing shared link for {record.record_name}, creating one...")
                 link_response = await self.data_source.shared_links_create_shared_link_for_file(
                     file_id=record.external_record_id,
                     access='company'
                 )
 
-                if link_response.success and link_response.data:
-                    file_data = link_response.data
-                    shared_link = None
-                    if isinstance(file_data, dict):
-                        shared_link = file_data.get('shared_link')
-                    else:
-                        shared_link = getattr(file_data, 'shared_link', None)
-
-                    if shared_link:
-                        if isinstance(shared_link, dict):
-                            download_url = shared_link.get('download_url')
-                        else:
-                            download_url = getattr(shared_link, 'download_url', None)
+                if link_response.success:
+                    file_data = self._to_dict(link_response.data)
+                    shared_link = file_data.get('shared_link')
+                    
+                    if isinstance(shared_link, dict):
+                        download_url = shared_link.get('download_url')
                 else:
                     self.logger.warning(f"Failed to create shared link for {record.record_name}: {link_response.error}")
 
-            if download_url:
-                return download_url
-
-            return None
+            return str(download_url) if download_url else None
 
         except Exception as e:
             self.logger.error(f"Error creating signed URL for record {record.id}: {e}", exc_info=True)
@@ -1616,10 +1617,6 @@ class BoxConnector(BaseConnector):
     async def reindex_records(self, records: List[Record]) -> None:
         """
         Reindex a list of Box records.
-        1. Groups records by Owner (to handle As-User context).
-        2. Fetches fresh data from Box.
-        3. Compares with DB state.
-        4. Pushes updates or reindex events.
         """
         try:
             if not records:
@@ -1628,11 +1625,9 @@ class BoxConnector(BaseConnector):
 
             self.logger.info(f"Starting reindex for {len(records)} Box records")
 
-            # 1. Group records by Owner (external_record_group_id)
-            # We need this to set the correct 'As-User' context for the API calls
+            # 1. Group records by Owner
             records_by_owner: Dict[str, List[Record]] = {}
             for record in records:
-                # Default to current user if group ID is missing
                 owner_id = record.external_record_group_id or self.current_user_id
                 if owner_id:
                     records_by_owner.setdefault(owner_id, []).append(record)
@@ -1643,45 +1638,28 @@ class BoxConnector(BaseConnector):
             # 2. Process per Owner
             for owner_id, owner_records in records_by_owner.items():
                 try:
-                    # Set Context
                     await self.data_source.set_as_user_context(owner_id)
 
-                    # Create fetch tasks
                     tasks = []
                     for rec in owner_records:
                         if rec.is_file:
                             tasks.append(self.data_source.files_get_file_by_id(rec.external_record_id))
                         else:
-                            # It is a folder
                             tasks.append(self.data_source.folders_get_folder_by_id(rec.external_record_id))
 
-                    # Execute in parallel
                     responses = await asyncio.gather(*tasks, return_exceptions=True)
 
                     for record, response in zip(owner_records, responses):
 
-                        # Handle API Errors (e.g. 404 Not Found)
                         if isinstance(response, Exception) or not getattr(response, 'success', False):
                             self.logger.warning(f"Could not fetch record {record.record_name} ({record.external_record_id}) during reindex. It may be deleted.")
                             continue
 
-                        box_item = response.data
-
-                        # Convert SDK Object to Dict
-                        entry_dict = {}
-                        if hasattr(box_item, 'to_dict'):
-                            entry_dict = box_item.to_dict()
-                        elif hasattr(box_item, 'response_object'):
-                            entry_dict = box_item.response_object
-                        elif isinstance(box_item, dict):
-                            entry_dict = box_item
+                        entry_dict = self._to_dict(response.data)
 
                         if not entry_dict:
                             continue
 
-                        # Process entry to check for changes
-                        # We pass 'incremental_sync_reindex' as email just as a placeholder
-                        # because _process_box_entry mainly needs ID for logic.
                         update_result = await self._process_box_entry(
                             entry=entry_dict,
                             user_id=owner_id,
@@ -1691,7 +1669,6 @@ class BoxConnector(BaseConnector):
                         )
 
                         if update_result:
-                            # Separation Logic: Changed vs Unchanged
                             if update_result.is_updated or update_result.is_new:
                                 updated_records_batch.append((update_result.record, update_result.new_permissions or []))
                             else:
@@ -1700,10 +1677,9 @@ class BoxConnector(BaseConnector):
                 except Exception as ex:
                     self.logger.error(f"Error reindexing batch for owner {owner_id}: {ex}")
                 finally:
-                    # Always clear context before moving to next owner
                     await self.data_source.clear_as_user_context()
 
-            # 3. Commit Updates to DB
+            # 3. Commit Updates
             if updated_records_batch:
                 self.logger.info(f"📝 Updating {len(updated_records_batch)} records that changed at source.")
                 await self.data_entities_processor.on_new_records(updated_records_batch)
