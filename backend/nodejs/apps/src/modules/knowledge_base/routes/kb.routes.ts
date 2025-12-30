@@ -7,6 +7,7 @@ import {
   updateRecord,
   getRecordBuffer,
   reindexRecord,
+  reindexRecordGroup,
   getConnectorStats,
   reindexFailedRecords,
   resyncConnectorRecords,
@@ -36,6 +37,7 @@ import {
   getRecordByIdSchema,
   updateRecordSchema,
   deleteRecordSchema,
+  reindexRecordGroupSchema,
   reindexFailedRecordSchema,
   resyncConnectorSchema,
   createKBSchema,
@@ -224,6 +226,15 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(reindexRecordSchema),
     reindexRecord(appConfig),
+  );
+
+  // reindex a record group
+  router.post(
+    '/reindex/record-group/:recordGroupId',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(reindexRecordGroupSchema),
+    reindexRecordGroup(appConfig),
   );
 
   // connector stats

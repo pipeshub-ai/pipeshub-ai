@@ -2085,6 +2085,10 @@ class ConfluenceConnector(BaseConnector):
                         base_url = self_link.split("/wiki/")[0] + "/wiki"
                         web_url = f"{base_url}{webui}"
 
+            # Set parent_record_type to match record_type when parent exists
+            # This allows placeholder parent creation when parent doesn't exist yet
+            parent_record_type = record_type if parent_external_record_id else None
+
             return WebpageRecord(
                 org_id=self.data_entities_processor.org_id,
                 record_name=item_title,
@@ -2098,6 +2102,7 @@ class ConfluenceConnector(BaseConnector):
                 record_group_type=RecordGroupType.CONFLUENCE_SPACES,
                 external_record_group_id=external_record_group_id,
                 parent_external_record_id=parent_external_record_id,
+                parent_record_type=parent_record_type,
                 weburl=web_url,
                 mime_type=MimeTypes.HTML.value,
                 source_created_at=source_created_at,
