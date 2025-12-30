@@ -345,7 +345,7 @@ const CitationHoverCard = ({
                 title={citation.metadata?.recordName}
                 arrow
                 placement="top"
-                sx={{ zIndex: 2999, placement: 'top',}}
+                sx={{ zIndex: 2999,}}
               >
                 <Box
                   component="span"
