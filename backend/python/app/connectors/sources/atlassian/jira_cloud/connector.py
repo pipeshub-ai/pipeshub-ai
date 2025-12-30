@@ -10,7 +10,6 @@ from typing import (
     Callable,
     Dict,
     List,
-    NoReturn,
     Optional,
     Set,
     Tuple,
@@ -918,18 +917,9 @@ class JiraConnector(BaseConnector):
             projects_list = response_data.get("values", [])
 
             # Check if there are more results
-            total = response_data.get("total", 0)
+            # Use Jira's isLast flag as the source of truth for pagination
             is_last = response_data.get("isLast", False)
-            has_more = not is_last and (start_at + len(projects_list) < total)
-
-            # If search term provided, filter results client-side for better matching
-            if search and projects_list:
-                search_lower = search.lower()
-                projects_list = [
-                    p for p in projects_list
-                    if search_lower in p.get("name", "").lower() or
-                       search_lower in p.get("key", "").lower()
-                ]
+            has_more = not is_last
 
         except Exception as e:
             self.logger.error(f"❌ Error fetching projects: {e}")
@@ -1016,7 +1006,7 @@ class JiraConnector(BaseConnector):
                     if allowed_keys:
                         self.logger.info(f"🔍 Project keys filter applied: {allowed_keys}")
                     else:
-                        self.logger.info("🔍 Project keys filter is empty, will fetch all projects")
+                        self.logger.info("🔍 Project keys filter is empty, will fetch no projects")
             # Fetch projects
             projects, raw_projects = await self._fetch_projects(allowed_keys)
 
@@ -2233,7 +2223,7 @@ class JiraConnector(BaseConnector):
         # If specific project keys are provided, fetch only those projects
         # Note: Empty list [] means "no projects" (user explicitly set empty filter)
         # None means "fetch all projects" (no filter configured)
-        if project_keys is not None and len(project_keys) > 0:
+        if project_keys is not None:
             self.logger.info(f"📁 Fetching specific projects: {project_keys}")
             datasource = await self._get_fresh_datasource()
             for project_key in project_keys:
