@@ -22,7 +22,10 @@ import {
   Link,
 } from '@mui/material';
 
-import { extractCleanTextFragment, addTextFragmentToUrl } from 'src/sections/knowledgebase/utils/utils';
+import {
+  extractCleanTextFragment,
+  addTextFragmentToUrl,
+} from 'src/sections/knowledgebase/utils/utils';
 import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
 
 // Styled components for consistent design
@@ -326,6 +329,7 @@ const CitationHoverCard = ({
                       color: 'primary.main',
                     }
                   : {},
+                pb:1,
               }}
             >
               <Icon
@@ -337,9 +341,19 @@ const CitationHoverCard = ({
                   color: theme.palette.primary.main,
                 }}
               />
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {citation.metadata?.recordName || 'Document'}
-              </span>
+              <Tooltip
+                title={citation.metadata?.recordName}
+                arrow
+                placement="top"
+                sx={{ zIndex: 2999, placement: 'top',}}
+              >
+                <Box
+                  component="span"
+                  style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                >
+                  {citation.metadata?.recordName || 'Document'}
+                </Box>
+              </Tooltip>
             </DocumentTitle>
 
             <Box sx={{ display: 'flex', alignItems: 'center' }}>

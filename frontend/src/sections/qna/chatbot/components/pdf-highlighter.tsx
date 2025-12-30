@@ -972,9 +972,7 @@ const PdfHighlighterComp = ({
                     screenshot,
                     isScrolledTo
                   ) => {
-                    // Only show brackets on the citation that matches selectedCitationId
-                    // Use selectedCitationId (which is updated when clicking sidebar or when highlightCitation changes)
-                    // This ensures only ONE highlight shows brackets at a time
+                    // Only the selected citation should be highlighted
                     const isHighlighted = selectedCitationId !== null && selectedCitationId === highlight.id;
 
                     const isTextHighlight = !highlight.content?.image;
@@ -983,8 +981,8 @@ const PdfHighlighterComp = ({
                         className="highlight-wrapper"
                         style={
                           {
-                            '--highlight-color': isHighlighted ? '#4caf50' : '#e6f4f1',
-                            '--highlight-opacity': isHighlighted ? '0.6' : '0.4',
+                            '--highlight-color': '#4caf50',
+                            '--highlight-opacity': '0.6',
                           } as CSSProperties
                         }
                       >
@@ -1019,7 +1017,12 @@ const PdfHighlighterComp = ({
                       </Popup>
                     );
                   }}
-                  highlights={highlights}
+                  highlights={
+                    // Only show the selected citation highlight, or all if none is selected
+                    selectedCitationId
+                      ? highlights.filter((h) => h.id === selectedCitationId)
+                      : []
+                  }
                 />
               </div>
             )}
