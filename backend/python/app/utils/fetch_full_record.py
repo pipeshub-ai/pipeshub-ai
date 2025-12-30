@@ -72,7 +72,7 @@ async def _fetch_multiple_records_impl(
     }
     """
     records = list(virtual_record_id_to_result.values())
-    
+
     found_records = []
     not_found_ids = []
 

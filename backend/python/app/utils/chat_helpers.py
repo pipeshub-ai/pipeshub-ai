@@ -424,7 +424,7 @@ async def get_record(meta: Dict[str, Any],virtual_record_id: str,virtual_record_
                 record["origin"] = arango_record.get("origin")
                 record["connector_name"] = arango_record.get("connectorName")
                 record["weburl"] = arango_record.get("webUrl")
-                
+
             virtual_record_id_to_result[virtual_record_id] = record
         else:
             virtual_record_id_to_result[virtual_record_id] = None
