@@ -2488,7 +2488,6 @@ class JiraConnector(BaseConnector):
             issue_id = issue_data["issue_id"]
             issue_key = issue_data["issue_key"]
             issue_name = issue_data["issue_name"]
-            issue_data["description"]
             issue_type = issue_data["issue_type"]
             is_epic = issue_data["is_epic"]
             is_subtask = issue_data["is_subtask"]
