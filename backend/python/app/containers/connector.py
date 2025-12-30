@@ -58,6 +58,7 @@ from app.core.celery_app import CeleryApp
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
 from app.health.health import Health
 from app.migrations.connector_migration_service import ConnectorMigrationService
+from app.migrations.folder_hierarchy_migration import run_folder_hierarchy_migration
 from app.migrations.permission_edge_migration import (
     run_permissions_edge_migration,
     run_permissions_to_kb_migration,
@@ -995,6 +996,32 @@ async def initialize_container(container) -> bool:
                 await mark_migration_completed("permissionsToKb", result_permissions_to_kb_migration)
             else:
                 logger.error(f"Failed: {result_permissions_to_kb_migration.get('message')}")
+
+        migration_state = await get_migration_state()
+
+        if migration_completed(migration_state, "folderHierarchy"):
+            logger.info("⏭️ Folder Hierarchy migration already completed, skipping.")
+        else:
+            logger.info("🔄 Running Folder Hierarchy migration...")
+            result_folder_hierarchy_migration = await run_folder_hierarchy_migration(
+                arango_service, config_service, logger, dry_run=False
+            )
+            if result_folder_hierarchy_migration.get("success"):
+                folders_migrated = result_folder_hierarchy_migration.get('folders_migrated', 0)
+                edges_created = result_folder_hierarchy_migration.get('edges_created', 0)
+                edges_updated = result_folder_hierarchy_migration.get('edges_updated', 0)
+
+                if result_folder_hierarchy_migration.get('skipped'):
+                    logger.info("⏭️ Folder Hierarchy migration already completed (checked by service)")
+                else:
+                    logger.info(f"✅ Migrated: {folders_migrated} folders")
+                    logger.info(f"✅ Edges created: {edges_created}")
+                    logger.info(f"✅ Edges updated: {edges_updated}")
+
+                await mark_migration_completed("folderHierarchy", result_folder_hierarchy_migration)
+            else:
+                error_msg = result_folder_hierarchy_migration.get('error') or result_folder_hierarchy_migration.get('message', 'Unknown error')
+                logger.error(f"❌ Folder Hierarchy migration failed: {error_msg}")
 
         return True
 
