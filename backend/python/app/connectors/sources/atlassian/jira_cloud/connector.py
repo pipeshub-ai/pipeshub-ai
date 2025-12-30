@@ -888,24 +888,17 @@ class JiraConnector(BaseConnector):
         # Calculate startAt for pagination (Jira uses 0-based startAt)
         start_at = (page - 1) * limit
 
-        projects_list = []
-        has_more = False
-
         try:
-            # Build query parameters for search
-            # Jira search_projects supports query parameter for filtering
-            query = None
-            if search:
-                # Use JQL-like search: search for projects matching the search term
-                # Jira project search supports name and key matching
-                query = search
+            # Jira search_projects supports a query parameter for filtering by name or key.
+            # Passing None is handled by the API, so we can directly assign search.
+            query = search
 
-            # Fetch projects using search_projects API
+            # Fetch projects using the search_projects API.
+            # No expand parameter needed - we only use 'key' and 'name' which are in default response.
             response = await datasource.search_projects(
                 maxResults=limit,
                 startAt=start_at,
-                query=query,
-                expand=["description", "url"]
+                query=query
             )
 
             if not response or response.status != HttpStatusCode.OK.value:
@@ -916,33 +909,31 @@ class JiraConnector(BaseConnector):
             response_data = response.json()
             projects_list = response_data.get("values", [])
 
-            # Check if there are more results
-            # Use Jira's isLast flag as the source of truth for pagination
+            # Use Jira's isLast flag as the source of truth for pagination.
             is_last = response_data.get("isLast", False)
             has_more = not is_last
 
+            # Convert to FilterOption objects.
+            options = [
+                FilterOption(
+                    id=project.get("key"),  # Use key as id since filter expects keys.
+                    label=f"{project.get('name', '')} ({project.get('key', '')})"
+                )
+                for project in projects_list
+                if project.get("key") and project.get("name")
+            ]
+
+            return FilterOptionsResponse(
+                success=True,
+                options=options,
+                page=page,
+                limit=limit,
+                has_more=has_more,
+                cursor=None  # Jira doesn't use cursor-based pagination.
+            )
         except Exception as e:
             self.logger.error(f"❌ Error fetching projects: {e}")
             raise RuntimeError(f"Failed to fetch project options: {str(e)}")
-
-        # Convert to FilterOption objects
-        options = [
-            FilterOption(
-                id=project.get("key"),  # Use key as id since filter expects keys
-                label=f"{project.get('name', '')} ({project.get('key', '')})"
-            )
-            for project in projects_list
-            if project.get("key") and project.get("name")
-        ]
-
-        return FilterOptionsResponse(
-            success=True,
-            options=options,
-            page=page,
-            limit=limit,
-            has_more=has_more,
-            cursor=None  # Jira doesn't use cursor-based pagination
-        )
 
     async def handle_webhook_notification(self, notification: Dict) -> None:
         pass
@@ -978,9 +969,6 @@ class JiraConnector(BaseConnector):
                 self.connector_id,
                 self.logger
             )
-
-            self.logger.info(f"🔍 Sync filters: {self.sync_filters}")
-            self.logger.info(f"🔍 Indexing filters: {self.indexing_filters}")
 
             users = await self.data_entities_processor.get_all_active_users()
 
@@ -2245,7 +2233,8 @@ class JiraConnector(BaseConnector):
                     self.logger.error(f"❌ Error fetching project {project_key}: {e}")
                     continue
         else:
-            # project_keys is None or empty - fetch all projects
+            # project_keys is None - fetch all projects
+            # Note: Empty list [] is handled above (fetches no projects)
             self.logger.info("📁 Fetching all projects")
             start_at = 0
 
