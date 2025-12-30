@@ -7,6 +7,7 @@ from app.config.constants.arangodb import (
     CollectionNames,
     MimeTypes,
     OriginTypes,
+    RecordRelations,
 )
 from app.config.constants.service import config_node_constants
 from app.connectors.core.base.data_store.data_store import (
@@ -18,12 +19,16 @@ from app.models.entities import (
     AppRole,
     AppUser,
     AppUserGroup,
+    CommentRecord,
     FileRecord,
     IndexingStatus,
+    MailRecord,
     Record,
     RecordGroup,
     RecordType,
+    TicketRecord,
     User,
+    WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.messaging.interface.producer import IMessagingProducer
@@ -47,6 +52,13 @@ class UserGroupWithMembers:
     users: List[Tuple[AppUser, Permission]]
 
 class DataSourceEntitiesProcessor:
+    ATTACHMENT_CONTAINER_TYPES = [
+        RecordType.MAIL,
+        RecordType.WEBPAGE,
+        RecordType.CONFLUENCE_PAGE,
+        RecordType.CONFLUENCE_BLOGPOST,
+        RecordType.SHAREPOINT_PAGE,
+    ]
     def __init__(self, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
         self.logger = logger
         self.data_store_provider: DataStoreProvider = data_store_provider
@@ -79,36 +91,84 @@ class DataSourceEntitiesProcessor:
                 raise Exception("No organizations found in the database. Cannot initialize DataSourceEntitiesProcessor.")
             self.org_id = orgs[0]["_key"]
 
+    def _create_placeholder_parent_record(
+        self,
+        parent_external_id: str,
+        parent_record_type: RecordType,
+        record: Record,
+    ) -> Record:
+        """
+        Create a placeholder parent record based on the parent record type.
+
+        Args:
+            parent_external_id: External ID of the parent record
+            parent_record_type: Type of the parent record
+            record: The child record (for context like connector info)
+
+        Returns:
+            A placeholder Record instance of the appropriate type
+        """
+        base_params = {
+            "org_id": self.org_id,
+            "external_record_id": parent_external_id,
+            "record_name": parent_external_id,  # Will be updated when real parent is synced
+            "origin": OriginTypes.CONNECTOR.value,
+            "connector_name": record.connector_name,
+            "connector_id": record.connector_id,
+            "record_type": parent_record_type,
+            "record_group_type": record.record_group_type,
+            "version": 0,
+            "mime_type": MimeTypes.UNKNOWN.value,
+        }
+
+        # Map RecordType to appropriate Record class
+        if parent_record_type == RecordType.FILE:
+            return FileRecord(
+                **base_params,
+                is_file=False,
+                extension=None,
+                mime_type=MimeTypes.FOLDER.value,
+            )
+        elif parent_record_type in [RecordType.WEBPAGE, RecordType.CONFLUENCE_PAGE,
+                                     RecordType.CONFLUENCE_BLOGPOST, RecordType.SHAREPOINT_PAGE]:
+            # All webpage-like types use WebpageRecord
+            return WebpageRecord(**base_params)
+        elif parent_record_type == RecordType.MAIL:
+            return MailRecord(**base_params)
+        elif parent_record_type == RecordType.TICKET:
+            return TicketRecord(**base_params)
+        elif parent_record_type in [RecordType.COMMENT, RecordType.INLINE_COMMENT]:
+            return CommentRecord(
+                **base_params,
+                author_source_id="",  # Will be updated when real parent is synced
+            )
+        else:
+            raise ValueError(
+                f"Unsupported parent record type: {parent_record_type.value}. for _handle_parent_record"
+            )
+
     async def _handle_parent_record(self, record: Record, tx_store: TransactionStore) -> None:
         if record.parent_external_record_id:
-            parent_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
-                                                                     external_id=record.parent_external_record_id)
+            parent_record = await tx_store.get_record_by_external_id(
+                connector_id=record.connector_id,
+                external_id=record.parent_external_record_id
+            )
 
-            if parent_record is None and record.parent_record_type is RecordType.FILE and record.record_type is RecordType.FILE:
-                # Create a new parent record
-                parent_record = FileRecord(
-                    org_id=self.org_id,
-                    external_record_id=record.parent_external_record_id,
-                    record_name=record.parent_external_record_id,
-                    origin=OriginTypes.CONNECTOR.value,
-                    connector_name=record.connector_name,
-                    connector_id=record.connector_id,
-                    record_type=record.parent_record_type,
-                    record_group_type=record.record_group_type,
-                    version=0,
-                    is_file=False,
-                    extension=None,
-                    mime_type=MimeTypes.FOLDER.value,
+            # Create placeholder parent record if not found (generic for all record types)
+            if parent_record is None and record.parent_record_type:
+                parent_record = self._create_placeholder_parent_record(
+                    parent_external_id=record.parent_external_record_id,
+                    parent_record_type=record.parent_record_type,
+                    record=record,
                 )
                 await tx_store.batch_upsert_records([parent_record])
 
             if parent_record and isinstance(parent_record, Record):
-                if (record.record_type == RecordType.FILE and
-                    record.parent_external_record_id and
-                    (record.parent_record_type == RecordType.MAIL or record.parent_record_type == RecordType.WEBPAGE)):
-                    relation_type = 'ATTACHMENT'
+                if (record.record_type == RecordType.FILE and record.parent_external_record_id and
+                    record.parent_record_type in self.ATTACHMENT_CONTAINER_TYPES):
+                    relation_type = RecordRelations.ATTACHMENT.value
                 else:
-                    relation_type = 'PARENT_CHILD'
+                    relation_type = RecordRelations.PARENT_CHILD.value
                 await tx_store.create_record_relation(parent_record.id, record.id, relation_type)
 
     async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> None:

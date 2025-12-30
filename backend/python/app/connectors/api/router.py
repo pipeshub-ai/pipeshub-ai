@@ -40,9 +40,7 @@ from app.config.constants.arangodb import (
     RecordRelations,
     RecordTypes,
 )
-from app.config.constants.http_status_code import (
-    HttpStatusCode,
-)
+from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.api.middleware import WebhookAuthVerifier
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -54,6 +52,7 @@ from app.connectors.core.base.token_service.oauth_service import (
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.services.base_arango_service import BaseArangoService
+from app.connectors.services.kafka_service import KafkaService
 from app.connectors.sources.google.admin.admin_webhook_handler import (
     AdminWebhookHandler,
 )
@@ -149,6 +148,11 @@ async def get_arango_service(request: Request) -> BaseArangoService:
     container: ConnectorAppContainer = request.app.container
     arango_service = await container.arango_service()
     return arango_service
+
+async def get_kafka_service(request: Request) -> KafkaService:
+    container: ConnectorAppContainer = request.app.container
+    kafka_service = container.kafka_service()
+    return kafka_service
 
 async def get_drive_webhook_handler(request: Request) -> Optional[AbstractDriveWebhookHandler]:
     try:
@@ -2191,7 +2195,12 @@ async def reindex_single_record(
     arango_service: BaseArangoService = Depends(get_arango_service),
 ) -> Dict:
     """
-    Reindex a single record with permission validation
+    Reindex a single record with permission validation.
+
+    Request Body (optional):
+        depth: int - Depth of children to reindex.
+               -1 = unlimited, 0 = only this record (default),
+               1 = direct children, 2 = children + grandchildren, etc.
     """
     try:
         container = request.app.container
@@ -2199,25 +2208,36 @@ async def reindex_single_record(
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
 
-        logger.info(f"🔄 Attempting to reindex record {record_id}")
+        # Parse optional depth from request body
+        depth = 0  # Default: only this record
+        try:
+            request_body = await request.json()
+            depth = request_body.get("depth", 0)
+        except json.JSONDecodeError:
+            # No body or invalid JSON - use default depth
+            pass
+
+        logger.info(f"🔄 Attempting to reindex record {record_id} with depth {depth}")
 
         result = await arango_service.reindex_single_record(
             record_id=record_id,
             user_id=user_id,
             org_id=org_id,
+            depth=depth,
             request=request
         )
 
         if result["success"]:
-            logger.info(f"✅ Successfully initiated reindex for record {record_id}")
+            logger.info(f"✅ Successfully initiated reindex for record {record_id} with depth {depth}")
             return {
                 "success": True,
-                "message": f"Reindex initiated for record {record_id}",
+                "message": f"Reindex initiated for record {record_id}" + (f" with depth {depth}" if depth != 0 else ""),
                 "recordId": result.get("recordId"),
                 "recordName": result.get("recordName"),
                 "connector": result.get("connector"),
                 "eventPublished": result.get("eventPublished"),
-                "userRole": result.get("userRole")
+                "userRole": result.get("userRole"),
+                "depth": depth
             }
         else:
             logger.error(f"❌ Failed to reindex record {record_id}: {result.get('reason')}")
@@ -2254,6 +2274,99 @@ async def get_connector_stats_endpoint(
     except Exception as e:
         logger.error(f"Error getting connector stats: {str(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Internal server error while getting connector stats: {str(e)}")
+
+@router.post("/api/v1/record-groups/{record_group_id}/reindex")
+@inject
+async def reindex_record_group(
+    record_group_id: str,
+    request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service),
+    kafka_service: KafkaService = Depends(get_kafka_service),
+) -> Dict:
+    """
+    Reindex all records in a record group up to a specified depth
+    """
+    try:
+        container = request.app.container
+        logger = container.logger()
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+
+        # Parse optional depth from request body
+        depth = 0  # Default to 0 (only direct records)
+        try:
+            request_body = await request.json()
+            depth = request_body.get("depth", 0)
+        except json.JSONDecodeError:
+            # No body or invalid JSON - use default depth
+            depth = 0
+
+        logger.info(f"🔄 Attempting to reindex record group {record_group_id} with depth {depth}")
+
+        # Get record group data and validate permissions (does not publish events)
+        result = await arango_service.reindex_record_group_records(
+            record_group_id=record_group_id,
+            depth=depth,
+            user_id=user_id,
+            org_id=org_id
+        )
+
+        if not result["success"]:
+            logger.error(f"❌ Failed to reindex record group {record_group_id}: {result.get('reason')}")
+            raise HTTPException(
+                status_code=result.get("code", 500),
+                detail=result.get("reason", "Failed to reindex record group")
+            )
+
+        # Publish reindex event (router is responsible for event publishing)
+        connector_id = result.get("connectorId")
+        connector_name = result.get("connectorName")
+        depth = result.get("depth", depth)
+
+        try:
+            connector_normalized = connector_name.replace(" ", "").lower()
+            event_type = f"{connector_normalized}.reindex"
+
+            payload = {
+                "orgId": org_id,
+                "recordGroupId": record_group_id,
+                "depth": depth,
+                "connectorId": connector_id
+            }
+
+            # Publish event directly using KafkaService
+            timestamp = get_epoch_timestamp_in_ms()
+            event = {
+                "eventType": event_type,
+                "timestamp": timestamp,
+                "payload": payload
+            }
+            await kafka_service.publish_event("sync-events", event)
+            logger.info(f"✅ Published {event_type} event for record group {record_group_id}")
+
+            return {
+                "success": True,
+                "message": f"Reindex initiated for record group {record_group_id} with depth {depth}",
+                "recordGroupId": record_group_id,
+                "depth": depth,
+                "connector": connector_id,
+                "eventPublished": True
+            }
+        except Exception as event_error:
+            logger.error(f"❌ Failed to publish reindex event: {str(event_error)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to publish reindex event: {str(event_error)}"
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error reindexing record group {record_group_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error while reindexing record group: {str(e)}"
+        )
 
 async def check_beta_connector_access(
     connector_type: str,
