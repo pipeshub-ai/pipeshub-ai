@@ -211,14 +211,14 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
                 FilterOption(id="heif", label=".heif"),
             ]
         ))
-        .add_filter_field(FilterField(
-            name="shared",
-            display_name="Index Shared Items",
-            filter_type=FilterType.BOOLEAN,
-            category=FilterCategory.INDEXING,
-            description="Enable indexing of shared items",
-            default_value=True
-        ))
+        # .add_filter_field(FilterField(
+        #     name="shared",
+        #     display_name="Index Shared Items",
+        #     filter_type=FilterType.BOOLEAN,
+        #     category=FilterCategory.INDEXING,
+        #     description="Enable indexing of shared items",
+        #     default_value=True
+        # ))
         .with_webhook_config(True, ["file.added", "file.modified", "file.deleted"])
         .with_scheduled_config(True, 60)
         .add_sync_custom_field(CommonFields.batch_size_field())
@@ -380,7 +380,6 @@ class DropboxIndividualConnector(BaseConnector):
             RecordUpdate object or None if entry should be skipped
         """
         try:
-
             # 0. Apply date filters
             if not self._pass_date_filters(
                 entry, modified_after, modified_before, created_after, created_before
@@ -389,7 +388,7 @@ class DropboxIndividualConnector(BaseConnector):
 
             if not self._pass_extension_filter(entry):
                 self.logger.debug(f"Skipping item {entry.name} (ID: {entry.id}) due to extention filters.")
-                return
+                return None
 
             # 1. Handle Deleted Items (Deletion from db not implemented yet)
             if isinstance(entry, DeletedMetadata):
@@ -656,10 +655,11 @@ class DropboxIndividualConnector(BaseConnector):
                     created_after=created_after,
                     created_before=created_before
                 )
-                if record_update:
-                    if record_update.record:
-                        if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                            record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                if record_update and record_update.record:
+                    if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                        record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                    if record_update.record.is_shared and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True):
+                        record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
                     yield (record_update.record, record_update.new_permissions or [], record_update)
                 await asyncio.sleep(0)
@@ -758,7 +758,7 @@ class DropboxIndividualConnector(BaseConnector):
             return True
         
         # 2. Get the extensions filter
-        extensions_filter = self.sync_filters.get("extensions")
+        extensions_filter = self.sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
         
         # If no filter configured or filter is empty, allow all files
         if extensions_filter is None or extensions_filter.is_empty():

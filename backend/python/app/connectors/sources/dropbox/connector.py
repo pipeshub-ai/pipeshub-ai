@@ -562,6 +562,14 @@ class DropboxConnector(BaseConnector):
                     shared_folder_id=shared_folder_id
                 )
 
+                is_shared = False
+                if new_permissions is not None and len(new_permissions) > 1:
+                    is_shared = True
+                if new_permissions is not None and len(new_permissions) == 1:
+                    is_shared = new_permissions[0].type == PermissionType.GROUP
+                
+                file_record.is_shared = is_shared
+
                 # If no explicit permissions were found (e.g., personal file),
                 # add the owner's permission
                 if not new_permissions:
@@ -651,8 +659,10 @@ class DropboxConnector(BaseConnector):
                     created_after=created_after,
                     created_before=created_before
                 )
-                if record_update:
-                    if record_update.record and not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                if record_update and record_update.record:
+                    if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                        record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                    if record_update.record.is_shared and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True):
                         record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
                     yield (record_update.record, record_update.new_permissions or [], record_update)
@@ -752,7 +762,7 @@ class DropboxConnector(BaseConnector):
             return True
         
         # 2. Get the extensions filter
-        extensions_filter = self.sync_filters.get("extensions")
+        extensions_filter = self.sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
         
         # If no filter configured or filter is empty, allow all files
         if extensions_filter is None or extensions_filter.is_empty():

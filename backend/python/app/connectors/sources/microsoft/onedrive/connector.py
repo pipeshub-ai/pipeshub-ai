@@ -264,7 +264,6 @@ class OneDriveConnector(BaseConnector):
         """
         try:
 
-            print("\n\n\n\n\n !!!!!!!!!!!!!!!!!!!Processing item:", item)
             # Apply Date Filters
             if not self._pass_date_filters(item):
                 self.logger.debug(f"Skipping item {item.name} (ID: {item.id}) due to date filters.")
@@ -583,9 +582,7 @@ class OneDriveConnector(BaseConnector):
         
         # 4. Get the list of extensions from the filter value
         allowed_extensions = extensions_filter.value
-        print("--DEBUG-- Allowed extensions:", allowed_extensions)
         if not isinstance(allowed_extensions, list):
-            print("--DEBUG-- Invalid filter value type:", type(allowed_extensions))
             return True  # Invalid filter value, allow the file
         
         # Normalize extensions (lowercase, without dots)
