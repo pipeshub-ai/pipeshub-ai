@@ -59,12 +59,10 @@ class FilterOption:
     Used for MULTISELECT and LIST filters with static or dynamic options.
 
     Args:
-        id: Unique identifier (e.g., space ID, channel ID)
-        key: Value to store in filter (e.g., space key, channel name)
+        id: Unique identifier (e.g., space ID, channel ID) - value stored in filter
         label: Display text shown in UI (e.g., space name, channel display name)
     """
     id: str
-    key: str
     label: str
 
     def to_dict(self) -> Dict[str, str]:
