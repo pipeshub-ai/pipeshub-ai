@@ -3139,7 +3139,6 @@ class ConfluenceConnector(BaseConnector):
         options = [
             FilterOption(
                 id=space.get("key"),  # Frontend will use this value, backend expects keys
-                key=space.get("id"),
                 label=space.get("name")
             )
             for space in spaces_list
@@ -3234,7 +3233,6 @@ class ConfluenceConnector(BaseConnector):
         options = [
             FilterOption(
                 id=p.get("id"),
-                key=p.get("id"),
                 label=p.get('title')
             )
             for p in pages_list
@@ -3328,7 +3326,6 @@ class ConfluenceConnector(BaseConnector):
         options = [
             FilterOption(
                 id=bp.get("id"),
-                key=bp.get("id"),
                 label=bp.get('title')
             )
             for bp in blogposts_list
