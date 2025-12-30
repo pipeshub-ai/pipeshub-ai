@@ -180,5 +180,5 @@ image_*.png
 
 .cursorignore
 backend/python/cleanup.ps1
-pyrightconfig.json
 .vscode/settings.json
+pyrightconfig.json
