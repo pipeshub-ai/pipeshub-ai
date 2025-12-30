@@ -5012,20 +5012,6 @@ async def toggle_connector_instance(
                     detail="Connector must be configured before enabling"
                 )
 
-
-        # Cleanup connector when disabling
-        if toggle_type == "sync" and current_sync_status and not target_status:
-            # Disabling sync - cleanup connector from container
-            if hasattr(container, 'connectors_map') and connector_id in container.connectors_map:
-                logger.info(f"Cleaning up connector {connector_id} as it's being disabled")
-                existing_connector = container.connectors_map.pop(connector_id)
-                try:
-                    if hasattr(existing_connector, 'cleanup'):
-                        await existing_connector.cleanup()
-                    logger.info(f"Successfully cleaned up connector {connector_id}")
-                except Exception as e:
-                    logger.error(f"Error cleaning up connector {connector_id}: {e}")
-
         # Update connector status
         updates = {
             status_field: target_status,

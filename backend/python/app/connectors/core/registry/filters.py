@@ -59,12 +59,10 @@ class FilterOption:
     Used for MULTISELECT and LIST filters with static or dynamic options.
 
     Args:
-        id: Unique identifier (e.g., space ID, channel ID)
-        key: Value to store in filter (e.g., space key, channel name)
+        id: Unique identifier (e.g., space ID, channel ID) - value stored in filter
         label: Display text shown in UI (e.g., space name, channel display name)
     """
     id: str
-    key: str
     label: str
 
     def to_dict(self) -> Dict[str, str]:
@@ -223,6 +221,7 @@ class SyncFilterKey(str, Enum):
     FOLDER_IDS = "folder_ids"
     FOLDERS = "folders"
     PROJECT_IDS = "project_ids"
+    PROJECT_KEYS = "project_keys"
     SITE_IDS = "site_ids"
     CHANNEL_IDS = "channel_ids"
 
@@ -273,6 +272,8 @@ class IndexingFilterKey(str, Enum):
     PAGE_ATTACHMENTS = "page_attachments"
     BLOGPOST_COMMENTS = "blogpost_comments"
     BLOGPOST_ATTACHMENTS = "blogpost_attachments"
+    ISSUE_COMMENTS = "issue_comments"
+    ISSUE_ATTACHMENTS = "issue_attachments"
 
 
 # Type to operators mapping (for validation and UI)
