@@ -10,7 +10,6 @@ from typing import (
     Callable,
     Dict,
     List,
-    NoReturn,
     Optional,
     Set,
     Tuple,
@@ -38,8 +37,11 @@ from app.connectors.core.registry.connector_builder import (
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterField,
+    FilterOption,
+    FilterOptionsResponse,
     FilterType,
     IndexingFilterKey,
+    OptionSourceType,
     SyncFilterKey,
     load_connector_filters,
 )
@@ -678,7 +680,9 @@ async def adf_to_text_with_images(
             display_name="Project Keys",
             filter_type=FilterType.LIST,
             category=FilterCategory.SYNC,
-            description="Filter issues by project keys (e.g., PROJ1, PROJ2)"
+            description="Filter issues by project keys (e.g., PROJ1, PROJ2)",
+            default_value=[],
+            option_source_type=OptionSourceType.DYNAMIC
         ))
         .add_filter_field(CommonFields.modified_date_filter("Filter issues by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter issues by creation date."))
@@ -754,17 +758,6 @@ class JiraConnector(BaseConnector):
         Initialize Jira client using proper Client + DataSource architecture
         """
         try:
-            # Load filters
-            self.sync_filters, self.indexing_filters = await load_connector_filters(
-                self.config_service,
-                "jira",
-                self.connector_id,
-                self.logger
-            )
-
-            self.logger.info(f"🔍 Sync filters: {self.sync_filters}")
-            self.logger.info(f"🔍 Indexing filters: {self.indexing_filters}")
-
             # Use JiraClient.build_from_services() to create client with proper auth
             client = await JiraClient.build_from_services(
                 logger=self.logger,
@@ -856,9 +849,91 @@ class JiraConnector(BaseConnector):
         limit: int = 20,
         search: Optional[str] = None,
         cursor: Optional[str] = None
-    ) -> NoReturn:
-        """Jira connector does not support dynamic filter options."""
-        raise NotImplementedError("Jira connector does not support dynamic filter options")
+    ) -> FilterOptionsResponse:
+        """
+        Get dynamic filter options for Jira filters with pagination.
+
+        Supports:
+        - project_keys: All available Jira projects
+
+        Args:
+            filter_key: Filter field name
+            page: Page number (1-indexed)
+            limit: Items per page
+            search: Search text to filter project names/keys
+            cursor: Not used (Jira uses startAt-based pagination)
+
+        Returns:
+            FilterOptionsResponse with options and pagination metadata
+        """
+        if filter_key == "project_keys":
+            return await self._get_project_options(page, limit, search)
+        else:
+            raise ValueError(f"Unsupported filter key: {filter_key}")
+
+    async def _get_project_options(
+        self,
+        page: int,
+        limit: int,
+        search: Optional[str]
+    ) -> FilterOptionsResponse:
+        """Fetch available Jira projects with pagination.
+
+        Uses search_projects API with optional search term filtering.
+        Jira uses startAt/maxResults pagination (not cursor-based).
+        """
+        # Get fresh datasource with refreshed OAuth token
+        datasource = await self._get_fresh_datasource()
+
+        # Calculate startAt for pagination (Jira uses 0-based startAt)
+        start_at = (page - 1) * limit
+
+        try:
+            # Jira search_projects supports a query parameter for filtering by name or key.
+            # Passing None is handled by the API, so we can directly assign search.
+            query = search
+
+            # Fetch projects using the search_projects API.
+            # No expand parameter needed - we only use 'key' and 'name' which are in default response.
+            response = await datasource.search_projects(
+                maxResults=limit,
+                startAt=start_at,
+                query=query
+            )
+
+            if not response or response.status != HttpStatusCode.OK.value:
+                raise RuntimeError(
+                    f"Failed to fetch projects: HTTP {response.status if response else 'No response'}"
+                )
+
+            response_data = response.json()
+            projects_list = response_data.get("values", [])
+
+            # Use Jira's isLast flag as the source of truth for pagination.
+            is_last = response_data.get("isLast", False)
+            has_more = not is_last
+
+            # Convert to FilterOption objects.
+            options = [
+                FilterOption(
+                    id=project.get("key"),  # Use key as id since filter expects keys.
+                    label=f"{project.get('name', '')} ({project.get('key', '')})"
+                )
+                for project in projects_list
+                if project.get("key") and project.get("name")
+            ]
+
+            return FilterOptionsResponse(
+                success=True,
+                options=options,
+                page=page,
+                limit=limit,
+                has_more=has_more,
+                cursor=None  # Jira doesn't use cursor-based pagination.
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Error fetching projects: {e}")
+            raise RuntimeError(f"Failed to fetch project options: {str(e)}")
 
     async def handle_webhook_notification(self, notification: Dict) -> None:
         pass
@@ -887,6 +962,14 @@ class JiraConnector(BaseConnector):
             if not self.cloud_id:
                 await self.init()
 
+            # Load sync and indexing filters (loaded in run_sync to ensure latest values)
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service,
+                "jira",
+                self.connector_id,
+                self.logger
+            )
+
             users = await self.data_entities_processor.get_all_active_users()
 
             if not users:
@@ -908,7 +991,10 @@ class JiraConnector(BaseConnector):
                 project_keys_filter = self.sync_filters.get(SyncFilterKey.PROJECT_KEYS)
                 if project_keys_filter:
                     allowed_keys = project_keys_filter.get_value(default=[])
-
+                    if allowed_keys:
+                        self.logger.info(f"🔍 Project keys filter applied: {allowed_keys}")
+                    else:
+                        self.logger.info("🔍 Project keys filter is empty, will fetch no projects")
             # Fetch projects
             projects, raw_projects = await self._fetch_projects(allowed_keys)
 
@@ -2123,7 +2209,10 @@ class JiraConnector(BaseConnector):
         projects: List[Dict[str, Any]] = []
 
         # If specific project keys are provided, fetch only those projects
-        if project_keys is not None and project_keys:
+        # Note: Empty list [] means "no projects" (user explicitly set empty filter)
+        # None means "fetch all projects" (no filter configured)
+        if project_keys is not None:
+            self.logger.info(f"📁 Fetching specific projects: {project_keys}")
             datasource = await self._get_fresh_datasource()
             for project_key in project_keys:
                 try:
@@ -2144,7 +2233,8 @@ class JiraConnector(BaseConnector):
                     self.logger.error(f"❌ Error fetching project {project_key}: {e}")
                     continue
         else:
-            # project_keys is None or empty - fetch all projects
+            # project_keys is None - fetch all projects
+            # Note: Empty list [] is handled above (fetches no projects)
             self.logger.info("📁 Fetching all projects")
             start_at = 0
 
