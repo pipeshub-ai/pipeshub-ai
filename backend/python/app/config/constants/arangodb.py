@@ -46,7 +46,7 @@ class Connectors(Enum):
 
     CONFLUENCE = "CONFLUENCE"
     JIRA = "JIRA"
-
+    BOX = "BOX"
     DROPBOX = "DROPBOX"
     DROPBOX_PERSONAL = "DROPBOX PERSONAL"
     WEB = "WEB"
@@ -62,6 +62,7 @@ class AppGroups(Enum):
     ATLASSIAN = "Atlassian"
     MICROSOFT = "Microsoft"
     DROPBOX = "Dropbox"
+    BOX = "Box"
     SERVICENOW = "Servicenow"
     WEB = "Web"
     BOOKSTACK = "BookStack"
