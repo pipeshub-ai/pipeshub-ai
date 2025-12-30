@@ -371,7 +371,7 @@ async def execute_tool_calls(
 
         # Execute all tools in parallel
         tool_results_inner = await asyncio.gather(*tool_tasks, return_exceptions=False)
-        
+
         records = []
         # Process results and yield events
         for tool_result in tool_results_inner:
