@@ -632,11 +632,12 @@ async def adf_to_text_with_images(
 @ConnectorBuilder("Jira")\
     .in_group(AppGroups.ATLASSIAN.value)\
     .with_auth_type("OAUTH")\
-    .with_description("Sync issues from Jira Cloud")\
-    .with_categories(["Storage"])\
+    .with_description("Sync issues, comments, and users from Jira Cloud")\
+    .with_categories(["Project Management", "Collaboration"])\
     .with_scopes([ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/jira.svg")
+        .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
             "Jira Cloud API Setup",
             "https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/",
@@ -669,6 +670,8 @@ async def adf_to_text_with_images(
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
         .with_oauth_urls(AUTHORIZE_URL, TOKEN_URL, AtlassianScope.get_full_access())
         .add_filter_field(FilterField(
             name="project_keys",
@@ -730,7 +733,6 @@ class JiraConnector(BaseConnector):
         self.data_source: Optional[JiraDataSource] = None
         self.cloud_id: Optional[str] = None
         self.site_url: Optional[str] = None
-        self._sync_in_progress: bool = False
         self.connector_id = connector_id
         self.connector_name = Connectors.JIRA
 
@@ -747,7 +749,7 @@ class JiraConnector(BaseConnector):
         self.sync_filters = None
         self.indexing_filters = None
 
-    async def init(self) -> None:
+    async def init(self) -> bool:
         """
         Initialize Jira client using proper Client + DataSource architecture
         """
@@ -756,6 +758,7 @@ class JiraConnector(BaseConnector):
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service,
                 "jira",
+                self.connector_id,
                 self.logger
             )
 
@@ -764,8 +767,9 @@ class JiraConnector(BaseConnector):
 
             # Use JiraClient.build_from_services() to create client with proper auth
             client = await JiraClient.build_from_services(
-                self.logger,
-                self.config_service
+                logger=self.logger,
+                config_service=self.config_service,
+                connector_instance_id=self.connector_id
             )
 
             # Store client for token updates
@@ -784,15 +788,18 @@ class JiraConnector(BaseConnector):
             self.site_url = resources[0].url
 
             self.logger.info("✅ Jira client initialized successfully using Client + DataSource architecture")
+            return True
+
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize Jira client: {e}")
-            raise
+            return False
 
     async def _get_access_token(self) -> str:
         """
         Get access token from config
         """
-        config = await self.config_service.get_config(f"{OAUTH_JIRA_CONFIG_PATH}")
+        config_path = OAUTH_JIRA_CONFIG_PATH.format(connector_id=self.connector_id)
+        config = await self.config_service.get_config(config_path)
         access_token = config.get("credentials", {}).get("access_token") if config else None
         if not access_token:
             raise ValueError("Jira access token not found in configuration")
@@ -815,7 +822,8 @@ class JiraConnector(BaseConnector):
             raise Exception("Jira client not initialized. Call init() first.")
 
         # Fetch current config from etcd (async I/O)
-        config = await self.config_service.get_config("/services/connectors/jira/config")
+        config_path = OAUTH_JIRA_CONFIG_PATH.format(connector_id=self.connector_id)
+        config = await self.config_service.get_config(config_path)
 
         if not config:
             raise Exception("Jira configuration not found")
@@ -831,7 +839,15 @@ class JiraConnector(BaseConnector):
         internal_client = self.external_client.get_client()
         # Extract token from Authorization header (format: "Bearer {token}")
         auth_header = internal_client.headers.get("Authorization", "")
-        auth_header.replace("Bearer ", "").strip() if auth_header.startswith("Bearer ") else ""
+        current_token = auth_header.replace("Bearer ", "").strip() if auth_header.startswith("Bearer ") else ""
+
+        # Update client's token if it changed (mutation)
+        if current_token != fresh_token:
+            self.logger.debug("🔄 Updating client with refreshed access token")
+            internal_client.headers["Authorization"] = f"Bearer {fresh_token}"
+
+        # Return datasource with updated client
+        return JiraDataSource(self.external_client)
 
     async def get_filter_options(
         self,
@@ -846,14 +862,6 @@ class JiraConnector(BaseConnector):
 
     async def handle_webhook_notification(self, notification: Dict) -> None:
         pass
-
-        # # Update client's token if it changed (mutation)
-        # if current_token != fresh_token:
-        #     self.logger.debug("🔄 Updating client with refreshed access token")
-        #     internal_client.headers["Authorization"] = f"Bearer {fresh_token}"
-
-        # # Return datasource with updated client
-        # return JiraDataSource(self.external_client)
 
     def _parse_jira_timestamp(self, timestamp_str: Optional[str]) -> int:
         """
@@ -875,13 +883,6 @@ class JiraConnector(BaseConnector):
         """
         Run sync of Jira projects and issues - only new/updated tickets
         """
-        # Check if sync is already in progress
-        if self._sync_in_progress:
-            self.logger.warning("⚠️ Sync already in progress, skipping this run")
-            return
-
-        self._sync_in_progress = True
-
         try:
             if not self.cloud_id:
                 await self.init()
@@ -937,8 +938,6 @@ class JiraConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error during Jira sync: {e}", exc_info=True)
             raise
-        finally:
-            self._sync_in_progress = False
 
     async def _get_issues_sync_checkpoint(self) -> Optional[int]:
         """
@@ -1047,10 +1046,21 @@ class JiraConnector(BaseConnector):
             if last_issue_timestamp:
                 last_issue_updated_in_batch = last_issue_timestamp
 
-            # Update project sync point after each batch
+            # Update project sync point after each batch (only if we processed issues)
+            # This prevents last_sync_time from getting ahead of last_issue_updated
+            if last_issue_updated_in_batch:
+                current_time = get_epoch_timestamp_in_ms()
+                # Always save last_issue_updated (works for both resume and next incremental sync)
+                # last_sync_time is just metadata for tracking when checkpoint was updated
+                await self._update_project_sync_checkpoint(
+                    project_key,
+                    last_sync_time=current_time,
+                    last_issue_updated=last_issue_updated_in_batch
+                )
+
+        # Final checkpoint update if we processed any issues (ensures last_sync_time stays close to last_issue_updated)
+        if last_issue_updated_in_batch:
             current_time = get_epoch_timestamp_in_ms()
-            # Always save last_issue_updated (works for both resume and next incremental sync)
-            # last_sync_time is just metadata for tracking when checkpoint was updated
             await self._update_project_sync_checkpoint(
                 project_key,
                 last_sync_time=current_time,
@@ -1232,6 +1242,7 @@ class JiraConnector(BaseConnector):
 
             app_user = AppUser(
                 app_name=Connectors.JIRA,
+                connector_id=self.connector_id,
                 source_user_id=account_id,
                 org_id=self.data_entities_processor.org_id,
                 email=email,
@@ -1709,6 +1720,7 @@ class JiraConnector(BaseConnector):
                     # Create AppUserGroup (always create, even if no members)
                     user_group = AppUserGroup(
                         app_name=Connectors.JIRA,
+                        connector_id=self.connector_id,
                         source_user_group_id=group_id,
                         name=group_name,
                         org_id=self.data_entities_processor.org_id,
@@ -1936,11 +1948,18 @@ class JiraConnector(BaseConnector):
                         role_data = role_response.json()
                         actors = role_data.get("actors", [])
 
+                        # Extract available fields from role_data
+                        role_name_display = role_data.get("name", role_name)
+
                         # Build AppRole with external_id matching Permission format
                         app_role = AppRole(
                             app_name=Connectors.JIRA,
+                            connector_id=self.connector_id,
                             source_role_id=f"{project_key}_{role_id}",
-                            name=f"{project_key} - {role_name}",
+                            name=f"{project_key} - {role_name_display}",
+                            org_id=self.data_entities_processor.org_id,
+                            source_created_at=None,  # Jira API doesn't provide role creation timestamp
+                            source_updated_at=None   # Jira API doesn't provide role update timestamp
                         )
 
                         # Step 3: Extract member users from actors
@@ -2047,10 +2066,18 @@ class JiraConnector(BaseConnector):
                 lead_data = project.get("lead")
 
                 # Create AppRole for project lead (even if no lead exists - to clean up old edges)
+                # Extract project timestamps if available
+                project_created = project.get("createdAt")
+                project_updated = project.get("updatedAt")
+
                 app_role = AppRole(
                     app_name=Connectors.JIRA,
+                    connector_id=self.connector_id,
                     source_role_id=f"{project_key}_projectLead",
-                    name=f"{project_key} - Project Lead"
+                    name=f"{project_key} - Project Lead",
+                    org_id=self.data_entities_processor.org_id,
+                    source_created_at=self._parse_jira_timestamp(project_created) if project_created else None,
+                    source_updated_at=self._parse_jira_timestamp(project_updated) if project_updated else None
                 )
 
                 # Determine lead user (if any)
@@ -3688,7 +3715,10 @@ class JiraConnector(BaseConnector):
                 email = user_obj.get("emailAddress")
                 if account_id and email:
                     user_by_account_id[account_id] = AppUser(
-                        id="", email=email, source_user_id=account_id
+                        id="",
+                        connector_id=self.connector_id,
+                        email=email,
+                        source_user_id=account_id
                     )
 
             # Extract issue data using existing function
@@ -3770,7 +3800,7 @@ class JiraConnector(BaseConnector):
 
             # Get parent ticket's internal record ID
             parent_ticket_record = await self.data_store_provider.arango_service.get_record_by_external_id(
-                connector_name=Connectors.JIRA,
+                connector_id=self.connector_id,
                 external_id=issue_id
             )
             parent_node_id = parent_ticket_record.id if parent_ticket_record else None
@@ -3902,7 +3932,7 @@ class JiraConnector(BaseConnector):
 
             # Get parent ticket's internal record ID
             parent_ticket_record = await self.data_store_provider.arango_service.get_record_by_external_id(
-                connector_name=Connectors.JIRA,
+                connector_id=self.connector_id,
                 external_id=issue_id
             )
             parent_node_id = parent_ticket_record.id if parent_ticket_record else None
