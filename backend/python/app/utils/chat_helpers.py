@@ -414,7 +414,7 @@ async def get_record(meta: Dict[str, Any],virtual_record_id: str,virtual_record_
     try:
         record = await blob_store.get_record_from_storage(virtual_record_id=virtual_record_id, org_id=org_id)
         if record:
-            arango_record = virtual_to_record_map.get(virtual_record_id) if virtual_to_record_map and virtual_record_id in virtual_to_record_map else None
+            arango_record = (virtual_to_record_map or {}).get(virtual_record_id)
             if arango_record:
                 record["id"] = arango_record.get("_key")
                 record["org_id"] = org_id
