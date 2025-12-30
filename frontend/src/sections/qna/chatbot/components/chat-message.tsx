@@ -234,6 +234,7 @@ const StreamingContent = React.memo(
           const citationNumber = parseInt(citationMatch[1], 10);
           const citation = citationMap[citationNumber];
           const citationId = `citation-${citationNumber}-${index}-${messageId}`;
+          const recordName = citation?.metadata?.recordName;
 
           if (!citation) {
             return <Fragment key={index}>{part}</Fragment>;
@@ -253,6 +254,7 @@ const StreamingContent = React.memo(
                 mr: 0.25,
                 cursor: 'pointer',
                 position: 'relative',
+                gap: 0.5,
                 // Create a larger hover area with invisible padding
                 '&::before': {
                   content: '""',
@@ -265,8 +267,12 @@ const StreamingContent = React.memo(
                   // This creates an invisible larger hover area
                 },
                 '&:hover': {
+                  '& .citation-record-name': {
+                    color: 'primary.main',
+                    fontWeight: 600,
+                  },
                   '& .citation-number': {
-                    transform: 'scale(1.15) translateY(-1px)',
+                    transform: 'scale(1.1) translateY(-1px)',
                     bgcolor: 'primary.main',
                     color: 'white',
                     boxShadow: '0 3px 8px rgba(25, 118, 210, 0.3)',
@@ -274,6 +280,27 @@ const StreamingContent = React.memo(
                 },
               }}
             >
+              {recordName && (
+                <Typography
+                  component="span"
+                  className={`citation-record-name citation-record-name-${citationId}`}
+                  sx={{
+                    fontSize: '0.7rem',
+                    fontWeight: 500,
+                    color: 'text.secondary',
+                    transition: 'all 0.2s ease',
+                    lineHeight: 1.2,
+                    maxWidth: '120px',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    position: 'relative',
+                    zIndex: 2,
+                  }}
+                >
+                  {recordName}
+                </Typography>
+              )}
               <Box
                 component="span"
                 className={`citation-number citation-number-${citationId}`}
@@ -281,12 +308,13 @@ const StreamingContent = React.memo(
                   display: 'inline-flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  width: '18px',
-                  height: '18px',
-                  borderRadius: '50%',
+                  minWidth: '20px',
+                  height: '20px',
+                  px: 0.75,
+                  borderRadius: '10px',
                   bgcolor: 'rgba(25, 118, 210, 0.08)',
                   color: 'primary.main',
-                  fontSize: '0.65rem',
+                  fontSize: '0.7rem',
                   fontWeight: 600,
                   transition: 'all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)',
                   textDecoration: 'none',
