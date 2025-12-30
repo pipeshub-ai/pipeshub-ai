@@ -40,6 +40,7 @@ export interface IRecordDocument {
   connectorName?: ConnectorName;
   updatedAtTimestamp?: number;
   lastSyncTimestamp?: number;
+  connectorId: string;
 
   // Flags and timestamps
   isDeletedAtSource?: boolean; // default: false
@@ -50,6 +51,7 @@ export interface IRecordDocument {
   isDeleted?: boolean; // default: false
   isArchived?: boolean; // default: false
   deletedByUserId?: string;
+  isVLMOcrProcessed?: boolean; // default: false
 
   lastIndexTimestamp?: number;
   lastExtractionTimestamp?: number;

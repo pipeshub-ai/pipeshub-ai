@@ -26,7 +26,7 @@ class GmailSyncTasks(BaseSyncTasks):
         self.register_connector_sync_control("gmail", self.gmail_manual_sync_control)
         self.logger.info("✅ Gmail sync service registered")
 
-    async def gmail_manual_sync_control(self, action: str, org_id: Optional[str] = None, user_email: Optional[str] = None) -> Dict[str, Any]:
+    async def gmail_manual_sync_control(self, action: str, org_id: Optional[str] = None, user_email: Optional[str] = None, connector_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Manual task to control Gmail sync operations
         Args:
@@ -42,6 +42,13 @@ class GmailSyncTasks(BaseSyncTasks):
             self.logger.info(
                 f"Manual sync control - Action: {action} at {current_time}"
             )
+
+            # If a connector_id is provided, set it on the service for upcoming operations
+            if connector_id and hasattr(self.gmail_sync_service, "connector_id"):
+                try:
+                    self.gmail_sync_service.connector_id = connector_id
+                except Exception:
+                    pass
 
             if action == "start":
                 self.logger.info("Starting sync")
@@ -82,7 +89,7 @@ class GmailSyncTasks(BaseSyncTasks):
                 return {"status": "error", "message": "Failed to queue sync resume"}
             elif action == "init":
                 self.logger.info("Initializing sync")
-                success = await self.gmail_sync_service.initialize(org_id)
+                success = await self.gmail_sync_service.initialize(org_id, connector_id)
                 if success:
                     return {
                         "status": "accepted",

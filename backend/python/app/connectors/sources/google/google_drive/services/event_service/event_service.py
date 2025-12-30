@@ -68,7 +68,8 @@ class GoogleDriveEventService(BaseEventService):
 
             self.logger.info(f"Initializing Google Drive init sync service for org_id: {org_id}")
             # Initialize directly since we can't use BackgroundTasks in Kafka consumer
-            await self.sync_tasks.drive_manual_sync_control("init",org_id)
+            connector_id = payload.get("connectorId")
+            await self.sync_tasks.drive_manual_sync_control("init", org_id, connector_id=connector_id)
             return True
         except Exception as e:
             self.logger.error("Failed to queue Google Drive sync service initialization: %s", str(e))
@@ -82,7 +83,8 @@ class GoogleDriveEventService(BaseEventService):
                 raise ValueError("orgId is required")
 
             self.logger.info(f"Starting Google Drive sync service for org_id: {org_id}")
-            await self.sync_tasks.drive_manual_sync_control("start", org_id)
+            connector_id = payload.get("connectorId")
+            await self.sync_tasks.drive_manual_sync_control("start", org_id, connector_id=connector_id)
             return True
         except Exception as e:
             self.logger.error("Failed to queue Google Drive sync service start: %s", str(e))
@@ -96,7 +98,8 @@ class GoogleDriveEventService(BaseEventService):
                 raise ValueError("orgId is required")
 
             self.logger.info(f"Pausing Google Drive sync service for org_id: {org_id}")
-            await self.sync_tasks.drive_manual_sync_control("pause", org_id)
+            connector_id = payload.get("connectorId")
+            await self.sync_tasks.drive_manual_sync_control("pause", org_id, connector_id=connector_id)
             return True
         except Exception as e:
             self.logger.error("Failed to queue Google Drive sync service pause: %s", str(e))
@@ -110,7 +113,8 @@ class GoogleDriveEventService(BaseEventService):
                 raise ValueError("orgId is required")
 
             self.logger.info(f"Resuming Google Drive sync service for org_id: {org_id}")
-            await self.sync_tasks.drive_manual_sync_control("resume", org_id)
+            connector_id = payload.get("connectorId")
+            await self.sync_tasks.drive_manual_sync_control("resume", org_id, connector_id=connector_id)
             return True
         except Exception as e:
             self.logger.error("Failed to queue Google Drive sync service resume: %s", str(e))
@@ -137,7 +141,8 @@ class GoogleDriveEventService(BaseEventService):
             if not org_id:
                 raise ValueError("orgId is required")
 
-            await self.sync_tasks.drive_manual_sync_control("init", org_id)
+            connector_id = payload.get("connectorId")
+            await self.sync_tasks.drive_manual_sync_control("init", org_id, connector_id=connector_id)
 
             user_id = payload.get("userId")
             if user_id:
@@ -148,7 +153,7 @@ class GoogleDriveEventService(BaseEventService):
                     self.logger.error(f"User not found for user_id: {user_id}")
                     return False
 
-                result = await self.sync_tasks.drive_manual_sync_control("resync", org_id, user_email=user["email"])
+                result = await self.sync_tasks.drive_manual_sync_control("resync", org_id, user_email=user["email"], connector_id=connector_id)
                 if not result or result.get("status") != "accepted":
                     self.logger.error(f"Error resyncing Google Drive user {user['email']}")
                     return False
@@ -159,7 +164,7 @@ class GoogleDriveEventService(BaseEventService):
 
                 users = await self.arango_service.get_users(org_id, active=True)
                 for user in users:
-                    result = await self.sync_tasks.drive_manual_sync_control("resync", org_id, user_email=user["email"])
+                    result = await self.sync_tasks.drive_manual_sync_control("resync", org_id, user_email=user["email"], connector_id=connector_id)
                     if not result or result.get("status") != "accepted":
                         self.logger.error(f"Error re-syncing Google Drive user {user['email']}")
                         continue
@@ -225,7 +230,7 @@ class GoogleDriveEventService(BaseEventService):
                 self.logger.info(f"Org ID: {org_id}, Connector: {connector}")
                 raise ValueError("orgId and connector are required")
 
-            if connector == Connectors.GOOGLE_DRIVE.value:
+            if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower():
                 await self.sync_tasks.drive_manual_sync_control("reindex", org_id)
             else:
                 self.logger.warning(f"Connector {connector} is not Google Drive, skipping reindex")

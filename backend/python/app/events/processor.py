@@ -1,6 +1,7 @@
 import io
 import json
 from datetime import datetime
+from pathlib import Path
 
 from bs4 import BeautifulSoup
 from html_to_markdown import convert
@@ -33,6 +34,7 @@ from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
+from app.utils.aimodels import is_multimodal_llm
 from app.utils.llm import get_embedding_model_config, get_llm
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -74,6 +76,8 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
         mime_type=mime_type,
         external_revision_id=record_dict.get("externalRevisionId"),
         connector_name=connector_name,
+        is_vlm_ocr_processed=record_dict.get("isVLMOcrProcessed", False),
+        connector_id=record_dict.get("connectorId"),
     )
     return record
 
@@ -696,7 +700,7 @@ class Processor:
             self.logger.error(f"❌ Error processing PDF document with external Docling service: {str(e)}")
             raise
 
-    async def process_pdf_document(
+    async def process_pdf_document_with_ocr(
         self, recordName, recordId, version, source, orgId, pdf_binary, virtual_record_id
     ) -> None:
         """Process PDF document with automatic OCR selection based on environment settings"""
@@ -720,7 +724,16 @@ class Processor:
                 provider = config["provider"]
                 self.logger.info(f"🔧 Checking OCR provider: {provider}")
 
-                if provider == OCRProvider.AZURE_DI.value:
+                if provider == OCRProvider.VLM_OCR.value:
+                    self.logger.debug("🤖 Setting up VLM OCR handler")
+                    handler = OCRHandler(
+                        self.logger,
+                        OCRProvider.VLM_OCR.value,
+                        config=self.config_service
+                    )
+                    break
+
+                elif provider == OCRProvider.AZURE_DI.value:
                     self.logger.debug("☁️ Setting up Azure OCR handler")
                     handler = OCRHandler(
                         self.logger,
@@ -738,24 +751,123 @@ class Processor:
                     break
 
             if not handler:
-                self.logger.debug("📚 Setting up PyMuPDF OCR handler")
-                handler = OCRHandler(self.logger, OCRProvider.OCRMYPDF.value, config=self.config_service)
-                provider = OCRProvider.OCRMYPDF.value
+                # Check if multimodal LLM is available
+                self.logger.debug("🔍 Checking for multimodal LLM availability")
+                has_multimodal_llm = False
+
+                try:
+                    llm_configs = ai_models.get("llm", [])
+                    for llm_config in llm_configs:
+                        if is_multimodal_llm(llm_config):
+                            has_multimodal_llm = True
+                            self.logger.info(f"✅ Found multimodal LLM: {llm_config.get('provider')}")
+                            break
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Error checking for multimodal LLM: {str(e)}")
+
+                if has_multimodal_llm:
+                    self.logger.debug("🤖 Setting up VLM OCR handler (multimodal LLM detected)")
+                    handler = OCRHandler(self.logger, OCRProvider.VLM_OCR.value, config=self.config_service)
+                    provider = OCRProvider.VLM_OCR.value
+                else:
+                    self.logger.debug("📚 Setting up OCRmyPDF handler (no multimodal LLM available)")
+                    handler = OCRHandler(self.logger, OCRProvider.OCRMYPDF.value, config=self.config_service)
+                    provider = OCRProvider.OCRMYPDF.value
 
             # Process document
             self.logger.info("🔄 Processing document with OCR handler")
             try:
                 ocr_result = await handler.process_document(pdf_binary)
             except Exception:
-                if provider == OCRProvider.AZURE_DI.value:
-                    self.logger.info("🔄 Switching to PyMuPDF OCR handler as Azure OCR failed")
-                    handler = OCRHandler(self.logger, OCRProvider.OCRMYPDF.value, config=self.config_service)
+                if provider == OCRProvider.AZURE_DI.value or provider == OCRProvider.VLM_OCR.value:
+                    self.logger.info(f"🔄 Switching to OCRmyPDF handler as {provider} failed")
+                    provider = OCRProvider.OCRMYPDF.value
+                    handler = OCRHandler(self.logger, provider, config=self.config_service)
                     ocr_result = await handler.process_document(pdf_binary)
                 else:
                     raise
 
             self.logger.debug("✅ OCR processing completed")
 
+            if provider == OCRProvider.VLM_OCR.value:
+                pages = ocr_result.get("pages", [])
+                self.logger.info(f"📄 Processing {len(pages)} pages from VLM OCR")
+
+                all_blocks = []
+                all_block_groups = []
+                block_index_offset = 0
+                block_group_index_offset = 0
+                processor = DoclingProcessor(logger=self.logger, config=self.config_service)
+
+                for page in pages:
+                    page_number = page.get("page_number")
+                    page_markdown = page.get("markdown", "")
+
+                    if not page_markdown.strip():
+                        self.logger.debug(f"⏭️ Skipping empty page {page_number}")
+                        continue
+
+                    # Process each page through DoclingProcessor with page number
+                    page_filename = f"{Path(recordName).stem}_page_{page_number}.md"
+                    md_bytes = page_markdown.encode('utf-8')
+
+                    try:
+                        page_block_containers = await processor.load_document(
+                            page_filename,
+                            md_bytes,
+                            page_number=page_number
+                        )
+                    except Exception as e:
+                        self.logger.error(f"❌ Failed to process page {page_number}: {str(e)}")
+                        raise
+
+                    if page_block_containers:
+                        # Adjust block indices to be unique across all pages
+                        for block in page_block_containers.blocks:
+                            block.index = block.index + block_index_offset
+                            if block.parent_index is not None:
+                                block.parent_index = block.parent_index + block_group_index_offset
+                            all_blocks.append(block)
+
+                        for block_group in page_block_containers.block_groups:
+                            block_group.index = block_group.index + block_group_index_offset
+                            if block_group.parent_index is not None:
+                                block_group.parent_index = block_group.parent_index + block_group_index_offset
+                            # Adjust children indices
+                            if block_group.children:
+                                for child in block_group.children:
+                                    if child.block_index is not None:
+                                        child.block_index = child.block_index + block_index_offset
+                                    if child.block_group_index is not None:
+                                        child.block_group_index = child.block_group_index + block_group_index_offset
+                            all_block_groups.append(block_group)
+
+                        block_index_offset = len(all_blocks)
+                        block_group_index_offset = len(all_block_groups)
+
+                # Create combined BlocksContainer
+                combined_block_containers = BlocksContainer(blocks=all_blocks, block_groups=all_block_groups)
+                self.logger.info(f"📦 Combined {len(all_blocks)} blocks and {len(all_block_groups)} block groups from all pages")
+
+                # Get record and run indexing pipeline
+                record = await self.arango_service.get_document(recordId, CollectionNames.RECORDS.value)
+                if record is None:
+                    self.logger.error(f"❌ Record {recordId} not found in database")
+                    return
+                record = convert_record_dict_to_record(record)
+                record.block_containers = combined_block_containers
+                record.virtual_record_id = virtual_record_id
+                record.is_vlm_ocr_processed = True
+
+                ctx = TransformContext(record=record)
+                pipeline = IndexingPipeline(
+                    document_extraction=self.document_extraction,
+                    sink_orchestrator=self.sink_orchestrator
+                )
+                await pipeline.apply(ctx)
+
+                self.logger.info("✅ PDF processing completed successfully using VLM OCR")
+                return
             # Extract domain metadata from paragraphs
             self.logger.info("🎯 Extracting domain metadata")
             blocks_from_ocr = ocr_result.get("blocks", [])
@@ -1016,10 +1128,8 @@ class Processor:
                 record = convert_record_dict_to_record(record)
                 record.virtual_record_id = virtual_record_id
 
-                block_containers = await parser.get_blocks_from_csv_result(csv_result, recordId, orgId, recordName, version, origin, llm)
+                block_containers = await parser.get_blocks_from_csv_result(csv_result, llm)
                 record.block_containers = block_containers
-
-
 
                 ctx = TransformContext(record=record)
                 pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
@@ -1102,9 +1212,6 @@ class Processor:
             await self.process_md_document(
                 recordName=recordName,
                 recordId=recordId,
-                version=version,
-                source=source,
-                orgId=orgId,
                 md_binary=md_binary,
                 virtual_record_id=virtual_record_id
             )
@@ -1141,13 +1248,13 @@ class Processor:
 
         # Process the converted markdown content
         await self.process_md_document(
-            recordName, recordId, version, source, orgId, md_content, virtual_record_id
+            recordName, recordId, md_content, virtual_record_id
         )
 
         return {"status": "success", "message": "MDX processed successfully"}
 
     async def process_md_document(
-        self, recordName, recordId, version, source, orgId, md_binary, virtual_record_id
+        self, recordName, recordId, md_binary, virtual_record_id
     ) -> None:
         self.logger.info(
             f"🚀 Starting Markdown document processing for record: {recordName}"
@@ -1201,9 +1308,9 @@ class Processor:
             md_bytes = parser.parse_string(modified_markdown)
 
             processor = DoclingProcessor(logger=self.logger,config=self.config_service)
-            block_containers = await processor.load_document(f"{recordName}.md", md_bytes)
-            if block_containers is False:
-                raise Exception("Failed to process MD document. It might contain scanned pages.")
+            filename_without_ext = Path(recordName).stem
+
+            block_containers = await processor.load_document(f"{filename_without_ext}.md", md_bytes)
 
             record = await self.arango_service.get_document(
                 recordId, CollectionNames.RECORDS.value
@@ -1231,7 +1338,6 @@ class Processor:
                             self.logger.warning(f"⚠️ Skipping image with caption '{caption}' - no valid base64 data available")
 
             block_containers.blocks = blocks
-
 
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
@@ -1275,9 +1381,6 @@ class Processor:
             await self.process_md_document(
                 recordName=recordName,
                 recordId=recordId,
-                version=version,
-                source=source,
-                orgId=orgId,
                 md_binary=text_content,
                 virtual_record_id=virtual_record_id
             )

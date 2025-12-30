@@ -32,13 +32,17 @@ import {
   handleBackendError,
   handleConnectorResponse,
 } from '../../tokens_manager/utils/connector.utils';
+import {
+  safeParsePagination,
+} from '../../../utils/safe-integer';
+import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
 const logger = Logger.getInstance({
   service: 'Knowledge Base Controller',
 });
 
 // Types and helpers for active connector validation
 interface ConnectorInfo {
-  name: string;
+  _key: string;
 }
 
 interface ActiveConnectorsResponse {
@@ -49,7 +53,7 @@ const normalizeAppName = (value: string): string =>
   value.replace(' ', '').toLowerCase();
 
 const validateActiveConnector = async (
-  appName: string,
+  connectorId: string,
   appConfig: AppConfig,
   headers: Record<string, string>,
 ): Promise<void> => {
@@ -65,12 +69,11 @@ const validateActiveConnector = async (
 
   const data = activeAppsResponse.data as ActiveConnectorsResponse;
   const connectors = data?.connectors || [];
-  const allowedApps = connectors.map((connector) =>
-    normalizeAppName(connector.name),
-  );
 
-  if (!allowedApps.includes(normalizeAppName(appName))) {
-    throw new BadRequestError(`Connector ${appName} not allowed`);
+  const isAllowed = connectors.some((connector) => connector._key === connectorId);
+
+  if (!isAllowed) {
+    throw new BadRequestError(`Connector ${connectorId} not allowed`);
   }
 };
 
@@ -170,12 +173,43 @@ export const listKnowledgeBases =
         throw new UnauthorizedError('User authentication required');
       }
 
-      // Extract and parse query parameters
-      const page = req.query.page ? parseInt(String(req.query.page), 10) : 1;
-      const limit = req.query.limit
-        ? parseInt(String(req.query.limit), 10)
-        : 20;
+      // Extract and parse query parameters with safe integer validation
+      let page: number;
+      let limit: number;
+      try {
+        const pagination = safeParsePagination(
+          req.query.page as string | undefined,
+          req.query.limit as string | undefined,
+          1,
+          20,
+          100,
+        );
+        page = pagination.page;
+        limit = pagination.limit;
+      } catch (error: any) {
+        throw new BadRequestError(
+          error.message || 'Invalid pagination parameters',
+        );
+      }
+
       const search = req.query.search ? String(req.query.search) : undefined;
+      
+      // Additional validation for search parameter (defense in depth)
+      if (search) {
+        try {
+          validateNoXSS(search, 'search parameter');
+          validateNoFormatSpecifiers(search, 'search parameter');
+          
+          if (search.length > 1000) {
+            throw new BadRequestError('Search parameter too long (max 1000 characters)');
+          }
+        } catch (error: any) {
+          throw new BadRequestError(
+            error.message || 'Search parameter contains potentially dangerous content'
+          );
+        }
+      }
+      
       const permissions = req.query.permissions
         ? String(req.query.permissions).split(',')
         : undefined;
@@ -183,14 +217,6 @@ export const listKnowledgeBases =
       const sortOrder = req.query.sortOrder
         ? String(req.query.sortOrder)
         : 'asc';
-
-      // Validate pagination parameters
-      if (page < 1) {
-        throw new BadRequestError('Page must be greater than 0');
-      }
-      if (limit < 1 || limit > 100) {
-        throw new BadRequestError('Limit must be between 1 and 100');
-      }
 
       // Validate sort parameters
       const validSortFields = [
@@ -631,6 +657,7 @@ export const uploadRecordsToKB =
           version: 1,
           webUrl: webUrl,
           mimeType: correctMimeType,
+          connectorId: kbId
         };
 
         const fileRecord: IFileRecordDocument = {
@@ -806,6 +833,7 @@ export const uploadRecordsToFolder =
           version: 1,
           webUrl: webUrl,
           mimeType: correctMimeType,
+          connectorId: kbId
         };
 
         const fileRecord: IFileRecordDocument = {
@@ -1131,12 +1159,43 @@ export const getKBContent =
         throw new BadRequestError('Knowledge Base ID is required');
       }
 
-      // Extract and parse query parameters
-      const page = req.query.page ? parseInt(String(req.query.page), 10) : 1;
-      const limit = req.query.limit
-        ? parseInt(String(req.query.limit), 10)
-        : 20;
+      // Extract and parse query parameters with safe integer validation
+      let page: number;
+      let limit: number;
+      try {
+        const pagination = safeParsePagination(
+          req.query.page as string | undefined,
+          req.query.limit as string | undefined,
+          1,
+          20,
+          100,
+        );
+        page = pagination.page;
+        limit = pagination.limit;
+      } catch (error: any) {
+        throw new BadRequestError(
+          error.message || 'Invalid pagination parameters',
+        );
+      }
+
       const search = req.query.search ? String(req.query.search) : undefined;
+      
+      // Validate search parameter for XSS and format specifiers
+      if (search) {
+        try {
+          validateNoXSS(search, 'search parameter');
+          validateNoFormatSpecifiers(search, 'search parameter');
+          
+          if (search.length > 1000) {
+            throw new BadRequestError('Search parameter too long (max 1000 characters)');
+          }
+        } catch (error: any) {
+          throw new BadRequestError(
+            error.message || 'Search parameter contains potentially dangerous content'
+          );
+        }
+      }
+      
       const recordTypes = req.query.recordTypes
         ? String(req.query.recordTypes).split(',')
         : undefined;
@@ -1150,13 +1209,29 @@ export const getKBContent =
         ? String(req.query.indexingStatus).split(',')
         : undefined;
 
-      // Parse date filters
-      const dateFrom = req.query.dateFrom
-        ? parseInt(String(req.query.dateFrom), 10)
-        : undefined;
-      const dateTo = req.query.dateTo
-        ? parseInt(String(req.query.dateTo), 10)
-        : undefined;
+      // Parse date filters with safe integer validation
+      let dateFrom: number | undefined;
+      let dateTo: number | undefined;
+      if (req.query.dateFrom) {
+        try {
+          dateFrom = parseInt(String(req.query.dateFrom), 10);
+          if (isNaN(dateFrom) || dateFrom < 0) {
+            throw new BadRequestError('Invalid dateFrom parameter');
+          }
+        } catch (error: any) {
+          throw new BadRequestError('Invalid dateFrom parameter');
+        }
+      }
+      if (req.query.dateTo) {
+        try {
+          dateTo = parseInt(String(req.query.dateTo), 10);
+          if (isNaN(dateTo) || dateTo < 0) {
+            throw new BadRequestError('Invalid dateTo parameter');
+          }
+        } catch (error: any) {
+          throw new BadRequestError('Invalid dateTo parameter');
+        }
+      }
 
       // Sorting parameters
       const sortBy = req.query.sortBy
@@ -1169,14 +1244,6 @@ export const getKBContent =
         sortOrderParam === 'asc' || sortOrderParam === 'desc'
           ? sortOrderParam
           : 'desc';
-
-      // Validate pagination parameters
-      if (page < 1) {
-        throw new BadRequestError('Page must be greater than 0');
-      }
-      if (limit < 1 || limit > 100) {
-        throw new BadRequestError('Limit must be between 1 and 100');
-      }
 
       logger.info('Getting KB records', {
         kbId,
@@ -1287,12 +1354,43 @@ export const getFolderContents =
         throw new BadRequestError('Knowledge Base ID is required');
       }
 
-      // Extract and parse query parameters
-      const page = req.query.page ? parseInt(String(req.query.page), 10) : 1;
-      const limit = req.query.limit
-        ? parseInt(String(req.query.limit), 10)
-        : 20;
+      // Extract and parse query parameters with safe integer validation
+      let page: number;
+      let limit: number;
+      try {
+        const pagination = safeParsePagination(
+          req.query.page as string | undefined,
+          req.query.limit as string | undefined,
+          1,
+          20,
+          100,
+        );
+        page = pagination.page;
+        limit = pagination.limit;
+      } catch (error: any) {
+        throw new BadRequestError(
+          error.message || 'Invalid pagination parameters',
+        );
+      }
+
       const search = req.query.search ? String(req.query.search) : undefined;
+      
+      // Validate search parameter for XSS and format specifiers
+      if (search) {
+        try {
+          validateNoXSS(search, 'search parameter');
+          validateNoFormatSpecifiers(search, 'search parameter');
+          
+          if (search.length > 1000) {
+            throw new BadRequestError('Search parameter too long (max 1000 characters)');
+          }
+        } catch (error: any) {
+          throw new BadRequestError(
+            error.message || 'Search parameter contains potentially dangerous content'
+          );
+        }
+      }
+      
       const recordTypes = req.query.recordTypes
         ? String(req.query.recordTypes).split(',')
         : undefined;
@@ -1306,13 +1404,29 @@ export const getFolderContents =
         ? String(req.query.indexingStatus).split(',')
         : undefined;
 
-      // Parse date filters
-      const dateFrom = req.query.dateFrom
-        ? parseInt(String(req.query.dateFrom), 10)
-        : undefined;
-      const dateTo = req.query.dateTo
-        ? parseInt(String(req.query.dateTo), 10)
-        : undefined;
+      // Parse date filters with safe integer validation
+      let dateFrom: number | undefined;
+      let dateTo: number | undefined;
+      if (req.query.dateFrom) {
+        try {
+          dateFrom = parseInt(String(req.query.dateFrom), 10);
+          if (isNaN(dateFrom) || dateFrom < 0) {
+            throw new BadRequestError('Invalid dateFrom parameter');
+          }
+        } catch (error: any) {
+          throw new BadRequestError('Invalid dateFrom parameter');
+        }
+      }
+      if (req.query.dateTo) {
+        try {
+          dateTo = parseInt(String(req.query.dateTo), 10);
+          if (isNaN(dateTo) || dateTo < 0) {
+            throw new BadRequestError('Invalid dateTo parameter');
+          }
+        } catch (error: any) {
+          throw new BadRequestError('Invalid dateTo parameter');
+        }
+      }
 
       // Sorting parameters
       const sortBy = req.query.sortBy
@@ -1325,14 +1439,6 @@ export const getFolderContents =
         sortOrderParam === 'asc' || sortOrderParam === 'desc'
           ? sortOrderParam
           : 'desc';
-
-      // Validate pagination parameters
-      if (page < 1) {
-        throw new BadRequestError('Page must be greater than 0');
-      }
-      if (limit < 1 || limit > 100) {
-        throw new BadRequestError('Limit must be between 1 and 100');
-      }
 
       logger.info('Getting KB records', {
         kbId,
@@ -1444,6 +1550,23 @@ export const getAllRecords =
         ? parseInt(String(req.query.limit), 10)
         : 20;
       const search = req.query.search ? String(req.query.search) : undefined;
+      
+      // Validate search parameter for XSS and format specifiers
+      if (search) {
+        try {
+          validateNoXSS(search, 'search parameter');
+          validateNoFormatSpecifiers(search, 'search parameter');
+          
+          if (search.length > 1000) {
+            throw new BadRequestError('Search parameter too long (max 1000 characters)');
+          }
+        } catch (error: any) {
+          throw new BadRequestError(
+            error.message || 'Search parameter contains potentially dangerous content'
+          );
+        }
+      }
+      
       const recordTypes = req.query.recordTypes
         ? String(req.query.recordTypes).split(',')
         : undefined;
@@ -2169,8 +2292,8 @@ export const getConnectorStats =
         );
       }
 
-      if (!req.params.connector) {
-        throw new BadRequestError('Connector is required');
+      if (!req.params.connectorId) {
+        throw new BadRequestError('Connector ID is required');
       }
 
       try {
@@ -2179,7 +2302,7 @@ export const getConnectorStats =
         const queryParams = new URLSearchParams();
 
         queryParams.append('org_id', orgId);
-        queryParams.append('connector', req.params.connector);
+        queryParams.append('connector_id', req.params.connectorId);
         const response = await executeConnectorCommand(
           `${appConfig.connectorBackend}/api/v1/stats?${queryParams.toString()}`,
           HttpMethod.GET,
@@ -2321,19 +2444,20 @@ export const getRecordBuffer =
     }
   };
 
-export const reindexAllRecords =
+export const reindexFailedRecords =
   (recordRelationService: RecordRelationService, appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
       const app = req.body.app;
+      const connectorId = req.body.connectorId;
       if (!userId || !orgId) {
         throw new BadRequestError('User not authenticated');
       }
 
       await validateActiveConnector(
-        app,
+        connectorId,
         appConfig,
         req.headers as Record<string, string>,
       );
@@ -2342,10 +2466,11 @@ export const reindexAllRecords =
         userId,
         orgId,
         app: normalizeAppName(app),
+        connectorId,
       };
 
       const reindexResponse =
-        await recordRelationService.reindexAllRecords(reindexPayload);
+        await recordRelationService.reindexFailedRecords(reindexPayload);
 
       res.status(200).json({
         reindexResponse,
@@ -2353,7 +2478,7 @@ export const reindexAllRecords =
 
       return; // Added return statement
     } catch (error: any) {
-      logger.error('Error re indexing all records', {
+      logger.error('Error re indexing failed records', {
         error,
       });
       next(error);
@@ -2368,12 +2493,13 @@ export const resyncConnectorRecords =
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
       const connectorName = req.body.connectorName;
+      const connectorId = req.body.connectorId;
       if (!userId || !orgId) {
         throw new BadRequestError('User not authenticated');
       }
 
       await validateActiveConnector(
-        connectorName,
+        connectorId,
         appConfig,
         req.headers as Record<string, string>,
       );
@@ -2382,6 +2508,7 @@ export const resyncConnectorRecords =
         userId,
         orgId,
         connectorName: normalizeAppName(connectorName),
+        connectorId,
       };
 
       const resyncConnectorResponse =

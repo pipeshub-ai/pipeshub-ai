@@ -3,7 +3,6 @@
 # pylint: disable=E1101, W0718
 import asyncio
 import datetime
-import hashlib
 import json
 import unicodedata
 import uuid
@@ -517,7 +516,7 @@ class BaseArangoService:
     async def get_connector_stats(
         self,
         org_id: str,
-        connector: str,
+        connector_id: str,
     ) -> Dict:
         """
         Get connector statistics for a specific connector or knowledge base
@@ -528,175 +527,105 @@ class BaseArangoService:
                         If None, returns Knowledge Base stats
         """
         try:
-            self.logger.info(f"Getting connector stats for organization: {org_id}, connector: {connector or 'KNOWLEDGE_BASE'}")
+            self.logger.info(f"Getting connector stats for organization: {org_id}, connector: {connector_id or 'KNOWLEDGE_BASE'}")
 
             db = self.db
 
-            # Determine if we're querying Knowledge Base or a specific connector
-            is_knowledge_base = connector == "KB"
+            query = """
+            LET org_id = @org_id
+            LET connector = FIRST(
+                FOR doc IN @@apps
+                    FILTER doc._key == @connector_id
+                    RETURN doc
+            )
 
-            if is_knowledge_base:
-                # Query for Knowledge Base (UPLOAD origin)
-                query = """
-                LET org_id = @org_id
+            // Get all records for the specific connector
+            LET records = (
+                FOR doc IN @@records
+                    FILTER doc.orgId == org_id
+                    FILTER doc.origin == "CONNECTOR"
+                    FILTER doc.connectorId == @connector_id
+                    FILTER doc.recordType != @drive_record_type
+                    FILTER doc.isDeleted != true
+                    RETURN doc
+            )
 
-                // Get all upload records for the organization
-                LET records = (
-                    FOR doc IN @@records
-                        FILTER doc.orgId == org_id
-                        FILTER doc.origin == "UPLOAD"
-                        FILTER doc.recordType != @drive_record_type
-                        FILTER doc.isDeleted != true
-                        RETURN doc
-                )
-
-                // Overall stats
-                LET total_stats = {
-                    total: LENGTH(records),
-                    indexing_status: {
-                        NOT_STARTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                        IN_PROGRESS: LENGTH(records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                        COMPLETED: LENGTH(records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                        FAILED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                        FILE_TYPE_NOT_SUPPORTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                        AUTO_INDEX_OFF: LENGTH(records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
-                        ENABLE_MULTIMODAL_MODELS: LENGTH(records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
-                        EMPTY: LENGTH(records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
-                        QUEUED: LENGTH(records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
-                    }
+            // Overall stats
+            LET total_stats = {
+                total: LENGTH(records),
+                indexingStatus: {
+                    NOT_STARTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
+                    IN_PROGRESS: LENGTH(records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
+                    COMPLETED: LENGTH(records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
+                    FAILED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FAILED"]),
+                    FILE_TYPE_NOT_SUPPORTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
+                    AUTO_INDEX_OFF: LENGTH(records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
+                    ENABLE_MULTIMODAL_MODELS: LENGTH(records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
+                    EMPTY: LENGTH(records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
+                    QUEUED: LENGTH(records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
+                    PAUSED: LENGTH(records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
                 }
+            }
 
-                // Record type breakdown
-                LET by_record_type = (
-                    FOR record_type IN UNIQUE(records[*].recordType)
-                        FILTER record_type != null
-                        LET type_records = records[* FILTER CURRENT.recordType == record_type]
-                        RETURN {
-                            record_type: record_type,
-                            total: LENGTH(type_records),
-                            indexing_status: {
-                                NOT_STARTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                                IN_PROGRESS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                                COMPLETED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                                FAILED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                                FILE_TYPE_NOT_SUPPORTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                                AUTO_INDEX_OFF: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
-                                ENABLE_MULTIMODAL_MODELS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
-                                EMPTY: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
-                                QUEUED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
-                                PAUSED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
-                            }
+            // Record type breakdown
+            LET by_record_type = (
+                FOR record_type IN UNIQUE(records[*].recordType)
+                    FILTER record_type != null
+                    LET type_records = records[* FILTER CURRENT.recordType == record_type]
+                    RETURN {
+                        recordType: record_type,
+                        total: LENGTH(type_records),
+                        indexingStatus: {
+                            NOT_STARTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
+                            IN_PROGRESS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
+                            COMPLETED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
+                            FAILED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FAILED"]),
+                            FILE_TYPE_NOT_SUPPORTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
+                            AUTO_INDEX_OFF: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
+                            ENABLE_MULTIMODAL_MODELS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
+                            EMPTY: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
+                            QUEUED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
+                            PAUSED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
                         }
-                )
-
-                RETURN {
-                    org_id: org_id,
-                    connector: "KNOWLEDGE_BASE",
-                    origin: "UPLOAD",
-                    stats: total_stats,
-                    by_record_type: by_record_type
-                }
-                """
-
-                bind_vars = {
-                    "org_id": org_id,
-                    "@records": CollectionNames.RECORDS.value,
-                    "drive_record_type": RecordTypes.DRIVE.value,
-                }
-            else:
-                connector = connector.upper()
-                # Query for specific connector (CONNECTOR origin)
-                query = """
-                LET org_id = @org_id
-                LET connector = @connector
-
-                // Get all records for the specific connector
-                LET records = (
-                    FOR doc IN @@records
-                        FILTER doc.orgId == org_id
-                        FILTER doc.origin == "CONNECTOR"
-                        FILTER doc.connectorName == connector
-                        FILTER doc.recordType != @drive_record_type
-                        FILTER doc.isDeleted != true
-                        RETURN doc
-                )
-
-                // Overall stats
-                LET total_stats = {
-                    total: LENGTH(records),
-                    indexing_status: {
-                        NOT_STARTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                        IN_PROGRESS: LENGTH(records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                        COMPLETED: LENGTH(records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                        FAILED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                        FILE_TYPE_NOT_SUPPORTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                        AUTO_INDEX_OFF: LENGTH(records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
-                        ENABLE_MULTIMODAL_MODELS: LENGTH(records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
-                        EMPTY: LENGTH(records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
-                        QUEUED: LENGTH(records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
-                        PAUSED: LENGTH(records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
                     }
-                }
+            )
 
-                // Record type breakdown
-                LET by_record_type = (
-                    FOR record_type IN UNIQUE(records[*].recordType)
-                        FILTER record_type != null
-                        LET type_records = records[* FILTER CURRENT.recordType == record_type]
-                        RETURN {
-                            record_type: record_type,
-                            total: LENGTH(type_records),
-                            indexing_status: {
-                                NOT_STARTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                                IN_PROGRESS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                                COMPLETED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                                FAILED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                                FILE_TYPE_NOT_SUPPORTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                                AUTO_INDEX_OFF: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
-                                ENABLE_MULTIMODAL_MODELS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
-                                EMPTY: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
-                                QUEUED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
-                                PAUSED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
-                            }
-                        }
-                )
+            RETURN {
+                orgId: org_id,
+                connectorId: @connector_id,
+                origin: "CONNECTOR",
+                stats: total_stats,
+                byRecordType: by_record_type
+            }
+            """
 
-                RETURN {
-                    org_id: org_id,
-                    connector: connector,
-                    origin: "CONNECTOR",
-                    stats: total_stats,
-                    by_record_type: by_record_type
-                }
-                """
-
-                bind_vars = {
-                    "org_id": org_id,
-                    "connector": connector,
-                    "@records": CollectionNames.RECORDS.value,
-                    "drive_record_type": RecordTypes.DRIVE.value,
-                }
+            bind_vars = {
+                "org_id": org_id,
+                "connector_id": connector_id,
+                "@records": CollectionNames.RECORDS.value,
+                "drive_record_type": RecordTypes.DRIVE.value,
+                "@apps": CollectionNames.APPS.value,
+            }
 
             # Execute the query
             cursor = db.aql.execute(query, bind_vars=bind_vars)
             result = next(cursor, None)
 
             if result:
-                connector_display = connector or "KNOWLEDGE_BASE"
-                self.logger.info(f"Retrieved stats for {connector_display} in organization: {org_id}")
+                self.logger.info(f"Retrieved stats for {connector_id} in organization: {org_id}")
                 return {
                     "success": True,
                     "data": result
                 }
             else:
-                self.logger.warning(f"No data found for connector: {connector or 'KNOWLEDGE_BASE'} in organization: {org_id}")
+                self.logger.warning(f"No data found for connector: {connector_id} in organization: {org_id}")
                 return {
                     "success": False,
                     "message": "No data found for the specified connector",
                     "data": {
                         "org_id": org_id,
-                        "connector": connector or "KNOWLEDGE_BASE",
-                        "origin": "UPLOAD" if is_knowledge_base else "CONNECTOR",
+                        "connector_id": connector_id,
+                        "origin": "CONNECTOR",
                         "stats": {
                             "total": 0,
                             "indexing_status": {
@@ -989,6 +918,10 @@ class BaseArangoService:
                 additional_data["webUrl"] = (
                     f"https://mail.google.com/mail?authuser={user['email']}#all/{message_id}"
                 )
+            elif record["recordType"] == RecordTypes.TICKET.value:
+                additional_data = await self.get_document(
+                    record_id, CollectionNames.TICKETS.value
+                )
 
             metadata_query = f"""
             LET record = DOCUMENT(CONCAT('{CollectionNames.RECORDS.value}/', @recordId))
@@ -1112,6 +1045,11 @@ class BaseArangoService:
                         if record["recordType"] == RecordTypes.MAIL.value
                         else None
                     ),
+                    "ticketRecord": (
+                        additional_data
+                        if record["recordType"] == RecordTypes.TICKET.value
+                        else None
+                    ),
                 },
                 "knowledgeBase": kb_info,
                 "folder": folder_info,
@@ -1164,7 +1102,7 @@ class BaseArangoService:
                 if origins and include_filter_vars:
                     conditions.append("record.origin IN @origins")
                 if connectors and include_filter_vars:
-                    conditions.append("record.connectorName IN @connectors")
+                    conditions.append("record.connectorId IN @connectors")
                 if indexing_status and include_filter_vars:
                     conditions.append("record.indexingStatus IN @indexing_status")
                 if date_from and include_filter_vars:
@@ -1588,6 +1526,16 @@ class BaseArangoService:
                     ) : []
                 )
 
+                LET ticketRecord = (
+                    record.recordType == "TICKET" ? (
+                        FOR ticketEdge IN @@is_of_type
+                            FILTER ticketEdge._from == record._id
+                            LET ticket = DOCUMENT(ticketEdge._to)
+                            FILTER ticket != null
+                            RETURN ticket
+                    ) : []
+                )
+
                 RETURN {{
                     id: record._key,
                     externalRecordId: record.externalRecordId,
@@ -1609,6 +1557,7 @@ class BaseArangoService:
                     webUrl: record.webUrl,
                     fileRecord: LENGTH(fileRecord) > 0 ? fileRecord[0] : null,
                     mailRecord: LENGTH(mailRecord) > 0 ? mailRecord[0] : null,
+                    ticketRecord: LENGTH(ticketRecord) > 0 ? ticketRecord[0] : null,
                     permission: {{role: item.permission.role, type: item.permission.type}},
                     kb: {{id: item.kb_id || null, name: item.kb_name || null }}
                 }}
@@ -2317,12 +2266,7 @@ class BaseArangoService:
 
             elif origin == OriginTypes.CONNECTOR.value:
                 # Connector record - check connector-specific permissions
-                if connector_name == Connectors.GOOGLE_DRIVE.value:
-                    user_role = await self._check_drive_permissions(record_id, user_key)
-                elif connector_name == Connectors.GOOGLE_MAIL.value:
-                    user_role = await self._check_gmail_permissions(record_id, user_key)
-                else:
-                    user_role = await self._check_record_permissions(record_id, user_key)
+                user_role = await self._check_record_permissions(record_id, user_key)
 
                 if not user_role or user_role not in ["OWNER", "WRITER","READER"]:
                     return {
@@ -2369,82 +2313,6 @@ class BaseArangoService:
 
         except Exception as e:
             self.logger.error(f"❌ Failed to reindex record {record_id}: {str(e)}")
-            return {
-                "success": False,
-                "code": 500,
-                "reason": f"Internal error: {str(e)}"
-            }
-
-    async def reindex_failed_connector_records(self, user_id: str, org_id: str, connector: str, origin: str) -> Dict:
-        """
-        Reindex all failed records for a specific connector with permission check
-        Just validates permissions and publishes a single reindexFailed event
-        Args:
-            user_id: External user ID doing the reindex
-            org_id: Organization ID
-            connector: Connector name (GOOGLE_DRIVE, GOOGLE_MAIL, KNOWLEDGE_BASE)
-            origin: Origin type (CONNECTOR, UPLOAD)
-        Returns:
-            Dict: Result with success status and event publication info
-        """
-        try:
-            self.logger.info(f"🔄 Starting failed records reindex for {connector} by user {user_id}")
-
-            # Get user
-            user = await self.get_user_by_user_id(user_id)
-            if not user:
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found: {user_id}"
-                }
-
-            user_key = user.get('_key')
-
-            # Check if user has permission to reindex connector records
-            permission_check = await self._check_connector_reindex_permissions(
-                user_key, org_id, connector, origin
-            )
-
-            if not permission_check["allowed"]:
-                return {
-                    "success": False,
-                    "code": 403,
-                    "reason": permission_check["reason"]
-                }
-
-            try:
-                connector_normalized = connector.replace("_", "").lower()
-                event_type = f"{connector_normalized}.reindex"
-
-                payload = {
-                    "orgId": org_id,
-                    "statusFilters": ["FAILED"]
-                }
-
-                await self._publish_sync_event(event_type, payload)
-
-                self.logger.info(f"✅ Published {event_type} event for {connector}")
-
-                return {
-                    "success": True,
-                    "connector": connector,
-                    "origin": origin,
-                    "user_permission_level": permission_check["permission_level"],
-                    "event_published": True,
-                    "message": f"Successfully initiated reindex of failed {connector} records"
-                }
-
-            except Exception as event_error:
-                self.logger.error(f"❌ Failed to publish reindex event: {str(event_error)}")
-                return {
-                    "success": False,
-                    "code": 500,
-                    "reason": f"Failed to publish reindex event: {str(event_error)}"
-                }
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to reindex failed connector records: {str(e)}")
             return {
                 "success": False,
                 "code": 500,
@@ -2500,17 +2368,17 @@ class BaseArangoService:
                 "reason": f"Internal error: {str(e)}"
             }
 
-    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:
+    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:
         """
         Delete a record by external ID
         """
         try:
-            self.logger.info(f"🗂️ Deleting record {external_id} from {connector_name}")
+            self.logger.info(f"🗂️ Deleting record {external_id} from {connector_id}")
 
             # Get record
-            record = await self.get_record_by_external_id(connector_name, external_id, transaction=transaction)
+            record = await self.get_record_by_external_id(connector_id, external_id, transaction=transaction)
             if not record:
-                self.logger.warning(f"⚠️ Record {external_id} not found in {connector_name}")
+                self.logger.warning(f"⚠️ Record {external_id} not found in {connector_id}")
                 return
 
             # Delete record using the record's internal ID and user_id
@@ -2518,41 +2386,41 @@ class BaseArangoService:
 
             # Check if deletion was successful
             if deletion_result.get("success"):
-                self.logger.info(f"✅ Record {external_id} deleted from {connector_name}")
+                self.logger.info(f"✅ Record {external_id} deleted from {connector_id}")
             else:
                 error_reason = deletion_result.get("reason", "Unknown error")
                 self.logger.error(f"❌ Failed to delete record {external_id}: {error_reason}")
                 raise Exception(f"Deletion failed: {error_reason}")
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete record {external_id} from {connector_name}: {str(e)}")
+            self.logger.error(f"❌ Failed to delete record {external_id} from {connector_id}: {str(e)}")
             raise
 
-    async def remove_user_access_to_record(self, connector_name: Connectors, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:
+    async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:
         """
         Remove a user's access to a record (for inbox-based deletions)
         This removes the user's permissions and belongsTo edges without deleting the record itself
         """
         try:
-            self.logger.info(f"🔄 Removing user access: {external_id} from {connector_name} for user {user_id}")
+            self.logger.info(f"🔄 Removing user access: {external_id} from {connector_id} for user {user_id}")
 
             # Get record
-            record = await self.get_record_by_external_id(connector_name, external_id, transaction=transaction)
+            record = await self.get_record_by_external_id(connector_id, external_id, transaction=transaction)
             if not record:
-                self.logger.warning(f"⚠️ Record {external_id} not found in {connector_name}")
+                self.logger.warning(f"⚠️ Record {external_id} not found in {connector_id}")
                 return
 
             # Remove user's access instead of deleting the entire record
             result = await self._remove_user_access_from_record(record.id, user_id)
 
             if result.get("success"):
-                self.logger.info(f"✅ User access removed: {external_id} from {connector_name}")
+                self.logger.info(f"✅ User access removed: {external_id} from {connector_id}")
             else:
                 self.logger.error(f"❌ Failed to remove user access: {result.get('reason', 'Unknown error')}")
                 raise Exception(f"Failed to remove user access: {result.get('reason', 'Unknown error')}")
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_name}: {str(e)}")
+            self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_id}: {str(e)}")
             raise
 
     async def _remove_user_access_from_record(self, record_id: str, user_id: str) -> Dict:
@@ -3329,129 +3197,6 @@ class BaseArangoService:
             "@records_collection": CollectionNames.RECORDS.value,
         })
 
-    async def _check_connector_reindex_permissions(self, user_key: str, org_id: str, connector: str, origin: str) -> Dict:
-        """
-        Simple permission check for connector reindex operations
-        Permission rules:
-        1. Organization OWNER - Can reindex any connector
-        2. Knowledge Base OWNER - Can reindex KB records only
-        3. Users with significant connector access (≥50% of records)
-        """
-        try:
-            self.logger.info(f"🔍 Checking connector reindex permissions for user {user_key}")
-
-            permission_query = """
-            LET user = DOCUMENT("users", @user_key)
-            FILTER user != null
-            // Check organization ownership
-            LET org_owner = FIRST(
-                FOR edge IN @@belongs_to
-                    FILTER edge._from == user._id
-                    FILTER edge._to == CONCAT('organizations/', @org_id)
-                    FILTER edge.entityType == 'ORGANIZATION'
-                    FILTER edge.role == 'OWNER'
-                    RETURN edge
-            )
-            // Check if user is KB owner (for KB connectors)
-            LET kb_owner_count = @origin == 'UPLOAD' ? (
-                LENGTH(
-                    FOR perm IN @@permission
-                        FILTER perm._from == user._id
-                        FILTER perm.role == 'OWNER'
-                        LET kb = DOCUMENT(perm._to)
-                        FILTER kb != null AND kb.orgId == @org_id
-                        RETURN perm
-                )
-            ) : 0
-            // Check connector-specific permissions (simplified count)
-            LET connector_access_count = @origin == 'CONNECTOR' ? (
-                LENGTH(
-                    FOR perm IN @@permission
-                        FILTER perm._from == user._id
-                        FILTER perm.role IN ['OWNER', 'WRITER']
-                        LET record = DOCUMENT(perm._to)
-                        FILTER record != null
-                        FILTER record.orgId == @org_id
-                        FILTER record.connectorName == @connector
-                        FILTER record.origin == @origin
-                        RETURN perm
-                )
-            ) : 0
-            // Get total connector records for percentage calculation
-            LET total_connector_records = @origin == 'CONNECTOR' ? (
-                LENGTH(
-                    FOR record IN @@records
-                        FILTER record.orgId == @org_id
-                        FILTER record.connectorName == @connector
-                        FILTER record.origin == @origin
-                        FILTER record.isDeleted != true
-                        RETURN record
-                )
-            ) : (
-                LENGTH(
-                    FOR record IN @@records
-                        FILTER record.orgId == @org_id
-                        FILTER record.origin == @origin
-                        FILTER record.isDeleted != true
-                        RETURN record
-                )
-            )
-            LET access_percentage = total_connector_records > 0 ?
-                (connector_access_count * 100.0 / total_connector_records) : 0
-            // Determine permission level
-            LET permission_level = (
-                org_owner ? 'ORGANIZATION_OWNER' :
-                kb_owner_count > 0 ? 'KB_OWNER' :
-                access_percentage >= 50 ? 'SUFFICIENT_ACCESS' :
-                'INSUFFICIENT_ACCESS'
-            )
-            // Simple permission logic
-            LET allowed = (
-                org_owner != null OR
-                (kb_owner_count > 0 AND @origin == 'UPLOAD') OR
-                (@origin == 'CONNECTOR' AND access_percentage >= 50)
-            )
-            RETURN {
-                allowed: allowed,
-                permission_level: permission_level,
-                access_percentage: access_percentage,
-                total_records: total_connector_records,
-                accessible_records: connector_access_count,
-                reason: !allowed ? (
-                    @origin == 'UPLOAD' ? 'User must be a Knowledge Base owner to reindex KB records' :
-                    access_percentage < 50 ? 'User has insufficient access to connector records (less than 50%)' :
-                    'User has no permission to reindex connector records'
-                ) : 'Permission granted'
-            }
-            """
-
-            cursor = self.db.aql.execute(permission_query, bind_vars={
-                "user_key": user_key,
-                "org_id": org_id,
-                "connector": connector,
-                "origin": origin,
-                "@belongs_to": CollectionNames.BELONGS_TO.value,
-                "@permission": CollectionNames.PERMISSION.value,
-                "@records": CollectionNames.RECORDS.value,
-            })
-
-            result = next(cursor, {})
-
-            if result.get("allowed"):
-                self.logger.info(f"✅ Permission granted for connector reindex: {result['permission_level']}")
-            else:
-                self.logger.warning(f"⚠️ Permission denied for connector reindex: {result.get('reason')}")
-
-            return result
-
-        except Exception as e:
-            self.logger.error(f"❌ Error checking connector reindex permissions: {str(e)}")
-            return {
-                "allowed": False,
-                "reason": f"Permission check failed: {str(e)}",
-                "permission_level": "ERROR"
-            }
-
     async def _check_record_permissions(self, record_id: str, user_key: str, check_drive_inheritance: bool = True) -> Dict:
         """
         Generic permission checker for any record type.
@@ -3489,13 +3234,11 @@ class BaseArangoService:
             LET group_permission = FIRST(
                 FOR permission IN @@permission
                     FILTER permission._from == user_from
-                    FILTER permission.type == "USER"
                     LET group = DOCUMENT(permission._to)
                     FILTER group != null
                     FOR perm IN @@permission
                         FILTER perm._from == group._id
                         FILTER perm._to == record_from
-                        FILTER perm.type == "GROUP"
                         RETURN perm.role
             )
 
@@ -3504,45 +3247,39 @@ class BaseArangoService:
             LET record_group_permission = FIRST(
                 // First hop: user -> group
                 FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
-                    FILTER userToGroupEdge.type == "USER"
                     FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
 
                     // Second hop: group -> recordgroup
                     FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id @@permission
-                        FILTER groupToRecordGroupEdge.type == "GROUP" or groupToRecordGroupEdge.type == "ROLE"
 
                         // Third hop: recordgroup -> record
                         FOR rec, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id @@inherit_permissions
                             FILTER rec._id == record_from
+
                             // The role is on the final edge from the record group to the record
-                            RETURN recordGroupToRecordEdge.role
+                            RETURN groupToRecordGroupEdge.role
             )
 
             LET nested_record_group_permission = FIRST(
-                // First hop: user -> group
+                // First hop: user -> group/role
                 FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
-                    FILTER userToGroupEdge.type == "USER"
                     FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
 
-                // Second hop: group -> recordgroup1
-                FOR recordGroup1, groupToRg1Edge IN 1..1 ANY group._id @@permission
-                    FILTER groupToRg1Edge.type == "GROUP" or groupToRg1Edge.type == "ROLE"
+                // Second hop: group -> recordgroup
+                FOR recordGroup, groupToRgEdge IN 1..1 ANY group._id @@permission
+                    FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
 
-                // Third hop: recordgroup1 -> recordgroup2
-                FOR recordGroup2, rg1ToRg2Edge IN 1..1 INBOUND recordGroup1._id @@inherit_permissions
-                    FILTER rg1ToRg2Edge.type == "GROUP"
+                // Third hop: recordgroup -> nested record groups (0 to 5 levels) -> record
+                FOR record, edge, path IN 0..5 INBOUND recordGroup._id @@inherit_permissions
+                    FILTER record._id == record_from
+                    FILTER IS_SAME_COLLECTION("records", record)
 
-                // Fourth hop: recordgroup2 -> record
-                FOR rec, rg2ToRecordEdge IN 1..1 INBOUND recordGroup2._id @@inherit_permissions
-                    FILTER rec._id == record_from
-                    // The role is on the final edge from the record group (rg2) to the record
-                    RETURN rg2ToRecordEdge.role
+                    RETURN groupToRgEdge.role
             )
 
             LET direct_user_record_group_permission = FIRST(
                 // Direct user -> record_group (with nested record groups support)
                 FOR recordGroup, userToRgEdge IN 1..1 ANY user_from @@permission
-                    FILTER userToRgEdge.type == "USER"
                     FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
 
                     // Record group -> nested record groups (0 to 5 levels) -> record
@@ -3552,7 +3289,7 @@ class BaseArangoService:
                         FILTER IS_SAME_COLLECTION("records", record)
 
                         LET finalEdge = LENGTH(path.edges) > 0 ? path.edges[LENGTH(path.edges) - 1] : edge
-                        RETURN finalEdge.role
+                        RETURN userToRgEdge.role
             )
 
             // 3. Check domain/organization permissions
@@ -3598,7 +3335,6 @@ class BaseArangoService:
 
                     // Org -> record_group permission
                     FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id @@permission
-                        FILTER orgToRgEdge.type == "ORG"
                         FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
 
                         // Record group -> nested record groups (0 to 2 levels) -> record
@@ -3607,7 +3343,7 @@ class BaseArangoService:
                             FILTER IS_SAME_COLLECTION("records", record)
 
                             LET finalEdge = LENGTH(path.edges) > 0 ? path.edges[LENGTH(path.edges) - 1] : edge
-                            RETURN finalEdge.role
+                            RETURN orgToRgEdge.role
             )
 
             // 5. Check Drive-level access (if enabled)
@@ -4103,6 +3839,10 @@ class BaseArangoService:
                 extension = file_record.get("extension", "")
                 mime_type = file_record.get("mimeType", "")
 
+            # Fallback: check if mimeType is in the record itself (for WebpageRecord, CommentRecord, etc.)
+            if not mime_type:
+                mime_type = record.get("mimeType", "")
+
             endpoints = await self.config_service.get_config(
                     config_node_constants.ENDPOINTS.value
                 )
@@ -4142,6 +3882,7 @@ class BaseArangoService:
                 "extension": extension,
                 "mimeType": mime_type,
                 "body": file_content,
+                "connectorId": record.get("connectorId", ""),
                 "createdAtTimestamp": str(record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())),
                 "updatedAtTimestamp": str(get_epoch_timestamp_in_ms()),
                 "sourceCreatedAtTimestamp": str(record.get("sourceCreatedAtTimestamp", record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())))
@@ -4151,22 +3892,6 @@ class BaseArangoService:
             self.logger.error(f"❌ Failed to create reindex event payload: {str(e)}")
             raise
 
-    async def _create_reindex_failed_event_payload(self, orgId:str, connector: str, origin: str) -> Dict:
-        """Create reindex connector records event payload"""
-        try:
-
-            return {
-                "orgId": orgId,
-                "origin": origin,
-                "connector": connector,
-                "createdAtTimestamp": str(get_epoch_timestamp_in_ms()),
-                "updatedAtTimestamp": str(get_epoch_timestamp_in_ms()),
-                "sourceCreatedAtTimestamp": str(get_epoch_timestamp_in_ms())
-            }
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to create reindex event payload: {str(e)}")
-            raise
 
     async def _publish_sync_event(self, event_type: str, payload: Dict) -> None:
         """Publish record event to Kafka"""
@@ -4326,7 +4051,7 @@ class BaseArangoService:
 
     async def get_record_by_conversation_index(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         conversation_index: str,
         thread_id: str,
         org_id: str,
@@ -4337,7 +4062,7 @@ class BaseArangoService:
         Get mail record by conversation_index and thread_id for a specific user
 
         Args:
-            connector_name: Connector name
+            connector_id: Connector ID
             conversation_index: The conversation index to look up
             thread_id: The thread ID to match
             org_id: The organization ID
@@ -4352,7 +4077,7 @@ class BaseArangoService:
             # Query that joins records, mails, and permissions to find mail by owner
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.connectorName == @connector_name
+                FILTER record.connectorId == @connector_id
                     AND record.orgId == @org_id
                 FOR mail IN {CollectionNames.MAILS.value}
                     FILTER mail._key == record._key
@@ -4375,7 +4100,7 @@ class BaseArangoService:
                 bind_vars={
                     "conversation_index": conversation_index,
                     "thread_id": thread_id,
-                    "connector_name": connector_name.value,
+                    "connector_id": connector_id,
                     "org_id": org_id,
                     "user_id": user_id,
                 },
@@ -4435,13 +4160,13 @@ class BaseArangoService:
 
 
     async def get_record_by_path(
-        self, connector_name: Connectors, path: str, transaction: Optional[TransactionDatabase] = None
+        self, connector_id: str, path: str, transaction: Optional[TransactionDatabase] = None
     ) -> Dict:
         """
         Get a record from the FILES collection using its path.
 
         Args:
-            connector_name (Connectors): The name of the connector.
+            connector_id (str): The ID of the connector.
             path (str): The path of the file to look up.
             transaction (Optional[TransactionDatabase]): Optional database transaction.
 
@@ -4450,7 +4175,7 @@ class BaseArangoService:
         """
         try:
             self.logger.info(
-                "🚀 Retrieving record by path for connector %s and path %s", connector_name.value, path
+                "🚀 Retrieving record by path for connector %s and path %s", connector_id, path
             )
 
             query = f"""
@@ -4470,6 +4195,10 @@ class BaseArangoService:
                 self.logger.info(
                     "✅ Successfully retrieved file record for path: %s", path
                 )
+                # TODO:
+                # The file record might return multiple file_records as they might have same path (but have different connectors instance)
+                # Now fetch all the correosponding records of these file_records and then filter them based on connector_id
+
                 # record = await self.get_record_by_id(result["_key"])
 
                 # return record.id
@@ -4487,12 +4216,13 @@ class BaseArangoService:
             return None
 
     async def get_record_by_external_id(
-        self, connector_name: Connectors, external_id: str, transaction: Optional[TransactionDatabase] = None
+        self, connector_id: str, external_id: str, transaction: Optional[TransactionDatabase] = None
     ) -> Optional[Record]:
         """
         Get internal file key using the external file ID
 
         Args:
+            connector_id: Connector ID
             external_file_id (str): External file ID to look up
             transaction (Optional[TransactionDatabase]): Optional database transaction
 
@@ -4501,43 +4231,164 @@ class BaseArangoService:
         """
         try:
             self.logger.info(
-                "🚀 Retrieving internal key for external file ID %s %s", connector_name, external_id
+                "🚀 Retrieving internal key for external file ID %s %s", connector_id, external_id
             )
 
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.externalRecordId == @external_id AND record.connectorName == @connector_name
+                FILTER record.externalRecordId == @external_id AND record.connectorId == @connector_id
                 RETURN record
             """
 
             db = transaction if transaction else self.db
             cursor = db.aql.execute(
-                query, bind_vars={"external_id": external_id, "connector_name": connector_name.value}
+                query, bind_vars={"external_id": external_id, "connector_id": connector_id}
             )
             result = next(cursor, None)
 
             if result:
                 self.logger.info(
-                    "✅ Successfully retrieved internal key for external file ID %s %s", connector_name, external_id
+                    "✅ Successfully retrieved internal key for external file ID %s %s", connector_id, external_id
                 )
                 return Record.from_arango_base_record(result)
             else:
                 self.logger.warning(
-                    "⚠️ No internal key found for external file ID %s %s", connector_name, external_id
+                    "⚠️ No internal key found for external file ID %s %s", connector_id, external_id
                 )
                 return None
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to retrieve internal key for external file ID %s %s: %s", connector_name, external_id, str(e)
+                "❌ Failed to retrieve internal key for external file ID %s %s: %s", connector_id, external_id, str(e)
             )
             return None
+
+    async def get_record_by_issue_key(
+        self, connector_id: str, issue_key: str, transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[Record]:
+        """
+        Get Jira issue record by issue key (e.g., PROJ-123) by searching weburl pattern.
+
+        Args:
+            connector_id (str): Connector ID
+            issue_key (str): Jira issue key (e.g., "PROJ-123")
+            transaction (Optional[TransactionDatabase]): Optional database transaction
+
+        Returns:
+            Optional[Record]: Record if found, None otherwise
+        """
+        try:
+            self.logger.info(
+                "🚀 Retrieving record for Jira issue key %s %s", connector_id, issue_key
+            )
+
+            # Search for record where weburl contains "/browse/{issue_key}" and record_type is TICKET
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.connectorId == @connector_id
+                    AND record.recordType == @record_type
+                    AND record.webUrl != null
+                    AND CONTAINS(record.webUrl, @browse_pattern)
+                RETURN record
+            """
+
+            browse_pattern = f"/browse/{issue_key}"
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query,
+                bind_vars={
+                    "connector_id": connector_id,
+                    "record_type": "TICKET",
+                    "browse_pattern": browse_pattern
+                }
+            )
+            result = next(cursor, None)
+
+            if result:
+                self.logger.info(
+                    "✅ Successfully retrieved record for Jira issue key %s %s", connector_id, issue_key
+                )
+                return Record.from_arango_base_record(result)
+            else:
+                self.logger.warning(
+                    "⚠️ No record found for Jira issue key %s %s", connector_id, issue_key
+                )
+                return None
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve record for Jira issue key %s %s: %s", connector_id, issue_key, str(e)
+            )
+            return None
+
+    async def get_records_by_parent(
+        self,
+        connector_id: str,
+        parent_external_record_id: str,
+        record_type: Optional[str] = None,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> List[Record]:
+        """
+        Get all child records for a parent record by parent_external_record_id.
+        Optionally filter by record_type.
+
+        Args:
+            connector_id (str): Connector ID
+            parent_external_record_id (str): Parent record's external ID
+            record_type (Optional[str]): Optional filter by record type (e.g., "COMMENT", "FILE", "TICKET")
+            transaction (Optional[TransactionDatabase]): Optional database transaction
+
+        Returns:
+            List[Record]: List of child records
+        """
+        try:
+            self.logger.debug(
+                "🚀 Retrieving child records for parent %s %s (record_type: %s)",
+                connector_id, parent_external_record_id, record_type or "all"
+            )
+
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.externalParentId != null
+                    AND record.externalParentId == @parent_id
+                    AND record.connectorId == @connector_id
+            """
+
+            bind_vars = {
+                "parent_id": parent_external_record_id,
+                "connector_id": connector_id
+            }
+
+            if record_type:
+                query += " AND record.recordType == @record_type"
+                bind_vars["record_type"] = record_type
+
+            query += " RETURN record"
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars=bind_vars)
+            results = list(cursor)
+
+            records = [Record.from_arango_base_record(result) for result in results]
+
+            self.logger.debug(
+                "✅ Successfully retrieved %d child record(s) for parent %s %s",
+                len(records), connector_id, parent_external_record_id
+            )
+            return records
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve child records for parent %s %s: %s",
+                connector_id, parent_external_record_id, str(e)
+            )
+            return []
 
     # TODO: expand this method for specific users list
     async def get_records_by_status(
         self,
         org_id: str,
-        connector_name: Connectors,
+        connector_id: str,
         status_filters: List[str],
         limit: Optional[int] = None,
         offset: int = 0,
@@ -4549,7 +4400,7 @@ class BaseArangoService:
 
         Args:
             org_id (str): Organization ID
-            connector_name (Connectors): Connector name
+            connector_id (str): Connector ID
             status_filters (List[str]): List of status values to filter (e.g., ["FAILED", "COMPLETED"])
             limit (Optional[int]): Maximum number of records to return (for pagination)
             offset (int): Number of records to skip (for pagination)
@@ -4559,7 +4410,7 @@ class BaseArangoService:
             List[Record]: List of properly typed Record instances
         """
         try:
-            self.logger.info(f"Retrieving records for connector {connector_name.value} with status filters: {status_filters}, limit: {limit}, offset: {offset}")
+            self.logger.info(f"Retrieving records for connector {connector_id} with status filters: {status_filters}, limit: {limit}, offset: {offset}")
 
             limit_clause = "LIMIT @offset, @limit" if limit else ""
 
@@ -4572,7 +4423,7 @@ class BaseArangoService:
             type_doc_conditions = []
             bind_vars = {
                 "org_id": org_id,
-                "connector_name": connector_name.value,
+                "connector_id": connector_id,
                 "status_filters": status_filters,
             }
 
@@ -4610,7 +4461,7 @@ class BaseArangoService:
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
                 FILTER record.orgId == @org_id
-                    AND record.connectorName == @connector_name
+                    AND record.connectorId == @connector_id
                     AND record.indexingStatus IN @status_filters
                 SORT record._key
                 {limit_clause}
@@ -4641,11 +4492,11 @@ class BaseArangoService:
                 )
                 typed_records.append(record)
 
-            self.logger.info(f"✅ Successfully retrieved {len(typed_records)} typed records for connector {connector_name.value}")
+            self.logger.info(f"✅ Successfully retrieved {len(typed_records)} typed records for connector {connector_id}")
             return typed_records
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to retrieve records by status for connector {connector_name.value}: {str(e)}")
+            self.logger.error(f"❌ Failed to retrieve records by status for connector {connector_id}: {str(e)}")
             return []
 
     def _create_typed_record_from_arango(self, record_dict: Dict, type_doc: Optional[Dict]) -> Record:
@@ -4736,41 +4587,41 @@ class BaseArangoService:
             )
             return None
 
-    async def get_record_group_by_external_id(self, connector_name: Connectors, external_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[RecordGroup]:
-        """
+    async def get_record_group_by_external_id(self, connector_id: str, external_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[RecordGroup]:
+        """1
         Get internal record group key using the external record group ID
         """
         try:
             self.logger.info(
-                "🚀 Retrieving internal key for external record group ID %s %s", connector_name, external_id
+                "🚀 Retrieving internal key for external record group ID %s %s", connector_id, external_id
             )
             query = f"""
             FOR record_group IN {CollectionNames.RECORD_GROUPS.value}
-                FILTER record_group.externalGroupId == @external_id AND record_group.connectorName == @connector_name
+                FILTER record_group.externalGroupId == @external_id AND record_group.connectorId == @connector_id
                 RETURN record_group
             """
             db = transaction if transaction else self.db
-            cursor = db.aql.execute(query, bind_vars={"external_id": external_id, "connector_name": connector_name.value})
+            cursor = db.aql.execute(query, bind_vars={"external_id": external_id, "connector_id": connector_id})
             result = next(cursor, None)
             if result:
                 self.logger.info(
-                    "✅ Successfully retrieved internal key for external record group ID %s %s", connector_name, external_id
+                    "✅ Successfully retrieved internal key for external record group ID %s %s", connector_id, external_id
                 )
                 return RecordGroup.from_arango_base_record_group(result)
             else:
                 self.logger.warning(
-                    "⚠️ No internal key found for external record group ID %s %s", connector_name, external_id
+                    "⚠️ No internal key found for external record group ID %s %s", connector_id, external_id
                 )
                 return None
         except Exception as e:
             self.logger.error(
-                "❌ Failed to retrieve internal key for external record group ID %s %s: %s", connector_name, external_id, str(e)
+                "❌ Failed to retrieve internal key for external record group ID %s %s: %s", connector_id, external_id, str(e)
             )
             return None
 
     async def get_user_group_by_external_id(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         external_id: str,
         transaction: Optional[TransactionDatabase] = None
     ) -> Optional[AppUserGroup]:
@@ -4779,13 +4630,13 @@ class BaseArangoService:
         """
         try:
             self.logger.info(
-                "🚀 Retrieving user group for external ID %s %s", connector_name, external_id
+                "🚀 Retrieving user group for external ID %s %s", connector_id, external_id
             )
 
             # Query the GROUPS collection using the schema fields
             query = f"""
             FOR group IN {CollectionNames.GROUPS.value}
-                FILTER group.externalGroupId == @external_id AND group.connectorName == @connector_name
+                FILTER group.externalGroupId == @external_id AND group.connectorId == @connector_id
                 LIMIT 1
                 RETURN group
             """
@@ -4794,7 +4645,7 @@ class BaseArangoService:
 
 
             cursor = db.aql.execute(query,
-                bind_vars={"external_id": external_id, "connector_name": connector_name.value}
+                bind_vars={"external_id": external_id, "connector_id": connector_id}
             )
 
             result = next(cursor, None)
@@ -4802,23 +4653,23 @@ class BaseArangoService:
 
             if result:
                 self.logger.info(
-                    "✅ Successfully retrieved user group for external ID %s %s", connector_name, external_id
+                    "✅ Successfully retrieved user group for external ID %s %s", connector_id, external_id
                 )
                 return AppUserGroup.from_arango_base_user_group(result)
             else:
                 self.logger.warning(
-                    "⚠️ No user group found for external ID %s %s", connector_name, external_id
+                    "⚠️ No user group found for external ID %s %s", connector_id, external_id
                 )
                 return None
         except Exception as e:
             self.logger.error(
-                "❌ Failed to retrieve user group for external ID %s %s: %s", connector_name, external_id, str(e)
+                "❌ Failed to retrieve user group for external ID %s %s: %s", connector_id, external_id, str(e)
             )
             return None
 
     async def get_app_role_by_external_id(
         self,
-        connector_name: Connectors,
+        connector_id: str,
         external_id: str,
         transaction: Optional[TransactionDatabase] = None
     ) -> Optional[AppRole]:
@@ -4827,13 +4678,13 @@ class BaseArangoService:
         """
         try:
             self.logger.info(
-                "🚀 Retrieving Role for external ID %s %s", connector_name, external_id
+                "🚀 Retrieving Role for external ID %s %s", connector_id, external_id
             )
 
             # Query the GROUPS collection using the schema fields
             query = f"""
             FOR role IN {CollectionNames.ROLES.value}
-                FILTER role.externalRoleId == @external_id AND role.connectorName == @connector_name
+                FILTER role.externalRoleId == @external_id AND role.connectorId == @connector_id
                 LIMIT 1
                 RETURN role
             """
@@ -4842,7 +4693,7 @@ class BaseArangoService:
 
 
             cursor = db.aql.execute(query,
-                bind_vars={"external_id": external_id, "connector_name": connector_name.value}
+                bind_vars={"external_id": external_id, "connector_id": connector_id}
             )
 
             result = next(cursor, None)
@@ -4850,98 +4701,18 @@ class BaseArangoService:
 
             if result:
                 self.logger.info(
-                    "✅ Successfully retrieved Role for external ID %s %s", connector_name, external_id
+                    "✅ Successfully retrieved Role for external ID %s %s", connector_id, external_id
                 )
                 return AppRole.from_arango_base_role(result)
             else:
                 self.logger.warning(
-                    "⚠️ No Role found for external ID %s %s", connector_name, external_id
+                    "⚠️ No Role found for external ID %s %s", connector_id, external_id
                 )
                 return None
         except Exception as e:
             self.logger.error(
-                "❌ Failed to retrieve Role for external ID %s %s: %s", connector_name, external_id, str(e)
+                "❌ Failed to retrieve Role for external ID %s %s: %s", connector_id, external_id, str(e)
             )
-            return None
-
-    async def get_or_create_app_by_name(
-        self,
-        app_name: str,
-        app_group: str,
-        auth_type: Optional[str] = None,
-        app_type: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Get an existing app by name or create it if it doesn't exist.
-
-        Args:
-            app_name: Name of the application
-            app_group: Group the app belongs to (e.g., "Google Workspace")
-            auth_type: Authentication type (e.g., "oauth", "api_token")
-            app_type: Optional type override (defaults to uppercased app_name)
-
-        Returns:
-            App document if successful
-        """
-        try:
-            # First try to get existing app
-            existing_app = await self.get_app_by_name(app_name)
-            if existing_app:
-                return existing_app
-
-            # If not found, create new app
-            orgs = await self.get_all_documents(CollectionNames.ORGS.value)
-
-            if not orgs or not isinstance(orgs, list):
-                self.logger.warning(f"No organizations found in DB; skipping app creation for {app_name}")
-                return None
-
-            org_id = orgs[0].get("_key")
-            if not org_id:
-                self.logger.warning(f"First organization document missing _key; skipping app creation for {app_name}")
-                return None
-
-            # Generate consistent app group ID
-            app_group_id = hashlib.sha256(app_group.encode()).hexdigest()
-
-            # Create app document
-            doc = {
-                '_key': f"{org_id}_{app_name.replace(' ', '_').upper()}",
-                'name': app_name,
-                'type': app_type or app_name.upper().replace(' ', '_'),
-                'appGroup': app_group,
-                'appGroupId': app_group_id,
-                'authType': auth_type or 'oauth',
-                'isActive': False,
-                'isConfigured': False,
-                'createdAtTimestamp': get_epoch_timestamp_in_ms(),
-                'updatedAtTimestamp': get_epoch_timestamp_in_ms()
-            }
-
-            # Insert app document
-            app_doc = await self.batch_upsert_nodes([doc], CollectionNames.APPS.value)
-            if not app_doc:
-                raise Exception(f"Failed to create app {app_name} in database")
-
-            # Create org-app edge
-            edge_data = {
-                "_from": f"{CollectionNames.ORGS.value}/{org_id}",
-                "_to": f"{CollectionNames.APPS.value}/{doc['_key']}",
-                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-            }
-
-            edge_doc = await self.batch_create_edges(
-                [edge_data],
-                CollectionNames.ORG_APP_RELATION.value,
-            )
-            if not edge_doc:
-                raise Exception(f"Failed to create edge for {app_name} in database")
-
-            self.logger.info(f"Created database entry for {app_name}")
-            return app_doc
-
-        except Exception as e:
-            self.logger.error(f"Error in get_or_create_app_by_name for {app_name}: {e}")
             return None
 
     async def get_user_by_email(self, email: str, transaction: Optional[TransactionDatabase] = None) -> Optional[User]:
@@ -4979,7 +4750,7 @@ class BaseArangoService:
     async def get_app_user_by_email(
         self,
         email: str,
-        app_name: Connectors,
+        connector_id: str,
         transaction: Optional[TransactionDatabase] = None
     ) -> Optional[AppUser]:
         """
@@ -4987,14 +4758,14 @@ class BaseArangoService:
         """
         try:
             self.logger.info(
-                "🚀 Retrieving user for email %s and app %s", email, app_name
+                "🚀 Retrieving user for email %s and app %s", email, connector_id
             )
 
             query = """
                 // First find the app
                 LET app = FIRST(
                     FOR a IN @@apps
-                        FILTER LOWER(a.name) == LOWER(@app_name)
+                        FILTER a._key == @connector_id
                         RETURN a
                 )
 
@@ -5022,7 +4793,7 @@ class BaseArangoService:
             db = transaction if transaction else self.db
             cursor = db.aql.execute(query, bind_vars={
                 "email": email,
-                "app_name": app_name.value,
+                "connector_id": connector_id,
                 "@apps": CollectionNames.APPS.value,
                 "@users": CollectionNames.USERS.value,
                 "@user_app_relation": CollectionNames.USER_APP_RELATION.value
@@ -5030,19 +4801,20 @@ class BaseArangoService:
 
             result = next(cursor, None)
             if result:
-                self.logger.info("✅ Successfully retrieved user for email %s and app %s", email, app_name)
+                self.logger.info("✅ Successfully retrieved user for email %s and app %s", email, connector_id)
+                result["connectorId"] = connector_id
                 return AppUser.from_arango_user(result)
             else:
-                self.logger.warning("⚠️ No user found for email %s and app %s", email, app_name)
+                self.logger.warning("⚠️ No user found for email %s and app %s", email, connector_id)
                 return None
         except Exception as e:
-            self.logger.error("❌ Failed to retrieve user for email %s and app %s: %s", email, app_name, str(e))
+            self.logger.error("❌ Failed to retrieve user for email %s and app %s: %s", email, connector_id, str(e))
             return None
 
     async def get_user_by_source_id(
             self,
             source_user_id: str,
-            connector_name: Connectors,
+            connector_id: str,
             transaction: Optional[TransactionDatabase] = None
         ) -> Optional[User]:
             """
@@ -5050,7 +4822,7 @@ class BaseArangoService:
 
             Args:
                 source_user_id: The user ID from the source system
-                connector_name: Connector enum for scoped lookup
+                connector_id: Connector ID
                 transaction: Optional transaction database
 
             Returns:
@@ -5059,14 +4831,14 @@ class BaseArangoService:
             try:
                 self.logger.info(
                     "🚀 Retrieving user by source_id %s for connector %s",
-                    source_user_id, connector_name.value
+                    source_user_id, connector_id
                 )
 
                 user_query = """
                 // First find the app
                 LET app = FIRST(
                     FOR a IN @@apps
-                        FILTER LOWER(a.name) == LOWER(@app_name)
+                        FILTER a._key == @connector_id
                         RETURN a
                 )
 
@@ -5086,7 +4858,7 @@ class BaseArangoService:
                     bind_vars={
                         "@apps": CollectionNames.APPS.value,
                         "@user_app_relation": CollectionNames.USER_APP_RELATION.value,
-                        "app_name": connector_name.value,
+                        "connector_id": connector_id,
                         "source_user_id": source_user_id,
                     },
                 )
@@ -5141,26 +4913,26 @@ class BaseArangoService:
             self.logger.error("❌ Failed to fetch users: %s", str(e))
             return []
 
-    async def get_app_users(self, org_id, app_name: Connectors) -> List[Dict]:
+    async def get_app_users(self, org_id, connector_id: str) -> List[Dict]:
         """
         Fetch all users from the database who belong to the organization
         and are connected to the specified app via userAppRelation edge.
 
         Args:
             org_id (str): Organization ID
-            app_name (Connectors): App connector name
+            connector_id (str): App connector ID
 
         Returns:
             List[Dict]: List of user documents with their details and sourceUserId
         """
         try:
-            self.logger.info(f"🚀 Fetching users connected to {app_name.value} app")
+            self.logger.info(f"🚀 Fetching users connected to {connector_id} app")
 
             query = """
                 // First find the app
                 LET app = FIRST(
                     FOR a IN @@apps
-                        FILTER LOWER(a.name) == LOWER(@app_name)
+                        FILTER a._key == @connector_id
                         RETURN a
                 )
 
@@ -5182,29 +4954,30 @@ class BaseArangoService:
 
                     RETURN MERGE(user, {
                         sourceUserId: edge.sourceUserId,
-                        appName: UPPER(app.name)
+                        appName: UPPER(app.type),
+                        connectorId: app._key
                     })
             """
 
             cursor = self.db.aql.execute(query, bind_vars={
                 "org_id": org_id,
-                "app_name": app_name.value,
+                "connector_id": connector_id,
                 "@apps": CollectionNames.APPS.value,
                 "@user_app_relation": CollectionNames.USER_APP_RELATION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value
             })
 
             users  = list(cursor)
-            self.logger.info(f"✅ Successfully fetched {len(users)} users for {app_name.value}")
+            self.logger.info(f"✅ Successfully fetched {len(users)} users for {connector_id}")
             return users
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to fetch users for {app_name.value}: {str(e)}")
+            self.logger.error(f"❌ Failed to fetch users for {connector_id}: {str(e)}")
             return []
 
     async def get_user_groups(
         self,
-        app_name: Connectors,
+        connector_id: str,
         org_id: str,
         transaction: Optional[TransactionDatabase] = None
     ) -> List[AppUserGroup]:
@@ -5212,7 +4985,7 @@ class BaseArangoService:
         Get all user groups for a specific connector and organization.
 
         Args:
-            app_name: Connector name
+            connector_id: Connector ID
             org_id: Organization ID
             transaction: Optional transaction database context
 
@@ -5221,12 +4994,12 @@ class BaseArangoService:
         """
         try:
             self.logger.info(
-                "🚀 Retrieving user groups for connector %s and org %s", app_name.value, org_id
+                "🚀 Retrieving user groups for connector %s and org %s", connector_id, org_id
             )
 
             query = f"""
             FOR group IN {CollectionNames.GROUPS.value}
-                FILTER group.connectorName == @connector_name
+                FILTER group.connectorId == @connector_id
                     AND group.orgId == @org_id
                 RETURN group
             """
@@ -5236,7 +5009,7 @@ class BaseArangoService:
             cursor = db.aql.execute(
                 query,
                 bind_vars={
-                    "connector_name": app_name.value,
+                    "connector_id": connector_id,
                     "org_id": org_id
                 }
             )
@@ -5244,13 +5017,13 @@ class BaseArangoService:
             groups = [AppUserGroup.from_arango_base_user_group(group_data) for group_data in cursor]
 
             self.logger.info(
-                "✅ Successfully retrieved %d user groups for connector %s", len(groups), app_name.value
+                "✅ Successfully retrieved %d user groups for connector %s", len(groups), connector_id
             )
             return groups
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to retrieve user groups for connector %s: %s", app_name.value, str(e)
+                "❌ Failed to retrieve user groups for connector %s: %s", connector_id, str(e)
             )
             return []
 
@@ -5942,6 +5715,7 @@ class BaseArangoService:
         user_email: str,
         token: str,
         expiration: Optional[str] = None,
+        connector_id: Optional[str] = None,
     ) -> Optional[Dict]:
         """Store page token with user channel information"""
         try:
@@ -5974,23 +5748,44 @@ class BaseArangoService:
                 "expiration": expiration,
             }
 
+            # Add connector_id if provided
+            if connector_id:
+                token_doc["connectorId"] = connector_id
+
             # Upsert to handle updates to existing channel tokens
-            query = """
-            UPSERT { userEmail: @userEmail }
-            INSERT @token_doc
-            UPDATE @token_doc
-            IN @@pageTokens
-            RETURN NEW
-            """
+            # Use connector_id in upsert condition if provided
+            if connector_id:
+                query = """
+                UPSERT { userEmail: @userEmail, connectorId: @connectorId }
+                INSERT @token_doc
+                UPDATE @token_doc
+                IN @@pageTokens
+                RETURN NEW
+                """
+                bind_vars = {
+                    "userEmail": user_email,
+                    "connectorId": connector_id,
+                    "token_doc": token_doc,
+                    "@pageTokens": CollectionNames.PAGE_TOKENS.value,
+                }
+            else:
+                query = """
+                UPSERT { userEmail: @userEmail }
+                INSERT @token_doc
+                UPDATE @token_doc
+                IN @@pageTokens
+                RETURN NEW
+                """
+                bind_vars = {
+                    "userEmail": user_email,
+                    "token_doc": token_doc,
+                    "@pageTokens": CollectionNames.PAGE_TOKENS.value,
+                }
 
             list(
                 self.db.aql.execute(
                     query,
-                    bind_vars={
-                        "userEmail": user_email,
-                        "token_doc": token_doc,
-                        "@pageTokens": CollectionNames.PAGE_TOKENS.value,
-                    },
+                    bind_vars=bind_vars,
                 )
             )
 
@@ -6000,7 +5795,7 @@ class BaseArangoService:
             self.logger.error("❌ Error storing page token: %s", str(e))
 
     async def get_page_token_db(
-        self, channel_id: str = None, resource_id: str = None, user_email: str = None
+        self, channel_id: str = None, resource_id: str = None, user_email: str = None, connector_id: Optional[str] = None
     ) -> Optional[Dict]:
         """Get page token for specific channel"""
         try:
@@ -6028,12 +5823,15 @@ class BaseArangoService:
             if user_email is not None:
                 filters.append("token.userEmail == @user_email")
                 bind_vars["user_email"] = user_email
+            if connector_id is not None:
+                filters.append("token.connectorId == @connector_id")
+                bind_vars["connector_id"] = connector_id
 
             if not filters:
                 self.logger.warning("⚠️ No filter params provided for page token query")
                 return None
 
-            filter_clause = " OR ".join(filters)
+            filter_clause = " AND ".join(filters)
 
             query = f"""
             FOR token IN @@pageTokens
@@ -6080,7 +5878,7 @@ class BaseArangoService:
             return []
 
     async def store_channel_history_id(
-        self, history_id: str, expiration: str, user_email: str
+        self, history_id: str, expiration: str, user_email: str, connector_id: Optional[str] = None
     ) -> None:
         """
         Store the latest historyId for a user's channel watch
@@ -6094,30 +5892,56 @@ class BaseArangoService:
         try:
             self.logger.info(f"🚀 Storing historyId for user {user_email}")
 
-            query = """
-            UPSERT { userEmail: @userEmail }
-            INSERT {
-                userEmail: @userEmail,
-                historyId: @historyId,
-                expiration: @expiration,
-                updatedAt: DATE_NOW()
-            }
-            UPDATE {
-                historyId: @historyId,
-                expiration: @expiration,
-                updatedAt: DATE_NOW()
-            } IN channelHistory
-            RETURN NEW
-            """
+            # Use connector_id in upsert condition if provided
+            if connector_id:
+                query = """
+                UPSERT { userEmail: @userEmail, connectorId: @connectorId }
+                INSERT {
+                    userEmail: @userEmail,
+                    connectorId: @connectorId,
+                    historyId: @historyId,
+                    expiration: @expiration,
+                    updatedAt: DATE_NOW()
+                }
+                UPDATE {
+                    historyId: @historyId,
+                    expiration: @expiration,
+                    updatedAt: DATE_NOW()
+                } IN channelHistory
+                RETURN NEW
+                """
+                bind_vars = {
+                    "userEmail": user_email,
+                    "connectorId": connector_id,
+                    "historyId": history_id,
+                    "expiration": expiration,
+                }
+            else:
+                query = """
+                UPSERT { userEmail: @userEmail }
+                INSERT {
+                    userEmail: @userEmail,
+                    historyId: @historyId,
+                    expiration: @expiration,
+                    updatedAt: DATE_NOW()
+                }
+                UPDATE {
+                    historyId: @historyId,
+                    expiration: @expiration,
+                    updatedAt: DATE_NOW()
+                } IN channelHistory
+                RETURN NEW
+                """
+                bind_vars = {
+                    "userEmail": user_email,
+                    "historyId": history_id,
+                    "expiration": expiration,
+                }
 
             result = list(
                 self.db.aql.execute(
                     query,
-                    bind_vars={
-                        "userEmail": user_email,
-                        "historyId": history_id,
-                        "expiration": expiration,
-                    },
+                    bind_vars=bind_vars,
                 )
             )
 
@@ -6129,12 +5953,13 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error(f"❌ Error storing historyId: {str(e)}")
 
-    async def get_channel_history_id(self, user_email: str) -> Optional[str]:
+    async def get_channel_history_id(self, user_email: str, connector_id: Optional[str] = None) -> Optional[str]:
         """
         Retrieve the latest historyId for a user
 
         Args:
             user_email (str): Email of the user
+            connector_id (str): Connector ID (optional)
 
         Returns:
             Optional[str]: Latest historyId if found, None otherwise
@@ -6142,14 +5967,27 @@ class BaseArangoService:
         try:
             self.logger.info(f"🚀 Retrieving historyId for user {user_email}")
 
-            query = """
-            FOR history IN channelHistory
-            FILTER history.userEmail == @userEmail
-            RETURN history
-            """
+            bind_vars = {
+                "userEmail": user_email,
+            }
+
+            # Use connector_id in filter if provided
+            if connector_id:
+                query = """
+                FOR history IN channelHistory
+                FILTER history.userEmail == @userEmail AND history.connectorId == @connectorId
+                RETURN history
+                """
+                bind_vars["connectorId"] = connector_id
+            else:
+                query = """
+                FOR history IN channelHistory
+                FILTER history.userEmail == @userEmail
+                RETURN history
+                """
 
             result = list(
-                self.db.aql.execute(query, bind_vars={"userEmail": user_email})
+                self.db.aql.execute(query, bind_vars=bind_vars)
             )
 
             if result:
@@ -7194,6 +7032,7 @@ class BaseArangoService:
         user_email: str,
         state: str,
         service_type: str = Connectors.GOOGLE_DRIVE.value,
+        connector_id: Optional[str] = None,
     ) -> Optional[Dict]:
         """
         Update user's sync state in USER_APP_RELATION collection for specific service
@@ -7202,6 +7041,7 @@ class BaseArangoService:
             user_email (str): Email of the user
             state (str): Sync state (NOT_STARTED, RUNNING, PAUSED, COMPLETED)
             service_type (str): Type of service
+            connector_id (str): Connector ID (optional)
 
         Returns:
             Optional[Dict]: Updated relation document if successful, None otherwise
@@ -7216,35 +7056,51 @@ class BaseArangoService:
 
             user_key = await self.get_entity_id_by_email(user_email)
 
-            # Get user key and app key based on service type and update the sync state
-            query = f"""
-            LET app = FIRST(FOR a IN {CollectionNames.APPS.value}
-                          FILTER LOWER(a.name) == LOWER(@service_type)
-                          RETURN {{
-                              _key: a._key,
-                              name: a.name
-                          }})
+            # Update edge scoped by connector instance when provided; otherwise by service name
+            if connector_id:
+                query = f"""
+                LET edge = FIRST(
+                    FOR rel in {CollectionNames.USER_APP_RELATION.value}
+                        FILTER rel._from == CONCAT('users/', @user_key)
+                        FILTER rel._to == CONCAT('apps/', @connector_id)
+                        UPDATE rel WITH {{ syncState: @state, lastSyncUpdate: @lastSyncUpdate }} IN {CollectionNames.USER_APP_RELATION.value}
+                        RETURN NEW
+                )
+                RETURN edge
+                """
+                bind_vars = {
+                    "user_key": user_key,
+                    "connector_id": connector_id,
+                    "state": state,
+                    "lastSyncUpdate": get_epoch_timestamp_in_ms(),
+                }
+            else:
+                query = f"""
+                LET app = FIRST(FOR a IN {CollectionNames.APPS.value}
+                              FILTER LOWER(a.name) == LOWER(@service_type)
+                              RETURN {{
+                                  _key: a._key,
+                                  name: a.name
+                              }})
 
-            LET edge = FIRST(
-                FOR rel in {CollectionNames.USER_APP_RELATION.value}
-                    FILTER rel._from == CONCAT('users/', @user_key)
-                    FILTER rel._to == CONCAT('apps/', app._key)
-                    UPDATE rel WITH {{ syncState: @state, lastSyncUpdate: @lastSyncUpdate }} IN {CollectionNames.USER_APP_RELATION.value}
-                    RETURN NEW
-            )
+                LET edge = FIRST(
+                    FOR rel in {CollectionNames.USER_APP_RELATION.value}
+                        FILTER rel._from == CONCAT('users/', @user_key)
+                        FILTER rel._to == CONCAT('apps/', app._key)
+                        UPDATE rel WITH {{ syncState: @state, lastSyncUpdate: @lastSyncUpdate }} IN {CollectionNames.USER_APP_RELATION.value}
+                        RETURN NEW
+                )
 
-            RETURN edge
-            """
-
-            cursor = self.db.aql.execute(
-                query,
-                bind_vars={
+                RETURN edge
+                """
+                bind_vars = {
                     "user_key": user_key,
                     "service_type": service_type,
                     "state": state,
                     "lastSyncUpdate": get_epoch_timestamp_in_ms(),
-                },
-            )
+                }
+
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
 
             result = next(cursor, None)
             if result:
@@ -7270,7 +7126,10 @@ class BaseArangoService:
             return None
 
     async def get_user_sync_state(
-        self, user_email: str, service_type: str = Connectors.GOOGLE_DRIVE.value
+        self,
+        user_email: str,
+        service_type: str = Connectors.GOOGLE_DRIVE.value,
+        connector_id: Optional[str] = None,
     ) -> Optional[Dict]:
         """
         Get user's sync state from USER_APP_RELATION collection for specific service
@@ -7289,31 +7148,41 @@ class BaseArangoService:
 
             user_key = await self.get_entity_id_by_email(user_email)
 
-            query = f"""
-            LET app = FIRST(FOR a IN {CollectionNames.APPS.value}
-                          FILTER LOWER(a.name) == LOWER(@service_type)
-                          RETURN {{
-                              _key: a._key,
-                              name: a.name
-                          }})
+            if connector_id:
+                query = f"""
+                RETURN FIRST(
+                  FOR rel in {CollectionNames.USER_APP_RELATION.value}
+                    FILTER rel._from == CONCAT('users/', @user_key)
+                    FILTER rel._to == CONCAT('apps/', @connector_id)
+                    RETURN rel
+                )
+                """
+                bind_vars = {
+                    "user_key": user_key,
+                    "connector_id": connector_id,
+                }
+            else:
+                query = f"""
+                LET app = FIRST(FOR a IN {CollectionNames.APPS.value}
+                              FILTER LOWER(a.name) == LOWER(@service_type)
+                              RETURN {{
+                                  _key: a._key,
+                                  name: a.name
+                              }})
 
-            LET edge = FIRST(
-                FOR rel in {CollectionNames.USER_APP_RELATION.value}
+                RETURN FIRST(
+                  FOR rel in {CollectionNames.USER_APP_RELATION.value}
                     FILTER rel._from == CONCAT('users/', @user_key)
                     FILTER rel._to == CONCAT('apps/', app._key)
                     RETURN rel
-            )
-
-            RETURN edge
-            """
-
-            cursor = self.db.aql.execute(
-                query,
-                bind_vars={
+                )
+                """
+                bind_vars = {
                     "user_key": user_key,
                     "service_type": service_type,
-                },
-            )
+                }
+
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
 
             result = next(cursor, None)
             if result:
@@ -7340,7 +7209,7 @@ class BaseArangoService:
             return None
 
     async def update_drive_sync_state(
-        self, drive_id: str, state: str
+        self, drive_id: str, state: str, connector_id: Optional[str] = None
     ) -> Optional[Dict]:
         """
         Update drive's sync state in drives collection
@@ -7348,7 +7217,7 @@ class BaseArangoService:
         Args:
             drive_id (str): ID of the drive
             state (str): Sync state (NOT_STARTED, RUNNING, PAUSED, COMPLETED)
-            additional_data (dict, optional): Additional data to update
+            connector_id (Optional[str]): Connector ID (optional)
 
         Returns:
             Optional[Dict]: Updated drive document if successful, None otherwise
@@ -7363,16 +7232,25 @@ class BaseArangoService:
                 "last_sync_update": get_epoch_timestamp_in_ms(),
             }
 
-            query = """
-            FOR drive IN drives
-                FILTER drive.id == @drive_id
-                UPDATE drive WITH @update IN drives
-                RETURN NEW
-            """
+            if connector_id:
+                update_data["connectorId"] = connector_id
+                query = """
+                FOR drive IN drives
+                    FILTER drive.id == @drive_id AND drive.connectorId == @connector_id
+                    UPDATE drive WITH @update IN drives
+                    RETURN NEW
+                """
+                bind_vars = {"drive_id": drive_id, "connector_id": connector_id, "update": update_data}
+            else:
+                query = """
+                FOR drive IN drives
+                    FILTER drive.id == @drive_id
+                    UPDATE drive WITH @update IN drives
+                    RETURN NEW
+                """
+                bind_vars = {"drive_id": drive_id, "update": update_data}
 
-            cursor = self.db.aql.execute(
-                query, bind_vars={"drive_id": drive_id, "update": update_data}
-            )
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
 
             result = next(cursor, None)
             if result:
@@ -7390,11 +7268,12 @@ class BaseArangoService:
             self.logger.error("❌ Failed to update drive sync state: %s", str(e))
             return None
 
-    async def get_drive_sync_state(self, drive_id: str) -> Optional[str]:
+    async def get_drive_sync_state(self, drive_id: str, connector_id: Optional[str] = None) -> Optional[str]:
         """Get sync state for a specific drive
 
         Args:
             drive_id (str): ID of the drive to check
+            connector_id (Optional[str]): Connector ID (optional)
 
         Returns:
             Optional[str]: Current sync state of the drive ('NOT_STARTED', 'IN_PROGRESS', 'PAUSED', 'COMPLETED', 'FAILED')
@@ -7403,13 +7282,22 @@ class BaseArangoService:
         try:
             self.logger.info("🔍 Getting sync state for drive %s", drive_id)
 
-            query = """
-            FOR drive IN drives
-                FILTER drive.id == @drive_id
-                RETURN drive.sync_state
-            """
+            if connector_id:
+                query = """
+                FOR drive IN drives
+                    FILTER drive.id == @drive_id AND drive.connectorId == @connector_id
+                    RETURN drive.sync_state
+                """
+                bind_vars = {"drive_id": drive_id, "connector_id": connector_id}
+            else:
+                query = """
+                FOR drive IN drives
+                    FILTER drive.id == @drive_id
+                    RETURN drive.sync_state
+                """
+                bind_vars = {"drive_id": drive_id}
 
-            result = list(self.db.aql.execute(query, bind_vars={"drive_id": drive_id}))
+            result = list(self.db.aql.execute(query, bind_vars=bind_vars))
 
             if result:
                 self.logger.debug(
@@ -13356,7 +13244,7 @@ class BaseArangoService:
                     'languages': [language_ids],
                     'topics': [topic_ids],
                     'kb': [kb_ids],
-                    'apps': [app_names]
+                    'apps': [connector_ids]
                 }
         """
         self.logger.info(
@@ -13366,19 +13254,18 @@ class BaseArangoService:
         try:
             # Extract filters
             kb_ids = filters.get("kb") if filters else None
-            app_names = filters.get("apps") if filters else None
+            connector_ids = filters.get("apps") if filters else None
 
-            # Process app names
-            has_local = False
-            non_local_apps = []
-            if app_names:
-                apps_lower = [app.lower() for app in app_names]
-                has_local = "local" in apps_lower
-                non_local_apps = [app for app in apps_lower if app != "local"]
+            # Determine filter case
+            has_kb_filter = kb_ids is not None and len(kb_ids) > 0
+            has_app_filter = connector_ids is not None and len(connector_ids) > 0
 
-            self.logger.info(f"🔍 Filter analysis - KB IDs: {kb_ids}, Apps: {app_names}, Has local: {has_local}, Non-local apps: {non_local_apps}")
+            self.logger.info(
+                f"🔍 Filter analysis - KB filter: {has_kb_filter} (IDs: {kb_ids}), "
+                f"App filter: {has_app_filter} (Connector IDs: {connector_ids})"
+            )
 
-            # Build base query
+            # Build base query with common parts
             query = f"""
             LET userDoc = FIRST(
                 FOR user IN @@users
@@ -13470,8 +13357,12 @@ class BaseArangoService:
             """
 
             unions = []
-            if has_local:
-                self.logger.info("🔍 Getting all KB records")
+
+            # Case 1: Both KB and App filters applied
+            if has_kb_filter and has_app_filter:
+                self.logger.info("🔍 Case 1: Both KB and App filters applied")
+
+                # Get KB records with filter
                 query += f"""
                 // Direct user-KB permissions
                 LET directKbRecords = (
@@ -13496,102 +13387,80 @@ class BaseArangoService:
                 LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
                 """
                 unions.append("kbRecords")
-                if non_local_apps:
-                    self.logger.info("🔍 Getting app filtered records, filter applied : local + apps")
-                    query += """
-                    LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
-                    LET appFilteredRecords = (
-                        FOR record IN baseAccessible
-                            FILTER LOWER(record.connectorName) IN @non_local_apps
-                            RETURN DISTINCT record
-                    )
-                    """
-                    unions.append("appFilteredRecords")
 
-            elif kb_ids or non_local_apps:
-
-                # KB records - conditional based on whether KB filtering is applied
-                if kb_ids:
-                    self.logger.info(f"🔍 Applying KB filtering for specific KBs: {kb_ids}")
-                    query += f"""
-                    // Direct user-KB permissions with filter
-                    LET directKbRecords = (
-                        FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                            FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                            FILTER kb._key IN @kb_ids
-                        FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                        RETURN DISTINCT records
-                    )
-
-                    // Team-based KB permissions with filter: User -> Team -> KB -> Records
-                    LET teamKbRecords = (
-                        FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
-                            FILTER IS_SAME_COLLECTION("teams", team)
-                            FILTER userTeamEdge.type == "USER"
-                        FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
-                            FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                            FILTER teamKbEdge.type == "TEAM"
-                            FILTER kb._key IN @kb_ids
-                        FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                        RETURN DISTINCT records
-                    )
-
-                    LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
-                    """
-                    unions.append("kbRecords")
-                if non_local_apps:
-                    self.logger.info("🔍 Getting app filtered records, filter applied : kb + apps")
-                    query += """
-                        LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
-                        LET appFilteredRecords = (
-                            FOR record IN baseAccessible
-                                FILTER LOWER(record.connectorName) IN @non_local_apps
-                                RETURN DISTINCT record
-                        )
-                    """
-                    unions.append("appFilteredRecords")
-            else:
-                self.logger.info("🔍 Getting all accessible records")
-                query += f"""
-                // Direct user-KB permissions
-                LET directKbRecords = (
-                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
+                # Get app-filtered records from direct, group, org, and anyone
+                query += """
+                LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
+                LET appFilteredRecords = (
+                    FOR record IN baseAccessible
+                        FILTER record.connectorId IN @connector_ids
+                        RETURN DISTINCT record
                 )
-
-                // Team-based KB permissions: User -> Team -> KB -> Records
-                LET teamKbRecords = (
-                    FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("teams", team)
-                        FILTER userTeamEdge.type == "USER"
-                    FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                        FILTER teamKbEdge.type == "TEAM"
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
-                )
-
-                LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
-
-                LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, kbRecords, anyoneRecords)
                 """
+                unions.append("appFilteredRecords")
 
-                unions.append("baseAccessible")
+            # Case 2: Only KB filter applied
+            elif has_kb_filter and not has_app_filter:
+                self.logger.info("🔍 Case 2: Only KB filter applied")
 
+                # Get only filtered KB records
+                query += f"""
+                // Direct user-KB permissions with filter
+                LET directKbRecords = (
+                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                        FILTER kb._key IN @kb_ids
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
 
-            if unions and len(unions) > 0:
-                if len(unions) == 1 :
-                    query += f"""
-                    LET allAccessibleRecords = {unions[0]}
-                    """
-                else:
-                    query += f"""
-                    LET allAccessibleRecords = UNION_DISTINCT({", ".join(unions)})
-                    """
+                // Team-based KB permissions with filter: User -> Team -> KB -> Records
+                LET teamKbRecords = (
+                    FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("teams", team)
+                        FILTER userTeamEdge.type == "USER"
+                    FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                        FILTER teamKbEdge.type == "TEAM"
+                        FILTER kb._key IN @kb_ids
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+
+                LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
+                """
+                unions.append("kbRecords")
+
+            # Case 3: Only App filter applied
+            elif not has_kb_filter and has_app_filter:
+                self.logger.info("🔍 Case 3: Only App filter applied")
+
+                # # Get all KB records (no KB filter)
+                # query += f"""
+                # LET kbRecords = (
+                #     FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
+                #     FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                #     RETURN DISTINCT records
+                # )
+                # """
+                # unions.append("kbRecords")
+
+                # Get app-filtered records from direct, group, org, and anyone
+                query += """
+                LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
+                LET appFilteredRecords = (
+                    FOR record IN baseAccessible
+                        FILTER record.connectorId IN @connector_ids
+                        RETURN DISTINCT record
+                )
+                """
+                unions.append("appFilteredRecords")
+
+            # Case 4: No KB or App filters - return all accessible records
             else:
-                self.logger.info("🔍 Fallback logic to all accessible records")
+                self.logger.info("🔍 Case 4: No KB or App filters - returning all accessible records")
+
+                # Get all KB records
                 query += f"""
                 // Direct user-KB permissions
                 LET directKbRecords = (
@@ -13614,7 +13483,20 @@ class BaseArangoService:
                 )
 
                 LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
-                LET allAccessibleRecords = UNION_DISTINCT(directAndGroupRecords, kbRecords, anyoneRecords)
+
+                """
+                unions.append("kbRecords")
+                unions.append("directAndGroupRecords")
+                unions.append("anyoneRecords")
+
+            # Combine all unions
+            if len(unions) == 1:
+                query += f"""
+                LET allAccessibleRecords = {unions[0]}
+                """
+            else:
+                query += f"""
+                LET allAccessibleRecords = UNION_DISTINCT({", ".join(unions)})
                 """
 
             # Add additional filter conditions (departments, categories, etc.)
@@ -13730,11 +13612,11 @@ class BaseArangoService:
             }
 
             # Add conditional bind variables
-            if kb_ids and not has_local:
+            if has_kb_filter:
                 bind_vars["kb_ids"] = kb_ids
 
-            if non_local_apps:
-                bind_vars["non_local_apps"] = non_local_apps
+            if has_app_filter:
+                bind_vars["connector_ids"] = connector_ids
 
             # Add filter bind variables
             if filters:
@@ -13775,12 +13657,14 @@ class BaseArangoService:
 
             self.logger.info(f"✅ Query completed - found {record_count} accessible records")
 
-            if kb_ids:
+            if has_kb_filter:
                 self.logger.info(f"✅ KB filtering applied for {len(kb_ids)} KBs")
-            if non_local_apps:
-                self.logger.info(f"✅ App filtering applied for apps: {non_local_apps}")
-            if has_local:
-                self.logger.info("✅ 'local' app included - returning broader record set")
+            if has_app_filter:
+                self.logger.info(
+                    f"✅ App filtering applied for {len(connector_ids)} connector IDs"
+                )
+            if not has_kb_filter and not has_app_filter:
+                self.logger.info("✅ No KB/App filters - returned all accessible records")
 
             return result if result else []
 

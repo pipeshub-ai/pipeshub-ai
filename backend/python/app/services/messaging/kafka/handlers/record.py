@@ -164,6 +164,9 @@ class RecordEventHandler(BaseEventService):
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
 
+            # Fallback: Get mimeType from database record if payload has empty/unknown value
+            if mime_type == "unknown" or not mime_type:
+                mime_type = record.get("mimeType") or "unknown"
 
             if extension is None and mime_type != "text/gmail_content":
                 extension = payload.get("extension", None)
@@ -194,6 +197,7 @@ class RecordEventHandler(BaseEventService):
                 MimeTypes.GOOGLE_SHEETS.value,
                 MimeTypes.HTML.value,
                 MimeTypes.PLAIN_TEXT.value,
+                MimeTypes.MARKDOWN.value,
                 MimeTypes.PNG.value,
                 MimeTypes.JPG.value,
                 MimeTypes.JPEG.value,

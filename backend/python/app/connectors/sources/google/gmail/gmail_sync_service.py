@@ -109,7 +109,7 @@ class BaseGmailSyncService(ABC):
         """
         try:
             sync_state = await self.arango_service.get_user_sync_state(
-                user_email, Connectors.GOOGLE_MAIL.value.lower()
+                user_email, Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
             )
             if sync_state:
                 return sync_state  # Relation already exists
@@ -130,34 +130,16 @@ class BaseGmailSyncService(ABC):
                 self.logger.error("User document not found for %s", user_email)
                 return None
 
-            # Get app key
-            apps = await self.arango_service.get_org_apps(org_id)
-            app_key = next(
-                (
-                    a.get("_key")
-                    for a in apps
-                    if (a.get("name", "") or "").lower() == Connectors.GOOGLE_MAIL.value.lower()
-                ),
-                None,
-            )
-            if not app_key:
-                # Fallback: fetch app doc by name
-                try:
-                    app_doc = await self.arango_service.get_app_by_name(Connectors.GOOGLE_MAIL.value)
-                    if isinstance(app_doc, dict):
-                        app_key = app_doc.get("_key")
-                except (AttributeError, KeyError, TypeError) as e:
-                    self.logger.warning("Failed to get app by name: %s", str(e))
-                    app_key = None
-
-            if not app_key:
-                self.logger.error("Gmail app not found for org %s", org_id)
+            app = await self.arango_service.get_document(self.connector_id, CollectionNames.APPS.value)
+            if not app:
+                self.logger.error("App document not found for %s", self.connector_id)
                 return None
+
 
             # Create edge between user and app
             app_edge_data = {
                 "_from": f"{CollectionNames.USERS.value}/{user['_key']}",
-                "_to": f"{CollectionNames.APPS.value}/{app_key}",
+                "_to": f"{CollectionNames.APPS.value}/{self.connector_id}",
                 "syncState": "NOT_STARTED",
                 "lastSyncUpdate": get_epoch_timestamp_in_ms(),
             }
@@ -197,7 +179,7 @@ class BaseGmailSyncService(ABC):
 
                     # Check current state using get_user_sync_state
                     sync_state = await self.arango_service.get_user_sync_state(
-                        user["email"], Connectors.GOOGLE_MAIL.value.lower()
+                        user["email"], Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                     )
                     current_state = (
                         sync_state.get("syncState") if sync_state else "NOT_STARTED"
@@ -241,6 +223,7 @@ class BaseGmailSyncService(ABC):
                 for user in users:
                     # Ensure user-app relation exists and get sync state
                     sync_state = await self.ensure_user_app_relation(user["email"], org_id)
+
                     current_state = (
                         sync_state.get("syncState") if sync_state else "NOT_STARTED"
                     )
@@ -253,7 +236,7 @@ class BaseGmailSyncService(ABC):
 
                     # Update state in Arango
                     await self.arango_service.update_user_sync_state(
-                        user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
+                        user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                     )
 
                     # Cancel current sync task
@@ -279,6 +262,7 @@ class BaseGmailSyncService(ABC):
                 for user in users:
                     # Ensure user-app relation exists and get sync state
                     sync_state = await self.ensure_user_app_relation(user["email"], org_id)
+
                     if not sync_state:
                         self.logger.warning("⚠️ No user found, starting fresh")
                         return await self.start(org_id)
@@ -316,20 +300,20 @@ class BaseGmailSyncService(ABC):
             users = await self.arango_service.get_users(org_id=org_id)
             for user in users:
                 current_state = await self.arango_service.get_user_sync_state(
-                    user["email"], Connectors.GOOGLE_MAIL.value.lower()
+                    user["email"], Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                 )
                 if current_state:
                     current_state = current_state.get("syncState")
                     if current_state == "IN_PROGRESS":
                         await self.arango_service.update_user_sync_state(
-                            user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
+                            user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                         )
                         self.logger.info("✅ Gmail sync state updated before stopping")
                         return True
             return False
         return False
 
-    async def process_batch(self, metadata_list, org_id) -> bool | None:
+    async def process_batch(self, metadata_list, org_id, connector_id: str = None) -> bool | None:
         """Process a single batch with atomic operations in a separate thread"""
         # Respect stop signal before scheduling work
         if await self._should_stop(org_id):
@@ -343,15 +327,15 @@ class BaseGmailSyncService(ABC):
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
             None,
-            lambda: self._run_batch_in_thread(metadata_list, org_id),
+            lambda: self._run_batch_in_thread(metadata_list, org_id, connector_id),
         )
 
-    def _run_batch_in_thread(self, metadata_list, org_id) -> bool | None:
+    def _run_batch_in_thread(self, metadata_list, org_id, connector_id) -> bool | None:
         # Serialize batch execution across threads
         with self._batch_lock:
-            return asyncio.run(self._process_batch_sync(metadata_list, org_id))
+            return asyncio.run(self._process_batch_sync(metadata_list, org_id, connector_id))
 
-    async def _process_batch_sync(self, metadata_list, org_id) -> bool | None:
+    async def _process_batch_sync(self, metadata_list, org_id, connector_id) -> bool | None:
         """
         The function is divided into 4 phases:
         Phase 1: Collect all IDs from metadata
@@ -605,6 +589,7 @@ class BaseGmailSyncService(ABC):
                         "version": 0,
                         "origin": OriginTypes.CONNECTOR.value,
                         "connectorName": Connectors.GOOGLE_MAIL.value,
+                        "connectorId": connector_id,
                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                         "lastSyncTimestamp": get_epoch_timestamp_in_ms(),
@@ -703,6 +688,7 @@ class BaseGmailSyncService(ABC):
                         "externalRevisionId": None,
                         "origin": OriginTypes.CONNECTOR.value,
                         "connectorName": Connectors.GOOGLE_MAIL.value,
+                        "connectorId": connector_id,
                         "lastSyncTimestamp": get_epoch_timestamp_in_ms(),
                         "isDeleted": False,
                         "isArchived": False,
@@ -746,6 +732,7 @@ class BaseGmailSyncService(ABC):
                             message_id,
                             attachment_id,
                         )
+
 
                 # ============================================
                 # PROCESS PERMISSIONS (using cached lookups - NO DB QUERIES)
@@ -1012,11 +999,13 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
         change_handler,
         kafka_service: KafkaService,
         celery_app,
+        connector_id: str,
     ) -> None:
         super().__init__(
             logger, config_service, arango_service, change_handler, kafka_service, celery_app
         )
         self.gmail_admin_service = gmail_admin_service
+        self.connector_id = connector_id
 
     async def connect_services(self, org_id: str) -> bool:
         """Connect to services for enterprise setup"""
@@ -1024,7 +1013,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             self.logger.info("🚀 Connecting to enterprise services")
 
             # Connect to Google Admin
-            if not await self.gmail_admin_service.connect_admin(org_id, "gmail"):
+            if not await self.gmail_admin_service.connect_admin(org_id, self.connector_id):
                 raise Exception("Failed to connect to Gmail Admin API")
 
             self.logger.info("✅ Enterprise services connected successfully")
@@ -1039,7 +1028,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
         try:
             # Only set up watch if user has completed sync
             sync_state = await self.arango_service.get_user_sync_state(
-                user_email, Connectors.GOOGLE_MAIL.value.lower()
+                user_email, Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
             )
             current_state = (
                 sync_state.get("syncState") if sync_state else "NOT_STARTED"
@@ -1054,11 +1043,11 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
             # Set up watch
             user_service = await self.gmail_admin_service.create_gmail_user_service(
-                user_email
+                user_email, self.connector_id
             )
             self.logger.info("👀 Setting up Gmail changes watch for user %s", user_email)
             channel_history = await self.arango_service.get_channel_history_id(
-                user_email
+                user_email, connector_id=self.connector_id
             )
             if not channel_history:
                 self.logger.info("📝 No channel history found for user %s, creating new watch", user_email)
@@ -1098,7 +1087,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
         """Stop changes watch"""
         try:
             user_service = await self.gmail_admin_service.create_gmail_user_service(
-                user_email
+                user_email, self.connector_id
             )
             stopped = await user_service.stop_gmail_user_watch(user_email)
             return stopped
@@ -1106,10 +1095,12 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             self.logger.error("Failed to stop changes watch: %s", str(e))
             return False
 
-    async def initialize(self, org_id) -> bool:
+    async def initialize(self, org_id, connector_id: Optional[str]) -> bool:
         """Initialize enterprise sync service"""
         try:
             self.logger.info("🚀 Initializing")
+            if connector_id:
+                self.connector_id = connector_id
             if not await self.connect_services(org_id):
                 return False
 
@@ -1133,7 +1124,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     await self.ensure_user_app_relation(user["email"], org_id)
 
             # List and store groups
-            groups = await self.gmail_admin_service.list_groups(org_id)
+            groups = await self.gmail_admin_service.list_groups(org_id, self.connector_id)
             if groups:
                 self.logger.info("🚀 Found %s groups", len(groups))
 
@@ -1264,6 +1255,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                         user["email"],
                         "PAUSED",
                         service_type=Connectors.GOOGLE_MAIL.value.lower(),
+                        connector_id=self.connector_id,
                     )
 
                 # Only set up watches for users who have completed sync
@@ -1279,6 +1271,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                                 channel_data.get("historyId"),
                                 channel_data.get("expiration"),
                                 user["email"],
+                                connector_id=self.connector_id,
                             )
                             self.logger.info(
                                 "✅ Changes watch set up successfully for user: %s",
@@ -1356,6 +1349,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     user["email"],
                     "IN_PROGRESS",
                     service_type=Connectors.GOOGLE_MAIL.value.lower(),
+                    connector_id=self.connector_id,
                 )
 
                 # Stop checks
@@ -1367,12 +1361,14 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                         user["email"],
                         "PAUSED",
                         service_type=Connectors.GOOGLE_MAIL.value.lower(),
+                        connector_id=self.connector_id,
                     )
                     return False
 
                 # Initialize user service
+                self.logger.debug("Creating Gmail user service via admin for %s", user["email"])
                 user_service = await self.gmail_admin_service.create_gmail_user_service(
-                    user["email"]
+                    user["email"], connector_id=self.connector_id
                 )
                 if not user_service:
                     self.logger.warning(
@@ -1382,15 +1378,17 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
                 # List all threads for the user (using async wrapper)
                 threads = await user_service.list_threads_async()
+
                 for thread in threads:
                     if thread.get("historyId"):
                         self.logger.info("🚀 Thread historyId: %s", thread["historyId"])
-                        channel_history = await self.arango_service.get_channel_history_id(user["email"])
+                        channel_history = await self.arango_service.get_channel_history_id(user["email"], connector_id=self.connector_id)
                         if not channel_history:
                             await self.arango_service.store_channel_history_id(
                                 history_id=thread["historyId"],
                                 expiration=None,
                                 user_email=user["email"],
+                                connector_id=self.connector_id,
                             )
                         break
 
@@ -1539,7 +1537,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     )
 
                     # Process the batch metadata
-                    if not await self.process_batch(batch_metadata, org_id):
+                    if not await self.process_batch(batch_metadata, org_id, self.connector_id):
                         self.logger.warning(
                             "Failed to process batch starting at index %s", i
                         )
@@ -1567,6 +1565,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                                 "recordType": RecordTypes.MAIL.value,
                                 "recordVersion": 0,
                                 "eventType": EventTypes.NEW_RECORD.value,
+                                "connectorId": self.connector_id,
                                 "body": message.get("body", ""),
                                 "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{message_key}/signedUrl",
                                 "connectorName": Connectors.GOOGLE_MAIL.value,
@@ -1609,6 +1608,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                                 "eventType": EventTypes.NEW_RECORD.value,
                                 "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{attachment_key}/signedUrl",
                                 "connectorName": Connectors.GOOGLE_MAIL.value,
+                                "connectorId": self.connector_id,
                                 "origin": OriginTypes.CONNECTOR.value,
                                 "mimeType": attachment.get(
                                     "mimeType", "application/octet-stream"
@@ -1629,6 +1629,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     user["email"],
                     "COMPLETED",
                     service_type=Connectors.GOOGLE_MAIL.value.lower(),
+                    connector_id=self.connector_id,
                 )
 
             # Add completion handling
@@ -1638,7 +1639,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
         except Exception as e:
             if "user" in locals():
                 await self.arango_service.update_user_sync_state(
-                    user["email"], "FAILED", service_type=Connectors.GOOGLE_MAIL.value.lower()
+                    user["email"], "FAILED", service_type=Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                 )
             self.logger.error(f"❌ Initial sync failed: {str(e)}")
             return False
@@ -1691,7 +1692,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
             # Update user sync state to RUNNING
             await self.arango_service.update_user_sync_state(
-                user_email, "IN_PROGRESS", service_type=Connectors.GOOGLE_MAIL.value
+                user_email, "IN_PROGRESS", service_type=Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
             )
 
             account_type = await self.arango_service.get_account_type(org_id)
@@ -1702,14 +1703,14 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
             # Create user service instance
             user_service = await self.gmail_admin_service.create_gmail_user_service(
-                user_email
+                user_email, connector_id=self.connector_id
             )
             if not user_service:
                 self.logger.error(
                     "❌ Failed to create Gmail service for user %s", user_email
                 )
                 await self.arango_service.update_user_sync_state(
-                    user_email, "FAILED", Connectors.GOOGLE_MAIL.value.lower()
+                    user_email, "FAILED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                 )
                 return False
 
@@ -1718,12 +1719,13 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             for thread in threads:
                 if thread.get("historyId"):
                     self.logger.info("🚀 Thread historyId: %s", thread["historyId"])
-                    channel_history = await self.arango_service.get_channel_history_id(user["email"])
+                    channel_history = await self.arango_service.get_channel_history_id(user["email"], connector_id=self.connector_id)
                     if not channel_history:
                         await self.arango_service.store_channel_history_id(
                             history_id=thread["historyId"],
                             expiration=None,
                             user_email=user["email"],
+                            connector_id=self.connector_id,
                         )
                     break
 
@@ -1732,7 +1734,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             if not threads:
                 self.logger.info("No threads found for user %s", user_email)
                 await self.arango_service.update_user_sync_state(
-                    user_email, "COMPLETED", Connectors.GOOGLE_MAIL.value.lower()
+                    user_email, "COMPLETED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                 )
                 return True
 
@@ -1797,7 +1799,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                         "Sync stopped during batch processing at index %s", i
                     )
                     await self.arango_service.update_user_sync_state(
-                        user_email, "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
+                        user_email, "PAUSED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                     )
                     return False
 
@@ -1840,7 +1842,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     batch_metadata.append(metadata)
 
                 # Process batch
-                if not await self.process_batch(batch_metadata, org_id):
+                if not await self.process_batch(batch_metadata, org_id, self.connector_id):
                     self.logger.warning(
                         "Failed to process batch starting at index %s", i
                     )
@@ -1870,6 +1872,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                             "recordType": RecordTypes.MAIL.value,
                             "recordVersion": 0,
                             "eventType": EventTypes.NEW_RECORD.value,
+                            "connectorId": self.connector_id,
                             "body": message.get("body", ""),
                             "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{message_key}/signedUrl",
                             "connectorName": Connectors.GOOGLE_MAIL.value,
@@ -1912,6 +1915,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                             "eventType": EventTypes.NEW_RECORD.value,
                             "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{attachment_key}/signedUrl",
                             "connectorName": Connectors.GOOGLE_MAIL.value,
+                            "connectorId": self.connector_id,
                             "origin": OriginTypes.CONNECTOR.value,
                             "mimeType": attachment.get(
                                 "mimeType", "application/octet-stream"
@@ -1927,7 +1931,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
             # Update user state to COMPLETED
             await self.arango_service.update_user_sync_state(
-                user_email, "COMPLETED", Connectors.GOOGLE_MAIL.value.lower()
+                user_email, "COMPLETED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
             )
 
             # Set up changes watch AFTER sync completes
@@ -1939,6 +1943,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                         channel_data.get("historyId"),
                         channel_data.get("expiration"),
                         user_email,
+                        connector_id=self.connector_id,
                     )
                     self.logger.info(
                         "✅ Changes watch set up successfully for user: %s",
@@ -1960,7 +1965,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
         except Exception as e:
             await self.arango_service.update_user_sync_state(
-                user_email, "FAILED", Connectors.GOOGLE_MAIL.value.lower()
+                user_email, "FAILED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
             )
             self.logger.error("❌ Failed to sync user %s: %s", user_email, str(e))
             return False
@@ -1986,11 +1991,13 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 return True
 
             user_service = await self.gmail_admin_service.create_gmail_user_service(
-                user["email"]
+                user["email"],
+                connector_id=self.connector_id
             )
 
             channel_history = await self.arango_service.get_channel_history_id(
-                user["email"]
+                user["email"],
+                connector_id=self.connector_id
             )
             if not channel_history:
                 self.logger.warning(
@@ -2009,14 +2016,15 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 self.logger.info(f"📝 Changes found for user {user['email']}")
                 try:
                     await self.change_handler.process_changes(
-                        user_service, changes, org_id, user
+                        user_service, changes, org_id, user, self.connector_id
                     )
 
                     # Update history ID after successful processing
                     await self.arango_service.store_channel_history_id(
                         changes["historyId"],
                         channel_history["expiration"],
-                        user["email"]
+                        user["email"],
+                        connector_id=self.connector_id
                     )
                     self.logger.info(f"🚀 Updated historyId for user {user['email']}")
 
@@ -2038,12 +2046,14 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             self.logger.info("🔄 Starting reindexing of failed records")
 
             # Query to get all failed records and their active users with permissions
+            # Filter by both connector_name and connector_id to ensure we only get records from this specific connector instance
             failed_records_with_users = self.arango_service.db.aql.execute(
                 """
                 FOR doc IN records
                     FILTER doc.orgId == @org_id
                     AND doc.indexingStatus == "FAILED"
                     AND doc.connectorName == @connector_name
+                    AND doc.connectorId == @connector_id
 
                     LET active_users = (
                         FOR perm IN permission
@@ -2063,7 +2073,8 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 """,
                 bind_vars={
                     "org_id": org_id,
-                    "connector_name": Connectors.GOOGLE_MAIL.value
+                    "connector_name": Connectors.GOOGLE_MAIL.value,
+                    "connector_id": self.connector_id
                 }
             )
 
@@ -2091,6 +2102,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                         "recordVersion": record["version"],
                         "eventType": EventTypes.REINDEX_RECORD.value,
                         "connectorName": Connectors.GOOGLE_MAIL.value,
+                        "connectorId": self.connector_id,
                         "origin": OriginTypes.CONNECTOR.value,
                         "createdAtSourceTimestamp": record.get("sourceCreatedAtTimestamp"),
                         "modifiedAtSourceTimestamp": record.get("sourceLastModifiedTimestamp")
@@ -2103,7 +2115,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
                             # Add type-specific fields
                             if record["recordType"] == RecordTypes.MAIL.value:
-                                gmail_user_service = await self.gmail_admin_service.create_gmail_user_service(user["email"])
+                                gmail_user_service = await self.gmail_admin_service.create_gmail_user_service(user["email"], connector_id=self.connector_id)
                                 message = await gmail_user_service.get_message(record["externalRecordId"])
                                 message_body = message.get("body", {}) if message else {}
                                 event.update({
@@ -2149,34 +2161,144 @@ class GmailSyncIndividualService(BaseGmailSyncService):
         change_handler,
         kafka_service: KafkaService,
         celery_app,
+        connector_id: str = None,
     ) -> None:
         super().__init__(
             logger, config_service, arango_service, change_handler, kafka_service, celery_app
         )
         self.gmail_user_service = gmail_user_service
+        self.connector_id = connector_id
+        # Store credential owner info to ensure all edges/permissions use the correct user
+        self.credential_owner = None
+
+    async def _should_stop(self, org_id) -> bool:
+        """Check if operation should stop - for individual sync, check credential owner only"""
+        if self._stop_requested:
+            if not self.credential_owner:
+                return False
+            credential_owner_email = self.credential_owner.get("email")
+            if not credential_owner_email:
+                return False
+            current_state = await self.arango_service.get_user_sync_state(
+                credential_owner_email, Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
+            )
+            if current_state:
+                current_state = current_state.get("syncState")
+                if current_state == "IN_PROGRESS":
+                    await self.arango_service.update_user_sync_state(
+                        credential_owner_email,
+                        "PAUSED",
+                        Connectors.GOOGLE_MAIL.value.lower(),
+                        connector_id=self.connector_id,
+                    )
+                    self.logger.info("✅ Gmail sync state updated before stopping for credential owner")
+                    return True
+            return False
+        return False
 
     async def connect_services(self, org_id: str) -> bool:
-        """Connect to services for individual setup"""
+        """Connect to services for individual setup
+
+        For individual/personal scope connectors, we MUST use the user whose OAuth credentials
+        were used to configure the connector, NOT the logged-in user. This ensures data is
+        synced for the correct user.
+
+        The user is determined by calling the Google API (list_individual_user) which returns
+        the user whose credentials are stored in the connector config.
+        """
         try:
             self.logger.info("🚀 Connecting to individual user services")
-            user_id = None
-            user_info = await self.arango_service.get_users(org_id, active=True)
-            if user_info and user_info[0].get("userId"):
-                # Use existing active user
-                user_id = user_info[0]["userId"]
-            else:
-                # Fallback: fetch individual user directly from Gmail API
-                self.logger.warning("⚠️ No active users found in DB; fetching individual user from Gmail API")
-                fetched_users = await self.gmail_user_service.list_individual_user(org_id)
-                if fetched_users and len(fetched_users) > 0 and fetched_users[0].get("userId"):
-                    user_id = fetched_users[0]["userId"]
-                else:
-                    self.logger.error("❌ Unable to determine user_id for individual Gmail connection")
+
+            if not self.connector_id:
+                self.logger.error("❌ Connector ID not set")
+                return False
+
+            # Step 1: Connect the service directly from connector config (no user_id needed)
+            # This initializes the service so we can call the API
+            self.logger.info("📋 Initializing Gmail service from connector config")
+            if not await self.gmail_user_service.connect_from_connector_config(org_id, self.connector_id):
+                self.logger.error("❌ Failed to initialize Gmail service from connector config")
+                return False
+
+            # Step 2: Get the credential owner user from the Google API
+            # This is the ONLY source of truth for who the credentials belong to
+            self.logger.info("📋 Fetching credential owner user from Gmail API")
+            fetched_users = await self.gmail_user_service.list_individual_user(org_id)
+            if not fetched_users or len(fetched_users) == 0:
+                self.logger.error("❌ Unable to get credential owner user from Gmail API")
+                return False
+
+            credential_owner = fetched_users[0]
+            credential_owner_email = credential_owner.get("email")
+            if not credential_owner_email:
+                self.logger.error("❌ Credential owner user has no email address")
+                return False
+
+            self.logger.info(f"✅ Credential owner user from API: {credential_owner_email}")
+
+            # Store credential owner info for use throughout sync
+            self.credential_owner = credential_owner
+
+            # Ensure the credential owner user exists in the USERS collection (not people or groups)
+            # This is critical: sync operations require users to be in the users collection
+            existing_user = await self.arango_service.get_user_by_email(credential_owner_email)
+
+            if not existing_user:
+                self.logger.info(f"🔨 Creating user record in users collection for credential owner: {credential_owner_email}")
+                # Update user data with org_id
+                credential_owner["orgId"] = org_id
+                await self.arango_service.batch_upsert_nodes(
+                    [credential_owner], collection=CollectionNames.USERS.value
+                )
+                # Get the user ID after creation - use users-only check
+                existing_user = await self.arango_service.get_user_by_email(credential_owner_email)
+                if not existing_user:
+                    self.logger.error(f"❌ Failed to create user record in users collection for {credential_owner_email}")
                     return False
 
-            # Connect to Google Gmail
+                # Create user-org relationship if it doesn't exist
+                user_org_relation = {
+                    "_from": f"{CollectionNames.USERS.value}/{existing_user.id}",
+                    "_to": f"{CollectionNames.ORGS.value}/{org_id}",
+                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "entityType": "ORGANIZATION",
+                }
+                await self.arango_service.batch_create_edges(
+                    [user_org_relation],
+                    collection=CollectionNames.BELONGS_TO.value
+                )
+                self.logger.info(f"✅ Created user-org relationship for {credential_owner_email}")
+            else:
+                # Verify the user document exists and update if needed
+                user_doc = await self.arango_service.get_document(existing_user.id, CollectionNames.USERS.value)
+                if not user_doc:
+                    # This should not happen, but if it does, create the user
+                    self.logger.warning(f"⚠️ User ID {existing_user.id} found but document missing. Creating user record.")
+                    credential_owner["orgId"] = org_id
+                    await self.arango_service.batch_upsert_nodes(
+                        [credential_owner], collection=CollectionNames.USERS.value
+                    )
+                    existing_user = await self.arango_service.get_user_by_email(credential_owner_email)
+                    if not existing_user:
+                        self.logger.error(f"❌ Failed to create user record for {credential_owner_email}")
+                        return False
+                elif user_doc.get("orgId") != org_id:
+                    self.logger.info(f"🔄 Updating user org_id for {credential_owner_email}")
+                    user_doc["orgId"] = org_id
+                    await self.arango_service.batch_upsert_nodes(
+                        [user_doc], collection=CollectionNames.USERS.value
+                    )
+
+            # Use the credential owner's user_id for connection
+            user_id = self.credential_owner["userId"]
+            if not user_id:
+                self.logger.error("❌ Unable to determine user_id for credential owner")
+                return False
+
+            # Connect to Google Gmail using the credential owner's credentials
             if not await self.gmail_user_service.connect_individual_user(
-                org_id, user_id
+                org_id, user_id, self.connector_id
             ):
                 raise Exception("Failed to connect to Gmail API")
 
@@ -2195,7 +2317,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
         try:
             # Only set up watch if user has completed sync
             sync_state = await self.arango_service.get_user_sync_state(
-                user_email, Connectors.GOOGLE_MAIL.value.lower()
+                user_email, Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
             )
             current_state = (
                 sync_state.get("syncState") if sync_state else "NOT_STARTED"
@@ -2210,9 +2332,20 @@ class GmailSyncIndividualService(BaseGmailSyncService):
 
             # Set up watch
             user_service = self.gmail_user_service
+
+            # Get user info to connect the service
+            user = await self.arango_service.get_user_by_email(user_email)
+            if not user:
+                self.logger.error(f"User not found for email {user_email}")
+                return None
+            # Ensure the Gmail service is properly connected before making API calls
+            if not await user_service.connect_individual_user(org_id, user.user_id, self.connector_id):
+                self.logger.error(f"Failed to connect Gmail service for user {user_email}")
+                return None
+
             self.logger.info("👀 Setting up changes watch for user %s", user_email)
             channel_history = await self.arango_service.get_channel_history_id(
-                user_email
+                user_email, connector_id=self.connector_id
             )
             if not channel_history:
                 self.logger.info(
@@ -2253,15 +2386,33 @@ class GmailSyncIndividualService(BaseGmailSyncService):
         """Stop changes watch"""
         try:
             user_service = self.gmail_user_service
+
+            # Get org_id from the user_email by looking up the user
+            user = await self.arango_service.get_user_by_email(user_email)
+            if not user:
+                self.logger.error(f"User not found for email {user_email}")
+                return False
+            org_id = user.org_id
+            if not org_id:
+                self.logger.error(f"No org_id found for user {user_email}")
+                return False
+
+            # Ensure the Gmail service is properly connected before making API calls
+            if not await user_service.connect_individual_user(org_id, user["userId"], self.connector_id):
+                self.logger.error(f"Failed to connect Gmail service for user {user_email}")
+                return False
+
             stopped = await user_service.stop_gmail_user_watch(user_email)
             return stopped
         except Exception as e:
             self.logger.error("Failed to stop changes watch: %s", str(e))
             return False
 
-    async def initialize(self, org_id) -> bool:
+    async def initialize(self, org_id, connector_id: Optional[str]) -> bool:
         """Initialize individual user sync service"""
         try:
+            if connector_id:
+                self.connector_id = connector_id
             if not await self.connect_services(org_id):
                 return False
 
@@ -2277,13 +2428,13 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                     await self.arango_service.batch_upsert_nodes(
                         user_info, collection=CollectionNames.USERS.value
                     )
-                    app = await self.arango_service.get_app_by_name(Connectors.GOOGLE_MAIL.value)
+                    app = await self.arango_service.get_document(self.connector_id, CollectionNames.APPS.value)
                     if not app:
-                        raise Exception("Failed to get app by name")
+                        raise Exception("Failed to get app by connector id")
                     # Create edge between user and app
                     app_edge_data = {
                         "_from": f"{CollectionNames.USERS.value}/{user_info[0]['_key']}",
-                        "_to": f"{CollectionNames.APPS.value}/{app['_key']}",
+                        "_to": f"{CollectionNames.APPS.value}/{self.connector_id}",
                         "syncState": "NOT_STARTED",
                         "lastSyncUpdate": get_epoch_timestamp_in_ms(),
                     }
@@ -2292,10 +2443,44 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                         CollectionNames.USER_APP_RELATION.value,
                     )
                 user_info = user_info[0]
+            # Get credential owner user info (already ensured to exist in connect_services)
+            user_info_list = await self.gmail_user_service.list_individual_user(org_id)
+            if not user_info_list or len(user_info_list) == 0:
+                self.logger.error("❌ Unable to get credential owner user info")
+                return False
+
+            credential_owner_email = user_info_list[0].get("email")
+            if not credential_owner_email:
+                self.logger.error("❌ Credential owner has no email")
+                return False
+
+            # Get user from database (should exist from connect_services) - MUST be in users collection
+            user = await self.arango_service.get_user_by_email(credential_owner_email)
+            if not user:
+                self.logger.error(f"❌ Credential owner user {credential_owner_email} not found in users collection. User must exist in users collection for sync operations.")
+                return False
+            user_id = user.id
+            if not user_id:
+                self.logger.error(f"❌ Credential owner user {credential_owner_email} not found in users collection. User must exist in users collection for sync operations.")
+                return False
+
+            user_doc = await self.arango_service.get_document(user_id, CollectionNames.USERS.value)
+            if not user_doc:
+                self.logger.error(f"❌ User document not found in users collection for {credential_owner_email} (ID: {user_id})")
+                return False
+
+            # Use the credential owner's info
+            user_info = {
+                "email": credential_owner_email,
+                "userId": user_doc.get("userId") or user_id,
+                "_key": user_id,
+                "orgId": user_doc.get("orgId", org_id)
+            }
+            self.logger.info(f"🚀 Using credential owner user: {user_info}")
 
             # Check if sync is already running
             sync_state = await self.arango_service.get_user_sync_state(
-                user_info["email"], Connectors.GOOGLE_MAIL.value.lower()
+                user_info["email"], Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
             )
             current_state = sync_state.get("syncState") if sync_state else "NOT_STARTED"
             if current_state == "IN_PROGRESS":
@@ -2303,7 +2488,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                     f"Gmail sync is currently RUNNING for user {user_info['email']}. Pausing it."
                 )
                 await self.arango_service.update_user_sync_state(
-                    user_info["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
+                    user_info["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                 )
 
             try:
@@ -2323,6 +2508,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                         channel_data["historyId"],
                         channel_data["expiration"],
                         user_info["email"],
+                        connector_id=self.connector_id,
                     )
 
                 self.logger.info(
@@ -2356,12 +2542,40 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                 self.logger.info("Sync stopped before starting")
                 return False
 
-            user = await self.arango_service.get_users(org_id, active=True)
-            user = user[0]
+            # For individual scope, ALWAYS use the credential owner, not logged-in user
+            if not self.credential_owner:
+                self.logger.error("❌ Credential owner not set. Call connect_services first.")
+                return False
+
+            # Get credential owner user from database - MUST be in users collection
+            credential_owner_email = self.credential_owner["email"]
+            user = await self.arango_service.get_user_by_email(credential_owner_email)
+            if not user:
+                self.logger.error(f"❌ Credential owner user {credential_owner_email} not found in users collection. User must exist in users collection for sync operations.")
+                return False
+            user_id = user.id
+            if not user_id:
+                self.logger.error(f"❌ Credential owner user {credential_owner_email} not found in users collection. User must exist in users collection for sync operations.")
+                return False
+
+            user_doc = await self.arango_service.get_document(user_id, CollectionNames.USERS.value)
+            if not user_doc:
+                self.logger.error(f"❌ User document not found in users collection for {credential_owner_email} (ID: {user_id})")
+                return False
+
+            # Use credential owner for all operations
+            user = {
+                "email": credential_owner_email,
+                "userId": user_doc.get("userId") or user_id,
+                "_key": user_id,
+                "orgId": user_doc.get("orgId", org_id)
+            }
+            self.logger.info(f"🔐 Using credential owner for sync: {user['email']}")
 
             # Ensure user-app relation exists and get sync state
             sync_state = await self.ensure_user_app_relation(user["email"], org_id)
             current_state = sync_state.get("syncState") if sync_state else "NOT_STARTED"
+
             if current_state == "COMPLETED":
                 self.logger.info(
                     "💥 Gmail sync is already completed for user %s", user["email"]
@@ -2382,7 +2596,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             account_type = await self.arango_service.get_account_type(org_id)
             # Update user sync state to RUNNING
             await self.arango_service.update_user_sync_state(
-                user["email"], "IN_PROGRESS", Connectors.GOOGLE_MAIL.value.lower()
+                user["email"], "IN_PROGRESS", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
             )
 
             if await self._should_stop(org_id):
@@ -2390,24 +2604,33 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                     "Sync stopped during user %s processing", user["email"]
                 )
                 await self.arango_service.update_user_sync_state(
-                    user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
+                    user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                 )
                 return False
 
             # Initialize user service
             user_service = self.gmail_user_service
 
-            # List all threads and messages for the user (using async wrappers)
+            # Ensure the Gmail service is properly connected before making API calls
+            if not await user_service.connect_individual_user(org_id, user["userId"], self.connector_id):
+                self.logger.error(f"Failed to connect Gmail service for user {user['email']}")
+                await self.arango_service.update_user_sync_state(
+                    user["email"], "FAILED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
+                )
+                return False
+
+            # List all threads and messages for the user
             threads = await user_service.list_threads_async()
             for thread in threads:
                 if thread.get("historyId"):
                     self.logger.info("🚀 Thread historyId: %s", thread["historyId"])
-                    channel_history = await self.arango_service.get_channel_history_id(user["email"])
+                    channel_history = await self.arango_service.get_channel_history_id(user["email"], connector_id=self.connector_id)
                     if not channel_history:
                         await self.arango_service.store_channel_history_id(
                             history_id=thread["historyId"],
                             expiration=None,
                             user_email=user["email"],
+                            connector_id=self.connector_id,
                         )
                     break
 
@@ -2419,7 +2642,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             if not threads:
                 self.logger.info(f"No threads found for user {user['email']}")
                 await self.arango_service.update_user_sync_state(
-                    user["email"], "COMPLETED", Connectors.GOOGLE_MAIL.value.lower()
+                    user["email"], "COMPLETED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                 )
                 return False
 
@@ -2481,7 +2704,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                         f"Sync stopped during batch processing at index {i}"
                     )
                     await self.arango_service.update_user_sync_state(
-                        user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower()
+                        user["email"], "PAUSED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                     )
                     return False
 
@@ -2524,7 +2747,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                     batch_metadata.append(metadata)
 
                 # Process batch
-                if not await self.process_batch(batch_metadata, org_id):
+                if not await self.process_batch(batch_metadata, org_id, self.connector_id):
                     self.logger.warning(
                         f"Failed to process batch starting at index {i}"
                     )
@@ -2560,6 +2783,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                             "body": message.get("body", ""),
                             "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{message_key}/signedUrl",
                             "connectorName": Connectors.GOOGLE_MAIL.value,
+                            "connectorId": self.connector_id,
                             "origin": OriginTypes.CONNECTOR.value,
                             "mimeType": "text/gmail_content",
                             "createdAtSourceTimestamp": int(
@@ -2598,6 +2822,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                             "eventType": EventTypes.NEW_RECORD.value,
                             "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{attachment_key}/signedUrl",
                             "connectorName": Connectors.GOOGLE_MAIL.value,
+                            "connectorId": self.connector_id,
                             "origin": OriginTypes.CONNECTOR.value,
                             "mimeType": attachment.get(
                                 "mimeType", "application/octet-stream"
@@ -2613,7 +2838,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
 
             # Update user state to COMPLETED
             await self.arango_service.update_user_sync_state(
-                user["email"], "COMPLETED", Connectors.GOOGLE_MAIL.value.lower()
+                user["email"], "COMPLETED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
             )
 
             # Set up changes watch AFTER sync completes
@@ -2625,6 +2850,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                         channel_data.get("historyId"),
                         channel_data.get("expiration"),
                         user["email"],
+                        connector_id=self.connector_id,
                     )
                     self.logger.info(
                         "✅ Changes watch set up successfully for user: %s",
@@ -2647,7 +2873,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
         except Exception as e:
             if "user" in locals():
                 await self.arango_service.update_user_sync_state(
-                    user["email"], "FAILED", Connectors.GOOGLE_MAIL.value.lower()
+                    user["email"], "FAILED", Connectors.GOOGLE_MAIL.value.lower(), connector_id=self.connector_id
                 )
             self.logger.error(f"❌ Initial sync failed: {str(e)}")
             return False
@@ -2660,8 +2886,13 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             user_service = self.gmail_user_service
             self.logger.info(f"Resyncing Gmail for user {user['email']}")
 
+            # Ensure the Gmail service is properly connected before making API calls
+            if not await user_service.connect_individual_user(org_id, user["userId"], self.connector_id):
+                self.logger.error(f"Failed to connect Gmail service for user {user['email']}")
+                return False
+
             channel_history = await self.arango_service.get_channel_history_id(
-                user["email"]
+                user["email"], connector_id=self.connector_id
             )
             if not channel_history:
                 self.logger.warning(
@@ -2680,14 +2911,15 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                 self.logger.info(f"📝 Changes found for user {user['email']}")
                 try:
                     await self.change_handler.process_changes(
-                        user_service, changes, org_id, user
+                        user_service, changes, org_id, user, self.connector_id
                     )
 
                     # Update history ID after successful processing
                     await self.arango_service.store_channel_history_id(
                         changes["historyId"],
                         channel_history["expiration"],
-                        user["email"]
+                        user["email"],
+                        connector_id=self.connector_id
                     )
                     self.logger.info(f"🚀 Updated historyId for user {user['email']}")
 
@@ -2709,17 +2941,20 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             self.logger.info("🔄 Starting reindexing of failed records")
 
             # Query to get all failed records for Gmail connector
+            # Filter by both connector_name and connector_id to ensure we only get records from this specific connector instance
             failed_records = self.arango_service.db.aql.execute(
                 """
                 FOR doc IN records
                     FILTER doc.orgId == @org_id
                     AND doc.indexingStatus == "FAILED"
                     AND doc.connectorName == @connector_name
+                    AND doc.connectorId == @connector_id
                     RETURN doc
                 """,
                 bind_vars={
                     "org_id": org_id,
-                    "connector_name": Connectors.GOOGLE_MAIL.value
+                    "connector_name": Connectors.GOOGLE_MAIL.value,
+                    "connector_id": self.connector_id
                 }
             )
 
@@ -2751,6 +2986,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                         "recordVersion": record["version"],
                         "eventType": EventTypes.REINDEX_RECORD.value,
                         "connectorName": Connectors.GOOGLE_MAIL.value,
+                        "connectorId": self.connector_id,
                         "origin": OriginTypes.CONNECTOR.value,
                         "createdAtSourceTimestamp": record.get("sourceCreatedAtTimestamp"),
                         "modifiedAtSourceTimestamp": record.get("sourceLastModifiedTimestamp")

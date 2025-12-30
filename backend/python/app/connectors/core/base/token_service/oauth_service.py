@@ -57,6 +57,7 @@ class OAuthToken:
     token_type: str = "Bearer"
     expires_in: Optional[int] = None
     refresh_token: Optional[str] = None
+    refresh_token_expires_in: Optional[int] = None  # used by Microsoft/OneDrive
     scope: Optional[str] = None
     id_token: Optional[str] = None
     created_at: datetime = field(default_factory=datetime.now)
@@ -86,19 +87,24 @@ class OAuthToken:
             "token_type": self.token_type,
             "expires_in": self.expires_in,
             "refresh_token": self.refresh_token,
+            "refresh_token_expires_in": self.refresh_token_expires_in,
             "scope": self.scope,
             "id_token": self.id_token,
             "created_at": self.created_at.isoformat(),
             "uid": self.uid,
-            "account_id": self.account_id
+            "account_id": self.account_id,
+            "team_id": self.team_id
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'OAuthToken':
-        """Create token from dictionary"""
+        """Create token from dictionary, filtering out unknown fields"""
         if 'created_at' in data and isinstance(data['created_at'], str):
             data['created_at'] = datetime.fromisoformat(data['created_at'])
-        return cls(**data)
+        # Filter to only known fields to handle varying OAuth provider responses
+        known_fields = {f.name for f in cls.__dataclass_fields__.values()}
+        filtered_data = {k: v for k, v in data.items() if k in known_fields}
+        return cls(**filtered_data)
 
 
 class OAuthProvider:
@@ -181,9 +187,21 @@ class OAuthProvider:
                     f"Response: {error_text}"
                 )
                 raise Exception(error_msg)
+            if response.status >= HttpStatusCode.BAD_REQUEST.value:
+                # Get detailed error information
+                try:
+                    error_data = await response.json()
+                    error_detail = f"HTTP {response.status}: {error_data}"
+                except Exception:
+                    error_text = await response.text()
+                    error_detail = f"HTTP {response.status}: {error_text}"
+
+                raise Exception(f"Token exchange failed: {error_detail}")
+
+            response.raise_for_status()
             token_data = await response.json()
 
-        token = OAuthToken(**token_data)
+        token = OAuthToken.from_dict(token_data)
         return token
 
     async def refresh_access_token(self, refresh_token: str) -> OAuthToken:
@@ -205,7 +223,7 @@ class OAuthProvider:
             token_data = await response.json()
 
         # Create new token with current timestamp
-        token = OAuthToken(**token_data)
+        token = OAuthToken.from_dict(token_data)
 
         # Handle different OAuth providers:
         # - Google: doesn't return refresh_token on refresh, so preserve the old one
@@ -264,7 +282,8 @@ class OAuthProvider:
         state = self.config.generate_state()
         session_data: Dict[str, Any] = {
             "created_at": datetime.utcnow().isoformat(),
-            "state": state
+            "state": state,
+            "used_codes": []  # Start fresh with empty used_codes for new auth flow
         }
         if use_pkce:
             code_verifier = self._gen_code_verifier()
@@ -281,6 +300,8 @@ class OAuthProvider:
         config = await self.key_value_store.get_key(self.credentials_path)
         if not isinstance(config, dict):
             config = {}
+        # Replace entire oauth session data - this clears any old state, codes, etc.
+        # This is important for re-authentication to ensure fresh start
         config['oauth'] = session_data
         await self.key_value_store.create_key(self.credentials_path, config)
         return self._get_authorization_url(state=state, **extra)
@@ -293,29 +314,70 @@ class OAuthProvider:
         oauth_data = config.get('oauth', {}) or {}
         stored_state = oauth_data.get("state")
 
-        # Validate state
+        # Validate state first (must match for security)
         if not stored_state or stored_state != state:
-            # Idempotent handling: if credentials already exist, treat as success
+            # Check if this is a duplicate callback (code already used, credentials exist)
+            # This handles browser refreshes or duplicate callback attempts
             existing_creds = config.get('credentials')
-            if isinstance(existing_creds, dict) and existing_creds.get('access_token'):
+            used_codes = oauth_data.get("used_codes", [])
+
+            # Only treat as success if:
+            # 1. Credentials exist AND
+            # 2. This specific code was already used (indicates duplicate callback)
+            if isinstance(existing_creds, dict) and existing_creds.get('access_token') and code in used_codes:
                 try:
                     token = OAuthToken.from_dict(existing_creds)
+                    self.token = token
+                    return token
                 except (TypeError, ValueError, KeyError):
                     # If stored creds are malformed, fall back to error
                     raise ValueError("Invalid or expired state")
-                self.token = token
-                return token
-            # No existing credentials -> genuine invalid/expired state
+
+            # State mismatch and not a duplicate callback -> genuine error
             raise ValueError("Invalid or expired state")
 
-        token = await self.exchange_code_for_token(code=code, state=state, code_verifier=oauth_data.get("code_verifier"))
-        self.token = token
+        # Check if this specific code has already been used (prevent duplicate code usage)
+        used_codes = oauth_data.get("used_codes", [])
+        if code in used_codes:
+            # This code was already used - check if we have valid credentials from it
+            existing_creds = config.get('credentials')
+            if isinstance(existing_creds, dict) and existing_creds.get('access_token'):
+                # Return existing credentials from this code (duplicate callback protection)
+                try:
+                    token = OAuthToken.from_dict(existing_creds)
+                    self.token = token
+                    return token
+                except (TypeError, ValueError, KeyError):
+                    pass
+            # Code was used but no valid credentials - treat as error
+            raise ValueError("Authorization code has already been used")
 
-        # Clean up OAuth state and store credentials
-        config['oauth'] = None  # remove transient state after successful exchange
+        try:
+            token = await self.exchange_code_for_token(code=code, state=state, code_verifier=oauth_data.get("code_verifier"))
+            self.token = token
 
-        # Store the new token (use the refresh_token from the response if available)
-        config['credentials'] = token.to_dict()
-        await self.key_value_store.create_key(self.credentials_path, config)
+            # Mark this code as used
+            used_codes.append(code)
+            oauth_data["used_codes"] = used_codes
 
-        return token
+            # Store the new token FIRST before clearing OAuth state
+            # This ensures credentials are updated even if something fails during cleanup
+            config['credentials'] = token.to_dict()
+
+            # Clean up OAuth transient state after successful exchange
+            # Clear state and code_verifier, but keep used_codes temporarily
+            # to prevent duplicate callback with same code
+            config['oauth'] = {
+                "used_codes": used_codes  # Keep used codes to prevent replay attacks
+            }
+
+            await self.key_value_store.create_key(self.credentials_path, config)
+
+            return token
+        except Exception:
+            # If token exchange fails, still mark the code as used to prevent retry loops
+            used_codes.append(code)
+            oauth_data["used_codes"] = used_codes
+            config['oauth'] = oauth_data
+            await self.key_value_store.create_key(self.credentials_path, config)
+            raise

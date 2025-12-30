@@ -2,7 +2,6 @@ from abc import ABC, abstractmethod
 from logging import Logger
 from typing import TYPE_CHECKING, AsyncContextManager, List, Optional
 
-from app.config.constants.arangodb import Connectors
 from app.models.entities import (
     Anyone,
     AnyoneSameOrg,
@@ -62,28 +61,40 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_record_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[Record]:
+    async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
         pass
 
     @abstractmethod
-    async def get_records_by_status(self, org_id: str, connector_name: Connectors, status_filters: List[str], limit: Optional[int] = None, offset: int = 0) -> List[Record]:
+    async def get_record_by_issue_key(self, connector_id: str, issue_key: str) -> Optional[Record]:
+        """Get record by Jira issue key (e.g., PROJ-123) by searching weburl pattern."""
+        pass
+
+    @abstractmethod
+    async def get_records_by_parent(
+        self,
+        connector_id: str,
+        parent_external_record_id: str,
+        record_type: Optional[str] = None
+    ) -> List[Record]:
+        """Get all child records for a parent record by parent_external_record_id. Optionally filter by record_type."""
+        pass
+
+    @abstractmethod
+    async def get_records_by_status(self, org_id: str, connector_id: str, status_filters: List[str], limit: Optional[int] = None, offset: int = 0) -> List[Record]:
         """Get records by their indexing status with pagination support. Returns typed Record instances."""
         pass
 
     @abstractmethod
-    async def get_record_group_by_external_id(self, connector_name: Connectors, external_id: str) -> Optional[RecordGroup]:
+    async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[RecordGroup]:
         pass
 
     @abstractmethod
     async def create_record_groups_relation(self, child_id: str, parent_id: str) -> None:
         pass
 
-    @abstractmethod
-    async def create_user_group_hierarchy(self, child_external_id: str, parent_external_id: str, connector_name: Connectors) -> bool:
-        pass
 
     @abstractmethod
-    async def create_user_group_membership(self, user_source_id: str, group_external_id: str, connector_name: Connectors, org_id: str) -> bool:
+    async def create_user_group_membership(self, user_source_id: str, group_external_id: str, connector_id: str, org_id: str) -> bool:
         pass
 
     @abstractmethod
@@ -91,7 +102,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_user_by_source_id(self, source_user_id: str, connector_name: Connectors) -> Optional[User]:
+    async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> Optional[User]:
         pass
 
     @abstractmethod
@@ -103,7 +114,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_user_groups(self, app_name: Connectors, org_id: str) -> List[UserGroup]:
+    async def get_user_groups(self, connector_id: str, org_id: str) -> List[UserGroup]:
         pass
 
     @abstractmethod
@@ -111,19 +122,19 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str) -> None:
+    async def delete_record_by_external_id(self, connector_id: str, external_id: str) -> None:
         pass
 
     @abstractmethod
-    async def get_record_by_conversation_index(self, connector_name: Connectors, conversation_index: str, thread_id: str, org_id: str, user_id: str) -> Optional[Record]:
+    async def get_record_by_conversation_index(self, connector_id: str, conversation_index: str, thread_id: str, org_id: str, user_id: str) -> Optional[Record]:
         pass
 
     @abstractmethod
-    async def remove_user_access_to_record(self, connector_name: Connectors, external_id: str, user_id: str) -> None:
+    async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str) -> None:
         pass
 
     @abstractmethod
-    async def delete_record_group_by_external_id(self, connector_name: Connectors, external_id: str) -> None:
+    async def delete_record_group_by_external_id(self, connector_id: str, external_id: str) -> None:
         pass
 
     @abstractmethod
@@ -143,7 +154,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def batch_upsert_record_group_permissions(self, record_group_id: str, permissions: List[Permission], connector_name: Connectors) -> None:
+    async def batch_upsert_record_group_permissions(self, record_group_id: str, permissions: List[Permission], connector_id: str) -> None:
         pass
 
     @abstractmethod

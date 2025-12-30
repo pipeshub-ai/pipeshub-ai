@@ -45,6 +45,74 @@ class FilterCategory(str, Enum):
     INDEXING = "indexing"  # Applied at record level (what to index)
 
 
+class OptionSourceType(str, Enum):
+    """How filter options are provided"""
+    MANUAL = "manual"      # User types values (LIST/TAGS)
+    STATIC = "static"      # Predefined options (MULTISELECT with options list)
+    DYNAMIC = "dynamic"    # Fetched via API call (MULTISELECT/LIST with get_filter_options)
+
+@dataclass
+class FilterOption:
+    """
+    Standard format for filter option values.
+
+    Used for MULTISELECT and LIST filters with static or dynamic options.
+
+    Args:
+        id: Unique identifier (e.g., space ID, channel ID)
+        key: Value to store in filter (e.g., space key, channel name)
+        label: Display text shown in UI (e.g., space name, channel display name)
+    """
+    id: str
+    key: str
+    label: str
+
+    def to_dict(self) -> Dict[str, str]:
+        """Convert to dictionary for JSON serialization"""
+        return {
+            "id": self.id,
+            "label": self.label
+        }
+
+
+@dataclass
+class FilterOptionsResponse:
+    """
+    Response format for filter options API.
+
+    Args:
+        success: Whether the request was successful
+        options: List of filter options
+        page: Current page number
+        limit: Number of items per page
+        has_more: Whether more results are available
+        cursor: Optional cursor for cursor-based pagination
+        message: Optional error or info message
+    """
+    success: bool
+    options: List[FilterOption]
+    page: int
+    limit: int
+    has_more: bool
+    cursor: Optional[str] = None
+    message: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization"""
+        result = {
+            "success": self.success,
+            "options": [opt.to_dict() for opt in self.options],
+            "page": self.page,
+            "limit": self.limit,
+            "hasMore": self.has_more
+        }
+        if self.cursor is not None:
+            result["cursor"] = self.cursor
+        if self.message is not None:
+            result["message"] = self.message
+        return result
+
+
 class FilterOperator:
     # String operators
     IS = "is"
@@ -155,6 +223,7 @@ class SyncFilterKey(str, Enum):
     FOLDER_IDS = "folder_ids"
     FOLDERS = "folders"
     PROJECT_IDS = "project_ids"
+    PROJECT_KEYS = "project_keys"
     SITE_IDS = "site_ids"
     CHANNEL_IDS = "channel_ids"
 
@@ -175,6 +244,9 @@ class IndexingFilterKey(str, Enum):
     Common indexing filter keys for record types.
     These control what record types get indexed (boolean filters).
     """
+    # Master control for manual sync mode
+    ENABLE_MANUAL_SYNC = "enable_manual_sync"
+
     # Container types
     SPACES = "spaces"
     FOLDERS = "folders"
@@ -202,6 +274,8 @@ class IndexingFilterKey(str, Enum):
     PAGE_ATTACHMENTS = "page_attachments"
     BLOGPOST_COMMENTS = "blogpost_comments"
     BLOGPOST_ATTACHMENTS = "blogpost_attachments"
+    ISSUE_COMMENTS = "issue_comments"
+    ISSUE_ATTACHMENTS = "issue_attachments"
 
 
 # Type to operators mapping (for validation and UI)
@@ -250,15 +324,21 @@ class FilterField:
         required: Whether the field is mandatory
         default_value: Default value for the field
         default_operator: Default operator (must be valid for filter_type)
-        options: For MULTISELECT type, predefined options to select from (required)
+        options: For MULTISELECT/LIST with static options (option_source_type=STATIC)
+        option_source_type: How options are provided (MANUAL, STATIC, DYNAMIC)
 
     Value types by filter_type:
         STRING      → str
         BOOLEAN     → bool
         DATETIME    → tuple[int] or tuple[int, int] (epoch timestamps)
-        LIST        → List[str] (free-form tags)
-        MULTISELECT → List[str] (selected from predefined options)
+        LIST        → List[str] (manual tags or dynamic from API)
+        MULTISELECT → List[str] (static or dynamic options)
         NUMBER      → float (supports decimals)
+
+    Option Source Types:
+        MANUAL  → User types values (default for LIST)
+        STATIC  → Predefined options list (for MULTISELECT/LIST with options)
+        DYNAMIC → Fetched via connector's get_filter_options() method
     """
     name: str
     display_name: str
@@ -269,13 +349,33 @@ class FilterField:
     default_value: FilterValue = None
     default_operator: Optional[str] = None
     options: List[str] = dataclass_field(default_factory=list)
+    option_source_type: OptionSourceType = OptionSourceType.MANUAL
 
     def __post_init__(self) -> None:
-        """Set default values based on filter_type"""
+        """Set default values based on filter_type and validate configuration"""
         if self.default_value is None:
             self.default_value = self._get_default_for_type()
         if self.default_operator is None:
             self.default_operator = self._get_default_operator()
+
+        # Auto-detect option_source_type if not explicitly set
+        if self.option_source_type == OptionSourceType.MANUAL:
+            if self.options:
+                # Has static options defined
+                self.option_source_type = OptionSourceType.STATIC
+
+        # Validate option_source_type compatibility
+        if self.option_source_type == OptionSourceType.DYNAMIC:
+            if self.filter_type not in [FilterType.MULTISELECT, FilterType.LIST]:
+                raise ValueError(
+                    f"option_source_type=DYNAMIC only supported for MULTISELECT and LIST, "
+                    f"got {self.filter_type}"
+                )
+        elif self.option_source_type == OptionSourceType.STATIC:
+            if not self.options:
+                raise ValueError(
+                    "option_source_type=STATIC requires options list to be defined"
+                )
 
     def _get_default_for_type(self) -> Union[str, bool, List[str], tuple, None]:
         """Get default value based on type"""
@@ -318,6 +418,7 @@ class FilterField:
             "defaultValue": self.default_value,
             "defaultOperator": self.default_operator,
             "operators": self.operators,
+            "optionSourceType": self.option_source_type.value,
         }
 
         if self.options:
@@ -379,6 +480,7 @@ class Filter(BaseModel):
                             pass
 
             # Convert datetime value to tuple of epoch integers
+            # Also extract id from {id, label} objects for LIST and MULTISELECT filters
             if 'value' in data and 'type' in data:
                 filter_type_str = data['type']
                 if isinstance(filter_type_str, str):
@@ -401,6 +503,22 @@ class Filter(BaseModel):
                         data['value'] = (start, end)
                     else:
                         data['value'] = None
+                elif filter_type in (FilterType.LIST, FilterType.MULTISELECT) and data['value'] is not None:
+                    value = data['value']
+                    # Extract id from {id, label} objects if present
+                    if isinstance(value, list):
+                        extracted_ids = []
+                        for item in value:
+                            if isinstance(item, dict) and 'id' in item:
+                                # New format: {id, label} object - extract id
+                                extracted_ids.append(item['id'])
+                            elif isinstance(item, str):
+                                # Old format: string id (backward compatibility)
+                                extracted_ids.append(item)
+                            else:
+                                # Fallback: convert to string
+                                extracted_ids.append(str(item))
+                        data['value'] = extracted_ids
 
         return data
 
@@ -676,7 +794,33 @@ class FilterCollection(BaseModel):
             - Strings: True if non-empty
             - Numbers: True if non-zero
         """
+        # Get the filter being checked
         f = self.get(key)
+
+        # Convert key to string for comparison
+        key_str = key.value if isinstance(key, Enum) else key
+
+        # If checking enable_manual_sync itself, return its value directly
+        if key_str == "enable_manual_sync":
+            if f is None:
+                return default
+            if f.is_empty():
+                return default
+            if f.type == FilterType.BOOLEAN:
+                return bool(f.value)
+            return True
+
+        # For other indexing filters, check if manual sync is enabled
+        # Only apply override if enable_manual_sync filter exists and is explicitly enabled
+        manual_sync_filter = self.get("enable_manual_sync")
+        if (manual_sync_filter is not None
+            and not manual_sync_filter.is_empty()
+            and manual_sync_filter.type == FilterType.BOOLEAN
+            and manual_sync_filter.value is True):
+            # Manual sync is explicitly ON: no auto-indexing
+            return False
+
+        # Normal logic: return the specific filter's value
         if f is None:
             return default
         if f.is_empty():
@@ -749,6 +893,7 @@ class FilterCollection(BaseModel):
 async def load_connector_filters(
     config_service: ConfigurationService,
     connector_name: str,
+    connector_id: str,
     logger: Optional[Logger] = None
 ) -> Tuple[FilterCollection, FilterCollection]:
     """
@@ -757,6 +902,7 @@ async def load_connector_filters(
     Args:
         config_service: ConfigurationService instance
         connector_name: Name of connector (e.g., "confluence", "outlook")
+        connector_id: ID of connector (e.g., "confluence_123", "outlook_456")
         logger: Optional logger (uses module logger if not provided)
 
     Returns:
@@ -782,28 +928,28 @@ async def load_connector_filters(
     """
     log = logger or _logger
     empty_filters = (FilterCollection(), FilterCollection())
-    config_path = f"/services/connectors/{connector_name.lower()}/config"
+    config_path = f"/services/connectors/{connector_id}/config"
 
     # Fetch config from service
     try:
         config = await config_service.get_config(config_path)
     except Exception as e:
-        log.error(f"Failed to fetch config for {connector_name}: {e}")
+        log.error(f"Failed to fetch config for {connector_id}: {e}")
         return empty_filters
 
     # Handle missing or disabled config
     if not config:
-        log.debug(f"No config found for {connector_name}")
+        log.debug(f"No config found for {connector_name} {connector_id}")
         return empty_filters
 
     if not config.get("enabled", True):
-        log.debug(f"Connector {connector_name} is disabled")
+        log.debug(f"Connector {connector_name} {connector_id} is disabled")
         return empty_filters
 
     # Extract filter values from config
     filters_config = config.get("filters", {})
     if not filters_config:
-        log.debug(f"No filters configured for {connector_name}")
+        log.debug(f"No filters configured for {connector_name} {connector_id}")
         return empty_filters
 
     sync_values = filters_config.get("sync", {}).get("values", {})
@@ -816,7 +962,7 @@ async def load_connector_filters(
     # Log summary
     if sync_filters or indexing_filters:
         log.info(
-            f"Loaded filters for {connector_name}: "
+            f"Loaded filters for {connector_name} {connector_id}: "
             f"{len(sync_filters)} sync, {len(indexing_filters)} indexing"
         )
 

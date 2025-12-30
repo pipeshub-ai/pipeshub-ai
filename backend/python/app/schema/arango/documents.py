@@ -1,4 +1,8 @@
-from app.config.constants.arangodb import Connectors, OriginTypes
+from app.config.constants.arangodb import (
+    Connectors,
+    ConnectorScopes,
+    OriginTypes,
+)
 from app.models.entities import RecordGroupType, RecordType
 
 # User schema for ArangoDB
@@ -64,6 +68,7 @@ user_group_schema = {
                 "type": "string",
                 "enum": [connector.value for connector in Connectors],
             },
+            "connectorId": {"type": "string"},
             "mail": {"type": ["string", "null"]},
             "mailEnabled": {"type": "boolean", "default": False},
             # Arango collection entry
@@ -101,6 +106,7 @@ app_role_schema = {
                 "type": "string",
                 "enum": [connector.value for connector in Connectors],
             },
+            "connectorId": {"type": "string"},
             # Arango collection entry
             "createdAtTimestamp": {"type": "number"},
             # Arango collection entry
@@ -115,6 +121,7 @@ app_role_schema = {
             "name",
             "externalRoleId",
             "connectorName",
+            "connectorId",
             "createdAtTimestamp",
         ],
         "additionalProperties": False,
@@ -131,11 +138,14 @@ app_schema = {
             "name": {"type": "string"},
             "type": {"type": "string"},
             "appGroup": {"type": "string"},
-            "appGroupId": {"type": "string"},
             "authType": {"type": "string"},
+            "scope": {"type": "string", "enum": [scope.value for scope in ConnectorScopes]},
             "isActive": {"type": "boolean", "default": True},
+            "isAgentActive": {"type": "boolean", "default": False},
             "isConfigured": {"type": "boolean", "default": False},
             "isAuthenticated": {"type": "boolean", "default": False},
+            "createdBy": {"type": ["string", "null"]},
+            "updatedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
         },
@@ -143,10 +153,9 @@ app_schema = {
             "name",
             "type",
             "appGroup",
-            "appGroupId",
+            "scope",
             "isActive",
-            "createdAtTimestamp",
-            "updatedAtTimestamp",
+            "createdAtTimestamp"
         ],
         "additionalProperties": False,
     },
@@ -163,6 +172,7 @@ record_schema = {
             "recordName": {"type": "string", "minLength": 1},
             # should be a uuid
             "externalRecordId": {"type": "string", "minLength": 1},
+            "connectorId": {"type": ["string", "null"]},
             "externalGroupId": {"type": ["string", "null"]},
             "externalParentId": {"type": ["string", "null"]},
             "externalRevisionId": {"type": ["string", "null"], "default": None},
@@ -188,6 +198,7 @@ record_schema = {
             "sourceLastModifiedTimestamp": {"type": ["number", "null"]},
             "isDeleted": {"type": "boolean", "default": False},
             "isArchived": {"type": "boolean", "default": False},
+            "isVLMOcrProcessed": {"type": "boolean", "default": False},
             "deletedByUserId": {"type": ["string", "null"]},
             "indexingStatus": {
                 "type": "string",
@@ -232,7 +243,8 @@ record_schema = {
             "externalRecordId",
             "recordType",
             "origin",
-            "createdAtTimestamp"
+            "createdAtTimestamp",
+            "connectorId"
         ],
         "additionalProperties": False,
     },
@@ -381,6 +393,7 @@ record_group_schema = {
                 "type": "string",
                 "enum": [connector.value for connector in Connectors],
             },
+            "connectorId": {"type": ["string", "null"]},
             "parentExternalGroupId": {"type": ["string", "null"]},
             "webUrl": {"type": ["string", "null"]},
             "createdBy":{"type": ["string", "null"]},
@@ -398,7 +411,7 @@ record_group_schema = {
             # "externalGroupId",
             "groupType",
             "connectorName",
-            "createdAtTimestamp",
+            "createdAtTimestamp"
         ],
         "additionalProperties": False,
     },
@@ -522,14 +535,23 @@ agent_schema = {
                 },
                 "default": [],
             },
-            "apps": {
+            "kb": {
                 "type": "array",
                 "items": {"type": "string"},
                 "default": [],
             },
-            "kb": {
+            "connectors": {
                 "type": "array",
-                "items": {"type": "string"},
+                "items": {"type": "object", "properties": {
+                    "id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "category": {"type": "string", "enum": ["knowledge", "action"]},
+                    "scope": {"type": "string", "enum": [scope.value for scope in ConnectorScopes]},
+                    "type": {"type": "string"},
+                    },
+                    "required": ["id", "name", "category", "scope", "type"],
+                    "additionalProperties": True,
+                },
                 "default": [],
             },
             "vectorDBs": {

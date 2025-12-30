@@ -1,7 +1,12 @@
 import asyncio
 from uuid import uuid4
 
-from app.config.constants.arangodb import AccountType, CollectionNames, Connectors
+from app.config.constants.arangodb import (
+    AccountType,
+    CollectionNames,
+    Connectors,
+    ConnectorScopes,
+)
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.services.base_arango_service import (
     BaseArangoService as ArangoService,
@@ -362,14 +367,22 @@ class EntityEventService(BaseEventService):
             self.logger.error(f"❌ Error deleting user: {str(e)}")
             return False
 
-    async def __handle_google_app_account_services(self, org_id: str, account_type: str, app_names: list[str]) -> bool:
+    async def __handle_google_app_account_services(self, org_id: str, account_type: str, app_names: list[str],connector_id: str, scope: str) -> bool:
         """Handle Google account services"""
-        if account_type == AccountType.ENTERPRISE.value or account_type == AccountType.BUSINESS.value:
-            await initialize_enterprise_google_account_services_fn(org_id, self.app_container, app_names)
-        elif account_type == AccountType.INDIVIDUAL.value:
-            await initialize_individual_google_account_services_fn(org_id, self.app_container, app_names)
+        # Personal scope connectors use individual initialization regardless of account type
+        # (personal scope means individual user credentials, not admin/service account)
+        if scope == ConnectorScopes.PERSONAL.value:
+            await initialize_individual_google_account_services_fn(org_id, self.app_container, connector_id, app_names)
+            return True
+        # Team scope connectors use enterprise initialization for enterprise/business accounts
+        elif scope == ConnectorScopes.TEAM.value and (account_type == AccountType.ENTERPRISE.value or account_type == AccountType.BUSINESS.value):
+            await initialize_enterprise_google_account_services_fn(org_id, self.app_container, connector_id, app_names)
+            return True
+        elif scope == ConnectorScopes.TEAM.value and account_type == AccountType.INDIVIDUAL.value:
+            await initialize_individual_google_account_services_fn(org_id, self.app_container, connector_id, app_names)
+            return True
         else:
-            self.logger.error("Account Type not valid")
+            self.logger.error(f"Invalid account type/scope combination: account_type={account_type}, scope={scope}")
             return False
 
     # APP EVENTS
@@ -381,7 +394,8 @@ class EntityEventService(BaseEventService):
             app_group = payload["appGroup"]
             apps = payload["apps"]
             sync_action = payload.get("syncAction", "none")
-
+            connector_id = payload.get("connectorId", "")
+            scope = payload.get("scope", ConnectorScopes.PERSONAL.value)
             # Get org details to check account type
             org = await self.arango_service.get_document(
                 org_id, CollectionNames.ORGS.value
@@ -399,9 +413,14 @@ class EntityEventService(BaseEventService):
                 if self.app_container and "google" in app_group.lower():
                     accountType = org["accountType"]
                     # Use the existing app container to initialize services
-                    await self.__handle_google_app_account_services(org_id, accountType, enabled_apps)
+                    init_success = await self.__handle_google_app_account_services(org_id, accountType, enabled_apps,connector_id, scope)
+                    if not init_success:
+                        self.logger.error(
+                            f"❌ Failed to initialize services for account type: {org['accountType']}, scope: {scope}"
+                        )
+                        return False
                     self.logger.info(
-                        f"✅ Successfully initialized services for account type: {org['accountType']}"
+                        f"✅ Successfully initialized services for account type: {org['accountType']}, scope: {scope}"
                     )
                 else:
                     self.logger.warning(
@@ -422,28 +441,33 @@ class EntityEventService(BaseEventService):
 
                     for app_name in enabled_apps:
                         if app_name in [Connectors.GOOGLE_CALENDAR.value]:
-                            self.logger.info(f"Skipping init for {app_name}")
+                            self.logger.info(f"Skipping sync for {app_name}")
                             continue
 
-                        # Initialize app (this will fetch and create users)
-                        await self.__handle_sync_event(
-                            event_type=f"{app_name.lower()}.init",
-                            value={
-                                "orgId": org_id,
-                                "connector":app_name
-                            },
-                        )
-
-                        # TODO: Remove this sleep
-                        await asyncio.sleep(5)
+                        # Gmail and Google Drive need both init and start events
+                        # They have specialized event handlers that require init to call initialize()
+                        # Use case-insensitive comparison since app_name comes as lowercase from payload
+                        if app_name.upper() in [Connectors.GOOGLE_MAIL.value, Connectors.GOOGLE_DRIVE.value]:
+                            # Initialize app (this will fetch and create users)
+                            await self.__handle_sync_event(
+                                event_type=f"{app_name.lower()}.init",
+                                value={
+                                    "orgId": org_id,
+                                    "connector":app_name,
+                                    "connectorId":connector_id
+                                },
+                            )
+                            # TODO: Remove this sleep
+                            await asyncio.sleep(5)
 
                         if sync_action == "immediate":
-                            # Start sync for all users
+                            # Start sync - connector should already be initialized
                             await self.__handle_sync_event(
                                 event_type=f"{app_name.lower()}.start",
                                 value={
                                     "orgId": org_id,
-                                    "connector":app_name
+                                    "connector":app_name,
+                                    "connectorId":connector_id
                                 },
                             )
                             # TODO: Remove this sleep
@@ -458,15 +482,32 @@ class EntityEventService(BaseEventService):
                     # First initialize each app
                     for app_name in enabled_apps:
                         if app_name in [Connectors.GOOGLE_CALENDAR.value]:
-                            self.logger.info(f"Skipping init for {app_name}")
+                            self.logger.info(f"Skipping sync for {app_name}")
                             continue
 
-                        # Initialize app
+                        # Gmail and Google Drive need both init and start events
+                        # They have specialized event handlers that require init to call initialize()
+                        # Use case-insensitive comparison since app_name comes as lowercase from payload
+                        if app_name.upper() in [Connectors.GOOGLE_MAIL.value, Connectors.GOOGLE_DRIVE.value]:
+                            # Initialize app
+                            await self.__handle_sync_event(
+                                event_type=f"{app_name.lower()}.init",
+                                value={
+                                    "orgId": org_id,
+                                    "connector":app_name,
+                                    "connectorId":connector_id
+                                },
+                            )
+                            # TODO: Remove this sleep
+                            await asyncio.sleep(5)
+
+                        # Start sync for each app (connector already initialized for standard connectors)
                         await self.__handle_sync_event(
-                            event_type=f"{app_name.lower()}.init",
+                            event_type=f"{app_name.lower()}.start",
                             value={
                                 "orgId": org_id,
-                                "connector":app_name
+                                "connector":app_name,
+                                "connectorId":connector_id
                             },
                         )
                         # TODO: Remove this sleep
@@ -486,7 +527,8 @@ class EntityEventService(BaseEventService):
                                     value={
                                         "orgId": org_id,
                                         "email": user["email"],
-                                        "connector":app
+                                        "connector":app,
+                                        "connectorId":connector_id
                                     },
                                 )
                                 # TODO: Remove this sleep
@@ -504,6 +546,7 @@ class EntityEventService(BaseEventService):
         try:
             org_id = payload["orgId"]
             apps = payload["apps"]
+            connector_id = payload.get("connectorId", "")
 
             if not org_id or not apps:
                 self.logger.error("Both orgId and apps are required to disable apps")
@@ -516,17 +559,16 @@ class EntityEventService(BaseEventService):
             app_updates = []
             for app_name in apps:
                 app_doc = await self.arango_service.get_document(
-                    f"{org_id}_{app_name}", CollectionNames.APPS.value
+                    connector_id, CollectionNames.APPS.value
                 )
                 if not app_doc:
                     self.logger.error(f"App not found: {app_name}")
                     return False
                 app_data = {
-                    "_key": f"{org_id}_{app_name}",  # Construct the app _key
+                    "_key": connector_id,  # Construct the app _key
                     "name": app_doc["name"],
                     "type": app_doc["type"],
                     "appGroup": app_doc["appGroup"],
-                    "appGroupId": app_doc["appGroupId"],
                     "isActive": False,
                     "createdAtTimestamp": app_doc["createdAtTimestamp"],
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),

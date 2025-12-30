@@ -3,5 +3,5 @@ from app.connectors.core.interfaces.connector.apps import App
 
 
 class DropboxIndividualApp(App):
-    def __init__(self) -> None:
-        super().__init__(Connectors.DROPBOX_PERSONAL.value, AppGroups.DROPBOX.value)
+    def __init__(self, connector_id: str) -> None:
+        super().__init__(Connectors.DROPBOX_PERSONAL, AppGroups.DROPBOX, connector_id)

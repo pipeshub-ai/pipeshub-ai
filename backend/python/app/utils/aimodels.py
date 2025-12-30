@@ -3,8 +3,8 @@ import os
 from enum import Enum
 from typing import Any, Dict
 
-from langchain.chat_models.base import BaseChatModel
 from langchain_core.embeddings.embeddings import Embeddings
+from langchain_core.language_models.chat_models import BaseChatModel
 
 from app.config.constants.ai_models import (
     AZURE_EMBEDDING_API_VERSION,
@@ -59,7 +59,7 @@ class LLMProvider(Enum):
     VERTEX_AI = "vertexAI"
     XAI = "xai"
 
-MAX_OUTPUT_TOKENS = 16000
+MAX_OUTPUT_TOKENS = 4096
 MAX_OUTPUT_TOKENS_CLAUDE_4_5 = 64000
 
 def get_default_embedding_model() -> Embeddings:
@@ -77,6 +77,22 @@ def get_default_embedding_model() -> Embeddings:
         raise e
 
 logger = create_logger("aimodels")
+
+def is_multimodal_llm(config: Dict[str, Any]) -> bool:
+    """
+    Check if an LLM configuration supports multimodal capabilities.
+
+    Args:
+        config: LLM configuration dictionary
+
+    Returns:
+        bool: True if the LLM supports multimodal capabilities
+    """
+    return (
+        config.get("isMultimodal", False) or
+        config.get("configuration", {}).get("isMultimodal", False)
+    )
+
 def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str | None = None) -> Embeddings:
     configuration = config['configuration']
     is_default = config.get("isDefault")
@@ -224,14 +240,20 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
     elif provider == EmbeddingProvider.OPENAI_COMPATIBLE.value:
         from langchain_openai.embeddings import OpenAIEmbeddings
 
+        check_embedding_ctx_length = True
+        base_url = configuration['endpoint']
+        providers_to_skip_check = ("google", "cohere", "voyage")
+        check_embedding_ctx_length = not any(p in base_url for p in providers_to_skip_check)
+
         return OpenAIEmbeddings(
             model=model_name,
             api_key=configuration['apiKey'],
-            base_url=configuration['endpoint'],
+            base_url=base_url,
+            check_embedding_ctx_length=check_embedding_ctx_length
         )
 
     elif provider == EmbeddingProvider.TOGETHER.value:
-        from langchain_together import TogetherEmbeddings
+        from app.utils.custom_embeddings import TogetherEmbeddings
 
         return TogetherEmbeddings(
             model=model_name,
@@ -371,6 +393,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                     timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                     api_key=configuration.get("apiKey"),
                     base_url=configuration.get("endpoint"),
+                    stream_usage=True,  # Enable token usage tracking for Opik
                 )
 
     elif provider == LLMProvider.AZURE_OPENAI.value:
@@ -385,11 +408,11 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                 temperature=temperature,
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 azure_deployment=configuration["deploymentName"],
+                stream_usage=True,  # Enable token usage tracking for Opik
             )
 
     elif provider == LLMProvider.COHERE.value:
         from langchain_cohere import ChatCohere
-
         return ChatCohere(
                 model=model_name,
                 temperature=0.2,
@@ -460,6 +483,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration["apiKey"],
                 organization=configuration.get("organizationId"),
+                stream_usage=True,  # Enable token usage tracking for Opik
             )
 
     elif provider == LLMProvider.XAI.value:
@@ -473,7 +497,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
             )
 
     elif provider == LLMProvider.TOGETHER.value:
-        from langchain_together import ChatTogether
+        from app.utils.custom_chat_model import ChatTogether
 
         return ChatTogether(
                 model=model_name,
@@ -493,6 +517,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration["apiKey"],
                 base_url=configuration["endpoint"],
+                stream_usage=True,  # Enable token usage tracking for Opik
             )
 
     raise ValueError(f"Unsupported provider type: {provider}")

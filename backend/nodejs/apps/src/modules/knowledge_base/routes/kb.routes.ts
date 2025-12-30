@@ -8,7 +8,7 @@ import {
   getRecordBuffer,
   reindexRecord,
   getConnectorStats,
-  reindexAllRecords,
+  reindexFailedRecords,
   resyncConnectorRecords,
   createKnowledgeBase,
   listKnowledgeBases,
@@ -36,7 +36,7 @@ import {
   getRecordByIdSchema,
   updateRecordSchema,
   deleteRecordSchema,
-  reindexAllRecordSchema,
+  reindexFailedRecordSchema,
   resyncConnectorSchema,
   createKBSchema,
   getKBSchema,
@@ -66,7 +66,6 @@ import { KeyValueStoreService } from '../../../libs/services/keyValueStore.servi
 import { RecordsEventProducer } from '../services/records_events.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { SyncEventProducer } from '../services/sync_events.service';
-import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 import { FileProcessorService } from '../../../libs/middlewares/file_processor/fp.service';
 import { KB_UPLOAD_LIMITS } from '../constants/kb.constants';
 import { getPlatformSettingsFromStore } from '../../configuration_manager/utils/util';
@@ -229,22 +228,20 @@ export function createKnowledgeBaseRouter(container: Container): Router {
 
   // connector stats
   router.get(
-    '/stats/:connector',
+    '/stats/:connectorId',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    userAdminCheck,
     ValidationMiddleware.validate(getConnectorStatsSchema),
     getConnectorStats(appConfig),
   );
 
   // reindex all failed records per connector
   router.post(
-    '/reindex-all/connector',
+    '/reindex-failed/connector',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    userAdminCheck,
-    ValidationMiddleware.validate(reindexAllRecordSchema),
-    reindexAllRecords(recordRelationService, appConfig),
+    ValidationMiddleware.validate(reindexFailedRecordSchema),
+    reindexFailedRecords(recordRelationService, appConfig),
   );
 
   // resync connector records
@@ -252,7 +249,6 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     '/resync/connector',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    userAdminCheck,
     ValidationMiddleware.validate(resyncConnectorSchema),
     resyncConnectorRecords(recordRelationService, appConfig),
   );

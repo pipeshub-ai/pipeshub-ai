@@ -11,6 +11,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
+from app.connectors.core.registry.filters import FilterOptionsResponse
 from app.models.entities import Record
 
 
@@ -22,15 +23,17 @@ class BaseConnector(ABC):
     config_service: ConfigurationService
     app: App
     connector_name: Connectors
+    connector_id: str
 
     def __init__(self, app: App, logger, data_entities_processor: DataSourceEntitiesProcessor,
-        data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
+        data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> None:
         self.logger = logger
         self.data_entities_processor = data_entities_processor
         self.app = app
         self.connector_name = app.get_app_name()
         self.data_store_provider = data_store_provider
         self.config_service = config_service
+        self.connector_id = connector_id
 
     @property
     def connector_metadata(self) -> Dict[str, Any]:
@@ -92,8 +95,32 @@ class BaseConnector(ABC):
 
     @classmethod
     @abstractmethod
-    async def create_connector(cls, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> "BaseConnector":
+    async def create_connector(cls, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> "BaseConnector":
         NotImplementedError("This method should be implemented by the subclass")
+
+    @abstractmethod
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None
+    ) -> FilterOptionsResponse:
+        """
+        Get dynamic filter options for a specific filter field.
+
+        Args:
+            filter_key: The filter field name (e.g., "space_keys", "page_ids")
+            page: Current page number for offset-based pagination
+            limit: Number of items per page for pagination
+            search: Optional search query to filter options
+            cursor: Optional cursor for cursor-based pagination (API-specific)
+
+        Returns:
+            FilterOptionsResponse object with options and pagination metadata
+        """
+        raise NotImplementedError("This method should be implemented by the subclass")
 
     def get_app(self) -> App:
         return self.app
@@ -106,3 +133,6 @@ class BaseConnector(ABC):
 
     def get_app_group_name(self) -> str:
         return self.app.get_app_group_name()
+
+    def get_connector_id(self) -> str:
+        return self.connector_id

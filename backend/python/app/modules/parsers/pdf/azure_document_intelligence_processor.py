@@ -76,7 +76,7 @@ class AzureOCRStrategy(OCRStrategy):
                     # Log page dimensions
                     self.logger.debug(f"   📐 Page dimensions: {page.rect.width:.1f} x {page.rect.height:.1f}")
 
-                    page_needs_ocr = self.needs_ocr(page)
+                    page_needs_ocr = OCRStrategy.needs_ocr(page, self.logger)
                     if page_needs_ocr:
                         pages_needing_ocr.append(page_num + 1)
                         self.logger.info(f"   ✅ Page {page_num + 1}: NEEDS OCR")
@@ -780,8 +780,8 @@ class AzureOCRStrategy(OCRStrategy):
                 col_count = table_data.get("column_count", 0)
                 table_markdown,table_data_grid = self.cells_to_markdown(row_count, col_count, cells)
                 response = await get_table_summary_n_headers(self.config, table_markdown)
-                table_summary = response.summary
-                column_headers = response.headers
+                table_summary = response.summary if response else ""
+                column_headers = response.headers if response else []
 
                 table_rows_text,table_rows = await get_rows_text(self.config, {"grid": table_data_grid}, table_summary, column_headers)
                 bbox = table_data.get("bounding_boxes", [])
