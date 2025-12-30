@@ -999,7 +999,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                   <Box sx={{ px: 2 }}>
                     {recordCitations.map((citation) => (
                       <Box
-                        key={citation.chunkIndex}
+                        key={citation._id}
                         onClick={(e) => {
                           e.stopPropagation();
                           if (!citation.metadata?.extension && citation.metadata?.webUrl) {
