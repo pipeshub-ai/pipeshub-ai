@@ -4734,9 +4734,11 @@ async def _ensure_connector_initialized(
         config_service = container.config_service()
         data_store_provider = ArangoDataStore(logger, arango_service)
 
+        connector_type = connector_type.replace(" ", "").lower()
+
         # Create connector using factory
         connector = await ConnectorFactory.create_connector(
-            name=connector_type.lower(),
+            name=connector_type,
             logger=logger,
             data_store_provider=data_store_provider,
             config_service=config_service,
