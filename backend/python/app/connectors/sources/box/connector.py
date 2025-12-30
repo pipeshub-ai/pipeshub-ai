@@ -1529,7 +1529,7 @@ class BoxConnector(BaseConnector):
             if not download_url:
                 link_response = await self.data_source.shared_links_create_shared_link_for_file(
                     file_id=record.external_record_id,
-                    access='company'
+                    access='open'
                 )
 
                 if link_response.success:
