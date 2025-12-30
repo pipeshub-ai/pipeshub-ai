@@ -995,11 +995,11 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                     </Box>
                   </Box>
                 </AccordionSummary>
-                <AccordionDetails sx={{ p: 0, pt: 1.5, pb: 1.5 }}>
+                <AccordionDetails sx={{ p: 0, pb: 1.5 }}>
                   <Box sx={{ px: 2 }}>
-                    {recordCitations.map((citation, cidx) => (
+                    {recordCitations.map((citation) => (
                       <Box
-                        key={cidx}
+                        key={citation._id}
                         onClick={(e) => {
                           e.stopPropagation();
                           if (!citation.metadata?.extension && citation.metadata?.webUrl) {
@@ -1064,7 +1064,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                               mt: 0.125,
                             }}
                           >
-                            {cidx + 1}
+                            {citation.chunkIndex}
                           </Box>
                           <Box sx={{ flex: 1, minWidth: 0 }}>
                             <Typography
