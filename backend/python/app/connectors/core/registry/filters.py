@@ -275,6 +275,8 @@ class IndexingFilterKey(str, Enum):
     ISSUE_COMMENTS = "issue_comments"
     ISSUE_ATTACHMENTS = "issue_attachments"
 
+    SHARED = "shared"
+
 
 # Type to operators mapping (for validation and UI)
 TYPE_OPERATORS: Dict[FilterType, List[str]] = {

@@ -36,6 +36,12 @@ from app.connectors.core.registry.connector_builder import (
 )
 from app.connectors.core.registry.filters import (
     FilterCollection,
+    FilterField,
+    FilterType,
+    FilterCategory,
+    OptionSourceType,
+    FilterOption,
+    FilterOperator,
     IndexingFilterKey,
     SyncFilterKey,
     load_connector_filters,
@@ -126,6 +132,41 @@ class OneDriveCredentials:
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
+        .add_filter_field(FilterField(
+            name="file_extensions",
+            display_name="Sync Files with Extensions",
+            filter_type=FilterType.MULTISELECT,
+            category=FilterCategory.SYNC,
+            description="Sync files with specific extensions",
+            default_value=True,
+            option_source_type=OptionSourceType.STATIC,
+            options=[
+                FilterOption(id="pdf", label=".pdf"),
+                FilterOption(id="docx", label=".docx"),
+                FilterOption(id="xlsx", label=".xlsx"),
+                FilterOption(id="pptx", label=".pptx"),
+                FilterOption(id="txt", label=".txt"),
+                FilterOption(id="csv", label=".csv"),
+                FilterOption(id="md", label=".md"),
+                FilterOption(id="mdx", label=".mdx"),
+                FilterOption(id="html", label=".html"),
+                FilterOption(id="png", label=".png"),
+                FilterOption(id="jpg", label=".jpg"),
+                FilterOption(id="jpeg", label=".jpeg"),
+                FilterOption(id="webp", label=".webp"),
+                FilterOption(id="svg", label=".svg"),
+                FilterOption(id="heic", label=".heic"),
+                FilterOption(id="heif", label=".heif"),
+            ]
+        ))
+        .add_filter_field(FilterField(
+            name="shared",
+            display_name="Index Shared Items",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of shared items",
+            default_value=True
+        ))
         .add_conditional_display("redirectUri", "hasAdminConsent", "equals", False)
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
@@ -181,6 +222,9 @@ class OneDriveConnector(BaseConnector):
             self.config_service, "onedrive", self.connector_id, self.logger
         )
 
+        self.logger.info(f"\n\n\n\nSync Filters:\n{self.sync_filters}")
+        self.logger.info(f"Indexing Filters:\n{self.indexing_filters}")
+
         has_admin_consent = auth_config.get("hasAdminConsent", False)
         credentials = OneDriveCredentials(
             tenant_id=tenant_id,
@@ -219,10 +263,16 @@ class OneDriveConnector(BaseConnector):
             RecordUpdate object containing the record and change information
         """
         try:
+
+            print("\n\n\n\n\n !!!!!!!!!!!!!!!!!!!Processing item:", item)
             # Apply Date Filters
             if not self._pass_date_filters(item):
                 self.logger.debug(f"Skipping item {item.name} (ID: {item.id}) due to date filters.")
                 return # Skip this item
+            
+            if not self._pass_extension_filter(item):
+                self.logger.debug(f"Skipping item {item.name} (ID: {item.id}) due to extention filters.")
+                return
 
             # Check if item is deleted
             if hasattr(item, 'deleted') and item.deleted is not None:
@@ -284,6 +334,8 @@ class OneDriveConnector(BaseConnector):
                     item.parent_reference.drive_id,
                     item.id,
                 )
+            
+            is_shared = hasattr(item, 'shared') and item.shared is not None
 
             file_record = FileRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
@@ -303,7 +355,7 @@ class OneDriveConnector(BaseConnector):
                 source_updated_at=int(item.last_modified_date_time.timestamp() * 1000),
                 weburl=item.web_url,
                 signed_url=signed_url,
-                is_shared=is_shared_folder,
+                is_shared=is_shared,
                 mime_type=item.file.mime_type if item.file else MimeTypes.FOLDER.value,
                 parent_external_record_id=item.parent_reference.id if item.parent_reference else None,
                 external_record_group_id=item.parent_reference.drive_id if item.parent_reference else None,
@@ -491,6 +543,67 @@ class OneDriveConnector(BaseConnector):
                     return False
 
         return True
+    
+    def _pass_extension_filter(self, item: DriveItem) -> bool:
+        """
+        Checks if the DriveItem passes the configured file extensions filter.
+        
+        For MULTISELECT filters:
+        - Operator IN: Only allow files with extensions in the selected list
+        - Operator NOT_IN: Allow files with extensions NOT in the selected list
+        
+        Folders always pass this filter to maintain directory structure.
+        """
+        # 1. ALWAYS Allow Folders
+        if item.folder is not None:
+            return True
+        
+        # 2. Get the extensions filter
+        extensions_filter = self.sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
+        
+        # If no filter configured or filter is empty, allow all files
+        if extensions_filter is None or extensions_filter.is_empty():
+            return True
+        
+        # 3. Get the file extension from the item
+        # The extension is stored without the dot (e.g., "pdf", "docx")
+        file_extension = None
+        if item.name and "." in item.name:
+            file_extension = item.name.rsplit(".", 1)[-1].lower()
+        
+        # Files without extensions: behavior depends on operator
+        # If using IN operator and file has no extension, it won't match any allowed extensions
+        # If using NOT_IN operator and file has no extension, it passes (not in excluded list)
+        if file_extension is None:
+            operator = extensions_filter.get_operator()
+            operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+            if operator_str == FilterOperator.NOT_IN:
+                return True
+            return False
+        
+        # 4. Get the list of extensions from the filter value
+        allowed_extensions = extensions_filter.value
+        print("--DEBUG-- Allowed extensions:", allowed_extensions)
+        if not isinstance(allowed_extensions, list):
+            print("--DEBUG-- Invalid filter value type:", type(allowed_extensions))
+            return True  # Invalid filter value, allow the file
+        
+        # Normalize extensions (lowercase, without dots)
+        normalized_extensions = [ext.lower().lstrip(".") for ext in allowed_extensions]
+        
+        # 5. Apply the filter based on operator
+        operator = extensions_filter.get_operator()
+        operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+        
+        if operator_str == FilterOperator.IN:
+            # Only allow files with extensions in the list
+            return file_extension in normalized_extensions
+        elif operator_str == FilterOperator.NOT_IN:
+            # Allow files with extensions NOT in the list
+            return file_extension not in normalized_extensions
+        
+        # Unknown operator, default to allowing the file
+        return True
 
     async def _process_delta_items_generator(self, delta_items: List[dict]) -> AsyncGenerator[Tuple[FileRecord, List[Permission], RecordUpdate], None]:
         """
@@ -510,6 +623,8 @@ class OneDriveConnector(BaseConnector):
                         yield (None, [], record_update)
                     elif record_update.record:
                         if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                            record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                        if record_update.record.is_shared and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True):
                             record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
                         yield (record_update.record, record_update.new_permissions or [], record_update)

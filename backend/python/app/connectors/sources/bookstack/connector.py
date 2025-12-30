@@ -36,8 +36,12 @@ from app.connectors.core.registry.connector_builder import (
 )
 from app.connectors.core.registry.filters import (
     FilterCollection,
+    FilterField,
     IndexingFilterKey,
     SyncFilterKey,
+    FilterType,
+    FilterCategory,
+    OptionSourceType,
     load_connector_filters,
 )
 from app.connectors.sources.bookstack.common.apps import BookStackApp
@@ -121,6 +125,15 @@ class RecordUpdate:
         .add_filter_field(CommonFields.modified_date_filter("Filter content by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter content by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
+        .add_filter_field(FilterField(
+            name="book_slugs",
+            display_name="Book Slugs",
+            description="Filter content by book slugs.",
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            default_value=[],
+            option_source_type=OptionSourceType.DYNAMIC
+        ))
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(False)

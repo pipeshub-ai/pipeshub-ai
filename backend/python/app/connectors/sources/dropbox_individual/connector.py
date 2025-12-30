@@ -47,6 +47,12 @@ from app.connectors.core.registry.filters import (
     FilterCollection,
     IndexingFilterKey,
     SyncFilterKey,
+    FilterField,
+    FilterCategory,
+    FilterOption,
+    OptionSourceType,
+    FilterType,
+    FilterOperator,
     load_connector_filters,
 )
 
@@ -178,6 +184,41 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
+        .add_filter_field(FilterField(
+            name="file_extensions",
+            display_name="Sync Files with Extensions",
+            filter_type=FilterType.MULTISELECT,
+            category=FilterCategory.SYNC,
+            description="Sync files with specific extensions",
+            default_value=True,
+            option_source_type=OptionSourceType.STATIC,
+            options=[
+                FilterOption(id="pdf", label=".pdf"),
+                FilterOption(id="docx", label=".docx"),
+                FilterOption(id="xlsx", label=".xlsx"),
+                FilterOption(id="pptx", label=".pptx"),
+                FilterOption(id="txt", label=".txt"),
+                FilterOption(id="csv", label=".csv"),
+                FilterOption(id="md", label=".md"),
+                FilterOption(id="mdx", label=".mdx"),
+                FilterOption(id="html", label=".html"),
+                FilterOption(id="png", label=".png"),
+                FilterOption(id="jpg", label=".jpg"),
+                FilterOption(id="jpeg", label=".jpeg"),
+                FilterOption(id="webp", label=".webp"),
+                FilterOption(id="svg", label=".svg"),
+                FilterOption(id="heic", label=".heic"),
+                FilterOption(id="heif", label=".heif"),
+            ]
+        ))
+        .add_filter_field(FilterField(
+            name="shared",
+            display_name="Index Shared Items",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of shared items",
+            default_value=True
+        ))
         .with_webhook_config(True, ["file.added", "file.modified", "file.deleted"])
         .with_scheduled_config(True, 60)
         .add_sync_custom_field(CommonFields.batch_size_field())
@@ -261,6 +302,8 @@ class DropboxIndividualConnector(BaseConnector):
             self.config_service, "dropboxpersonal", self.connector_id, self.logger
         )
 
+        self.logger.info(f"\n\n\n\nSync Filters:\n{self.sync_filters}")
+        self.logger.info(f"Indexing Filters:\n{self.indexing_filters}")
 
         try:
             config = DropboxTokenConfig(
@@ -343,6 +386,10 @@ class DropboxIndividualConnector(BaseConnector):
                 entry, modified_after, modified_before, created_after, created_before
             ):
                 return None
+
+            if not self._pass_extension_filter(entry):
+                self.logger.debug(f"Skipping item {entry.name} (ID: {entry.id}) due to extention filters.")
+                return
 
             # 1. Handle Deleted Items (Deletion from db not implemented yet)
             if isinstance(entry, DeletedMetadata):
@@ -685,6 +732,70 @@ class DropboxIndividualConnector(BaseConnector):
                 self.logger.debug(f"Skipping {entry.name}: created {created_date} after cutoff {created_before}")
                 return False
 
+        return True
+    
+    def _pass_extension_filter(self, entry: Union[FileMetadata, FolderMetadata, DeletedMetadata]) -> bool:
+        """
+        Checks if the Dropbox entry passes the configured file extensions filter.
+        
+        For MULTISELECT filters:
+        - Operator IN: Only allow files with extensions in the selected list
+        - Operator NOT_IN: Allow files with extensions NOT in the selected list
+        
+        Folders and deleted items always pass this filter to maintain directory structure.
+        
+        Args:
+            entry: The Dropbox file/folder/deleted metadata
+            
+        Returns:
+            True if the entry passes the filter (should be kept), False otherwise
+        """
+        # 1. ALWAYS Allow Folders and Deleted items
+        # We must sync folders regardless of extension to ensure the directory structure
+        # exists for any files that might be inside them.
+        # Deleted items should pass through so deletions are processed.
+        if not isinstance(entry, FileMetadata):
+            return True
+        
+        # 2. Get the extensions filter
+        extensions_filter = self.sync_filters.get("extensions")
+        
+        # If no filter configured or filter is empty, allow all files
+        if extensions_filter is None or extensions_filter.is_empty():
+            return True
+        
+        # 3. Get the file extension from the entry name
+        # The extension is stored without the dot (e.g., "pdf", "docx")
+        file_extension = None
+        if entry.name and "." in entry.name:
+            file_extension = entry.name.rsplit(".", 1)[-1].lower()
+        
+        # 4. Handle files without extensions
+        if file_extension is None:
+            operator = extensions_filter.get_operator()
+            operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+            return operator_str == FilterOperator.NOT_IN
+        
+        # 5. Get the list of extensions from the filter value
+        allowed_extensions = extensions_filter.value
+        if not isinstance(allowed_extensions, list):
+            return True  # Invalid filter value, allow the file
+        
+        # Normalize extensions (lowercase, without dots)
+        normalized_extensions = [ext.lower().lstrip(".") for ext in allowed_extensions]
+        
+        # 6. Apply the filter based on operator
+        operator = extensions_filter.get_operator()
+        operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+        
+        if operator_str == FilterOperator.IN:
+            # Only allow files with extensions in the list
+            return file_extension in normalized_extensions
+        elif operator_str == FilterOperator.NOT_IN:
+            # Allow files with extensions NOT in the list
+            return file_extension not in normalized_extensions
+        
+        # Unknown operator, default to allowing the file
         return True
 
     def _get_date_filters(self) -> Tuple[Optional[datetime], Optional[datetime], Optional[datetime], Optional[datetime]]:
