@@ -326,14 +326,13 @@ class RetrievalService:
             try:
                 self.logger.debug("About to call _create_virtual_to_record_mapping")
                 virtual_to_record_map = self._create_virtual_to_record_mapping(record_id_to_record_map.values(), virtual_record_ids)
-                self.logger.info(f"Virtual to record map size: {len(virtual_to_record_map)}")
             except Exception as e:
                 self.logger.error(f"Error in _create_virtual_to_record_mapping: {e}")
                 import traceback
                 self.logger.error(f"Traceback: {traceback.format_exc()}")
                 raise
 
-            unique_record_ids = set(virtual_to_record_map.values())
+            unique_record_ids = set(r.get("_key") for r in virtual_to_record_map.values() if r)
 
             if not unique_record_ids:
                 return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
@@ -354,9 +353,10 @@ class RetrievalService:
                     continue
                 virtual_id = result["metadata"].get("virtualRecordId")
                 if virtual_id is not None and virtual_id in virtual_to_record_map:
-                    record_id = virtual_to_record_map[virtual_id]
-                    result["metadata"]["recordId"] = record_id
+                    record_id = virtual_to_record_map[virtual_id].get("_key")
                     record = record_id_to_record_map.get(record_id, None)
+
+                    result["metadata"]["recordId"] = record_id
                     if record:
                         result["metadata"]["origin"] = record.get("origin")
                         result["metadata"]["connector"] = record.get("connectorName", None)
@@ -534,6 +534,7 @@ class RetrievalService:
                     "status": Status.SUCCESS.value,
                     "status_code": 200,
                     "message": "Query processed successfully. Relevant records retrieved.",
+                    "virtual_to_record_map": virtual_to_record_map,
                 }
 
                 # Add KB filtering info to response if KB filtering was applied
@@ -713,17 +714,17 @@ class RetrievalService:
         self,
         accessible_records: List[Dict[str, Any]],
         virtual_record_ids: List[str]
-    ) -> Dict[str, str]:
+    ) -> Dict[str, Dict[str, Any]]:
         """
-        Create virtual record ID to record ID mapping from already fetched accessible_records.
+        Create virtual record ID to record mapping from already fetched accessible_records.
         This eliminates the need for an additional database query.
         Args:
             accessible_records: List of accessible record documents (already fetched)
             virtual_record_ids: List of virtual record IDs from search results
         Returns:
-            Dict[str, str]: Mapping of virtual_record_id -> first accessible record_id
+            Dict[str, Dict[str, Any]]: Mapping of virtual_record_id -> first accessible record
         """
-        # Create a mapping from virtualRecordId to list of record IDs
+        # Create a mapping from virtualRecordId to list of records
         virtual_to_records = {}
         for record in accessible_records:
             if record and isinstance(record, dict):
@@ -733,11 +734,11 @@ class RetrievalService:
                 if virtual_id and record_id:
                     if virtual_id not in virtual_to_records:
                         virtual_to_records[virtual_id] = []
-                    virtual_to_records[virtual_id].append(record_id)
+                    virtual_to_records[virtual_id].append(record)
 
 
         # Create the final mapping using only the virtual record IDs from search results
-        # Use the first record ID for each virtual record ID
+        # Use the first record for each virtual record ID
         mapping = {}
         for virtual_id in virtual_record_ids:
             # Skip None values and ensure virtual_id exists in virtual_to_records
