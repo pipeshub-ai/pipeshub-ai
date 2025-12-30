@@ -370,11 +370,9 @@ async def execute_tool_calls(
 
         # Create parallel tasks for all tools
         tool_tasks = []
-        tool_names = []
         for (args, tool), call in zip(tool_args, ai.tool_calls):
             tool_name = call["name"]
             call_id = call.get("id")
-            tool_names.append(tool_name)
             tool_tasks.append(execute_single_tool(args, tool, tool_name, call_id))
 
         # Execute all tools in parallel
