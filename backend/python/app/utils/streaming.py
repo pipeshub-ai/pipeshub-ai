@@ -323,7 +323,7 @@ async def execute_tool_calls(
             tool_args.append((args,tool))
 
         tool_results_inner = []
-
+        valid_tool_names = [t.name for t in tools]
         # Execute all tools in parallel using asyncio.gather
         async def execute_single_tool(args, tool, tool_name, call_id) -> Dict[str, Any]:
             """Execute a single tool and return result with metadata"""
@@ -336,6 +336,14 @@ async def execute_tool_calls(
                     "call_id": call_id
                 }
 
+            if tool_name not in valid_tool_names:
+                logger.warning("invalid tool requested, name=%s", tool_name)
+                return {
+                    "ok": False,
+                    "error": f"Invalid tool: {tool_name}",
+                    "tool_name": tool_name,
+                    "call_id": call_id
+                }
             try:
                 logger.debug(
                     "execute_tool_calls: running tool name=%s call_id=%s args_keys=%s",
