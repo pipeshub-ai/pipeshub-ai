@@ -3,7 +3,7 @@ import mimetypes
 import uuid
 from datetime import datetime, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
 
 from aiohttp import ClientSession
 from aiolimiter import AsyncLimiter
@@ -1692,3 +1692,14 @@ class BoxConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error during Box reindex: {e}", exc_info=True)
             raise
+
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None
+    ) -> NoReturn:
+        """Box connector does not support dynamic filter options."""
+        raise NotImplementedError("Box connector does not support dynamic filter options")
