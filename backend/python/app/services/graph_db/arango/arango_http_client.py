@@ -12,13 +12,7 @@ from typing import Any, Dict, List, Optional, Union
 
 import aiohttp
 
-# HTTP Status Code Constants
-HTTP_OK = 200
-HTTP_CREATED = 201
-HTTP_ACCEPTED = 202
-HTTP_NO_CONTENT = 204
-HTTP_NOT_FOUND = 404
-HTTP_CONFLICT = 409
+from app.config.constants.http_status_code import HttpStatusCode
 
 # ArangoDB Error Code Constants
 ARANGO_ERROR_DOCUMENT_NOT_FOUND = 1202
@@ -65,7 +59,7 @@ class ArangoHTTPClient:
 
             # Test connection
             async with self.session.get(f"{self.base_url}/_api/version") as resp:
-                if resp.status == HTTP_OK:
+                if resp.status == HttpStatusCode.OK.value:
                     version_info = await resp.json()
                     self.logger.info(f"✅ Connected to ArangoDB {version_info.get('version')}")
                     return True
@@ -128,7 +122,7 @@ class ArangoHTTPClient:
         url = f"{self.base_url}/_api/database"
 
         async with self.session.get(url) as resp:
-            if resp.status == HTTP_OK:
+            if resp.status == HttpStatusCode.OK.value:
                 result = await resp.json()
                 return db_name in result.get("result", [])
             return False
@@ -149,10 +143,10 @@ class ArangoHTTPClient:
         }
 
         async with self.session.post(url, json=payload) as resp:
-            if resp.status in [HTTP_OK, HTTP_CREATED]:
+            if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.CREATED.value]:
                 self.logger.info(f"✅ Database '{db_name}' created")
                 return True
-            elif resp.status == HTTP_CONFLICT:
+            elif resp.status == HttpStatusCode.CONFLICT.value:
                 self.logger.info(f"Database '{db_name}' already exists")
                 return True
             else:
@@ -185,7 +179,7 @@ class ArangoHTTPClient:
 
         try:
             async with self.session.post(url, json=payload) as resp:
-                if resp.status != HTTP_CREATED:
+                if resp.status != HttpStatusCode.CREATED.value:
                     error = await resp.text()
                     raise Exception(f"Failed to begin transaction: {error}")
 
@@ -266,9 +260,9 @@ class ArangoHTTPClient:
 
         try:
             async with self.session.get(url, headers=headers) as resp:
-                if resp.status == HTTP_NOT_FOUND:
+                if resp.status == HttpStatusCode.NOT_FOUND.value:
                     return None
-                elif resp.status == HTTP_OK:
+                elif resp.status == HttpStatusCode.OK.value:
                     return await resp.json()
                 else:
                     error = await resp.text()
@@ -305,11 +299,11 @@ class ArangoHTTPClient:
 
         try:
             async with self.session.post(url, json=document, headers=headers) as resp:
-                if resp.status in [HTTP_CREATED, HTTP_ACCEPTED]:
+                if resp.status in [HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value]:
                     result = await resp.json()
                     self._check_response_for_errors(result, "Create document")
                     return result
-                elif resp.status == HTTP_CONFLICT:
+                elif resp.status == HttpStatusCode.CONFLICT.value:
                     # Document already exists, treat as success
                     return {"_key": document.get("_key")}
                 else:
@@ -349,7 +343,7 @@ class ArangoHTTPClient:
 
         try:
             async with self.session.patch(url, json=updates, headers=headers) as resp:
-                if resp.status in [HTTP_OK, HTTP_CREATED, HTTP_ACCEPTED]:
+                if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value]:
                     result = await resp.json()
                     self._check_response_for_errors(result, "Update document")
                     return result
@@ -388,7 +382,7 @@ class ArangoHTTPClient:
 
         try:
             async with self.session.delete(url, headers=headers) as resp:
-                if resp.status in [HTTP_OK, HTTP_ACCEPTED, HTTP_NO_CONTENT]:
+                if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.ACCEPTED.value, HttpStatusCode.NO_CONTENT.value]:
                     # Try to parse response for error checking
                     try:
                         result = await resp.json()
@@ -509,7 +503,7 @@ class ArangoHTTPClient:
                 params=params,
                 headers=headers
             ) as resp:
-                if resp.status in [HTTP_CREATED, HTTP_ACCEPTED]:
+                if resp.status in [HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value]:
                     result = await resp.json()
                     self.logger.debug(f"✅ Batch insert response: status={resp.status}, result={result}")
 
@@ -568,7 +562,7 @@ class ArangoHTTPClient:
                 headers=headers,
                 json=document_ids  # Send array of document IDs in request body
             ) as resp:
-                if resp.status in [HTTP_OK, HTTP_ACCEPTED]:
+                if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.ACCEPTED.value]:
                     results = await resp.json()
 
                     # Results is an array of deletion results
@@ -642,11 +636,11 @@ class ArangoHTTPClient:
 
         try:
             async with self.session.post(url, json=edge_doc, headers=headers) as resp:
-                if resp.status in [HTTP_CREATED, HTTP_ACCEPTED]:
+                if resp.status in [HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value]:
                     result = await resp.json()
                     self._check_response_for_errors(result, "Create edge")
                     return result
-                elif resp.status == HTTP_CONFLICT:
+                elif resp.status == HttpStatusCode.CONFLICT.value:
                     # Edge already exists
                     return {"_key": edge_doc.get("_key")}
                 else:
@@ -692,7 +686,7 @@ class ArangoHTTPClient:
                 headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 
                 async with self.session.delete(url, headers=headers) as resp:
-                    return resp.status in [HTTP_OK, HTTP_ACCEPTED, HTTP_NO_CONTENT]
+                    return resp.status in [HttpStatusCode.OK.value, HttpStatusCode.ACCEPTED.value, HttpStatusCode.NO_CONTENT.value]
 
             return False
 
@@ -708,7 +702,7 @@ class ArangoHTTPClient:
 
         try:
             async with self.session.get(url) as resp:
-                return resp.status == HTTP_OK
+                return resp.status == HttpStatusCode.OK.value
         except Exception:
             return False
 
@@ -739,10 +733,10 @@ class ArangoHTTPClient:
 
         try:
             async with self.session.post(url, json=payload) as resp:
-                if resp.status in [HTTP_OK, HTTP_CREATED]:
+                if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.CREATED.value]:
                     self.logger.info(f"✅ Collection '{name}' created")
                     return True
-                elif resp.status == HTTP_CONFLICT:
+                elif resp.status == HttpStatusCode.CONFLICT.value:
                     self.logger.debug(f"Collection '{name}' already exists")
                     return True
                 else:
@@ -754,13 +748,42 @@ class ArangoHTTPClient:
             self.logger.error(f"❌ Error creating collection: {str(e)}")
             return False
 
+    # ==================== Graph Operations ====================
+
+    async def get_graph(self, graph_name: str) -> Optional[Dict]:
+        """
+        Get graph definition including edge definitions.
+
+        Args:
+            graph_name: Graph name
+
+        Returns:
+            Optional[Dict]: Graph definition with edgeDefinitions, or None if not found
+        """
+        url = f"{self.base_url}/_db/{self.database}/_api/gharial/{graph_name}"
+
+        try:
+            async with self.session.get(url) as resp:
+                if resp.status == HttpStatusCode.OK.value:
+                    return await resp.json()
+                elif resp.status == HttpStatusCode.NOT_FOUND.value:
+                    self.logger.warning(f"Graph '{graph_name}' not found")
+                    return None
+                else:
+                    error = await resp.text()
+                    self.logger.error(f"❌ Failed to get graph: {error}")
+                    return None
+        except Exception as e:
+            self.logger.error(f"❌ Error getting graph: {str(e)}")
+            return None
+
     # ==================== Helper Methods ====================
 
     async def _handle_response(self, resp: aiohttp.ClientResponse, operation: str) -> Optional[Dict]:
         """Helper to handle HTTP responses"""
-        if resp.status in [HTTP_OK, HTTP_CREATED, HTTP_ACCEPTED]:
+        if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value]:
             return await resp.json()
-        elif resp.status == HTTP_NOT_FOUND:
+        elif resp.status == HttpStatusCode.NOT_FOUND.value:
             return None
         else:
             error = await resp.text()

@@ -35,6 +35,47 @@ class IGraphDBProvider(ABC):
     - Transaction support is optional but consistent across all operations
     - Methods return Python native types (Dict, List) not database-specific objects
     - Error handling returns None/False rather than raising exceptions (where appropriate)
+
+    Data Format Specifications:
+
+    1. Node/Document Format:
+       Nodes use a generic 'id' field for identification (not database-specific like '_key').
+       Example:
+       {
+           "id": "user123",              # Generic node identifier
+           "orgId": "org456",
+           "email": "user@example.com",
+           # ... other node properties
+       }
+
+       Implementation Note: Providers translate 'id' to their native field:
+       - ArangoDB: 'id' → '_key'
+       - Neo4j: 'id' → 'id' (native)
+
+    2. Edge/Relationship Format:
+       Edges use a generic format with separate fields for source/target nodes:
+       {
+           "from_id": "user123",           # Source node ID (without collection prefix)
+           "from_collection": "users",     # Source collection/label name
+           "to_id": "record456",           # Target node ID (without collection prefix)
+           "to_collection": "records",     # Target collection/label name
+           "role": "READER",               # Edge property example
+           "type": "PERMISSION",           # Edge property example
+           "createdAtTimestamp": 1234567890,
+           # ... other edge properties
+       }
+
+       Implementation Note: Providers translate to their native format:
+       - ArangoDB: Combines into '_from': "users/user123", '_to': "records/record456"
+       - Neo4j: Creates relationship with startNode and endNode references
+
+    3. Collection/Label Names:
+       Collection names are database-agnostic strings (e.g., "users", "records", "permissions").
+       Providers map these to their native concepts (collections in Arango, labels in Neo4j).
+
+    4. Backward Compatibility:
+       During transition, providers should handle both old format (with _key, _from, _to)
+       and new generic format to ensure smooth migration.
     """
 
     # ==================== Connection Management ====================
@@ -88,12 +129,12 @@ class IGraphDBProvider(ABC):
         Get a document by its key from a collection.
 
         Args:
-            document_key (str): The document's unique key (_key)
+            document_key (str): The document's unique identifier (generic 'id')
             collection (str): Collection/table name
             transaction (Optional[Any]): Optional transaction context
 
         Returns:
-            Optional[Dict]: Document data if found, None otherwise
+            Optional[Dict]: Document data with 'id' field if found, None otherwise
         """
         pass
 
@@ -108,7 +149,12 @@ class IGraphDBProvider(ABC):
         Batch upsert (insert or update) multiple nodes/documents.
 
         Args:
-            nodes (List[Dict]): List of documents to upsert (must have _key)
+            nodes (List[Dict]): List of documents to upsert. Each document should have 'id' field:
+                {
+                    "id": "user123",           # Generic node identifier
+                    "orgId": "org456",
+                    # ... other node properties
+                }
             collection (str): Collection/table name
             transaction (Optional[Any]): Optional transaction context
 
@@ -172,7 +218,14 @@ class IGraphDBProvider(ABC):
         Batch create edges/relationships between nodes.
 
         Args:
-            edges (List[Dict]): List of edges with _from and _to fields
+            edges (List[Dict]): List of edges in generic format:
+                {
+                    "from_id": "user123",           # Source node ID
+                    "from_collection": "users",     # Source collection
+                    "to_id": "record456",           # Target node ID
+                    "to_collection": "records",     # Target collection
+                    # ... additional edge properties
+                }
             collection (str): Edge collection name
             transaction (Optional[Any]): Optional transaction context
 
@@ -184,8 +237,10 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def get_edge(
         self,
-        from_key: str,
-        to_key: str,
+        from_id: str,
+        from_collection: str,
+        to_id: str,
+        to_collection: str,
         collection: str,
         transaction: Optional[str] = None
     ) -> Optional[Dict]:
@@ -193,21 +248,25 @@ class IGraphDBProvider(ABC):
         Get an edge/relationship between two nodes.
 
         Args:
-            from_key (str): Source node key
-            to_key (str): Target node key
+            from_id (str): Source node ID
+            from_collection (str): Source node collection name
+            to_id (str): Target node ID
+            to_collection (str): Target node collection name
             collection (str): Edge collection name
             transaction (Optional[Any]): Optional transaction context
 
         Returns:
-            Optional[Dict]: Edge data if found, None otherwise
+            Optional[Dict]: Edge data in generic format if found, None otherwise
         """
         pass
 
     @abstractmethod
     async def delete_edge(
         self,
-        from_key: str,
-        to_key: str,
+        from_id: str,
+        from_collection: str,
+        to_id: str,
+        to_collection: str,
         collection: str,
         transaction: Optional[str] = None
     ) -> bool:
@@ -215,8 +274,10 @@ class IGraphDBProvider(ABC):
         Delete an edge/relationship between two nodes.
 
         Args:
-            from_key (str): Source node key
-            to_key (str): Target node key
+            from_id (str): Source node ID
+            from_collection (str): Source node collection name
+            to_id (str): Target node ID
+            to_collection (str): Target node collection name
             collection (str): Edge collection name
             transaction (Optional[Any]): Optional transaction context
 
@@ -228,7 +289,8 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def delete_edges_from(
         self,
-        from_key: str,
+        from_id: str,
+        from_collection: str,
         collection: str,
         transaction: Optional[str] = None
     ) -> int:
@@ -236,7 +298,8 @@ class IGraphDBProvider(ABC):
         Delete all edges originating from a node.
 
         Args:
-            from_key (str): Source node key
+            from_id (str): Source node ID
+            from_collection (str): Source node collection name
             collection (str): Edge collection name
             transaction (Optional[Any]): Optional transaction context
 
@@ -248,7 +311,8 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def delete_edges_to(
         self,
-        to_key: str,
+        to_id: str,
+        to_collection: str,
         collection: str,
         transaction: Optional[str] = None
     ) -> int:
@@ -256,7 +320,8 @@ class IGraphDBProvider(ABC):
         Delete all edges pointing to a node.
 
         Args:
-            to_key (str): Target node key
+            to_id (str): Target node ID
+            to_collection (str): Target node collection name
             collection (str): Edge collection name
             transaction (Optional[Any]): Optional transaction context
 
@@ -268,7 +333,8 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def delete_edges_to_groups(
         self,
-        from_key: str,
+        from_id: str,
+        from_collection: str,
         collection: str,
         transaction: Optional[str] = None
     ) -> int:
@@ -276,7 +342,8 @@ class IGraphDBProvider(ABC):
         Delete edges from a node to group nodes.
 
         Args:
-            from_key (str): Source node key
+            from_id (str): Source node ID
+            from_collection (str): Source node collection name
             collection (str): Edge collection name
             transaction (Optional[Any]): Optional transaction context
 
@@ -288,7 +355,8 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def delete_edges_between_collections(
         self,
-        from_key: str,
+        from_id: str,
+        from_collection: str,
         edge_collection: str,
         to_collection: str,
         transaction: Optional[str] = None
@@ -297,7 +365,8 @@ class IGraphDBProvider(ABC):
         Delete edges between a node and nodes in a specific collection.
 
         Args:
-            from_key (str): Source node key
+            from_id (str): Source node ID
+            from_collection (str): Source node collection name
             edge_collection (str): Edge collection name
             to_collection (str): Target collection name
             transaction (Optional[Any]): Optional transaction context
@@ -636,6 +705,49 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Optional[Dict]: Record data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_by_issue_key(
+        self,
+        connector_id: str,
+        issue_key: str,
+        transaction: Optional[str] = None
+    ) -> Optional['Record']:
+        """
+        Get a record by Jira issue key (e.g., PROJ-123) by searching weburl pattern.
+
+        Args:
+            connector_id (str): Connector ID
+            issue_key (str): Jira issue key (e.g., "PROJ-123")
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[Dict]: Record data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_records_by_parent(
+        self,
+        connector_id: str,
+        parent_external_record_id: str,
+        record_type: Optional[str] = None,
+        transaction: Optional[str] = None
+    ) -> List['Record']:
+        """
+        Get all child records for a parent record by parent_external_record_id.
+        Optionally filter by record_type.
+
+        Args:
+            connector_id (str): Connector ID
+            parent_external_record_id (str): Parent record's external ID
+            record_type (Optional[str]): Optional filter by record type (e.g., "COMMENT", "FILE", "TICKET")
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of child records
         """
         pass
 
@@ -1050,36 +1162,40 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def get_first_user_with_permission_to_node(
         self,
-        node_key: str,
+        node_id: str,
+        node_collection: str,
         transaction: Optional[str] = None
     ) -> Optional['User']:
         """
         Get the first user with permission to a node.
 
         Args:
-            node_key (str): Node key
+            node_id (str): Node ID
+            node_collection (str): Node collection name
             transaction (Optional[Any]): Optional transaction context
 
         Returns:
-            Optional[str]: User ID if found, None otherwise
+            Optional[User]: User object if found, None otherwise
         """
         pass
 
     @abstractmethod
     async def get_users_with_permission_to_node(
         self,
-        node_key: str,
+        node_id: str,
+        node_collection: str,
         transaction: Optional[str] = None
     ) -> List['User']:
         """
         Get all users with permission to a node.
 
         Args:
-            node_key (str): Node key
+            node_id (str): Node ID
+            node_collection (str): Node collection name
             transaction (Optional[Any]): Optional transaction context
 
         Returns:
-            List[str]: List of user IDs
+            List[User]: List of user objects
         """
         pass
 

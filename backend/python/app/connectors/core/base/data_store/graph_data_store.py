@@ -106,23 +106,23 @@ class GraphTransactionStore(TransactionStore):
     async def delete_record_group_by_external_id(self, connector_id: str, external_id: str) -> None:
         return await self.graph_provider.delete_record_group_by_external_id(connector_id, external_id, transaction=self.txn)
 
-    async def delete_edge(self, from_key: str, to_key: str, collection: str) -> None:
-        return await self.graph_provider.delete_edge(from_key, to_key, collection, transaction=self.txn)
+    async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> None:
+        return await self.graph_provider.delete_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
 
     async def delete_nodes(self, keys: List[str], collection: str) -> None:
         return await self.graph_provider.delete_nodes(keys, collection, transaction=self.txn)
 
-    async def delete_edges_from(self, from_key: str, collection: str) -> None:
-        return await self.graph_provider.delete_edges_from(from_key, collection, transaction=self.txn)
+    async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> None:
+        return await self.graph_provider.delete_edges_from(from_id, from_collection, collection, transaction=self.txn)
 
-    async def delete_edges_to(self, to_key: str, collection: str) -> None:
-        return await self.graph_provider.delete_edges_to(to_key, collection, transaction=self.txn)
+    async def delete_edges_to(self, to_id: str, to_collection: str, collection: str) -> None:
+        return await self.graph_provider.delete_edges_to(to_id, to_collection, collection, transaction=self.txn)
 
-    async def delete_edges_to_groups(self, from_key: str, collection: str) -> None:
-        return await self.graph_provider.delete_edges_to_groups(from_key, collection, transaction=self.txn)
+    async def delete_edges_to_groups(self, from_id: str, from_collection: str, collection: str) -> None:
+        return await self.graph_provider.delete_edges_to_groups(from_id, from_collection, collection, transaction=self.txn)
 
-    async def delete_edges_between_collections(self, from_key: str, edge_collection: str, to_collection: str) -> None:
-        return await self.graph_provider.delete_edges_between_collections(from_key, edge_collection, to_collection, transaction=self.txn)
+    async def delete_edges_between_collections(self, from_id: str, from_collection: str, edge_collection: str, to_collection: str) -> None:
+        return await self.graph_provider.delete_edges_between_collections(from_id, from_collection, edge_collection, to_collection, transaction=self.txn)
 
     async def delete_nodes_and_edges(self, keys: List[str], collection: str) -> None:
         return await self.graph_provider.delete_nodes_and_edges(keys, collection, graph_name="knowledgeGraph", transaction=self.txn)
@@ -167,8 +167,10 @@ class GraphTransactionStore(TransactionStore):
 
             # Create BELONGS_TO edge
             edge = {
-                "_from": f"{CollectionNames.GROUPS.value}/{child_group.id}",
-                "_to": f"{CollectionNames.GROUPS.value}/{parent_group.id}",
+                "from_id": child_group.id,
+                "from_collection": CollectionNames.GROUPS.value,
+                "to_id": parent_group.id,
+                "to_collection": CollectionNames.GROUPS.value,
                 "entityType": "GROUP",
                 "createdAtTimestamp": get_epoch_timestamp_in_ms(),
             }
@@ -215,8 +217,10 @@ class GraphTransactionStore(TransactionStore):
 
             # Create BELONGS_TO edge
             edge = {
-                "_from": f"{CollectionNames.USERS.value}/{user.id}",
-                "_to": f"{CollectionNames.GROUPS.value}/{group.id}",
+                "from_id": user.id,
+                "from_collection": CollectionNames.USERS.value,
+                "to_id": group.id,
+                "to_collection": CollectionNames.GROUPS.value,
                 "entityType": "GROUP",
                 "createdAtTimestamp": get_epoch_timestamp_in_ms(),
             }
@@ -237,17 +241,32 @@ class GraphTransactionStore(TransactionStore):
             )
             return False
 
-    async def get_first_user_with_permission_to_node(self, node_key: str) -> Optional[User]:
-        return await self.graph_provider.get_first_user_with_permission_to_node(node_key, transaction=self.txn)
+    async def get_first_user_with_permission_to_node(self, node_id: str, node_collection: str) -> Optional[User]:
+        return await self.graph_provider.get_first_user_with_permission_to_node(node_id, node_collection, transaction=self.txn)
 
-    async def get_users_with_permission_to_node(self, node_key: str) -> List[User]:
-        return await self.graph_provider.get_users_with_permission_to_node(node_key, transaction=self.txn)
+    async def get_users_with_permission_to_node(self, node_id: str, node_collection: str) -> List[User]:
+        return await self.graph_provider.get_users_with_permission_to_node(node_id, node_collection, transaction=self.txn)
 
-    async def get_edge(self, from_key: str, to_key: str, collection: str) -> Optional[Dict]:
-        return await self.graph_provider.get_edge(from_key, to_key, collection, transaction=self.txn)
+    async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> Optional[Dict]:
+        return await self.graph_provider.get_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
 
     async def get_record_by_conversation_index(self, connector_id: str, conversation_index: str, thread_id: str, org_id: str, user_id: str) -> Optional[Record]:
         return await self.graph_provider.get_record_by_conversation_index(connector_id, conversation_index, thread_id, org_id, user_id, transaction=self.txn)
+
+    async def get_record_by_issue_key(self, connector_id: str, issue_key: str) -> Optional[Record]:
+        """Get record by Jira issue key (e.g., PROJ-123) by searching weburl pattern."""
+        return await self.graph_provider.get_record_by_issue_key(connector_id, issue_key, transaction=self.txn)
+
+    async def get_records_by_parent(
+        self,
+        connector_id: str,
+        parent_external_record_id: str,
+        record_type: Optional[str] = None
+    ) -> List[Record]:
+        """Get all child records for a parent record by parent_external_record_id. Optionally filter by record_type."""
+        return await self.graph_provider.get_records_by_parent(
+            connector_id, parent_external_record_id, record_type, transaction=self.txn
+        )
 
     async def batch_upsert_records(self, records: List[Record]) -> None:
         """
@@ -358,8 +377,10 @@ class GraphTransactionStore(TransactionStore):
         )
     async def create_inherit_permissions_relation_record(self, child_record_id: str, parent_record_id: str) -> None:
         record_edge = {
-                    "_from": f"{CollectionNames.RECORDS.value}/{child_record_id}",
-                    "_to": f"{CollectionNames.RECORD_GROUPS.value}/{parent_record_id}",
+                    "from_id": child_record_id,
+                    "from_collection": CollectionNames.RECORDS.value,
+                    "to_id": parent_record_id,
+                    "to_collection": CollectionNames.RECORD_GROUPS.value,
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 }
@@ -431,9 +452,11 @@ class GraphTransactionStore(TransactionStore):
             return
 
         permission_edges = []
-        to_collection = f"{CollectionNames.RECORD_GROUPS.value}/{record_group_id}"
+        to_id = record_group_id
+        to_collection = CollectionNames.RECORD_GROUPS.value
 
         for permission in permissions:
+            from_id = None
             from_collection = None
 
             if permission.entity_type.value == "USER":
@@ -443,7 +466,8 @@ class GraphTransactionStore(TransactionStore):
                     user = await self.get_user_by_email(permission.email)
 
                 if user:
-                    from_collection = f"{CollectionNames.USERS.value}/{user.id}"
+                    from_id = user.id
+                    from_collection = CollectionNames.USERS.value
                 else:
                     self.logger.warning(
                         f"User not found for email: {permission.email}"
@@ -459,16 +483,17 @@ class GraphTransactionStore(TransactionStore):
                     )
 
                 if user_group:
-                    from_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
+                    from_id = user_group.id
+                    from_collection = CollectionNames.GROUPS.value
                 else:
                     self.logger.warning(
                         f"Group not found for external_id: {permission.external_id}"
                     )
                     continue
 
-            if from_collection:
+            if from_id and from_collection:
                 permission_edges.append(
-                    permission.to_arango_permission(from_collection, to_collection)
+                    permission.to_arango_permission(from_id, from_collection, to_id, to_collection)
                 )
 
         if permission_edges:

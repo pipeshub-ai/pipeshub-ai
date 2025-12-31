@@ -569,8 +569,10 @@ class OutlookConnector(BaseConnector):
 
                     if parent_id:
                         edge = {
-                            "_from": f"records/{parent_id}",
-                            "_to": f"records/{record.id}",
+                            "from_id": parent_id,
+                            "from_collection": CollectionNames.RECORDS.value,
+                            "to_id": record.id,
+                            "to_collection": CollectionNames.RECORDS.value,
                             "relationType": "SIBLING"
                         }
                         edges.append(edge)

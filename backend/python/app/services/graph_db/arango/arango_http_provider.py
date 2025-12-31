@@ -37,6 +37,9 @@ from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+# Constants for ArangoDB document ID format
+ARANGO_ID_PARTS_COUNT = 2  # ArangoDB document IDs are in format "collection/key"
+
 
 class ArangoHTTPProvider(IGraphDBProvider):
     """
@@ -121,6 +124,126 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 ]
             }
         }
+
+    # ==================== Translation Layer ====================
+    # Methods to translate between generic format and ArangoDB-specific format
+
+    def _translate_node_to_arango(self, node: Dict) -> Dict:
+        """
+        Translate generic node format to ArangoDB format.
+
+        Converts 'id' field to '_key' for ArangoDB storage.
+
+        Args:
+            node: Node in generic format (with 'id' field)
+
+        Returns:
+            Node in ArangoDB format (with '_key' field)
+        """
+        arango_node = node.copy()
+        if "id" in arango_node:
+            arango_node["_key"] = arango_node.pop("id")
+        return arango_node
+
+    def _translate_node_from_arango(self, arango_node: Dict) -> Dict:
+        """
+        Translate ArangoDB node to generic format.
+
+        Converts '_key' field to 'id' for generic representation.
+
+        Args:
+            arango_node: Node in ArangoDB format (with '_key' field)
+
+        Returns:
+            Node in generic format (with 'id' field)
+        """
+        node = arango_node.copy()
+        if "_key" in node:
+            node["id"] = node.pop("_key")
+        return node
+
+    def _translate_edge_to_arango(self, edge: Dict) -> Dict:
+        """
+        Translate generic edge format to ArangoDB format.
+
+        Converts:
+        - from_id + from_collection → _from: "collection/id"
+        - to_id + to_collection → _to: "collection/id"
+
+        Handles both old format (already has _from/_to) and new generic format
+        for backward compatibility during transition.
+
+        Args:
+            edge: Edge in generic format
+
+        Returns:
+            Edge in ArangoDB format
+        """
+        arango_edge = edge.copy()
+
+        # Handle new generic format
+        if "from_id" in edge and "from_collection" in edge:
+            arango_edge["_from"] = f"{edge['from_collection']}/{edge['from_id']}"
+            arango_edge.pop("from_id", None)
+            arango_edge.pop("from_collection", None)
+
+        if "to_id" in edge and "to_collection" in edge:
+            arango_edge["_to"] = f"{edge['to_collection']}/{edge['to_id']}"
+            arango_edge.pop("to_id", None)
+            arango_edge.pop("to_collection", None)
+
+        # If neither format is present, edge is already in old format (_from/_to)
+        # Just return as-is for backward compatibility
+
+        return arango_edge
+
+    def _translate_edge_from_arango(self, arango_edge: Dict) -> Dict:
+        """
+        Translate ArangoDB edge to generic format.
+
+        Converts:
+        - _from: "collection/id" → from_collection + from_id
+        - _to: "collection/id" → to_collection + to_id
+
+        Args:
+            arango_edge: Edge in ArangoDB format
+
+        Returns:
+            Edge in generic format
+        """
+        edge = arango_edge.copy()
+
+        if "_from" in edge:
+            from_parts = edge["_from"].split("/", 1)
+            if len(from_parts) == ARANGO_ID_PARTS_COUNT:
+                edge["from_collection"] = from_parts[0]
+                edge["from_id"] = from_parts[1]
+            edge.pop("_from", None)
+
+        if "_to" in edge:
+            to_parts = edge["_to"].split("/", 1)
+            if len(to_parts) == ARANGO_ID_PARTS_COUNT:
+                edge["to_collection"] = to_parts[0]
+                edge["to_id"] = to_parts[1]
+            edge.pop("_to", None)
+
+        return edge
+
+    def _translate_nodes_to_arango(self, nodes: List[Dict]) -> List[Dict]:
+        """Batch translate nodes to ArangoDB format."""
+        return [self._translate_node_to_arango(node) for node in nodes]
+
+    def _translate_nodes_from_arango(self, arango_nodes: List[Dict]) -> List[Dict]:
+        """Batch translate nodes from ArangoDB format."""
+        return [self._translate_node_from_arango(node) for node in arango_nodes]
+
+    def _translate_edges_to_arango(self, edges: List[Dict]) -> List[Dict]:
+        """Batch translate edges to ArangoDB format."""
+        return [self._translate_edge_to_arango(edge) for edge in edges]
+
+    def _translate_edges_from_arango(self, arango_edges: List[Dict]) -> List[Dict]:
+        """Batch translate edges from ArangoDB format."""
+        return [self._translate_edge_from_arango(edge) for edge in arango_edges]
 
     # ==================== Connection Management ====================
 
@@ -259,17 +382,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Get a document by key - FULLY ASYNC.
 
         Args:
-            document_key: Document key
+            document_key: Document key (generic 'id')
             collection: Collection name
             transaction: Optional transaction ID
 
         Returns:
-            Optional[Dict]: Document data or None
+            Optional[Dict]: Document data in generic format (with 'id' field) or None
         """
         try:
-            return await self.http_client.get_document(
+            doc = await self.http_client.get_document(
                 collection, document_key, txn_id=transaction
             )
+            if doc:
+                # Translate from ArangoDB format to generic format
+                return self._translate_node_from_arango(doc)
+            return None
         except Exception as e:
             self.logger.error(f"❌ Failed to get document: {str(e)}")
             return None
@@ -284,7 +411,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Batch upsert nodes - FULLY ASYNC.
 
         Args:
-            nodes: List of node documents
+            nodes: List of node documents in generic format (with 'id' field)
             collection: Collection name
             transaction: Optional transaction ID
 
@@ -295,8 +422,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if not nodes:
                 return True
 
+            # Translate nodes from generic format to ArangoDB format
+            arango_nodes = self._translate_nodes_to_arango(nodes)
+
             result = await self.http_client.batch_insert_documents(
-                collection, nodes, txn_id=transaction, overwrite=True
+                collection, arango_nodes, txn_id=transaction, overwrite=True
             )
 
             success = result.get("errors", 0) == 0
@@ -374,7 +504,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Uses UPSERT to avoid duplicates - matches on _from and _to.
 
         Args:
-            edges: List of edge documents (must have _from and _to)
+            edges: List of edge documents in generic format (from_id, from_collection, to_id, to_collection)
             collection: Edge collection name
             transaction: Optional transaction ID
 
@@ -387,6 +517,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             self.logger.info(f"🚀 Batch creating edges: {collection}")
 
+            # Translate edges from generic format to ArangoDB format
+            arango_edges = self._translate_edges_to_arango(edges)
+
             batch_query = """
             FOR edge IN @edges
                 UPSERT { _from: edge._from, _to: edge._to }
@@ -395,7 +528,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 IN @@collection
                 RETURN NEW
             """
-            bind_vars = {"edges": edges, "@collection": collection}
+            bind_vars = {"edges": arango_edges, "@collection": collection}
 
             results = await self.http_client.execute_aql(
                 batch_query,
@@ -414,8 +547,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def get_edge(
         self,
-        from_key: str,
-        to_key: str,
+        from_id: str,
+        from_collection: str,
+        to_id: str,
+        to_collection: str,
         collection: str,
         transaction: Optional[str] = None
     ) -> Optional[Dict]:
@@ -423,20 +558,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Get an edge between two nodes - FULLY ASYNC.
 
         Args:
-            from_key: Source node key
-            to_key: Target node key
+            from_id: Source node ID
+            from_collection: Source node collection name
+            to_id: Target node ID
+            to_collection: Target node collection name
             collection: Edge collection name
             transaction: Optional transaction ID
 
         Returns:
-            Optional[Dict]: Edge data or None
+            Optional[Dict]: Edge data in generic format or None
         """
-        from_id = f"{from_key.split('/')[0]}/{from_key.split('/')[1]}" if "/" in from_key else from_key
-        to_id = f"{to_key.split('/')[0]}/{to_key.split('/')[1]}" if "/" in to_key else to_key
+        # Construct ArangoDB-style _from and _to values
+        from_node = f"{from_collection}/{from_id}"
+        to_node = f"{to_collection}/{to_id}"
 
         query = f"""
         FOR edge IN {collection}
-            FILTER edge._from == @from_id AND edge._to == @to_id
+            FILTER edge._from == @from_node AND edge._to == @to_node
             LIMIT 1
             RETURN edge
         """
@@ -444,32 +582,52 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             results = await self.http_client.execute_aql(
                 query,
-                {"from_id": from_id, "to_id": to_id},
+                {"from_node": from_node, "to_node": to_node},
                 txn_id=transaction
             )
-            return results[0] if results else None
+            if results:
+                # Translate from ArangoDB format to generic format
+                return self._translate_edge_from_arango(results[0])
+            return None
         except Exception as e:
             self.logger.error(f"❌ Get edge failed: {str(e)}")
             return None
 
     async def delete_edge(
         self,
-        from_key: str,
-        to_key: str,
+        from_id: str,
+        from_collection: str,
+        to_id: str,
+        to_collection: str,
         collection: str,
         transaction: Optional[str] = None
     ) -> bool:
-        """Delete an edge - FULLY ASYNC"""
-        from_id = f"{from_key.split('/')[0]}/{from_key.split('/')[1]}" if "/" in from_key else from_key
-        to_id = f"{to_key.split('/')[0]}/{to_key.split('/')[1]}" if "/" in to_key else to_key
+        """
+        Delete an edge - FULLY ASYNC.
+
+        Args:
+            from_id: Source node ID
+            from_collection: Source node collection name
+            to_id: Target node ID
+            to_collection: Target node collection name
+            collection: Edge collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        # Construct ArangoDB-style _from and _to values
+        from_node = f"{from_collection}/{from_id}"
+        to_node = f"{to_collection}/{to_id}"
 
         return await self.http_client.delete_edge(
-            collection, from_id, to_id, txn_id=transaction
+            collection, from_node, to_node, txn_id=transaction
         )
 
     async def delete_edges_from(
         self,
-        from_key: str,
+        from_id: str,
+        from_collection: str,
         collection: str,
         transaction: Optional[str] = None
     ) -> int:
@@ -477,18 +635,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Delete all edges from a node - FULLY ASYNC.
 
         Args:
-            from_key: Source node key
+            from_id: Source node ID
+            from_collection: Source node collection name
             collection: Edge collection name
             transaction: Optional transaction ID
 
         Returns:
             int: Number of edges deleted
         """
-        from_id = f"{from_key.split('/')[0]}/{from_key.split('/')[1]}" if "/" in from_key else from_key
+        # Construct ArangoDB-style _from value
+        from_node = f"{from_collection}/{from_id}"
 
         query = f"""
         FOR edge IN {collection}
-            FILTER edge._from == @from_id
+            FILTER edge._from == @from_node
             REMOVE edge IN {collection}
             RETURN OLD
         """
@@ -496,7 +656,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             results = await self.http_client.execute_aql(
                 query,
-                {"from_id": from_id},
+                {"from_node": from_node},
                 txn_id=transaction
             )
             return len(results)
@@ -506,7 +666,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def delete_edges_to(
         self,
-        to_key: str,
+        to_id: str,
+        to_collection: str,
         collection: str,
         transaction: Optional[str] = None
     ) -> int:
@@ -514,18 +675,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Delete all edges to a node - FULLY ASYNC.
 
         Args:
-            to_key: Target node key
+            to_id: Target node ID
+            to_collection: Target node collection name
             collection: Edge collection name
             transaction: Optional transaction ID
 
         Returns:
             int: Number of edges deleted
         """
-        to_id = f"{to_key.split('/')[0]}/{to_key.split('/')[1]}" if "/" in to_key else to_key
+        # Construct ArangoDB-style _to value
+        to_node = f"{to_collection}/{to_id}"
 
         query = f"""
         FOR edge IN {collection}
-            FILTER edge._to == @to_id
+            FILTER edge._to == @to_node
             REMOVE edge IN {collection}
             RETURN OLD
         """
@@ -533,7 +696,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             results = await self.http_client.execute_aql(
                 query,
-                {"to_id": to_id},
+                {"to_node": to_node},
                 txn_id=transaction
             )
             return len(results)
@@ -848,7 +1011,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 },
                 txn_id=transaction
             )
-            return Record.from_arango_base_record(results[0]) if results else None
+            if results:
+                record_data = self._translate_node_from_arango(results[0])
+                return Record.from_arango_base_record(record_data)
+            return None
         except Exception as e:
             self.logger.error(f"❌ Get record by external ID failed: {str(e)}")
             return None
@@ -1052,29 +1218,35 @@ class ArangoHTTPProvider(IGraphDBProvider):
         # Check if this record type has a type collection
         if not type_doc or record_type not in RECORD_TYPE_COLLECTION_MAPPING:
             # No type collection or no type doc - use base Record
-            return Record.from_arango_base_record(record_dict)
+            record_data = self._translate_node_from_arango(record_dict)
+            return Record.from_arango_base_record(record_data)
 
         try:
             # Determine which collection this type uses
             collection = RECORD_TYPE_COLLECTION_MAPPING[record_type]
 
+            # Apply translation to both documents
+            type_doc_data = self._translate_node_from_arango(type_doc)
+            record_data = self._translate_node_from_arango(record_dict)
+
             # Map collections to their corresponding Record classes
             if collection == CollectionNames.FILES.value:
-                return FileRecord.from_arango_record(type_doc, record_dict)
+                return FileRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.MAILS.value:
-                return MailRecord.from_arango_record(type_doc, record_dict)
+                return MailRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.WEBPAGES.value:
-                return WebpageRecord.from_arango_record(type_doc, record_dict)
+                return WebpageRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.TICKETS.value:
-                return TicketRecord.from_arango_record(type_doc, record_dict)
+                return TicketRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.COMMENTS.value:
-                return CommentRecord.from_arango_record(type_doc, record_dict)
+                return CommentRecord.from_arango_record(type_doc_data, record_data)
             else:
                 # Unknown collection - fallback to base Record
-                return Record.from_arango_base_record(record_dict)
+                return Record.from_arango_base_record(record_data)
         except Exception as e:
             self.logger.warning(f"Failed to create typed record for {record_type}, falling back to base Record: {str(e)}")
-            return Record.from_arango_base_record(record_dict)
+            record_data = self._translate_node_from_arango(record_dict)
+            return Record.from_arango_base_record(record_data)
 
     async def get_record_by_conversation_index(
         self,
@@ -1116,11 +1288,138 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
 
             results = await self.http_client.execute_aql(query, bind_vars, transaction)
-            return Record.from_arango_base_record(results[0]) if results else None
+            if results:
+                record_data = self._translate_node_from_arango(results[0])
+                return Record.from_arango_base_record(record_data)
+            return None
 
         except Exception as e:
             self.logger.error(f"❌ Get record by conversation index failed: {str(e)}")
             return None
+
+    async def get_record_by_issue_key(
+        self,
+        connector_id: str,
+        issue_key: str,
+        transaction: Optional[str] = None
+    ) -> Optional[Record]:
+        """
+        Get Jira issue record by issue key (e.g., PROJ-123) by searching weburl pattern.
+
+        Args:
+            connector_id: Connector ID
+            issue_key: Jira issue key (e.g., "PROJ-123")
+            transaction: Optional transaction ID
+
+        Returns:
+            Optional[Record]: Record if found, None otherwise
+        """
+        try:
+            self.logger.info(
+                "🚀 Retrieving record for Jira issue key %s %s", connector_id, issue_key
+            )
+
+            # Search for record where weburl contains "/browse/{issue_key}" and record_type is TICKET
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.connectorId == @connector_id
+                    AND record.recordType == @record_type
+                    AND record.webUrl != null
+                    AND CONTAINS(record.webUrl, @browse_pattern)
+                LIMIT 1
+                RETURN record
+            """
+
+            browse_pattern = f"/browse/{issue_key}"
+            bind_vars = {
+                "connector_id": connector_id,
+                "record_type": "TICKET",
+                "browse_pattern": browse_pattern
+            }
+
+            results = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
+
+            if results:
+                self.logger.info(
+                    "✅ Successfully retrieved record for Jira issue key %s %s", connector_id, issue_key
+                )
+                record_data = self._translate_node_from_arango(results[0])
+                return Record.from_arango_base_record(record_data)
+            else:
+                self.logger.warning(
+                    "⚠️ No record found for Jira issue key %s %s", connector_id, issue_key
+                )
+                return None
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve record for Jira issue key %s %s: %s", connector_id, issue_key, str(e)
+            )
+            return None
+
+    async def get_records_by_parent(
+        self,
+        connector_id: str,
+        parent_external_record_id: str,
+        record_type: Optional[str] = None,
+        transaction: Optional[str] = None
+    ) -> List[Record]:
+        """
+        Get all child records for a parent record by parent_external_record_id.
+        Optionally filter by record_type.
+
+        Args:
+            connector_id: Connector ID
+            parent_external_record_id: Parent record's external ID
+            record_type: Optional filter by record type (e.g., "COMMENT", "FILE", "TICKET")
+            transaction: Optional transaction ID
+
+        Returns:
+            List[Record]: List of child records
+        """
+        try:
+            self.logger.debug(
+                "🚀 Retrieving child records for parent %s %s (record_type: %s)",
+                connector_id, parent_external_record_id, record_type or "all"
+            )
+
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.externalParentId != null
+                    AND record.externalParentId == @parent_id
+                    AND record.connectorId == @connector_id
+            """
+
+            bind_vars = {
+                "parent_id": parent_external_record_id,
+                "connector_id": connector_id
+            }
+
+            if record_type:
+                query += " AND record.recordType == @record_type"
+                bind_vars["record_type"] = record_type
+
+            query += " RETURN record"
+
+            results = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
+
+            records = [
+                Record.from_arango_base_record(self._translate_node_from_arango(result))
+                for result in results
+            ]
+
+            self.logger.debug(
+                "✅ Successfully retrieved %d child record(s) for parent %s %s",
+                len(records), connector_id, parent_external_record_id
+            )
+            return records
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve child records for parent %s %s: %s",
+                connector_id, parent_external_record_id, str(e)
+            )
+            return []
 
     async def get_record_group_by_external_id(
         self,
@@ -1153,7 +1452,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             if results:
                 # Convert to RecordGroup entity
-                return RecordGroup.from_arango_base_record_group(results[0])
+                record_group_data = self._translate_node_from_arango(results[0])
+                return RecordGroup.from_arango_base_record_group(record_group_data)
 
             return None
 
@@ -1195,9 +1495,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 txn_id=transaction
             )
             if file and record:
+                file_data = self._translate_node_from_arango(file)
+                record_data = self._translate_node_from_arango(record)
                 return FileRecord.from_arango_record(
-                    arango_base_file_record=file,
-                    arango_base_record=record
+                    arango_base_file_record=file_data,
+                    arango_base_record=record_data
                 )
             return None
         except Exception as e:
@@ -1228,7 +1530,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             if results:
                 # Convert to User entity
-                return User.from_arango_user(results[0])
+                user_data = self._translate_node_from_arango(results[0])
+                return User.from_arango_user(user_data)
 
             return None
 
@@ -1287,7 +1590,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             if results:
                 self.logger.info(f"✅ Successfully retrieved user by source_id {source_user_id}")
-                return User.from_arango_user(results[0])
+                user_data = self._translate_node_from_arango(results[0])
+                return User.from_arango_user(user_data)
             else:
                 self.logger.warning(f"⚠️ No user found for source_id {source_user_id}")
                 return None
@@ -1424,7 +1728,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             if results and results[0]:
                 self.logger.info(f"✅ Successfully retrieved user for email {email} and app {connector_id}")
-                return AppUser.from_arango_user(results[0])
+                user_data = self._translate_node_from_arango(results[0])
+                return AppUser.from_arango_user(user_data)
             else:
                 self.logger.warning(f"⚠️ No user found for email {email} and app {connector_id}")
                 return None
@@ -1528,7 +1833,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             if results:
                 # Convert to AppUserGroup entity
-                return AppUserGroup.from_arango_base_user_group(results[0])
+                group_data = self._translate_node_from_arango(results[0])
+                return AppUserGroup.from_arango_base_user_group(group_data)
 
             return None
 
@@ -1569,7 +1875,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
 
             groupData = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
-            groups = [AppUserGroup.from_arango_base_user_group(group_data_item) for group_data_item in groupData]
+            groups = [AppUserGroup.from_arango_base_user_group(self._translate_node_from_arango(group_data_item)) for group_data_item in groupData]
 
             self.logger.info(
                 f"✅ Successfully retrieved {len(groups)} user groups for connector {connector_id}"
@@ -1613,7 +1919,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             if results:
                 # Convert to AppRole entity
-                return AppRole.from_arango_base_role(results[0])
+                role_data = self._translate_node_from_arango(results[0])
+                return AppRole.from_arango_base_role(role_data)
 
             return None
 
@@ -1940,12 +2247,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def get_first_user_with_permission_to_node(
         self,
-        node_key: str,
-        collection: str = CollectionNames.PERMISSION.value,
+        node_id: str,
+        node_collection: str,
         transaction: Optional[str] = None
     ) -> Optional[User]:
-        """Get first user with permission to node"""
+        """
+        Get first user with permission to node.
+
+        Args:
+            node_id: The node ID
+            node_collection: The node collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            Optional[User]: User with permission to the node, or None if not found
+        """
         try:
+            # Construct ArangoDB-specific _to value
+            node_key = f"{node_collection}/{node_id}"
+
             query = """
             FOR edge IN @@edge_collection
                 FILTER edge._to == @node_key
@@ -1961,7 +2281,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
 
             results = await self.http_client.execute_aql(query, bind_vars, transaction)
-            return User.from_arango_user(results[0]) if results else None
+            if results:
+                user_data = self._translate_node_from_arango(results[0])
+                return User.from_arango_user(user_data)
+            return None
 
         except Exception as e:
             self.logger.error(f"❌ Get first user with permission to node failed: {str(e)}")
@@ -1969,12 +2292,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def get_users_with_permission_to_node(
         self,
-        node_key: str,
-        collection: str =  CollectionNames.PERMISSION.value,
+        node_id: str,
+        node_collection: str,
         transaction: Optional[str] = None
     ) -> List[User]:
-        """Get users with permission to node"""
+        """
+        Get all users with permission to node.
+
+        Args:
+            node_id: The node ID
+            node_collection: The node collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            List[User]: List of users with permission to the node
+        """
         try:
+            # Construct ArangoDB-specific _to value
+            node_key = f"{node_collection}/{node_id}"
+
             query = """
             FOR edge IN @@edge_collection
                 FILTER edge._to == @node_key
@@ -1989,7 +2325,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
 
             results = await self.http_client.execute_aql(query, bind_vars, transaction)
-            return [User.from_arango_user(result) for result in results]
+            return [User.from_arango_user(self._translate_node_from_arango(result)) for result in results]
 
         except Exception as e:
             self.logger.error(f"❌ Get users with permission to node failed: {str(e)}")
@@ -3850,7 +4186,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def delete_edges_to_groups(
         self,
-        from_key: str,
+        from_id: str,
+        from_collection: str,
         collection: str,
         transaction: Optional[str] = None
     ) -> int:
@@ -3858,7 +4195,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Delete all edges from the given node if those edges are pointing to nodes in the groups collection.
 
         Args:
-            from_key: The source node key (e.g., "users/12345")
+            from_id: The source node ID
+            from_collection: The source node collection name
             collection: The edge collection name to search in
             transaction: Optional transaction ID
 
@@ -3866,6 +4204,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             int: Number of edges deleted
         """
         try:
+            # Construct ArangoDB-specific _from value
+            from_key = f"{from_collection}/{from_id}"
+
             self.logger.info(f"🚀 Deleting edges from {from_key} to groups collection in {collection}")
 
             query = """
@@ -3900,7 +4241,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def delete_edges_between_collections(
         self,
-        from_key: str,
+        from_id: str,
+        from_collection: str,
         edge_collection: str,
         to_collection: str,
         transaction: Optional[str] = None
@@ -3909,7 +4251,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Delete all edges from a specific node to any nodes in the target collection.
 
         Args:
-            from_key: The source node key (e.g., "users/12345")
+            from_id: The source node ID
+            from_collection: The source node collection name
             edge_collection: The edge collection name to search in
             to_collection: The target collection name (edges pointing to nodes in this collection will be deleted)
             transaction: Optional transaction ID
@@ -3918,6 +4261,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             int: Number of edges deleted
         """
         try:
+            # Construct ArangoDB-specific _from value
+            from_key = f"{from_collection}/{from_id}"
+
             self.logger.info(
                 f"🚀 Deleting edges from {from_key} to {to_collection} collection in {edge_collection}"
             )
@@ -3969,41 +4315,78 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         Delete nodes and all their connected edges.
 
-        Generic implementation that:
-        1. Deletes all edges FROM the nodes
-        2. Deletes all edges TO the nodes
-        3. Deletes the nodes themselves
+        This method dynamically discovers all edge collections in the graph
+        and deletes edges from all of them, matching the behavior of base_arango_service.
+
+        Steps:
+        1. Get all edge collections from the graph definition
+        2. Delete all edges FROM the nodes (in all edge collections)
+        3. Delete all edges TO the nodes (in all edge collections)
+        4. Delete the nodes themselves
         """
+        if not keys:
+            self.logger.info("No keys provided for deletion. Skipping.")
+            return
+
         try:
-            for key in keys:
-                node_id = f"{collection}/{key}"
+            self.logger.info(f"🚀 Starting deletion of nodes {keys} from '{collection}' and their edges in graph '{graph_name}'.")
 
-                # Delete all edges FROM this node (in all edge collections)
-                for edge_collection in [
+            # Step 1: Get all edge collections from the named graph definition
+            graph_info = await self.http_client.get_graph(graph_name)
+
+            if not graph_info:
+                self.logger.warning(f"⚠️ Graph '{graph_name}' not found. Using fallback edge collections.")
+                # Fallback to known edge collections if graph not found
+                edge_collections = [
                     CollectionNames.PERMISSION.value,
                     CollectionNames.BELONGS_TO.value,
                     CollectionNames.RECORD_RELATIONS.value,
                     CollectionNames.INHERIT_PERMISSIONS.value,
                     CollectionNames.IS_OF_TYPE.value,
                     CollectionNames.USER_APP_RELATION.value,
-                ]:
-                    await self.delete_edges_from(node_id, edge_collection, transaction)
+                ]
+            else:
+                # ArangoDB REST API returns graph info with 'graph' key containing the definition
+                graph_def = graph_info.get('graph', graph_info)  # Handle both nested and direct formats
+                edge_definitions = graph_def.get('edgeDefinitions', [])
+                edge_collections = [e.get('edge_collection') for e in edge_definitions if e.get('edge_collection')]
 
-                # Delete all edges TO this node (in all edge collections)
-                for edge_collection in [
-                    CollectionNames.PERMISSION.value,
-                    CollectionNames.BELONGS_TO.value,
-                    CollectionNames.RECORD_RELATIONS.value,
-                    CollectionNames.INHERIT_PERMISSIONS.value,
-                    CollectionNames.IS_OF_TYPE.value,
-                    CollectionNames.USER_APP_RELATION.value,
-                ]:
-                    await self.delete_edges_to(node_id, edge_collection, transaction)
+                if not edge_collections:
+                    self.logger.warning(f"⚠️ Graph '{graph_name}' has no edge collections defined.")
+                else:
+                    self.logger.info(f"🔎 Found {len(edge_collections)} edge collections in graph: {edge_collections}")
 
-                # Delete the node itself
-                await self.delete_nodes([key], collection, transaction)
+            # Step 2: Delete all edges connected to the target nodes
+            # Construct the full node IDs to match against _from and _to fields
+            node_ids = [f"{collection}/{key}" for key in keys]
 
-            self.logger.info(f"✅ Deleted {len(keys)} nodes and their edges from {collection}")
+            edge_delete_query = """
+            FOR edge IN @@edge_collection
+                FILTER edge._from IN @node_ids OR edge._to IN @node_ids
+                REMOVE edge IN @@edge_collection
+                OPTIONS { ignoreErrors: true }
+            """
+
+            for edge_collection in edge_collections:
+                try:
+                    await self.http_client.execute_aql(
+                        edge_delete_query,
+                        bind_vars={
+                            "node_ids": node_ids,
+                            "@edge_collection": edge_collection
+                        },
+                        txn_id=transaction
+                    )
+                except Exception as e:
+                    # Log but continue with other edge collections
+                    self.logger.warning(f"⚠️ Failed to delete edges from {edge_collection}: {str(e)}")
+
+            self.logger.info(f"🔥 Successfully ran edge cleanup for nodes: {keys}")
+
+            # Step 3: Delete the nodes themselves
+            await self.delete_nodes(keys, collection, transaction)
+
+            self.logger.info(f"✅ Successfully deleted {len(keys)} nodes and their associated edges from '{collection}'")
 
         except Exception as e:
             self.logger.error(f"❌ Delete nodes and edges failed: {str(e)}")
@@ -4333,16 +4716,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> None:
         """Delete a record and its type-specific documents using existing generic methods."""
         record_key = record_id
-        record_full_id = f"{CollectionNames.RECORDS.value}/{record_key}"
 
         # Delete all edges FROM this record
-        await self.delete_edges_from(record_full_id, CollectionNames.RECORD_RELATIONS.value, transaction)
-        await self.delete_edges_from(record_full_id, CollectionNames.IS_OF_TYPE.value, transaction)
-        await self.delete_edges_from(record_full_id, CollectionNames.BELONGS_TO.value, transaction)
+        await self.delete_edges_from(record_key, CollectionNames.RECORDS.value, CollectionNames.RECORD_RELATIONS.value, transaction)
+        await self.delete_edges_from(record_key, CollectionNames.RECORDS.value, CollectionNames.IS_OF_TYPE.value, transaction)
+        await self.delete_edges_from(record_key, CollectionNames.RECORDS.value, CollectionNames.BELONGS_TO.value, transaction)
 
         # Delete all edges TO this record
-        await self.delete_edges_to(record_full_id, CollectionNames.RECORD_RELATIONS.value, transaction)
-        await self.delete_edges_to(record_full_id, CollectionNames.PERMISSION.value, transaction)
+        await self.delete_edges_to(record_key, CollectionNames.RECORDS.value, CollectionNames.RECORD_RELATIONS.value, transaction)
+        await self.delete_edges_to(record_key, CollectionNames.RECORDS.value, CollectionNames.PERMISSION.value, transaction)
 
         # Delete type-specific documents (files, mails, etc.)
         for collection in type_collections:

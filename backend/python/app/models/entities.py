@@ -151,7 +151,7 @@ class Record(BaseModel):
             connector_name = Connectors.KNOWLEDGE_BASE
 
         return Record(
-            id=arango_base_record["_key"],
+            id=arango_base_record.get("id", arango_base_record.get("_key")),
             org_id=arango_base_record["orgId"],
             record_name=arango_base_record["recordName"],
             record_type=RecordType(arango_base_record["recordType"]),
@@ -217,7 +217,7 @@ class FileRecord(Record):
     @staticmethod
     def from_arango_record(arango_base_file_record: Dict, arango_base_record: Dict) -> "FileRecord":
         return FileRecord(
-            id=arango_base_record["_key"],
+            id=arango_base_record.get("id", arango_base_record.get("_key")),
             org_id=arango_base_record["orgId"],
             record_name=arango_base_record["recordName"],
             record_type=RecordType(arango_base_record["recordType"]),
@@ -343,7 +343,7 @@ class MailRecord(Record):
             connector_name = Connectors.KNOWLEDGE_BASE
 
         return MailRecord(
-            id=record_doc["_key"],
+            id=record_doc.get("id", record_doc.get("_key")),
             org_id=record_doc["orgId"],
             record_name=record_doc["recordName"],
             record_type=RecordType(record_doc["recordType"]),
@@ -407,7 +407,7 @@ class WebpageRecord(Record):
             connector_name = Connectors.KNOWLEDGE_BASE
 
         return WebpageRecord(
-            id=record_doc["_key"],
+            id=record_doc.get("id", record_doc.get("_key")),
             org_id=record_doc["orgId"],
             record_name=record_doc["recordName"],
             record_type=RecordType(record_doc["recordType"]),
@@ -474,7 +474,7 @@ class CommentRecord(Record):
             connector_name = Connectors.KNOWLEDGE_BASE
 
         return CommentRecord(
-            id=record_doc["_key"],
+            id=record_doc.get("id", record_doc.get("_key")),
             org_id=record_doc["orgId"],
             record_name=record_doc["recordName"],
             record_type=RecordType(record_doc["recordType"]),
@@ -536,7 +536,7 @@ class TicketRecord(Record):
             connector_name = Connectors.KNOWLEDGE_BASE
 
         return TicketRecord(
-            id=record_doc["_key"],
+            id=record_doc.get("id", record_doc.get("_key")),
             org_id=record_doc["orgId"],
             record_name=record_doc["recordName"],
             record_type=RecordType(record_doc["recordType"]),
@@ -739,7 +739,7 @@ class RecordGroup(BaseModel):
     @staticmethod
     def from_arango_base_record_group(arango_base_record_group: Dict) -> "RecordGroup":
         return RecordGroup(
-            id=arango_base_record_group["_key"],
+            id=arango_base_record_group.get("id", arango_base_record_group.get("_key")),
             org_id=arango_base_record_group.get("orgId", ""),
             name=arango_base_record_group["groupName"],
             short_name=arango_base_record_group.get("shortName", None),
@@ -841,7 +841,7 @@ class User(BaseModel):
     @staticmethod
     def from_arango_user(data: Dict[str, Any]) -> 'User':
         return User(
-            id=data.get("_key", None),
+            id=data.get("id", data.get("_key")),
             email=data.get("email", ""),
             org_id=data.get("orgId", ""),
             user_id=data.get("userId", None),
@@ -858,7 +858,7 @@ class UserGroup(BaseModel):
     source_user_group_id: str
     name: str
     mail: Optional[str] = None
-    _key: Optional[str] = None
+    id: Optional[str] = None
     description: Optional[str] = None
     created_at_timestamp: Optional[float] = None
     updated_at_timestamp: Optional[float] = None
@@ -881,7 +881,7 @@ class UserGroup(BaseModel):
         return True
 
     def key(self) -> str:
-        return self._key
+        return self.id
 
 
 class AppUser(BaseModel):
@@ -914,7 +914,7 @@ class AppUser(BaseModel):
     @staticmethod
     def from_arango_user(data: Dict[str, Any]) -> 'AppUser':
         return AppUser(
-            id=data.get("_key", None),
+            id=data.get("id", data.get("_key")),
             email=data.get("email", ""),
             org_id=data.get("orgId", ""),
             user_id=data.get("userId", None),
@@ -960,7 +960,7 @@ class AppUserGroup(BaseModel):
     @staticmethod
     def from_arango_base_user_group(arango_doc: Dict[str, Any]) -> "AppUserGroup":
         return AppUserGroup(
-            id=arango_doc["_key"],
+            id=arango_doc.get("id", arango_doc.get("_key")),
             org_id=arango_doc.get("orgId", ""),
             name=arango_doc["name"],
             source_user_group_id=arango_doc["externalGroupId"],
@@ -1005,7 +1005,7 @@ class AppRole(BaseModel):
     @staticmethod
     def from_arango_base_role(arango_doc: Dict[str, Any]) -> "AppRole":
         return AppRole(
-            id=arango_doc["_key"],
+            id=arango_doc.get("id", arango_doc.get("_key")),
             org_id=arango_doc.get("orgId", ""),
             name=arango_doc["name"],
             source_role_id=arango_doc["externalRoleId"],

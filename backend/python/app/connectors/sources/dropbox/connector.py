@@ -2741,7 +2741,7 @@ class DropboxConnector(BaseConnector):
         try:
             user_with_permission = None
             async with self.data_store_provider.transaction() as tx_store:
-                user_with_permission = await tx_store.get_first_user_with_permission_to_node(f"{CollectionNames.RECORDS.value}/{record.id}")
+                user_with_permission = await tx_store.get_first_user_with_permission_to_node(record.id, CollectionNames.RECORDS.value)
                 file_record = await tx_store.get_file_record_by_id(record.id)
             if not user_with_permission:
                 self.logger.warning(f"No user found with permission to node: {record.id}")
@@ -2883,7 +2883,7 @@ class DropboxConnector(BaseConnector):
             user_with_permission = None
             async with self.data_store_provider.transaction() as tx_store:
                 user_with_permission = await tx_store.get_first_user_with_permission_to_node(
-                    f"{CollectionNames.RECORDS.value}/{record.id}"
+                    record.id, CollectionNames.RECORDS.value
                 )
 
             if not user_with_permission:
