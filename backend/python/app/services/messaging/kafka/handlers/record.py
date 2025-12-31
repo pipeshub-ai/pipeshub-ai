@@ -12,6 +12,7 @@ from app.config.constants.arangodb import (
     EventTypes,
     ExtensionTypes,
     MimeTypes,
+    OriginTypes,
     ProgressStatus,
     RecordTypes,
 )
@@ -153,13 +154,26 @@ class RecordEventHandler(BaseEventService):
                 return True
 
             if event_type == EventTypes.UPDATE_RECORD.value:
-                # await self.scheduler.schedule_event({"eventType": event_type, "payload": payload})
-                # self.logger.info(f"Scheduled update for record {record_id}")
                 await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
 
             if record is None:
                 self.logger.error(f"❌ Record {record_id} not found in database")
                 return False
+
+            # Check if record is from a connector and if the connector is active
+            if event_type == EventTypes.NEW_RECORD.value:
+                connector_id = record.get("connectorId")
+                origin = record.get("origin")
+                if connector_id and origin == OriginTypes.CONNECTOR.value:
+                    connector_instance = await self.event_processor.arango_service.get_document(
+                        connector_id, CollectionNames.APPS.value
+                    )
+                    if connector_instance and not connector_instance.get("isActive", True):
+                        self.logger.info(
+                            f"⏭️ Skipping indexing for record {record_id}: "
+                            f"connector instance {connector_id} is inactive"
+                        )
+                        return True
 
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
