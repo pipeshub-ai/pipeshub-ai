@@ -20,7 +20,7 @@ class RecordGroupType(str, Enum):
     KB = "KB"
     NOTION_WORKSPACE = "NOTION_WORKSPACE"
     DRIVE = "DRIVE"
-    JIRA_PROJECT = "JIRA_PROJECT"
+    PROJECT = "PROJECT"
     SHAREPOINT_SITE = "SHAREPOINT_SITE"
     SHAREPOINT_SUBSITE = "SHAREPOINT_SUBSITE"
     USER_GROUP = "USER_GROUP"
@@ -102,6 +102,9 @@ class Record(BaseModel):
     parent_record_id: Optional[str] = None
     child_record_ids: Optional[List[str]] = Field(default_factory=list)
     related_record_ids: Optional[List[str]] = Field(default_factory=list)
+    # Hierarchy fields
+    is_dependent_node: bool = Field(default=False, description="True for dependent records, False for root records")
+    parent_node_id: Optional[str] = Field(default=None, description="Internal record ID of the parent node")
     def to_arango_base_record(self) -> Dict:
         return {
             "_key": self.id,
@@ -130,6 +133,8 @@ class Record(BaseModel):
             "previewRenderable": self.preview_renderable,
             "isShared": self.is_shared,
             "isVLMOcrProcessed": self.is_vlm_ocr_processed,
+            "isDependentNode": self.is_dependent_node,
+            "parentNodeId": self.parent_node_id,
         }
 
     @staticmethod
@@ -169,6 +174,8 @@ class Record(BaseModel):
             preview_renderable=arango_base_record.get("previewRenderable", True),
             is_shared=arango_base_record.get("isShared", False),
             is_vlm_ocr_processed=arango_base_record.get("isVLMOcrProcessed", False),
+            is_dependent_node=arango_base_record.get("isDependentNode", False),
+            parent_node_id=arango_base_record.get("parentNodeId", None),
         )
 
     def to_kafka_record(self) -> Dict:
@@ -214,6 +221,7 @@ class FileRecord(Record):
             org_id=arango_base_record["orgId"],
             record_name=arango_base_record["recordName"],
             record_type=RecordType(arango_base_record["recordType"]),
+            external_revision_id=arango_base_record.get("externalRevisionId", None),
             external_record_id=arango_base_record["externalRecordId"],
             version=arango_base_record["version"],
             origin=OriginTypes(arango_base_record["origin"]),
@@ -227,6 +235,8 @@ class FileRecord(Record):
             updated_at=arango_base_record["updatedAtTimestamp"],
             source_created_at=arango_base_record["sourceCreatedAtTimestamp"],
             source_updated_at=arango_base_record["sourceLastModifiedTimestamp"],
+            is_dependent_node=arango_base_record.get("isDependentNode", False),
+            parent_node_id=arango_base_record.get("parentNodeId", None),
             is_file=arango_base_file_record["isFile"],
             size_in_bytes=arango_base_file_record["sizeInBytes"],
             extension=arango_base_file_record["extension"],
@@ -483,16 +493,18 @@ class CommentRecord(Record):
             source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
             source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
             virtual_record_id=record_doc.get("virtualRecordId"),
-            author_id=comment_doc.get("authorId"),
+            preview_renderable=record_doc.get("previewRenderable", True),
+            is_dependent_node=record_doc.get("isDependentNode", False),
+            parent_node_id=record_doc.get("parentNodeId", None),
+            author_source_id=comment_doc.get("authorSourceId") or comment_doc.get("authorId") or "unknown",
             resolution_status=comment_doc.get("resolutionStatus"),
             comment_selection=comment_doc.get("commentSelection"),
         )
 
 class TicketRecord(Record):
-    summary: Optional[str] = None
-    description: Optional[str] = None
     status: Optional[str] = None
     priority: Optional[str] = None
+    type: Optional[str] = None
     assignee: Optional[str] = None
     reporter_email: Optional[str] = None
     assignee_email: Optional[str] = None
@@ -504,11 +516,9 @@ class TicketRecord(Record):
         return {
             "_key": self.id,
             "orgId": self.org_id,
-            "name": self.record_name,
-            "summary": self.summary,
-            "description": self.description,
             "status": self.status,
             "priority": self.priority,
+            "type": self.type,
             "assignee": self.assignee,
             "reporterEmail": self.reporter_email,
             "assigneeEmail": self.assignee_email,
@@ -545,10 +555,14 @@ class TicketRecord(Record):
             source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
             source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
             virtual_record_id=record_doc.get("virtualRecordId"),
+            preview_renderable=record_doc.get("previewRenderable", True),
+            is_dependent_node=record_doc.get("isDependentNode", False),
+            parent_node_id=record_doc.get("parentNodeId", None),
             summary=ticket_doc.get("summary"),
             description=ticket_doc.get("description"),
             status=ticket_doc.get("status"),
             priority=ticket_doc.get("priority"),
+            type=ticket_doc.get("type"),
             assignee=ticket_doc.get("assignee"),
             reporter_email=ticket_doc.get("reporterEmail"),
             assignee_email=ticket_doc.get("assigneeEmail"),

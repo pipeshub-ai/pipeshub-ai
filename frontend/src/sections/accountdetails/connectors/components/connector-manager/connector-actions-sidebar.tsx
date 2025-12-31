@@ -1,5 +1,19 @@
-import React from 'react';
-import { Paper, Typography, Button, Stack, Box, alpha, useTheme } from '@mui/material';
+import React, { useState } from 'react';
+import {
+  Paper,
+  Typography,
+  Button,
+  Stack,
+  Box,
+  alpha,
+  useTheme,
+  IconButton,
+  Menu,
+  MenuItem,
+  ListItemIcon,
+  ListItemText,
+  Divider,
+} from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import settingsIcon from '@iconify-icons/eva/settings-2-outline';
 import pauseIcon from '@iconify-icons/mdi/pause';
@@ -7,6 +21,7 @@ import playIcon from '@iconify-icons/mdi/play';
 import keyIcon from '@iconify-icons/mdi/key';
 import deleteIcon from '@iconify-icons/mdi/delete';
 import editIcon from '@iconify-icons/mdi/pencil';
+import syncIcon from '@iconify-icons/mdi/sync';
 import { Connector, ConnectorToggleType } from '../../types/types';
 
 interface ConnectorActionsSidebarProps {
@@ -14,7 +29,8 @@ interface ConnectorActionsSidebarProps {
   isAuthenticated: boolean;
   loading: boolean;
   onAuthenticate: () => void;
-  onConfigure: () => void;
+  onConfigureAuth: () => void;
+  onConfigureSync: () => void;
   onToggle: (enabled: boolean, type: ConnectorToggleType) => void;
   onDelete: () => void;
   onRename: () => void;
@@ -26,7 +42,8 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
   isAuthenticated,
   loading,
   onAuthenticate,
-  onConfigure,
+  onConfigureAuth,
+  onConfigureSync,
   onToggle,
   onDelete,
   onRename,
@@ -34,6 +51,26 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
 }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
+  const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
+  const menuOpen = Boolean(menuAnchor);
+
+  const handleMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
+    setMenuAnchor(event.currentTarget);
+  };
+
+  const handleMenuClose = () => {
+    setMenuAnchor(null);
+  };
+
+  const handleRenameClick = () => {
+    handleMenuClose();
+    onRename();
+  };
+
+  const handleDeleteClick = () => {
+    handleMenuClose();
+    onDelete();
+  };
 
   const isConfigured = connector.isConfigured || false;
   const isActive = connector.isActive || false;
@@ -61,9 +98,84 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
           bgcolor: theme.palette.background.paper,
         }}
       >
-        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1.5 }}>
-          Quick Actions
-        </Typography>
+        <Box
+          sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}
+        >
+          <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+            Quick Actions
+          </Typography>
+          <Box>
+            <IconButton
+              size="small"
+              onClick={handleMenuOpen}
+              sx={{
+                color: 'text.secondary',
+                '&:hover': {
+                  bgcolor: alpha(theme.palette.primary.main, 0.08),
+                  color: theme.palette.primary.main,
+                },
+              }}
+            >
+              <Iconify icon={settingsIcon} width={20} height={20} />
+            </IconButton>
+            <Menu
+              anchorEl={menuAnchor}
+              open={menuOpen}
+              onClose={handleMenuClose}
+              anchorOrigin={{
+                vertical: 'bottom',
+                horizontal: 'right',
+              }}
+              transformOrigin={{
+                vertical: 'top',
+                horizontal: 'right',
+              }}
+              PaperProps={{
+                sx: {
+                  mt: 0.5,
+                  minWidth: 180,
+                  borderRadius: 1.5,
+                  boxShadow: isDark ? '0 4px 20px rgba(0,0,0,0.3)' : '0 4px 20px rgba(0,0,0,0.1)',
+                },
+              }}
+            >
+              <MenuItem
+                onClick={handleRenameClick}
+                sx={{
+                  '&:hover': {
+                    bgcolor: alpha(theme.palette.primary.main, 0.08),
+                  },
+                }}
+              >
+                <ListItemIcon>
+                  <Iconify icon={editIcon} width={18} height={18} />
+                </ListItemIcon>
+                <ListItemText
+                  primary="Rename Instance"
+                  primaryTypographyProps={{ fontSize: '0.875rem' }}
+                />
+              </MenuItem>
+              <Divider sx={{ my: 0.5 }} />
+              <MenuItem
+                onClick={handleDeleteClick}
+                sx={{
+                  color: 'error.main',
+                  '&:hover': {
+                    bgcolor: alpha(theme.palette.error.main, 0.08),
+                  },
+                }}
+              >
+                <ListItemIcon>
+                  <Iconify icon={deleteIcon} width={18} height={18} sx={{ color: 'error.main' }} />
+                </ListItemIcon>
+                <ListItemText
+                  primary="Delete Instance"
+                  primaryTypographyProps={{ fontSize: '0.875rem', color: 'error.main' }}
+                />
+              </MenuItem>
+            </Menu>
+          </Box>
+        </Box>
 
         <Stack spacing={1}>
           {(connector.authType || '').toUpperCase() === 'OAUTH' && !hideAuthenticate && (
@@ -104,8 +216,8 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
             variant={!isConfigured ? 'contained' : 'outlined'}
             fullWidth
             size="small"
-            startIcon={<Iconify icon={settingsIcon} width={14} height={14} />}
-            onClick={onConfigure}
+            startIcon={<Iconify icon={keyIcon} width={14} height={14} />}
+            onClick={onConfigureAuth}
             sx={{
               textTransform: 'none',
               fontWeight: 500,
@@ -121,8 +233,26 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
               }),
             }}
           >
-            {!isConfigured ? 'Configure Now' : 'Configure Settings'}
+            Auth Settings
           </Button>
+
+          {isConfigured && (
+            <Button
+              variant="outlined"
+              fullWidth
+              size="small"
+              startIcon={<Iconify icon={syncIcon} width={14} height={14} />}
+              onClick={onConfigureSync}
+              sx={{
+                textTransform: 'none',
+                fontWeight: 500,
+                justifyContent: 'flex-start',
+                borderRadius: 1,
+              }}
+            >
+              View Sync Settings
+            </Button>
+          )}
 
           {isConfigured && (
             <Button
@@ -151,38 +281,6 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
               {isActive ? 'Disable Sync' : 'Enable Sync'}
             </Button>
           )}
-          <Button
-            variant="outlined"
-            fullWidth
-            size="small"
-            startIcon={<Iconify icon={editIcon} width={14} height={14} />}
-            onClick={onRename}
-            sx={{
-              textTransform: 'none',
-              fontWeight: 500,
-              justifyContent: 'flex-start',
-              borderRadius: 1,
-            }}
-          >
-            Rename Instance
-          </Button>
-
-          <Button
-            variant="outlined"
-            color="error"
-            fullWidth
-            size="small"
-            startIcon={<Iconify icon={deleteIcon} width={14} height={14} />}
-            onClick={onDelete}
-            sx={{
-              textTransform: 'none',
-              fontWeight: 500,
-              justifyContent: 'flex-start',
-              borderRadius: 1,
-            }}
-          >
-            Delete Instance
-          </Button>
         </Stack>
       </Paper>
 

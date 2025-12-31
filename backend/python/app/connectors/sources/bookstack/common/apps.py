@@ -4,4 +4,4 @@ from app.connectors.core.interfaces.connector.apps import App
 
 class BookStackApp(App):
     def __init__(self, connector_id: str) -> None:
-        super().__init__(Connectors.BOOKSTACK.value, AppGroups.BOOKSTACK.value, connector_id)
+        super().__init__(Connectors.BOOKSTACK, AppGroups.BOOKSTACK, connector_id)

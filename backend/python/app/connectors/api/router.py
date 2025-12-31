@@ -40,12 +40,11 @@ from app.config.constants.arangodb import (
     RecordRelations,
     RecordTypes,
 )
-from app.config.constants.http_status_code import (
-    HttpStatusCode,
-)
+from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.api.middleware import WebhookAuthVerifier
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
     OAuthToken,
@@ -53,6 +52,7 @@ from app.connectors.core.base.token_service.oauth_service import (
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.services.base_arango_service import BaseArangoService
+from app.connectors.services.kafka_service import KafkaService
 from app.connectors.sources.google.admin.admin_webhook_handler import (
     AdminWebhookHandler,
 )
@@ -148,6 +148,11 @@ async def get_arango_service(request: Request) -> BaseArangoService:
     container: ConnectorAppContainer = request.app.container
     arango_service = await container.arango_service()
     return arango_service
+
+async def get_kafka_service(request: Request) -> KafkaService:
+    container: ConnectorAppContainer = request.app.container
+    kafka_service = container.kafka_service()
+    return kafka_service
 
 async def get_drive_webhook_handler(request: Request) -> Optional[AbstractDriveWebhookHandler]:
     try:
@@ -2190,7 +2195,12 @@ async def reindex_single_record(
     arango_service: BaseArangoService = Depends(get_arango_service),
 ) -> Dict:
     """
-    Reindex a single record with permission validation
+    Reindex a single record with permission validation.
+
+    Request Body (optional):
+        depth: int - Depth of children to reindex.
+               -1 = unlimited, 0 = only this record (default),
+               1 = direct children, 2 = children + grandchildren, etc.
     """
     try:
         container = request.app.container
@@ -2198,25 +2208,36 @@ async def reindex_single_record(
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
 
-        logger.info(f"🔄 Attempting to reindex record {record_id}")
+        # Parse optional depth from request body
+        depth = 0  # Default: only this record
+        try:
+            request_body = await request.json()
+            depth = request_body.get("depth", 0)
+        except json.JSONDecodeError:
+            # No body or invalid JSON - use default depth
+            pass
+
+        logger.info(f"🔄 Attempting to reindex record {record_id} with depth {depth}")
 
         result = await arango_service.reindex_single_record(
             record_id=record_id,
             user_id=user_id,
             org_id=org_id,
+            depth=depth,
             request=request
         )
 
         if result["success"]:
-            logger.info(f"✅ Successfully initiated reindex for record {record_id}")
+            logger.info(f"✅ Successfully initiated reindex for record {record_id} with depth {depth}")
             return {
                 "success": True,
-                "message": f"Reindex initiated for record {record_id}",
+                "message": f"Reindex initiated for record {record_id}" + (f" with depth {depth}" if depth != 0 else ""),
                 "recordId": result.get("recordId"),
                 "recordName": result.get("recordName"),
                 "connector": result.get("connector"),
                 "eventPublished": result.get("eventPublished"),
-                "userRole": result.get("userRole")
+                "userRole": result.get("userRole"),
+                "depth": depth
             }
         else:
             logger.error(f"❌ Failed to reindex record {record_id}: {result.get('reason')}")
@@ -2253,6 +2274,99 @@ async def get_connector_stats_endpoint(
     except Exception as e:
         logger.error(f"Error getting connector stats: {str(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Internal server error while getting connector stats: {str(e)}")
+
+@router.post("/api/v1/record-groups/{record_group_id}/reindex")
+@inject
+async def reindex_record_group(
+    record_group_id: str,
+    request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service),
+    kafka_service: KafkaService = Depends(get_kafka_service),
+) -> Dict:
+    """
+    Reindex all records in a record group up to a specified depth
+    """
+    try:
+        container = request.app.container
+        logger = container.logger()
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+
+        # Parse optional depth from request body
+        depth = 0  # Default to 0 (only direct records)
+        try:
+            request_body = await request.json()
+            depth = request_body.get("depth", 0)
+        except json.JSONDecodeError:
+            # No body or invalid JSON - use default depth
+            depth = 0
+
+        logger.info(f"🔄 Attempting to reindex record group {record_group_id} with depth {depth}")
+
+        # Get record group data and validate permissions (does not publish events)
+        result = await arango_service.reindex_record_group_records(
+            record_group_id=record_group_id,
+            depth=depth,
+            user_id=user_id,
+            org_id=org_id
+        )
+
+        if not result["success"]:
+            logger.error(f"❌ Failed to reindex record group {record_group_id}: {result.get('reason')}")
+            raise HTTPException(
+                status_code=result.get("code", 500),
+                detail=result.get("reason", "Failed to reindex record group")
+            )
+
+        # Publish reindex event (router is responsible for event publishing)
+        connector_id = result.get("connectorId")
+        connector_name = result.get("connectorName")
+        depth = result.get("depth", depth)
+
+        try:
+            connector_normalized = connector_name.replace(" ", "").lower()
+            event_type = f"{connector_normalized}.reindex"
+
+            payload = {
+                "orgId": org_id,
+                "recordGroupId": record_group_id,
+                "depth": depth,
+                "connectorId": connector_id
+            }
+
+            # Publish event directly using KafkaService
+            timestamp = get_epoch_timestamp_in_ms()
+            event = {
+                "eventType": event_type,
+                "timestamp": timestamp,
+                "payload": payload
+            }
+            await kafka_service.publish_event("sync-events", event)
+            logger.info(f"✅ Published {event_type} event for record group {record_group_id}")
+
+            return {
+                "success": True,
+                "message": f"Reindex initiated for record group {record_group_id} with depth {depth}",
+                "recordGroupId": record_group_id,
+                "depth": depth,
+                "connector": connector_id,
+                "eventPublished": True
+            }
+        except Exception as event_error:
+            logger.error(f"❌ Failed to publish reindex event: {str(event_error)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to publish reindex event: {str(event_error)}"
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error reindexing record group {record_group_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error while reindexing record group: {str(e)}"
+        )
 
 async def check_beta_connector_access(
     connector_type: str,
@@ -2889,7 +3003,10 @@ async def create_connector_instance(
                 "created": True,
                 "scope": scope,
                 "createdBy": user_id,
-            }
+                "isAuthenticated": False,  # Will be set to True when user enables the connector
+                "isConfigured": bool(config)  # True if config was provided during creation
+            },
+            "message": "Connector instance created successfully."
         }
 
     except HTTPException:
@@ -3155,62 +3272,129 @@ async def update_connector_instance_config(
                 detail="Only the creator can update this connector"
             )
 
+        # Prevent saving configuration when connector is active
+        # Only allow filter/sync updates when connector is active (these don't require re-initialization)
+        if instance.get("isActive"):
+            logger.error("Cannot update configuration while connector is active. Please disable the connector first.")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Cannot update configuration while connector is active. Please disable the connector first."
+            )
+
         config_service = container.config_service()
         config_path = _get_config_path_for_instance(connector_id)
 
-        # Build new configuration from request
-        new_config = {}
+        # Get existing config to merge with new values
+        existing_config = await config_service.get_config(config_path)
+        if not existing_config:
+            existing_config = {}
+
+        # Merge new configuration with existing config
+        # Only update sections that are provided in the request
+        new_config = existing_config.copy() if existing_config else {}
+
+        # Determine which sections are being updated
+        auth_updated = "auth" in body
 
         for section in ["auth", "sync", "filters"]:
             if section in body and isinstance(body[section], dict):
-                new_config[section] = body[section]
+                # For filters section, we need special handling to preserve sync/indexing separately
+                if section == "filters":
+                    # Initialize filters section if it doesn't exist
+                    if section not in new_config:
+                        new_config[section] = {}
 
-        # Clear credentials and OAuth state on config updates
-        new_config["credentials"] = None
-        new_config["oauth"] = None
+                    # Merge filters section: preserve sync and indexing separately
+                    # If body has filters.sync, update only filters.sync (preserve filters.indexing)
+                    # If body has filters.indexing, update only filters.indexing (preserve filters.sync)
+                    for key in ["sync", "indexing"]:
+                        if key in body[section]:
+                            # Replace the entire sync or indexing subsection
+                            new_config[section][key] = body[section][key]
+                elif section in new_config and isinstance(new_config[section], dict):
+                    # For auth and sync sections, merge at top level (preserve existing values)
+                    new_config[section] = {**new_config[section], **body[section]}
+                else:
+                    # Section doesn't exist, add it
+                    new_config[section] = body[section]
 
-        # Add OAuth metadata from registry if applicable
-        auth_type = instance.get("authType", "").upper()
-        if auth_type in ["OAUTH", "OAUTH_ADMIN_CONSENT"]:
-            metadata = await connector_registry.get_connector_metadata(connector_type)
-            auth_metadata = metadata.get("config", {}).get("auth", {})
 
-            if "auth" not in new_config:
-                new_config["auth"] = {}
+        # Clear credentials and OAuth state only if auth config is being updated
+        # Filters and sync updates don't require re-authentication
+        if auth_updated:
+            new_config["credentials"] = None
+            new_config["oauth"] = None
 
-            # Determine redirect URI
-            redirect_uri = auth_metadata.get("redirectUri", "")
-            if base_url:
-                redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
-            else:
-                endpoints = await config_service.get_config(
-                    "/services/endpoints",
-                    use_cache=False
-                )
-                base_url = endpoints.get(
-                    "frontendPublicUrl",
-                    "http://localhost:3001"
-                )
-                redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
-            new_config["auth"].update({
-                "authorizeUrl": auth_metadata.get("authorizeUrl", ""),
-                "tokenUrl": auth_metadata.get("tokenUrl", ""),
-                "scopes": auth_metadata.get("scopes", []),
-                "redirectUri": redirect_uri
-            })
+        # Add OAuth metadata from registry if applicable (only if auth is being updated)
+        if auth_updated:
+            auth_type = instance.get("authType", "").upper()
+            if auth_type in ["OAUTH", "OAUTH_ADMIN_CONSENT"]:
+                metadata = await connector_registry.get_connector_metadata(connector_type)
+                auth_metadata = metadata.get("config", {}).get("auth", {})
+
+                if "auth" not in new_config:
+                    new_config["auth"] = {}
+
+                # Determine redirect URI
+                redirect_uri = auth_metadata.get("redirectUri", "")
+                if base_url:
+                    redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+                else:
+                    endpoints = await config_service.get_config(
+                        "/services/endpoints",
+                        use_cache=False
+                    )
+                    base_url = endpoints.get(
+                        "frontendPublicUrl",
+                        "http://localhost:3001"
+                    )
+                    redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+
+                new_config["auth"].update({
+                    "authorizeUrl": auth_metadata.get("authorizeUrl", ""),
+                    "tokenUrl": auth_metadata.get("tokenUrl", ""),
+                    "scopes": auth_metadata.get("scopes", []),
+                    "redirectUri": redirect_uri,
+                    "authType": auth_type,
+                })
 
         # Save configuration
         await config_service.set_config(config_path, new_config)
         logger.info(f"Updated config for instance {connector_id}")
 
-        # Update instance status
-        updates = {
-            "isConfigured": True,
-            "isAuthenticated": False,
-            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-            "updatedBy": user_id
-        }
+        # Only cleanup and disable connector if auth config is being updated
+        # Filters and sync updates don't require re-authentication, so connector can stay active
+        if auth_updated:
+            # Cleanup existing connector instance if it exists (auth config changed)
+            # User will need to toggle/enable again to re-initialize with new auth config
+            if hasattr(container, 'connectors_map') and connector_id in container.connectors_map:
+                logger.info(f"Cleaning up existing instance for {connector_id} due to auth config update")
+                existing_connector = container.connectors_map.pop(connector_id)
+                try:
+                    if hasattr(existing_connector, 'cleanup'):
+                        await existing_connector.cleanup()
+                    logger.info(f"Cleaned up existing connector instance {connector_id}")
+                except Exception as e:
+                    logger.error(f"Error cleaning up existing connector {connector_id}: {e}")
+
+            # Update instance status - mark as configured but not authenticated
+            # Connector will be initialized and authenticated when user clicks Enable
+            updates = {
+                "isConfigured": True,
+                "isAuthenticated": False,  # Will be set to True after successful toggle/enable
+                "isActive": False,  # Disable if auth config changed - user must re-enable
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedBy": user_id
+            }
+        else:
+            # For filters/sync updates, keep connector active and authenticated
+            # Only update the timestamp and preserve all other status fields
+            updates = {
+                "isConfigured": True,
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedBy": user_id
+            }
         updated_instance = await connector_registry.update_connector_instance(
             connector_id=connector_id,
             updates=updates,
@@ -3224,9 +3408,11 @@ async def update_connector_instance_config(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail=f"Failed to update {instance.get('name')} connector instance"
             )
+
         return {
             "success": True,
-            "config": new_config
+            "config": new_config,
+            "message": "Configuration saved successfully."
         }
 
     except HTTPException:
@@ -3823,19 +4009,29 @@ async def handle_oauth_callback(
         except Exception as cache_err:
             logger.warning(f"Could not refresh config cache: {cache_err}")
 
-        # Schedule token refresh
+        # Schedule token refresh using the singleton service instance
         try:
-            from app.connectors.core.base.token_service.token_refresh_service import (
-                TokenRefreshService,
+            from app.connectors.core.base.token_service.startup_service import (
+                startup_service,
             )
-            refresh_service = TokenRefreshService(
-                container.key_value_store(),
-                arango_service
-            )
-            await refresh_service.schedule_token_refresh(connector_id, connector_type, token)
-            logger.info(f"Scheduled token refresh for instance {connector_id}")
+            refresh_service = startup_service.get_token_refresh_service()
+            if refresh_service:
+                await refresh_service.schedule_token_refresh(connector_id, connector_type, token)
+                logger.info(f"✅ Scheduled token refresh for instance {connector_id}")
+            else:
+                logger.warning(f"⚠️ Token refresh service not initialized, cannot schedule refresh for {connector_id}")
+                # Fallback: create temporary service to schedule refresh
+                from app.connectors.core.base.token_service.token_refresh_service import (
+                    TokenRefreshService,
+                )
+                temp_service = TokenRefreshService(
+                    container.key_value_store(),
+                    arango_service
+                )
+                await temp_service.schedule_token_refresh(connector_id, connector_type, token)
+                logger.info(f"✅ Scheduled token refresh using temporary service for instance {connector_id}")
         except Exception as sched_err:
-            logger.warning(f"Could not schedule token refresh: {sched_err}")
+            logger.error(f"❌ Could not schedule token refresh for {connector_id}: {sched_err}", exc_info=True)
 
         # Update instance authentication status
         updates = {
@@ -4282,6 +4478,205 @@ async def get_connector_instance_filters(
             detail=f"Failed to get filter options: {str(e)}"
         )
 
+@router.get("/api/v1/connectors/{connector_id}/filters/{filter_key}/options")
+async def get_filter_field_options(
+    connector_id: str,
+    filter_key: str,
+    request: Request,
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    limit: int = Query(20, ge=1, le=100, description="Items per page"),
+    search: Optional[str] = Query(None, description="Search text to filter options"),
+    cursor: Optional[str] = Query(None, description="Cursor for cursor-based pagination (API-specific)"),
+    arango_service: BaseArangoService = Depends(get_arango_service)
+) -> Dict[str, Any]:
+    """
+    Get dynamic options for a specific filter field with pagination support.
+
+    This endpoint fetches the initialized connector instance from the container
+    and calls its get_filter_options() method.
+
+    Args:
+        connector_id: Unique connector instance key
+        filter_key: Filter field name (e.g., "space_keys", "page_ids")
+        request: FastAPI request object
+        page: Page number for pagination (default: 1)
+        limit: Number of items per page (default: 20, max: 100)
+        search: Optional search text to filter options
+        arango_service: Injected ArangoDB service
+
+    Returns:
+        Dictionary with options and pagination info:
+        {
+            "success": True,
+            "options": [{"id": "...", "value": "...", "label": "..."}],
+            "pagination": {
+                "page": 1,
+                "limit": 20,
+                "hasMore": True
+            }
+        }
+
+    Raises:
+        HTTPException: 400/401/403/404 for various error conditions
+    """
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+
+    try:
+        # Authentication
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+        x_is_admin_header = request.headers.get("X-Is-Admin", "false")
+        is_admin = x_is_admin_header.lower() == "true"
+
+        if not user_id or not org_id:
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
+
+        # Get connector instance from database
+        instance = await connector_registry.get_connector_instance(
+            connector_id=connector_id,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin
+        )
+
+        if not instance:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector instance {connector_id} not found or access denied"
+            )
+
+        # Check if connector is configured (has credentials)
+        if not instance.get("isAuthenticated", False):
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Connector is not authenticated. Please configure the connector with valid credentials first."
+            )
+
+        connector_type = instance.get("type", "")
+        await check_beta_connector_access(connector_type, request)
+
+        # Permission checks
+        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only administrators can access filter options for team connectors"
+            )
+
+        if instance.get("scope") == ConnectorScope.PERSONAL.value:
+            if instance.get("createdBy") != user_id and not is_admin:
+                raise HTTPException(
+                    status_code=HttpStatusCode.FORBIDDEN.value,
+                    detail="Only the creator can access filter options for this connector"
+                )
+
+        # Get connector metadata
+        metadata = await connector_registry.get_connector_metadata(connector_type)
+        if not metadata:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector type {connector_type} not found"
+            )
+
+        # Find filter configuration
+        filter_config = _find_filter_field_config(metadata, filter_key)
+        if not filter_config:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Filter field '{filter_key}' not found for connector {connector_type}"
+            )
+
+        # Check if filter supports dynamic options
+        option_source_type = filter_config.get("optionSourceType", "manual")
+        if option_source_type != "dynamic":
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=f"Filter field '{filter_key}' does not support dynamic options (type: {option_source_type})"
+            )
+
+        # Get or initialize connector from container
+        # get connector from container, if not found, initialize it
+        connector = _get_connector_from_container(container, connector_id)
+        if not connector:
+            # Connector not in container, try to initialize it
+            connector = await _ensure_connector_initialized(
+                container=container,
+                connector_id=connector_id,
+                connector_type=connector_type,
+                connector_registry=connector_registry,
+                arango_service=arango_service,
+                user_id=user_id,
+                org_id=org_id,
+                is_admin=is_admin,
+                logger=logger
+            )
+
+            # If still None, it means Gmail/Drive which don't support filter options via this endpoint
+            if not connector:
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail=f"Connector instance {connector_id} ({connector_type}) does not support filter options via this endpoint."
+                )
+
+        # Call get_filter_options method on initialized connector
+        response = await connector.get_filter_options(
+            filter_key=filter_key,
+            page=page,
+            limit=limit,
+            search=search,
+            cursor=cursor
+        )
+
+        # Return response as dictionary for JSON serialization
+        return response.to_dict()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting filter field options for {filter_key}: {e}", exc_info=True)
+
+        # Raise as HTTP 500 for proper error tracking and monitoring
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to get filter options: {str(e)}"
+        )
+
+
+def _get_connector_from_container(container, connector_id: str) -> Optional[BaseConnector]:
+    """
+    Get connector instance from app_container.
+    """
+    connector_key = f"{connector_id}_connector"
+
+    if hasattr(container, connector_key):
+        return getattr(container, connector_key)()
+    elif hasattr(container, 'connectors_map'):
+        return container.connectors_map.get(connector_id)
+
+    return None
+
+
+def _find_filter_field_config(
+    metadata: Dict[str, Any],
+    filter_key: str
+) -> Optional[Dict[str, Any]]:
+    """Find filter field configuration in connector metadata."""
+    filters_config = metadata.get("config", {}).get("filters", {})
+
+    for category in ["sync", "indexing"]:
+        schema = filters_config.get(category, {}).get("schema", {})
+        fields = schema.get("fields", [])
+
+        for field in fields:
+            if field.get("name") == filter_key:
+                return field
+
+    return None
+
 
 @router.post("/api/v1/connectors/{connector_id}/filters")
 async def save_connector_instance_filters(
@@ -4394,6 +4789,155 @@ async def save_connector_instance_filters(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to save filter selections: {str(e)}"
+        )
+
+
+async def _ensure_connector_initialized(
+    container: ConnectorAppContainer,
+    connector_id: str,
+    connector_type: str,
+    connector_registry,
+    arango_service: BaseArangoService,
+    user_id: str,
+    org_id: str,
+    is_admin: bool,
+    logger
+) -> Optional[BaseConnector]:
+    """
+    Ensure connector is initialized in container. If not, initialize it.
+
+    Args:
+        container: App container
+        connector_id: Connector instance ID
+        connector_type: Connector type (e.g., "ONEDRIVE", "SHAREPOINT ONLINE")
+        connector_registry: Connector registry instance
+        arango_service: ArangoDB service
+        user_id: User ID
+        org_id: Organization ID
+        is_admin: Whether user is admin
+        logger: Logger instance
+
+    Returns:
+        BaseConnector instance if successful, None if Gmail/Drive (they use event-based init)
+
+    Raises:
+        HTTPException: If initialization fails
+    """
+    # Skip synchronous initialization for Gmail and Google Drive - they use event-based initialization
+    # via specialized sync services and don't extend BaseConnector
+    is_gmail_or_drive = connector_type in [Connectors.GOOGLE_MAIL.value, Connectors.GOOGLE_DRIVE.value]
+
+    if is_gmail_or_drive:
+        logger.info(f"Skipping synchronous initialization for {connector_type} - will be initialized via event handlers")
+        return None
+
+    # Check if connector already exists in container
+    connector_exists = (
+        hasattr(container, 'connectors_map') and
+        connector_id in container.connectors_map
+    )
+
+    if connector_exists:
+        logger.info(f"Connector {connector_id} already initialized and stored in container")
+        return container.connectors_map.get(connector_id)
+
+    # Initialize connector
+    logger.info(f"Initializing connector {connector_id} before use")
+    try:
+        config_service = container.config_service()
+        data_store_provider = ArangoDataStore(logger, arango_service)
+
+        connector_type = connector_type.replace(" ", "").lower()
+
+        # Create connector using factory
+        connector = await ConnectorFactory.create_connector(
+            name=connector_type,
+            logger=logger,
+            data_store_provider=data_store_provider,
+            config_service=config_service,
+            connector_id=connector_id
+        )
+
+        if not connector:
+            logger.error(f"Failed to create {connector_type} connector")
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail="Failed to create connector instance. Please check your configuration."
+            )
+
+        # Initialize connector
+        logger.info(f"Calling init() for connector {connector_id}")
+        is_initialized = await connector.init()
+
+        if not is_initialized:
+            error_msg = "Failed to initialize connector. Please check your credentials and configuration."
+            logger.error(f"❌ {error_msg}")
+            # Cleanup on failure
+            try:
+                await connector.cleanup()
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=error_msg
+            )
+
+        # Test connection
+        logger.info(f"Testing connection for connector {connector_id}")
+        try:
+            connection_ok = connector.test_connection_and_access()
+            if not connection_ok:
+                error_msg = "Connection test failed. Please verify your credentials have proper access."
+                logger.error(f"❌ {error_msg}")
+                # Cleanup on failure
+                try:
+                    await connector.cleanup()
+                except Exception:
+                    pass
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail=error_msg
+                )
+        except HTTPException:
+            raise
+        except Exception as test_error:
+            error_msg = f"Connection test failed: {str(test_error)}"
+            logger.error(f"❌ {error_msg}", exc_info=True)
+            # Cleanup on failure
+            try:
+                await connector.cleanup()
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail=error_msg
+            )
+
+        # Success! Store connector in container
+        logger.info(f"✅ Successfully initialized and tested {connector_type} connector")
+        if not hasattr(container, 'connectors_map'):
+            container.connectors_map = {}
+        container.connectors_map[connector_id] = connector
+
+        # Update isAuthenticated flag
+        await connector_registry.update_connector_instance(
+            connector_id=connector_id,
+            updates={"isAuthenticated": True},
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin
+        )
+
+        return connector
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = f"Failed to initialize connector: {str(e)}"
+        logger.error(f"❌ {error_msg}", exc_info=True)
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=error_msg
         )
 
 
@@ -4554,6 +5098,19 @@ async def toggle_connector_instance(
                         detail="Connector must be configured before enabling"
                     )
 
+            # Initialize connector when enabling (if not already initialized)
+            await _ensure_connector_initialized(
+                container=container,
+                connector_id=connector_id,
+                connector_type=connector_type,
+                connector_registry=connector_registry,
+                arango_service=arango_service,
+                user_id=user_id,
+                org_id=org_id,
+                is_admin=is_admin,
+                logger=logger
+            )
+
         if toggle_type == "agent" and not current_agent_status:
             # Check if connector supports agent functionality
             if not instance.get("supportsAgent", False):
@@ -4569,7 +5126,6 @@ async def toggle_connector_instance(
                     status_code=HttpStatusCode.BAD_REQUEST.value,
                     detail="Connector must be configured before enabling"
                 )
-
 
         # Update connector status
         updates = {

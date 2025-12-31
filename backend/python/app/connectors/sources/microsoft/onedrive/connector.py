@@ -3,7 +3,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
 
 from aiolimiter import AsyncLimiter
 from azure.identity.aio import ClientSecretCredential
@@ -29,9 +29,16 @@ from app.connectors.core.base.sync_point.sync_point import (
 )
 from app.connectors.core.registry.connector_builder import (
     AuthField,
+    CommonFields,
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+)
+from app.connectors.core.registry.filters import (
+    FilterCollection,
+    IndexingFilterKey,
+    SyncFilterKey,
+    load_connector_filters,
 )
 from app.connectors.sources.microsoft.common.apps import OneDriveApp
 from app.connectors.sources.microsoft.common.msgraph_client import (
@@ -43,6 +50,7 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     FileRecord,
+    IndexingStatus,
     Record,
     RecordGroupType,
     RecordType,
@@ -115,6 +123,9 @@ class OneDriveCredentials:
             required=False,
             max_length=2000
         ))
+        .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
+        .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
         .add_conditional_display("redirectUri", "hasAdminConsent", "equals", False)
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
@@ -145,6 +156,8 @@ class OneDriveConnector(BaseConnector):
         self.max_concurrent_batches = 3
 
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
+        self.sync_filters: FilterCollection = FilterCollection()
+        self.indexing_filters: FilterCollection = FilterCollection()
 
     async def init(self) -> bool:
         config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
@@ -163,6 +176,10 @@ class OneDriveConnector(BaseConnector):
         if not all((tenant_id, client_id, client_secret)):
             self.logger.error("Incomplete OneDrive config. Ensure tenantId, clientId, and clientSecret are configured.")
             raise ValueError("Incomplete OneDrive credentials. Ensure tenantId, clientId, and clientSecret are configured.")
+
+        self.sync_filters, self.indexing_filters = await load_connector_filters(
+            self.config_service, "onedrive", self.connector_id, self.logger
+        )
 
         has_admin_consent = auth_config.get("hasAdminConsent", False)
         credentials = OneDriveCredentials(
@@ -202,6 +219,11 @@ class OneDriveConnector(BaseConnector):
             RecordUpdate object containing the record and change information
         """
         try:
+            # Apply Date Filters
+            if not self._pass_date_filters(item):
+                self.logger.debug(f"Skipping item {item.name} (ID: {item.id}) due to date filters.")
+                return # Skip this item
+
             # Check if item is deleted
             if hasattr(item, 'deleted') and item.deleted is not None:
                 self.logger.info(f"Item {item.id} has been deleted")
@@ -425,6 +447,51 @@ class OneDriveConnector(BaseConnector):
 
         return old_set == new_set
 
+    def _pass_date_filters(self, item: DriveItem) -> bool:
+        """
+        Checks if the DriveItem passes the configured CREATED and MODIFIED date filters.
+        Relies on client-side filtering since OneDrive Delta API does not support $filter.
+        """
+        # 1. ALWAYS Allow Folders
+        # We must sync folders regardless of date to ensure the directory structure
+        # exists for any new files that might be inside them.
+        if item.folder is not None:
+            return True
+
+        # 2. Check Created Date Filter
+        created_filter = self.sync_filters.get(SyncFilterKey.CREATED)
+        if created_filter:
+            created_after_iso, created_before_iso = created_filter.get_datetime_iso()
+
+            # Use _parse_datetime to get millisecond timestamps for easy comparison
+            item_ts = self._parse_datetime(item.created_date_time)
+            start_ts = self._parse_datetime(created_after_iso)
+            end_ts = self._parse_datetime(created_before_iso)
+
+            if item_ts is not None:
+                if start_ts and item_ts < start_ts:
+                    return False
+                if end_ts and item_ts > end_ts:
+                    return False
+
+        # 3. Check Modified Date Filter
+        modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
+        if modified_filter:
+            modified_after_iso, modified_before_iso = modified_filter.get_datetime_iso()
+
+            # Use _parse_datetime to get millisecond timestamps
+            item_ts = self._parse_datetime(item.last_modified_date_time)
+            start_ts = self._parse_datetime(modified_after_iso)
+            end_ts = self._parse_datetime(modified_before_iso)
+
+            if item_ts is not None:
+                if start_ts and item_ts < start_ts:
+                    return False
+                if end_ts and item_ts > end_ts:
+                    return False
+
+        return True
+
     async def _process_delta_items_generator(self, delta_items: List[dict]) -> AsyncGenerator[Tuple[FileRecord, List[Permission], RecordUpdate], None]:
         """
         Process delta items and yield records with their permissions.
@@ -442,6 +509,9 @@ class OneDriveConnector(BaseConnector):
                         # For deleted items, yield with empty permissions
                         yield (None, [], record_update)
                     elif record_update.record:
+                        if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                            record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
                         yield (record_update.record, record_update.new_permissions or [], record_update)
 
                 # Allow other tasks to run
@@ -1089,10 +1159,97 @@ class OneDriveConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error during cleanup: {e}")
 
-    async def reindex_records(self, record_results: List[Record]) -> None:
+    async def reindex_records(self, records: List[Record]) -> None:
         """Reindex records - not implemented for OneDrive yet."""
-        self.logger.warning("Reindex not implemented for OneDrive connector")
-        pass
+        try:
+            if not records:
+                self.logger.info("No records to reindex")
+                return
+
+            self.logger.info(f"Starting reindex for {len(records)} OneDrive records")
+
+            if not self.msgraph_client:
+                self.logger.error("MS Graph client not initialized. Call init() first.")
+                raise Exception("MS Graph client not initialized. Call init() first.")
+
+            # Check records at source for updates
+            org_id = self.data_entities_processor.org_id
+            updated_records = []
+            non_updated_records = []
+            for record in records:
+                try:
+                    updated_record_data = await self._check_and_fetch_updated_record(org_id, record)
+                    if updated_record_data:
+                        updated_record, permissions = updated_record_data
+                        updated_records.append((updated_record, permissions))
+                    else:
+                        non_updated_records.append(record)
+                except Exception as e:
+                    self.logger.error(f"Error checking record {record.id} at source: {e}")
+                    continue
+
+            # Update DB only for records that changed at source
+            if updated_records:
+                await self.data_entities_processor.on_new_records(updated_records)
+                self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
+
+            # Publish reindex events for non updated records
+            if non_updated_records:
+                await self.data_entities_processor.reindex_existing_records(non_updated_records)
+                self.logger.info(f"Published reindex events for {len(non_updated_records)} non updated records")
+        except Exception as e:
+            self.logger.error(f"Error during OneDrive reindex: {e}", exc_info=True)
+            raise
+
+    async def _check_and_fetch_updated_record(
+        self, org_id: str, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch record from MS Graph and return data for reindexing if changed."""
+        try:
+            drive_id = record.external_record_group_id
+            item_id = record.external_record_id
+
+            if not drive_id or not item_id:
+                self.logger.warning(f"Missing drive_id or item_id for record {record.id}")
+                return None
+
+            # Fetch fresh item from MS Graph
+            async with self.msgraph_client.rate_limiter:
+                item = await self.msgraph_client.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).get()
+
+            if not item:
+                self.logger.warning(f"Item {item_id} not found at source")
+                return None
+
+            # Use existing logic to detect changes and transform to FileRecord
+            record_update = await self._process_delta_item(item)
+
+            if not record_update or record_update.is_deleted:
+                return None
+
+            # Only return data if there's an actual update (metadata, content, or permissions)
+            if record_update.is_updated:
+                self.logger.info(f"Record {item_id} has changed at source. Updating.")
+                # Ensure we keep the internal DB ID
+                record_update.record.id = record.id
+                return (record_update.record, record_update.new_permissions)
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Error checking OneDrive record {record.id} at source: {e}")
+            return None
+
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None
+    ) -> NoReturn:
+        """OneDrive connector does not support dynamic filter options."""
+        raise NotImplementedError("OneDrive connector does not support dynamic filter options")
 
     async def get_signed_url(self, record: Record) -> str:
         """
@@ -1121,6 +1278,18 @@ class OneDriveConnector(BaseConnector):
             }
         )
 
+    def _parse_datetime(self, dt_obj) -> Optional[int]:
+        """Parse datetime object or string to epoch timestamp in milliseconds."""
+        if not dt_obj:
+            return None
+        try:
+            if isinstance(dt_obj, str):
+                dt = datetime.fromisoformat(dt_obj.replace('Z', '+00:00'))
+            else:
+                dt = dt_obj
+            return int(dt.timestamp() * 1000)
+        except Exception:
+            return None
 
     async def test_connection_and_access(self) -> bool:
         """Test connection and access to OneDrive."""

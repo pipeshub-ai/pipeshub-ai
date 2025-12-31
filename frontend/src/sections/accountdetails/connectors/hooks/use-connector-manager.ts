@@ -137,34 +137,14 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
   );
 
   // Handle connector toggle (enable/disable)
+  // Note: When enabling sync, the component intercepts and opens the config dialog with enableMode
+  // This handler is only called for disabling or agent toggles
   const handleToggleConnector = useCallback(
     async (enabled: boolean, type: ConnectorToggleType) => {
       if (!connector || !connectorId) return;
 
+      // For disabling or agent toggle, proceed with direct toggle
       try {
-        // When enabling, check if there are filter options to present first
-        // if (enabled) {
-        //   try {
-        //     const response = await ConnectorApiService.getConnectorInstanceFilterOptions(connectorId);
-        //     const options = response?.filterOptions;
-        //     const hasAnyOptions =
-        //       !!options &&
-        //       Object.values(options).some((v: any) => (Array.isArray(v) ? v.length > 0 : !!v));
-        //     if (hasAnyOptions) {
-        //       setFilterOptions(options);
-        //       setIsEnablingWithFilters(true);
-        //       setShowFilterDialog(true);
-        //       return; // show dialog instead of immediate toggle
-        //     }
-        //   } catch (fetchFiltersError) {
-        //     // If fetching filter options fails, proceed to toggle without filters
-        //     console.warn(
-        //       'Could not fetch filter options, proceeding to toggle:',
-        //       fetchFiltersError
-        //     );
-        //   }
-        // }
-
         const wasActive = !!connector.isActive;
         const selectedStrategy = String(
           connectorConfig?.config?.sync?.selectedStrategy || ''
@@ -247,8 +227,11 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
     setSuccessMessage(`${connector?.name} configured successfully`);
     setSuccess(true);
 
-    // Refresh connector data
-    fetchConnectorData();
+    const wasInactive = !connector?.isActive;
+    if (wasInactive) {
+      setConnector((prev) => (prev ? { ...prev, isActive: true } : null));
+    }
+    fetchConnectorData(true);
 
     // Clear success message after 4 seconds
     setTimeout(() => setSuccess(false), 4000);

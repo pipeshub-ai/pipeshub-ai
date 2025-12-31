@@ -27,6 +27,7 @@ from app.connectors.sources.atlassian.confluence_cloud.connector import (
 )
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.connectors.sources.bookstack.connector import BookStackConnector
+from app.connectors.sources.box.connector import BoxConnector
 from app.connectors.sources.dropbox.connector import DropboxConnector
 from app.connectors.sources.dropbox_individual.connector import (
     DropboxIndividualConnector,
@@ -52,6 +53,7 @@ class ConnectorFactory:
         "outlook": OutlookConnector,
         "confluence": ConfluenceConnector,
         "jira": JiraConnector,
+        "box": BoxConnector,
         "dropbox": DropboxConnector,
         "dropboxpersonal": DropboxIndividualConnector,
         "servicenow": ServiceNowConnector,

@@ -290,53 +290,6 @@ async def execute_tool_calls(
             messages.append(ai)
             break
 
-        # Check if LLM incorrectly made a tool call for unknown tools (e.g., tool name "json")
-        # This happens when the model wraps the final answer in a tool call instead of returning it directly
-        valid_tool_names = [t.name for t in tools]
-
-        # If there are any invalid tool calls, use reflection to guide the LLM
-        invalid_tool_calls = [call for call in ai.tool_calls if call.get("name") not in valid_tool_names]
-
-        if invalid_tool_calls:
-            logger.warning(
-                "execute_tool_calls: detected invalid tool calls: %s. Using reflection to guide LLM.",
-                [call.get("name") for call in invalid_tool_calls]
-            )
-
-            # Add the AI message with invalid tool calls
-            messages.append(ai)
-
-            # Create reflection messages for each invalid tool call
-            for call in invalid_tool_calls:
-                call_id = call.get("id")
-                tool_name = call.get("name")
-
-                reflection_message = (
-                    f"Error: Tool '{tool_name}' is not a valid tool. "
-                    f"Available tools are: {', '.join(valid_tool_names)}. "
-                    "Please provide your final answer directly as a JSON object with the following structure: "
-                    '{"answer": "your answer here", "reason": "reasoning", "confidence": "High/Medium/Low", '
-                    '"answerMatchType": "Derived From Blocks/Exact Match/etc", "blockNumbers": [list of block numbers]}. '
-                    "Do NOT wrap your response in any tool call."
-                )
-
-                messages.append(
-                    ToolMessage(
-                        content=reflection_message,
-                        tool_call_id=call_id
-                    )
-                )
-
-                logger.info(
-                    "execute_tool_calls: added reflection message for invalid tool '%s' with call_id=%s",
-                    tool_name,
-                    call_id
-                )
-
-            # Continue the loop to let the LLM try again with the reflection
-            hops += 1
-            continue
-
         tools_executed = True
         logger.debug(
             "execute_tool_calls: tool_calls_detected count=%d",
@@ -370,7 +323,7 @@ async def execute_tool_calls(
             tool_args.append((args,tool))
 
         tool_results_inner = []
-
+        valid_tool_names = [t.name for t in tools]
         # Execute all tools in parallel using asyncio.gather
         async def execute_single_tool(args, tool, tool_name, call_id) -> Dict[str, Any]:
             """Execute a single tool and return result with metadata"""
@@ -383,6 +336,14 @@ async def execute_tool_calls(
                     "call_id": call_id
                 }
 
+            if tool_name not in valid_tool_names:
+                logger.warning("invalid tool requested, name=%s", tool_name)
+                return {
+                    "ok": False,
+                    "error": f"Invalid tool: {tool_name}",
+                    "tool_name": tool_name,
+                    "call_id": call_id
+                }
             try:
                 logger.debug(
                     "execute_tool_calls: running tool name=%s call_id=%s args_keys=%s",
@@ -409,16 +370,15 @@ async def execute_tool_calls(
 
         # Create parallel tasks for all tools
         tool_tasks = []
-        tool_names = []
         for (args, tool), call in zip(tool_args, ai.tool_calls):
             tool_name = call["name"]
             call_id = call.get("id")
-            tool_names.append(tool_name)
             tool_tasks.append(execute_single_tool(args, tool, tool_name, call_id))
 
         # Execute all tools in parallel
         tool_results_inner = await asyncio.gather(*tool_tasks, return_exceptions=False)
 
+        records = []
         # Process results and yield events
         for tool_result in tool_results_inner:
             tool_name = tool_result.get("tool_name", "unknown")
@@ -441,6 +401,8 @@ async def execute_tool_calls(
                         "record_info": tool_result.get("record_info", {})
                     }
                 }
+                if "records" in tool_result:
+                    records.extend(tool_result.get("records", []))
             else:
                 logger.warning(
                     "execute_tool_calls: tool error result name=%s call_id=%s error=%s",
@@ -456,14 +418,6 @@ async def execute_tool_calls(
                         "call_id": call_id
                     }
                 }
-
-        # Handle both old single-record format and new multi-record format
-        records = []
-        for tool_result in tool_results_inner:
-            if tool_result.get("ok"):
-                # New format: multiple records
-                if "records" in tool_result:
-                    records.extend(tool_result.get("records", []))
 
         # First, add the AI message with tool calls to messages
         messages.append(ai)
@@ -1404,12 +1358,13 @@ async def call_aiter_llm_stream(
             if reflection_retry_count < max_reflection_retries:
                 yield {"event": "restreaming","data": {}}
                 yield {"event": "status", "data": {"status": "processing", "message": "Rethinking..."}}
+                parse_error = str(e)
                 logger.warning(
-                    "call_aiter_llm_stream: JSON parsing failed for LLM response. Using reflection to guide LLM to proper format. Retry count: %d.",
-                    reflection_retry_count,
+                    "JSON parsing failed for LLM response with error: %s. Using reflection to guide LLM to proper format. Retry count: %d.",
+                    parse_error,
+                    reflection_retry_count
                 )
 
-                parse_error = str(e)
                 # Create reflection message to guide the LLM
                 reflection_message = HumanMessage(
                     content=(f"""The previous response failed validation with the following error: {parse_error}. {format_instructions}"""
@@ -1417,8 +1372,10 @@ async def call_aiter_llm_stream(
                 # Add the reflection message to the messages list
                 updated_messages = messages.copy()
 
+                # Ensure response_text is a string for AIMessage (can be dict from structured output)
+                ai_message_content = response_text if isinstance(response_text, str) else json.dumps(response_text)
                 ai_message = AIMessage(
-                    content=response_text,
+                    content=ai_message_content,
                 )
                 updated_messages.append(ai_message)
 

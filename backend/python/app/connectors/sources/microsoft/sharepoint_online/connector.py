@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from http import HTTPStatus
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
 from urllib.parse import quote, unquote, urlparse
 
 import aiohttp
@@ -29,6 +29,7 @@ from msgraph.generated.models.list_item import ListItem
 from msgraph.generated.models.site import Site
 from msgraph.generated.models.site_page import SitePage
 from msgraph.generated.models.subscription import Subscription
+from msgraph.generated.sites.item.pages.pages_request_builder import PagesRequestBuilder
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -49,9 +50,16 @@ from app.connectors.core.base.sync_point.sync_point import (
 )
 from app.connectors.core.registry.connector_builder import (
     AuthField,
+    CommonFields,
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+)
+from app.connectors.core.registry.filters import (
+    FilterCollection,
+    IndexingFilterKey,
+    SyncFilterKey,
+    load_connector_filters,
 )
 from app.connectors.sources.microsoft.common.apps import SharePointOnlineApp
 from app.connectors.sources.microsoft.common.msgraph_client import (
@@ -64,6 +72,7 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     FileRecord,
+    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -172,6 +181,25 @@ class SiteMetadata:
             field_type="URL",
             max_length=2000
         ))
+        # .add_filter_field(FilterField(
+        #     name="site_urls",
+        #     display_name="Site URLs",
+        #     description="Filter specific sites by URL.",
+        #     filter_type=FilterType.LIST,
+        #     category=FilterCategory.SYNC,
+        #     default_value=[]
+        # ))
+        # .add_filter_field(FilterField(
+        #     name="page_urls",
+        #     display_name="Page URLs",
+        #     description="Filter specific pages by URL.",
+        #     filter_type=FilterType.LIST,
+        #     category=FilterCategory.SYNC,
+        #     default_value=[]
+        # ))
+        .add_filter_field(CommonFields.modified_date_filter("Filter pages and blogposts by modification date."))
+        .add_filter_field(CommonFields.created_date_filter("Filter pages and blogposts by creation date."))
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
@@ -235,6 +263,9 @@ class SharePointConnector(BaseConnector):
 
     async def init(self) -> bool:
         config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
+        self.sync_filters: FilterCollection = FilterCollection()
+        self.indexing_filters: FilterCollection = FilterCollection()
+
         if not config:
             self.logger.error("❌ SharePoint Online credentials not found")
             raise ValueError("SharePoint Online credentials not found")
@@ -259,6 +290,10 @@ class SharePointConnector(BaseConnector):
         self.logger.debug(f"🔍 Certificate data present: {bool(certificate_data)}")
         self.logger.debug(f"🔍 Private key data present: {bool(private_key_data)}")
         self.logger.debug(f"🔍 Client secret present: {bool(client_secret)}")
+
+        self.sync_filters, self.indexing_filters = await load_connector_filters(
+            self.config_service, "sharepointonline", self.connector_id, self.logger
+        )
 
         # Normalize SharePoint domain to scheme+host (no path)
         try:
@@ -679,9 +714,11 @@ class SharePointConnector(BaseConnector):
             batch_records = []
             total_processed = 0
 
+            modified_after, modified_before, created_after, created_before = self._get_date_filters()
+
             # Process drives (document libraries)
             self.logger.info(f"Processing drives for site: {site_name}")
-            async for record, permissions, record_update in self._process_site_drives(site_id, internal_site_record_group_id=site_record_group.id):
+            async for record, permissions, record_update in self._process_site_drives(site_id, internal_site_record_group_id=site_record_group.id, modified_after=modified_after, modified_before=modified_before, created_after=created_after, created_before=created_before):
                 if record_update.is_deleted:
                     await self._handle_record_updates(record_update)
                     continue
@@ -717,8 +754,7 @@ class SharePointConnector(BaseConnector):
 
             # Process pages
             self.logger.info(f"Processing pages for site: {site_name}")
-            async for record, permissions, record_update in self._process_site_pages(site_id, site_name):
-                self.logger.info(f"\n\n\n\nPage record_update: is_new={record_update.is_new}, is_updated={record_update.is_updated}, content_changed={record_update.content_changed}")
+            async for record, permissions, record_update in self._process_site_pages(site_id, site_name, modified_after, modified_before, created_after, created_before):
                 if record_update.is_deleted:
                     await self._handle_record_updates(record_update)
                     continue
@@ -748,7 +784,7 @@ class SharePointConnector(BaseConnector):
             self.stats['sites_failed'] += 1
             raise
 
-    async def _process_site_drives(self, site_id: str, internal_site_record_group_id: str) -> AsyncGenerator[Tuple[Record, List[Permission], RecordUpdate], None]:
+    async def _process_site_drives(self, site_id: str, internal_site_record_group_id: str, modified_after: Optional[datetime] = None, modified_before: Optional[datetime] = None, created_after: Optional[datetime] = None, created_before: Optional[datetime] = None) -> AsyncGenerator[Tuple[Record, List[Permission], RecordUpdate], None]:
         """
         Process all document libraries (drives) in a SharePoint site.
         """
@@ -787,14 +823,14 @@ class SharePointConnector(BaseConnector):
                 # Process items in the drive using delta
                 item_count = 0
                 self.logger.info(f"Drive record group: {drive_record_group}")
-                async for item_tuple in self._process_drive_delta(site_id, drive_record_group.external_group_id):
+                async for item_tuple in self._process_drive_delta(site_id, drive_record_group.external_group_id, modified_after=modified_after, modified_before=modified_before, created_after=created_after, created_before=created_before):
                     yield item_tuple
                     item_count += 1
 
         except Exception:
             self.logger.exception(f"❌ Error processing drives for site {site_id}")
 
-    async def _process_drive_delta(self, site_id: str, drive_id: str) -> AsyncGenerator[Tuple[FileRecord, List[Permission], RecordUpdate], None]:
+    async def _process_drive_delta(self, site_id: str, drive_id: str, modified_after: Optional[datetime] = None, modified_before: Optional[datetime] = None, created_after: Optional[datetime] = None, created_before: Optional[datetime] = None) -> AsyncGenerator[Tuple[FileRecord, List[Permission], RecordUpdate], None]:
         """
         Process drive items using delta API for a specific drive.
         """
@@ -852,11 +888,15 @@ class SharePointConnector(BaseConnector):
 
                 for item in drive_items:
                     try:
-                        record_update = await self._process_drive_item(item, site_id, drive_id, users)
+                        record_update = await self._process_drive_item(item, site_id, drive_id, users, modified_after=modified_after, modified_before=modified_before, created_after=created_after, created_before=created_before)
                         if record_update:
                             if record_update.is_deleted:
                                 yield (None, [], record_update)
                             elif record_update.record:
+
+                                if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                                    record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
                                 yield (record_update.record, record_update.new_permissions or [], record_update)
                                 self.stats['items_processed'] += 1
                     except Exception as item_error:
@@ -896,7 +936,7 @@ class SharePointConnector(BaseConnector):
             except Exception as clear_error:
                 self.logger.error(f"Failed to clear sync point: {clear_error}")
 
-    async def _process_drive_item(self, item: DriveItem, site_id: str, drive_id: str, users: List[AppUser]) -> Optional[RecordUpdate]:
+    async def _process_drive_item(self, item: DriveItem, site_id: str, drive_id: str, users: List[AppUser], modified_after: Optional[str] = None, modified_before: Optional[str] = None, created_after: Optional[str] = None, created_before: Optional[str] = None) -> Optional[RecordUpdate]:
         """
         Process a single drive item from SharePoint.
         """
@@ -919,6 +959,11 @@ class SharePointConnector(BaseConnector):
                     content_changed=False,
                     permissions_changed=False
                 )
+
+
+            if not self._pass_drive_date_filters(item):
+                return None
+
             existing_record = None
             # Get existing record for change detection
             async with self.data_store_provider.transaction() as tx_store:
@@ -1075,6 +1120,51 @@ class SharePointConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error creating file record: {e}")
             return None
+
+    def _pass_drive_date_filters(self, item: DriveItem) -> bool:
+        """
+        Checks if the DriveItem passes the configured CREATED and MODIFIED date filters.
+        Relies on client-side filtering since OneDrive Delta API does not support $filter.
+        """
+        # 1. ALWAYS Allow Folders
+        # We must sync folders regardless of date to ensure the directory structure
+        # exists for any new files that might be inside them.
+        if item.folder is not None:
+            return True
+
+        # 2. Check Created Date Filter
+        created_filter = self.sync_filters.get(SyncFilterKey.CREATED)
+        if created_filter:
+            created_after_iso, created_before_iso = created_filter.get_datetime_iso()
+
+            # Use _parse_datetime to get millisecond timestamps for easy comparison
+            item_ts = self._parse_datetime(item.created_date_time)
+            start_ts = self._parse_datetime(created_after_iso)
+            end_ts = self._parse_datetime(created_before_iso)
+
+            if item_ts is not None:
+                if start_ts and item_ts < start_ts:
+                    return False
+                if end_ts and item_ts > end_ts:
+                    return False
+
+        # 3. Check Modified Date Filter
+        modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
+        if modified_filter:
+            modified_after_iso, modified_before_iso = modified_filter.get_datetime_iso()
+
+            # Use _parse_datetime to get millisecond timestamps
+            item_ts = self._parse_datetime(item.last_modified_date_time)
+            start_ts = self._parse_datetime(modified_after_iso)
+            end_ts = self._parse_datetime(modified_before_iso)
+
+            if item_ts is not None:
+                if start_ts and item_ts < start_ts:
+                    return False
+                if end_ts and item_ts > end_ts:
+                    return False
+
+        return True
 
     async def _process_site_lists(self, site_id: str) -> AsyncGenerator[Tuple[Record, List[Permission], RecordUpdate], None]:
         """
@@ -1383,18 +1473,46 @@ class SharePointConnector(BaseConnector):
             self.logger.debug(f"❌ Error creating list item record: {e}")
             return None
 
-    async def _process_site_pages(self, site_id: str, site_name: str) -> AsyncGenerator[Tuple[Record, List[Permission], RecordUpdate], None]:
+    async def _process_site_pages(self, site_id: str, site_name: str, modified_after: Optional[str] = None, modified_before: Optional[str] = None, created_after: Optional[str] = None, created_before: Optional[str] = None) -> AsyncGenerator[Tuple[Record, List[Permission], RecordUpdate], None]:
         """
         Process all pages in a SharePoint site.
         """
         try:
             encoded_site_id = self._construct_site_url(site_id)
 
+            # Get sync point for pages
+            sync_point_key = generate_record_sync_point_key(
+                SharePointRecordType.PAGE.value,
+                RecordGroupType.SHAREPOINT_SITE.value,
+                site_id
+            )
+
+            sync_point = await self.page_sync_point.read_sync_point(sync_point_key)
+            last_sync_time = sync_point.get('lastSyncTime') if sync_point else None
+
+
+            sync_start_time = datetime.now(timezone.utc).isoformat()
+
+
+            # Build OData filter for modified pages
+            request_config = None
+            if last_sync_time:
+                query_params = PagesRequestBuilder.PagesRequestBuilderGetQueryParameters(
+                    filter=f"lastModifiedDateTime ge {last_sync_time}",
+                    orderby=["lastModifiedDateTime asc"]
+                )
+                request_config = PagesRequestBuilder.PagesRequestBuilderGetRequestConfiguration(
+                    query_parameters=query_params
+                )
+
             async with self.rate_limiter:
                 try:
                     pages_response = await self._safe_api_call(
-                        self.client.sites.by_site_id(encoded_site_id).pages.get()
+                        self.client.sites.by_site_id(encoded_site_id).pages.get(
+                            request_configuration=request_config
+                        )
                     )
+
                 except Exception as pages_error:
                     if any(term in str(pages_error).lower() for term in [HttpStatusCode.FORBIDDEN.value, "accessdenied", HttpStatusCode.NOT_FOUND.value, "notfound"]):
                         self.logger.debug(f"Pages not accessible for site {site_id}: {pages_error}")
@@ -1404,10 +1522,17 @@ class SharePointConnector(BaseConnector):
 
             if not pages_response or not pages_response.value:
                 self.logger.debug(f"No pages found for site {site_id}")
+                # Still update sync point even if no pages found
+                await self.page_sync_point.update_sync_point(
+                    sync_point_key,
+                    sync_point_data={"lastSyncTime": sync_start_time}
+                )
                 return
 
             pages = pages_response.value
             self.logger.debug(f"Found {len(pages)} pages in site")
+
+            pages_processed_count = 0
 
             for page in pages:
                 try:
@@ -1418,16 +1543,18 @@ class SharePointConnector(BaseConnector):
                         self.logger.debug(f"Skipping page with missing ID in site {site_id}")
                         continue
 
+                    # Apply date filters
+                    if not self._pass_page_date_filters(page):
+                        continue
+
                     # Check the 'created_by' field to skip System Account created pages
                     is_system_page = False
                     created_by = getattr(page, 'created_by', None)
 
                     if created_by:
-                        # Check User Display Name
                         user_identity = getattr(created_by, 'user', None)
                         display_name = getattr(user_identity, 'display_name', '').lower() if user_identity else ''
 
-                        # "System Account" is the standard display name for internal SharePoint operations
                         if display_name == 'system account':
                             is_system_page = True
 
@@ -1435,9 +1562,7 @@ class SharePointConnector(BaseConnector):
                         self.logger.info(f"⏭️ Skipping System Account/Template page: '{page_name}'")
                         continue
 
-
                     existing_record = None
-                    # Get existing record for change detection
                     async with self.data_store_provider.transaction() as tx_store:
                         existing_record = await tx_store.get_record_by_external_id(
                             connector_id=self.connector_id,
@@ -1450,14 +1575,20 @@ class SharePointConnector(BaseConnector):
                     content_changed = False
 
                     if existing_record:
-                        # Check for changes
-                        is_updated = True  # Placeholder logic - need to compare timestamps or content hashes
-                        content_changed = True  # Placeholder logic - If a page is coming in it means it has been updated - will implement full logic later
+                        # Use eTag for change detection (same pattern as drive items)
+                        current_etag = getattr(page, 'e_tag', None)
+                        if existing_record.external_revision_id != current_etag:
+                            is_updated = True
+                            content_changed = True
 
 
                     page_record = await self._create_page_record(page, site_id, site_name, existing_record)
+
                     if page_record:
                         permissions = await self._get_page_permissions(site_id, page.id)
+                        if not self.indexing_filters.is_enabled(IndexingFilterKey.PAGES, default=True):
+                            page_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
                         yield (page_record, permissions, RecordUpdate(
                             record=page_record,
                             is_new=is_new,
@@ -1469,14 +1600,23 @@ class SharePointConnector(BaseConnector):
                             new_permissions=permissions
                         ))
                         self.stats['pages_processed'] += 1
+                        pages_processed_count += 1
 
                 except Exception as page_error:
                     page_name = getattr(page, 'title', getattr(page, 'name', 'unknown'))
                     self.logger.warning(f"Error processing page '{page_name}': {page_error}")
                     continue
 
+            # ✅ Save sync point with the time we captured BEFORE starting
+            await self.page_sync_point.update_sync_point(
+                sync_point_key,
+                sync_point_data={"lastSyncTime": sync_start_time}
+            )
+            self.logger.info(f"✅ Processed {pages_processed_count} pages for site {site_name}")
+
         except Exception as e:
             self.logger.error(f"❌ Error processing pages for site {site_id}: {e}")
+            # Don't update sync point on error - will retry from last successful point
 
     async def _create_page_record(self, page: SitePage, site_id: str, site_name: str, existing_record: Optional[SharePointPageRecord] = None) -> Optional[SharePointPageRecord]:
         """
@@ -1535,6 +1675,49 @@ class SharePointConnector(BaseConnector):
             self.logger.debug(f"❌ Error creating page record: {e}")
             return None
 
+    def _pass_page_date_filters(self, page: SitePage) -> bool:
+        """
+        Checks if the SitePage passes the configured CREATED and MODIFIED date filters.
+        Client-side filtering since SharePoint Pages API may have limited $filter support.
+
+        Args:
+            page: SitePage object from Microsoft Graph API
+
+        Returns:
+            bool: True if page passes all date filters, False otherwise
+        """
+        # 1. Check Created Date Filter
+        created_filter = self.sync_filters.get(SyncFilterKey.CREATED)
+        if created_filter:
+            created_after_iso, created_before_iso = created_filter.get_datetime_iso()
+
+            item_ts = self._parse_datetime(getattr(page, 'created_date_time', None))
+            start_ts = self._parse_datetime(created_after_iso)
+            end_ts = self._parse_datetime(created_before_iso)
+
+            if item_ts is not None:
+                if start_ts and item_ts < start_ts:
+                    return False
+                if end_ts and item_ts > end_ts:
+                    return False
+
+        # 2. Check Modified Date Filter
+        modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
+        if modified_filter:
+            modified_after_iso, modified_before_iso = modified_filter.get_datetime_iso()
+
+            item_ts = self._parse_datetime(getattr(page, 'last_modified_date_time', None))
+            start_ts = self._parse_datetime(modified_after_iso)
+            end_ts = self._parse_datetime(modified_before_iso)
+
+            if item_ts is not None:
+                if start_ts and item_ts < start_ts:
+                    return False
+                if end_ts and item_ts > end_ts:
+                    return False
+
+        return True
+
     def _create_document_library_record_group(self, drive: dict, site_id: str, internal_site_record_group_id: str) -> Optional[RecordGroup]:
         """
         Create a record group for a document library.
@@ -1572,6 +1755,42 @@ class SharePointConnector(BaseConnector):
         except Exception as e:
             self.logger.debug(f"❌ Error creating document library record group: {e}")
             return None
+
+    def _get_date_filters(self) -> Tuple[Optional[datetime], Optional[datetime], Optional[datetime], Optional[datetime]]:
+        """
+        Extract date filter values from sync_filters.
+
+        Returns:
+            Tuple of (modified_after, modified_before, created_after, created_before)
+        """
+        modified_after: Optional[datetime] = None
+        modified_before: Optional[datetime] = None
+        created_after: Optional[datetime] = None
+        created_before: Optional[datetime] = None
+
+        # Get modified date filter
+        modified_date_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
+        if modified_date_filter and not modified_date_filter.is_empty():
+            after_iso, before_iso = modified_date_filter.get_datetime_iso()
+            if after_iso:
+                modified_after = datetime.fromisoformat(after_iso).replace(tzinfo=timezone.utc)
+                self.logger.info(f"Applying modified date filter: after {modified_after}")
+            if before_iso:
+                modified_before = datetime.fromisoformat(before_iso).replace(tzinfo=timezone.utc)
+                self.logger.info(f"Applying modified date filter: before {modified_before}")
+
+        # Get created date filter
+        created_date_filter = self.sync_filters.get(SyncFilterKey.CREATED)
+        if created_date_filter and not created_date_filter.is_empty():
+            after_iso, before_iso = created_date_filter.get_datetime_iso()
+            if after_iso:
+                created_after = datetime.fromisoformat(after_iso).replace(tzinfo=timezone.utc)
+                self.logger.info(f"Applying created date filter: after {created_after}")
+            if before_iso:
+                created_before = datetime.fromisoformat(before_iso).replace(tzinfo=timezone.utc)
+                self.logger.info(f"Applying created date filter: before {created_before}")
+
+        return modified_after, modified_before, created_after, created_before
 
     async def _get_sharepoint_access_token(self) -> Optional[str]:
         """Get access token for SharePoint REST API."""
@@ -2049,7 +2268,15 @@ class SharePointConnector(BaseConnector):
         return permissions
 
     def _parse_datetime(self, dt_obj) -> Optional[int]:
-        """Parse datetime object or string to epoch timestamp in milliseconds."""
+        """
+        Parse datetime object or string to epoch timestamp in milliseconds.
+
+        Args:
+            dt_obj: datetime object or ISO format string
+
+        Returns:
+            int: Epoch timestamp in milliseconds, or None if parsing fails
+        """
         if not dt_obj:
             return None
         try:
@@ -2951,10 +3178,275 @@ class SharePointConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error during SharePoint connector cleanup: {e}")
 
-    async def reindex_records(self, record_results: List[Record]) -> None:
-        """Reindex records - not implemented for SharePoint yet."""
-        self.logger.warning("Reindex not implemented for SharePoint connector")
-        pass
+    async def reindex_records(self, records: List[Record]) -> None:
+        """Reindex records for SharePoint."""
+        try:
+            if not records:
+                self.logger.info("No records to reindex")
+                return
+
+            self.logger.info(f"Starting reindex for {len(records)} SharePoint records")
+
+            if not self.msgraph_client:
+                self.logger.error("MS Graph client not initialized. Call init() first.")
+                raise Exception("MS Graph client not initialized. Call init() first.")
+
+            # Get all active users for permissions
+            users = await self.data_entities_processor.get_all_active_users()
+
+            # Check records at source for updates
+            updated_records = []
+            non_updated_records = []
+
+            for record in records:
+                try:
+                    updated_record_data = await self._check_and_fetch_updated_record(record, users)
+                    if updated_record_data:
+                        updated_record, permissions = updated_record_data
+                        updated_records.append((updated_record, permissions))
+                    else:
+                        non_updated_records.append(record)
+                except Exception as e:
+                    self.logger.error(f"Error checking record {record.id} at source: {e}")
+                    continue
+
+            # Update DB only for records that changed at source
+            if updated_records:
+                await self.data_entities_processor.on_new_records(updated_records)
+                self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
+
+            # Publish reindex events for non updated records
+            if non_updated_records:
+                await self.data_entities_processor.reindex_existing_records(non_updated_records)
+                self.logger.info(f"Published reindex events for {len(non_updated_records)} non updated records")
+
+        except Exception as e:
+            self.logger.error(f"Error during SharePoint reindex: {e}", exc_info=True)
+            raise
+
+    async def _check_and_fetch_updated_record(
+        self, record: Record, users: List[AppUser]
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch record from MS Graph and return data for reindexing if changed."""
+        try:
+            record_type = record.record_type
+            external_record_id = record.external_record_id
+
+            if not external_record_id:
+                self.logger.warning(f"Missing external_record_id for record {record.id}")
+                return None
+
+            # Handle different record types
+            if record_type == RecordType.FILE:
+                return await self._check_and_fetch_updated_file_record(record, users)
+            elif record_type == RecordType.SHAREPOINT_PAGE:
+                return await self._check_and_fetch_updated_page_record(record)
+            elif record_type == RecordType.SHAREPOINT_LIST_ITEM:
+                return await self._check_and_fetch_updated_list_item_record(record)
+            else:
+                self.logger.warning(f"Unsupported record type for reindex: {record_type}")
+                return None
+
+        except Exception as e:
+            self.logger.error(f"Error checking SharePoint record {record.id} at source: {e}")
+            return None
+
+    async def _check_and_fetch_updated_file_record(
+        self, record: Record, users: List[AppUser]
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Check and fetch updated file record from a SharePoint drive."""
+        try:
+            drive_id = record.external_record_group_id
+            item_id = record.external_record_id
+
+            if not drive_id or not item_id:
+                self.logger.warning(f"Missing drive_id or item_id for file record {record.id}")
+                return None
+
+            # Fetch fresh item from MS Graph
+            async with self.rate_limiter:
+                item = await self._safe_api_call(
+                    self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).get()
+                )
+
+            if not item:
+                self.logger.warning(f"File item {item_id} not found at source")
+                return None
+
+            # Check if item is deleted
+            if hasattr(item, 'deleted') and item.deleted is not None:
+                self.logger.info(f"File item {item_id} has been deleted at source")
+                return None
+
+            # Get the site_id from the drive to fetch permissions
+            # We need to extract site_id from parent_reference or use a cached mapping
+            site_id = None
+            if hasattr(item, 'parent_reference') and item.parent_reference:
+                site_id = getattr(item.parent_reference, 'site_id', None)
+
+            # Use existing logic to detect changes and create FileRecord
+            record_update = await self._process_drive_item(
+                item=item,
+                site_id=site_id or "",
+                drive_id=drive_id,
+                users=users
+            )
+
+            if not record_update or record_update.is_deleted:
+                return None
+
+            # Only return data if there's an actual update
+            if record_update.is_updated:
+                self.logger.info(f"File record {item_id} has changed at source. Updating.")
+                # Ensure we keep the internal DB ID
+                record_update.record.id = record.id
+                return (record_update.record, record_update.new_permissions or [])
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Error checking SharePoint file record {record.id} at source: {e}")
+            return None
+
+    async def _check_and_fetch_updated_page_record(
+        self, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Check and fetch updated page record from SharePoint."""
+        try:
+            site_id = record.external_record_group_id
+            page_id = record.external_record_id
+
+            if not site_id or not page_id:
+                self.logger.warning(f"Missing site_id or page_id for page record {record.id}")
+                return None
+
+            encoded_site_id = self._construct_site_url(site_id)
+
+            # Fetch fresh page from MS Graph
+            async with self.rate_limiter:
+                try:
+                    page = await self._safe_api_call(
+                        self.client.sites.by_site_id(encoded_site_id).pages.by_base_site_page_id(page_id).get()
+                    )
+                except Exception as page_error:
+                    if any(term in str(page_error).lower() for term in [HttpStatusCode.FORBIDDEN.value, "accessdenied", HttpStatusCode.NOT_FOUND.value, "notfound"]):
+                        self.logger.warning(f"Page {page_id} not accessible or not found at source")
+                        return None
+                    raise page_error
+
+            if not page:
+                self.logger.warning(f"Page {page_id} not found at source")
+                return None
+
+            # Check for changes using eTag
+            current_etag = getattr(page, 'e_tag', None)
+            is_updated = record.external_revision_id != current_etag
+
+            if not is_updated:
+                return None
+
+            self.logger.info(f"Page record {page_id} has changed at source. Updating.")
+
+            # Get site name for page record creation
+            site_name = ""
+            try:
+                async with self.rate_limiter:
+                    site_response = await self._safe_api_call(
+                        self.client.sites.by_site_id(encoded_site_id).get()
+                    )
+                if site_response:
+                    site_name = getattr(site_response, 'display_name', '') or getattr(site_response, 'name', '')
+            except Exception as e:
+                self.logger.warning(f"Could not fetch site name for site {site_id}: {e}")
+
+            # Create updated page record
+            page_record = await self._create_page_record(page, site_id, site_name, record)
+
+            if not page_record:
+                return None
+
+            # Get permissions
+            permissions = await self._get_page_permissions(site_id, page_id)
+
+            # Ensure we keep the internal DB ID
+            page_record.id = record.id
+
+            return (page_record, permissions)
+
+        except Exception as e:
+            self.logger.error(f"Error checking SharePoint page record {record.id} at source: {e}")
+            return None
+
+    async def _check_and_fetch_updated_list_item_record(
+        self, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Check and fetch updated list item record from SharePoint."""
+        try:
+            # Extract site_id and list_id from semantic_metadata
+            semantic_metadata = getattr(record, 'semantic_metadata', {}) or {}
+            site_id = semantic_metadata.get('site_id')
+            list_id = semantic_metadata.get('list_id')
+            item_id = record.external_record_id
+
+            if not site_id or not list_id or not item_id:
+                self.logger.warning(f"Missing site_id, list_id, or item_id for list item record {record.id}")
+                return None
+
+            encoded_site_id = self._construct_site_url(site_id)
+
+            # Fetch fresh list item from MS Graph
+            async with self.rate_limiter:
+                try:
+                    item = await self._safe_api_call(
+                        self.client.sites.by_site_id(encoded_site_id).lists.by_list_id(list_id).items.by_list_item_id(item_id).get()
+                    )
+                except Exception as item_error:
+                    if any(term in str(item_error).lower() for term in [HttpStatusCode.FORBIDDEN.value, "accessdenied", HttpStatusCode.NOT_FOUND.value, "notfound"]):
+                        self.logger.warning(f"List item {item_id} not accessible or not found at source")
+                        return None
+                    raise item_error
+
+            if not item:
+                self.logger.warning(f"List item {item_id} not found at source")
+                return None
+
+            # Check for changes using eTag
+            current_etag = getattr(item, 'e_tag', None)
+            is_updated = record.external_revision_id != current_etag
+
+            if not is_updated:
+                return None
+
+            self.logger.info(f"List item record {item_id} has changed at source. Updating.")
+
+            # Create updated list item record
+            list_item_record = await self._create_list_item_record(item, site_id, list_id)
+
+            if not list_item_record:
+                return None
+
+            # Get permissions
+            permissions = await self._get_list_item_permissions(site_id, list_id, item_id)
+
+            # Ensure we keep the internal DB ID
+            list_item_record.id = record.id
+
+            return (list_item_record, permissions)
+
+        except Exception as e:
+            self.logger.error(f"Error checking SharePoint list item record {record.id} at source: {e}")
+            return None
+
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None
+    ) -> NoReturn:
+        """SharePoint connector does not support dynamic filter options."""
+        raise NotImplementedError("SharePoint connector does not support dynamic filter options")
 
     @classmethod
     async def create_connector(cls, logger: Logger,

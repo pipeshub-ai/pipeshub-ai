@@ -45,6 +45,72 @@ class FilterCategory(str, Enum):
     INDEXING = "indexing"  # Applied at record level (what to index)
 
 
+class OptionSourceType(str, Enum):
+    """How filter options are provided"""
+    MANUAL = "manual"      # User types values (LIST/TAGS)
+    STATIC = "static"      # Predefined options (MULTISELECT with options list)
+    DYNAMIC = "dynamic"    # Fetched via API call (MULTISELECT/LIST with get_filter_options)
+
+@dataclass
+class FilterOption:
+    """
+    Standard format for filter option values.
+
+    Used for MULTISELECT and LIST filters with static or dynamic options.
+
+    Args:
+        id: Unique identifier (e.g., space ID, channel ID) - value stored in filter
+        label: Display text shown in UI (e.g., space name, channel display name)
+    """
+    id: str
+    label: str
+
+    def to_dict(self) -> Dict[str, str]:
+        """Convert to dictionary for JSON serialization"""
+        return {
+            "id": self.id,
+            "label": self.label
+        }
+
+
+@dataclass
+class FilterOptionsResponse:
+    """
+    Response format for filter options API.
+
+    Args:
+        success: Whether the request was successful
+        options: List of filter options
+        page: Current page number
+        limit: Number of items per page
+        has_more: Whether more results are available
+        cursor: Optional cursor for cursor-based pagination
+        message: Optional error or info message
+    """
+    success: bool
+    options: List[FilterOption]
+    page: int
+    limit: int
+    has_more: bool
+    cursor: Optional[str] = None
+    message: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization"""
+        result = {
+            "success": self.success,
+            "options": [opt.to_dict() for opt in self.options],
+            "page": self.page,
+            "limit": self.limit,
+            "hasMore": self.has_more
+        }
+        if self.cursor is not None:
+            result["cursor"] = self.cursor
+        if self.message is not None:
+            result["message"] = self.message
+        return result
+
+
 class FilterOperator:
     # String operators
     IS = "is"
@@ -155,6 +221,7 @@ class SyncFilterKey(str, Enum):
     FOLDER_IDS = "folder_ids"
     FOLDERS = "folders"
     PROJECT_IDS = "project_ids"
+    PROJECT_KEYS = "project_keys"
     SITE_IDS = "site_ids"
     CHANNEL_IDS = "channel_ids"
 
@@ -205,6 +272,8 @@ class IndexingFilterKey(str, Enum):
     PAGE_ATTACHMENTS = "page_attachments"
     BLOGPOST_COMMENTS = "blogpost_comments"
     BLOGPOST_ATTACHMENTS = "blogpost_attachments"
+    ISSUE_COMMENTS = "issue_comments"
+    ISSUE_ATTACHMENTS = "issue_attachments"
 
 
 # Type to operators mapping (for validation and UI)
@@ -253,15 +322,21 @@ class FilterField:
         required: Whether the field is mandatory
         default_value: Default value for the field
         default_operator: Default operator (must be valid for filter_type)
-        options: For MULTISELECT type, predefined options to select from (required)
+        options: For MULTISELECT/LIST with static options (option_source_type=STATIC)
+        option_source_type: How options are provided (MANUAL, STATIC, DYNAMIC)
 
     Value types by filter_type:
         STRING      → str
         BOOLEAN     → bool
         DATETIME    → tuple[int] or tuple[int, int] (epoch timestamps)
-        LIST        → List[str] (free-form tags)
-        MULTISELECT → List[str] (selected from predefined options)
+        LIST        → List[str] (manual tags or dynamic from API)
+        MULTISELECT → List[str] (static or dynamic options)
         NUMBER      → float (supports decimals)
+
+    Option Source Types:
+        MANUAL  → User types values (default for LIST)
+        STATIC  → Predefined options list (for MULTISELECT/LIST with options)
+        DYNAMIC → Fetched via connector's get_filter_options() method
     """
     name: str
     display_name: str
@@ -272,13 +347,33 @@ class FilterField:
     default_value: FilterValue = None
     default_operator: Optional[str] = None
     options: List[str] = dataclass_field(default_factory=list)
+    option_source_type: OptionSourceType = OptionSourceType.MANUAL
 
     def __post_init__(self) -> None:
-        """Set default values based on filter_type"""
+        """Set default values based on filter_type and validate configuration"""
         if self.default_value is None:
             self.default_value = self._get_default_for_type()
         if self.default_operator is None:
             self.default_operator = self._get_default_operator()
+
+        # Auto-detect option_source_type if not explicitly set
+        if self.option_source_type == OptionSourceType.MANUAL:
+            if self.options:
+                # Has static options defined
+                self.option_source_type = OptionSourceType.STATIC
+
+        # Validate option_source_type compatibility
+        if self.option_source_type == OptionSourceType.DYNAMIC:
+            if self.filter_type not in [FilterType.MULTISELECT, FilterType.LIST]:
+                raise ValueError(
+                    f"option_source_type=DYNAMIC only supported for MULTISELECT and LIST, "
+                    f"got {self.filter_type}"
+                )
+        elif self.option_source_type == OptionSourceType.STATIC:
+            if not self.options:
+                raise ValueError(
+                    "option_source_type=STATIC requires options list to be defined"
+                )
 
     def _get_default_for_type(self) -> Union[str, bool, List[str], tuple, None]:
         """Get default value based on type"""
@@ -321,6 +416,7 @@ class FilterField:
             "defaultValue": self.default_value,
             "defaultOperator": self.default_operator,
             "operators": self.operators,
+            "optionSourceType": self.option_source_type.value,
         }
 
         if self.options:
@@ -382,6 +478,7 @@ class Filter(BaseModel):
                             pass
 
             # Convert datetime value to tuple of epoch integers
+            # Also extract id from {id, label} objects for LIST and MULTISELECT filters
             if 'value' in data and 'type' in data:
                 filter_type_str = data['type']
                 if isinstance(filter_type_str, str):
@@ -404,6 +501,22 @@ class Filter(BaseModel):
                         data['value'] = (start, end)
                     else:
                         data['value'] = None
+                elif filter_type in (FilterType.LIST, FilterType.MULTISELECT) and data['value'] is not None:
+                    value = data['value']
+                    # Extract id from {id, label} objects if present
+                    if isinstance(value, list):
+                        extracted_ids = []
+                        for item in value:
+                            if isinstance(item, dict) and 'id' in item:
+                                # New format: {id, label} object - extract id
+                                extracted_ids.append(item['id'])
+                            elif isinstance(item, str):
+                                # Old format: string id (backward compatibility)
+                                extracted_ids.append(item)
+                            else:
+                                # Fallback: convert to string
+                                extracted_ids.append(str(item))
+                        data['value'] = extracted_ids
 
         return data
 

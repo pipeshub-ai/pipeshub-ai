@@ -25,12 +25,8 @@ from app.connectors.core.registry.connector_builder import (
     CustomField,
     DocumentationLink,
 )
-from app.models.entities import (
-    FileRecord,
-    Record,
-    RecordGroupType,
-    RecordType,
-)
+from app.connectors.core.registry.filters import FilterOptionsResponse
+from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -637,6 +633,17 @@ class WebConnector(BaseConnector):
         """Reindex records - not implemented for Web connector yet."""
         self.logger.warning("Reindex not implemented for Web connector")
         pass
+
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None
+    ) -> FilterOptionsResponse:
+        """Web connector does not support dynamic filter options."""
+        raise NotImplementedError("Web connector does not support dynamic filter options")
 
     async def handle_webhook_notification(self, notification: Dict) -> None:
         """Web connector doesn't support webhooks."""
