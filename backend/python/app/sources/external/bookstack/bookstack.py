@@ -75,11 +75,11 @@ class BookStackDataSource:
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
-        params: Dict[str, Union[str, int]] = {}
+        params: Dict[str, Union[str, str]] = {}
         if count is not None:
-            params["count"] = count
+            params["count"] = str(count)
         if offset is not None:
-            params["offset"] = offset
+            params["offset"] = str(offset)
         if sort is not None:
             params["sort"] = sort
         if filter is not None:
@@ -294,11 +294,11 @@ class BookStackDataSource:
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
-        params: Dict[str, Union[str, int]] = {}
+        params: Dict[str, str] = {}
         if count is not None:
-            params["count"] = count
+            params["count"] = str(count)
         if offset is not None:
-            params["offset"] = offset
+            params["offset"] = str(offset)
         if sort is not None:
             params["sort"] = sort
         if filter is not None:
@@ -313,7 +313,7 @@ class BookStackDataSource:
             method="GET",
             url=url,
             headers=headers,
-            query_params=params,
+            query=params,
             body=None
         )
         try:
@@ -658,11 +658,11 @@ class BookStackDataSource:
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
-        params: Dict[str, Union[str, int]] = {}
+        params: Dict[str, Union[str, str]] = {}
         if count is not None:
-            params["count"] = count
+            params["count"] = str(count)
         if offset is not None:
-            params["offset"] = offset
+            params["offset"] = str(offset)
         if sort is not None:
             params["sort"] = sort
         if filter is not None:
@@ -677,7 +677,7 @@ class BookStackDataSource:
             method="GET",
             url=url,
             headers=headers,
-            query_params=params,
+            query=params,
             body=None
         )
 
@@ -1389,11 +1389,11 @@ class BookStackDataSource:
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
-        params: Dict[str, Union[str, int]] = {}
+        params: Dict[str, Union[str, str]] = {}
         if count is not None:
-            params["count"] = count
+            params["count"] = str(count)
         if offset is not None:
-            params["offset"] = offset
+            params["offset"] = str(offset)
         if sort is not None:
             params["sort"] = sort
         if filter is not None:
@@ -1586,7 +1586,9 @@ class BookStackDataSource:
         self,
         query: str = None,
         page: Optional[int] = None,
-        count: Optional[int] = None
+        count: Optional[int] = None,
+        type: Optional[str] = None,
+        filter: Optional[Dict[str, str]] = None,
     ) -> BookStackResponse:
         """Search across all content types (shelves, books, chapters, pages)
 
@@ -1599,12 +1601,17 @@ class BookStackDataSource:
             BookStackResponse: Response object with success status and data/error
         """
         params: Dict[str, Union[str, int]] = {}
+        if type:
+            query = f"{query} {{type:{type}}}"
         if query is not None:
             params["query"] = query
         if page is not None:
-            params["page"] = page
+            params["page"] = str(page)
         if count is not None:
-            params["count"] = count
+            params["count"] = str(count)
+        if filter is not None:
+            for key, value in filter.items():
+                params[f'filter[{key}]'] = value
 
         url = self.base_url + "/api/search"
 
@@ -1614,9 +1621,11 @@ class BookStackDataSource:
             method="GET",
             url=url,
             headers=headers,
-            query_params=params,
+            query=params,
             body=None
         )
+
+        print("request:", request)
 
         try:
             response = await self.http.execute(request)
@@ -1642,11 +1651,11 @@ class BookStackDataSource:
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
-        params: Dict[str, Union[str, int]] = {}
+        params: Dict[str, Union[str, str]] = {}
         if count is not None:
-            params["count"] = count
+            params["count"] = str(count)
         if offset is not None:
-            params["offset"] = offset
+            params["offset"] = str(offset)
         if sort is not None:
             params["sort"] = sort
         if filter is not None:
@@ -2114,11 +2123,11 @@ class BookStackDataSource:
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
-        params: Dict[str, Union[str, int]] = {}
+        params: Dict[str, Union[str, str]] = {}
         if count is not None:
-            params["count"] = count
+            params["count"] = str(count)
         if offset is not None:
-            params["offset"] = offset
+            params["offset"] = str(offset)
         if sort is not None:
             params["sort"] = sort
         if filter is not None:
@@ -2339,11 +2348,11 @@ class BookStackDataSource:
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
-        params: Dict[str, Union[str, int]] = {}
+        params: Dict[str, Union[str, str]] = {}
         if count is not None:
-            params["count"] = count
+            params["count"] = str(count)
         if offset is not None:
-            params["offset"] = offset
+            params["offset"] = str(offset)
         if sort is not None:
             params["sort"] = sort
         if filter is not None:
@@ -2533,11 +2542,11 @@ class BookStackDataSource:
         Returns:
             BookStackResponse: Response object with success status and data/error
         """
-        params: Dict[str, Union[str, int]] = {}
+        params: Dict[str, Union[str, str]] = {}
         if count is not None:
-            params["count"] = count
+            params["count"] = str(count)
         if offset is not None:
-            params["offset"] = offset
+            params["offset"] = str(offset)
         if sort is not None:
             params["sort"] = sort
         if filter is not None:
