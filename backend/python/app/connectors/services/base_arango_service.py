@@ -559,15 +559,8 @@ class BaseArangoService:
                             RETURN v
                     )
                     
-                    // If the record connects to a file collection, verify isFile == true
-                    // For any other type (webpage, ticket, etc.), automatically accept
-                    LET isValidRecord = (
-                        targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
-                            ? targetDoc.isFile == true
-                            : true  // Not a file (webpage, ticket, etc.) - accept it
-                    )
-                    
-                    FILTER isValidRecord
+                    // A record is valid if it's not a file, or if it is a file and not a folder.
+                    FILTER targetDoc == null OR NOT IS_SAME_COLLECTION("files", targetDoc._id) OR targetDoc.isFile == true
                     RETURN doc
             )
 
