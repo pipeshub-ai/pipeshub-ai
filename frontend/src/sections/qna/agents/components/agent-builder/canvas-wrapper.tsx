@@ -11,7 +11,7 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
   nodeTemplates,
   loading,
   activeAgentConnectors,
-  activeConnectors,
+  configuredConnectors,
   connectorRegistry,
   isBusiness,
   nodes,
@@ -42,7 +42,7 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
       loading={loading}
       sidebarWidth={sidebarWidth}
       activeAgentConnectors={activeAgentConnectors}
-      activeConnectors={activeConnectors}
+      configuredConnectors={configuredConnectors}
       connectorRegistry={connectorRegistry}
       isBusiness={isBusiness}
     />
@@ -61,6 +61,8 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
       setNodes={setNodes}
       sidebarOpen={sidebarOpen}
       sidebarWidth={sidebarWidth}
+      configuredConnectors={configuredConnectors}
+      activeAgentConnectors={activeAgentConnectors}
       onNodeEdit={onNodeEdit}
       onNodeDelete={onNodeDelete}
       onError={onError}

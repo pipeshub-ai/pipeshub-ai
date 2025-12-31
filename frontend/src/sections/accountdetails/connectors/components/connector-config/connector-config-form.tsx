@@ -281,7 +281,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
       );
     }
     // Sync Settings mode: show filters (if available) and sync settings (always shown)
-    // This mode is for viewing sync settings (filters + sync) - never toggle, view-only
+    // This mode allows editing filters and sync settings
     if (syncSettingsMode) {
       // If filters are available, show them as the first step
       if (hasFilters) {
@@ -295,7 +295,6 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
                 onFieldChange={handleFieldChange}
                 onRemoveFilter={handleRemoveFilter}
                 connectorId={connector._key}
-                readOnly
               />
             );
           case 1:
@@ -306,7 +305,6 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
                 formErrors={formErrors.sync}
                 onFieldChange={handleFieldChange}
                 saving={saving}
-                readOnly
               />
             );
           default:
@@ -321,7 +319,6 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           formErrors={formErrors.sync}
           onFieldChange={handleFieldChange}
           saving={saving}
-          readOnly
         />
       );
     }
@@ -844,7 +841,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           </Alert>
         )}
 
-        {/* View-only mode notification for Sync Settings */}
+        {/* Info notification for Sync Settings */}
         {syncSettingsMode && (
           <Alert
             severity="info"
@@ -861,11 +858,10 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             }}
           >
             <AlertTitle sx={{ fontWeight: 600, fontSize: '0.8125rem', mb: 0.25 }}>
-              View-Only Mode
+              Sync Settings
             </AlertTitle>
             <Typography variant="body2" sx={{ fontSize: '0.75rem', lineHeight: 1.5 }}>
-              You are viewing the current sync settings (filters and sync configuration) in read-only mode. 
-              Changes can be made while enabling the connector sync.
+              Configure filters and sync settings. The connector must be disabled and authenticated (for OAUTH connectors) to save changes.
             </Typography>
           </Alert>
         )}
@@ -1075,8 +1071,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
               Next
             </Button>
           ) : (
-            !syncSettingsMode && (
-              <Button
+            <Button
                 variant="contained"
                 color="primary"
                 onClick={handleSave}
@@ -1106,7 +1101,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
                   },
                   '&:disabled': {
                     boxShadow: 'none',
-                    opacity: isConnectorActive && !enableMode ? 0.5 : 0.38,
+                    opacity: (isConnectorActive && !enableMode && !syncSettingsMode) ? 0.5 : 0.38,
                   },
                   transition: 'all 0.2s ease',
                 }}
@@ -1115,19 +1110,22 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
                   ? enableMode
                     ? 'Saving & Enabling...'
                     : syncOnly
-                      ? 'Saving Filters & Sync...'
-                      : authOnly
-                        ? 'Saving Auth...'
-                        : 'Saving...'
+                      ? 'Saving Filters ...'
+                      : syncSettingsMode
+                        ? 'Saving Filters ...'
+                        : authOnly
+                          ? 'Saving Auth...'
+                          : 'Saving...'
                   : enableMode
                     ? 'Save Filters & Enable Sync'
                     : syncOnly
-                      ? 'Save Filters & Sync'
-                      : authOnly
-                        ? 'Save Auth Settings'
-                        : 'Save Configuration'}
+                      ? 'Save Filters'
+                      : syncSettingsMode
+                        ? 'Save Filters'
+                        : authOnly
+                          ? 'Save Auth Settings'
+                          : 'Save Configuration'}
               </Button>
-            )
           )}
         </Box>
       </DialogActions>

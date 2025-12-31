@@ -41,7 +41,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
     availableModels,
     availableKnowledgeBases,
     activeAgentConnectors,
-    activeConnectors,
+    configuredConnectors,
     connectorRegistry,
     loading,
     loadedAgent,
@@ -88,7 +88,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
     availableModels,
     availableKnowledgeBases,
     activeAgentConnectors,
-    activeConnectors
+    configuredConnectors
   );
 
   // Flow reconstruction hook
@@ -556,7 +556,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         nodeTemplates={nodeTemplates}
         loading={loading}
         activeAgentConnectors={activeAgentConnectors}
-        activeConnectors={activeConnectors}
+        configuredConnectors={configuredConnectors}
         connectorRegistry={connectorRegistry}
         isBusiness={isBusiness}
         nodes={nodes}
@@ -584,7 +584,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
           setNodeToDelete(nodeId);
           setDeleteDialogOpen(true);
         }}
-        onError={(errorMsg: string) => setError(errorMsg)}
+        onError={(errorMsg) => setError(errorMsg)}
       />
 
       {/* Notifications */}
