@@ -551,14 +551,14 @@ class BaseArangoService:
                     FILTER doc.connectorId == @connector_id
                     FILTER doc.recordType != @drive_record_type
                     FILTER doc.isDeleted != true
-                    
+
                     // Filter out folders by checking the connected file document via isOfType edge
                     LET targetDoc = FIRST(
                         FOR v IN 1..1 OUTBOUND doc._id @@is_of_type
                             LIMIT 1
                             RETURN v
                     )
-                    
+
                     // A record is valid if it's not a file, or if it is a file and not a folder.
                     FILTER targetDoc == null OR NOT IS_SAME_COLLECTION("files", targetDoc._id) OR targetDoc.isFile == true
                     RETURN doc
