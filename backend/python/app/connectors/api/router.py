@@ -144,6 +144,89 @@ class ReindexFailedRequest(BaseModel):
     origin: str     # CONNECTOR, UPLOAD
 
 
+async def get_validated_connector_instance(
+    connector_id: str,
+    request: Request,
+) -> Dict[str, Any]:
+    """
+    FastAPI dependency to validate user authentication, retrieve connector instance,
+    check beta access, and verify permissions.
+
+    This dependency centralizes common validation logic used across multiple
+    connector instance update endpoints to reduce code duplication.
+
+    Args:
+        connector_id: Unique connector instance key
+        request: FastAPI request object
+
+    Returns:
+        Dictionary containing the validated connector instance
+
+    Raises:
+        HTTPException: 401 if not authenticated, 404 if instance not found,
+                      403 for permission violations or beta access issues
+    """
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+
+    # Extract user information
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+
+    # Validate authentication
+    if not user_id or not org_id:
+        logger.error(f"User not authenticated: {user_id} {org_id}")
+        raise HTTPException(
+            status_code=HttpStatusCode.UNAUTHORIZED.value,
+            detail="User not authenticated"
+        )
+
+    # Retrieve connector instance
+    instance = await connector_registry.get_connector_instance(
+        connector_id=connector_id,
+        user_id=user_id,
+        org_id=org_id,
+        is_admin=is_admin
+    )
+
+    if not instance:
+        logger.error(f"Connector instance {connector_id} not found or access denied")
+        raise HTTPException(
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail=f"Connector instance {connector_id} not found or access denied"
+        )
+
+    # Check beta connector access
+    connector_type = instance.get("type", "")
+    await check_beta_connector_access(connector_type, request)
+
+    # Validate permissions
+    if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+        logger.error("Only administrators can update team connectors")
+        raise HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value,
+            detail="Only administrators can update team connectors"
+        )
+
+    if instance.get("createdBy") != user_id and not is_admin:
+        logger.error("Only the creator or an administrator can update this connector")
+        raise HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value,
+            detail="Only the creator or an administrator can update this connector"
+        )
+
+    if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+        logger.error("Only the creator can update this connector")
+        raise HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value,
+            detail="Only the creator can update this connector"
+        )
+
+    return instance
+
+
 async def get_arango_service(request: Request) -> BaseArangoService:
     container: ConnectorAppContainer = request.app.container
     arango_service = await container.arango_service()
@@ -3219,15 +3302,15 @@ async def update_connector_instance_auth_config(
     connector_registry = request.app.state.connector_registry
 
     try:
+        # Use dependency to validate and retrieve connector instance
+        instance = await get_validated_connector_instance(connector_id, request)
+
+        # Extract user info for later use
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
-        if not user_id or not org_id:
-            logger.error(f"User not authenticated: {user_id} {org_id}")
-            raise HTTPException(
-                status_code=HttpStatusCode.UNAUTHORIZED.value,
-                detail="User not authenticated"
-            )
+        connector_type = instance.get("type", "")
+
         body = await request.json()
         base_url = body.get("baseUrl", "")
 
@@ -3240,40 +3323,12 @@ async def update_connector_instance_auth_config(
         # Trim whitespace from config values before processing
         body = _trim_connector_config(body)
 
-        # Verify instance exists
-        instance = await connector_registry.get_connector_instance(
-            connector_id=connector_id,
-            user_id=user_id,
-            org_id=org_id,
-            is_admin=is_admin
-        )
-        if not instance:
-            logger.error(f"Connector instance {connector_id} not found or access denied")
+        # Additional validation: Connector must be disabled for auth config updates
+        if instance.get("isActive"):
+            logger.error("Cannot update authentication configuration while connector is active. Please disable the connector first.")
             raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail=f"Connector instance {connector_id} not found or access denied"
-            )
-
-        connector_type = instance.get("type", "")
-        await check_beta_connector_access(connector_type, request)
-
-        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
-            logger.error("Only administrators can update team connectors")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only administrators can update team connectors"
-            )
-        if instance.get("createdBy") != user_id and not is_admin:
-            logger.error("Only the creator or an administrator can update this connector")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only the creator or an administrator can update this connector"
-            )
-        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
-            logger.error("Only the creator can update this connector")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only the creator can update this connector"
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Cannot update authentication configuration while connector is active. Please disable the connector first."
             )
 
         config_service = container.config_service()
@@ -3407,15 +3462,14 @@ async def update_connector_instance_filters_sync_config(
     connector_registry = request.app.state.connector_registry
 
     try:
+        # Use dependency to validate and retrieve connector instance
+        instance = await get_validated_connector_instance(connector_id, request)
+
+        # Extract user info for later use
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
-        if not user_id or not org_id:
-            logger.error(f"User not authenticated: {user_id} {org_id}")
-            raise HTTPException(
-                status_code=HttpStatusCode.UNAUTHORIZED.value,
-                detail="User not authenticated"
-            )
+
         body = await request.json()
 
         if "sync" not in body and "filters" not in body:
@@ -3427,42 +3481,6 @@ async def update_connector_instance_filters_sync_config(
         # Trim whitespace from config values before processing
         body = _trim_connector_config(body)
 
-        # Verify instance exists
-        instance = await connector_registry.get_connector_instance(
-            connector_id=connector_id,
-            user_id=user_id,
-            org_id=org_id,
-            is_admin=is_admin
-        )
-        if not instance:
-            logger.error(f"Connector instance {connector_id} not found or access denied")
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail=f"Connector instance {connector_id} not found or access denied"
-            )
-
-        connector_type = instance.get("type", "")
-        await check_beta_connector_access(connector_type, request)
-
-        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
-            logger.error("Only administrators can update team connectors")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only administrators can update team connectors"
-            )
-        if instance.get("createdBy") != user_id and not is_admin:
-            logger.error("Only the creator or an administrator can update this connector")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only the creator or an administrator can update this connector"
-            )
-        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
-            logger.error("Only the creator can update this connector")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only the creator can update this connector"
-            )
-
         # Validation: Connector must be disabled
         if instance.get("isActive"):
             logger.error("Cannot update filters and sync configuration while connector is active. Please disable the connector first.")
@@ -3470,17 +3488,6 @@ async def update_connector_instance_filters_sync_config(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Cannot update filters and sync configuration while connector is active. Please disable the connector first."
             )
-
-        # Validation: For OAUTH connectors, must be authenticated
-        auth_type = instance.get("authType", "").upper()
-        if auth_type in ["OAUTH", "OAUTH_ADMIN_CONSENT"]:
-            is_authenticated = instance.get("isAuthenticated", False)
-            if not is_authenticated:
-                logger.error("Cannot update filters and sync configuration. Connector authentication is required for OAUTH connectors.")
-                raise HTTPException(
-                    status_code=HttpStatusCode.BAD_REQUEST.value,
-                    detail="Cannot update filters and sync configuration. Please authenticate the connector first."
-                )
 
         config_service = container.config_service()
         config_path = _get_config_path_for_instance(connector_id)
@@ -3582,56 +3589,18 @@ async def update_connector_instance_config(
     connector_registry = request.app.state.connector_registry
 
     try:
+        # Use dependency to validate and retrieve connector instance
+        instance = await get_validated_connector_instance(connector_id, request)
+
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
-        if not user_id or not org_id:
-            logger.error(f"User not authenticated: {user_id} {org_id}")
-            raise HTTPException(
-                status_code=HttpStatusCode.UNAUTHORIZED.value,
-                detail="User not authenticated"
-            )
+        connector_type = instance.get("type", "")
         body = await request.json()
         base_url = body.get("baseUrl", "")
 
         # Trim whitespace from config values before processing
         body = _trim_connector_config(body)
-
-        # Verify instance exists
-        instance = await connector_registry.get_connector_instance(
-            connector_id=connector_id,
-            user_id=user_id,
-            org_id=org_id,
-            is_admin=is_admin
-        )
-        if not instance:
-            logger.error(f"Connector instance {connector_id} not found or access denied")
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail=f"Connector instance {connector_id} not found or access denied"
-            )
-
-        connector_type = instance.get("type", "")
-        await check_beta_connector_access(connector_type, request)
-
-        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
-            logger.error("Only administrators can update team connectors")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only administrators can update team connectors"
-            )
-        if instance.get("createdBy") != user_id and not is_admin:
-            logger.error("Only the creator or an administrator can update this connector")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only the creator or an administrator can update this connector"
-            )
-        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
-            logger.error("Only the creator can update this connector")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only the creator can update this connector"
-            )
 
         # Prevent saving configuration when connector is active
         # Only allow filter/sync updates when connector is active (these don't require re-initialization)
