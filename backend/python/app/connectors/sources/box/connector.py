@@ -357,18 +357,18 @@ class BoxConnector(BaseConnector):
         """
         if obj is None:
             return {}
-        
+
         if isinstance(obj, dict):
             return obj
-            
+
         if hasattr(obj, 'to_dict') and callable(getattr(obj, 'to_dict')):
             return obj.to_dict()
-            
+
         if hasattr(obj, 'response_object'):
             val = getattr(obj, 'response_object')
             if isinstance(val, dict):
                 return val
-                
+
         return {}
 
     async def _process_box_entry(
@@ -700,7 +700,7 @@ class BoxConnector(BaseConnector):
                     )
                     if user:
                         found_users.append(user)
-            
+
             if len(found_users) < len(emails):
                 missing_count = len(emails) - len(found_users)
                 self.logger.debug(f"⚠️ {missing_count} user(s) not found in database for provided emails")
@@ -723,7 +723,7 @@ class BoxConnector(BaseConnector):
                 connector_id=self.connector_id
             )
             user_map = {u.email.lower(): u for u in all_users if u.email}
-            
+
             self.logger.info(f"Pre-fetched {len(user_map)} users for group sync lookup.")
 
             # Track all IDs found in Box
@@ -773,14 +773,14 @@ class BoxConnector(BaseConnector):
                     )
 
                     group_member_users = []
-                    
+
                     if members_response.success:
-                        members_data = self._to_dict(members_response.data) 
+                        members_data = self._to_dict(members_response.data)
                         memberships = members_data.get('entries', [])
                         for membership in memberships:
                             user_info = membership.get('user', {})
                             email = user_info.get('login')
-                            
+
                             if email:
                                 # Lookup user in our pre-fetched map
                                 found_user = user_map.get(email.lower())
@@ -1423,7 +1423,7 @@ class BoxConnector(BaseConnector):
                     continue
 
                 file_entry = self._to_dict(res.data)
-                
+
                 if not file_entry:
                     self.logger.warning("Converted file entry is empty")
                     continue
@@ -1516,7 +1516,7 @@ class BoxConnector(BaseConnector):
 
             if response.success:
                 file_data = self._to_dict(response.data)
-                
+
                 # shared_link might be None, dict, or Object (if _to_dict was shallow, though it usually handles it)
                 shared_link = file_data.get('shared_link')
                 if isinstance(shared_link, dict):
@@ -1535,7 +1535,7 @@ class BoxConnector(BaseConnector):
                 if link_response.success:
                     file_data = self._to_dict(link_response.data)
                     shared_link = file_data.get('shared_link')
-                    
+
                     if isinstance(shared_link, dict):
                         download_url = shared_link.get('download_url')
                 else:

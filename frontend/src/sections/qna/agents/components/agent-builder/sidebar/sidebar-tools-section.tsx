@@ -44,12 +44,8 @@ export const SidebarToolsSection: React.FC<SidebarToolsSectionProps> = ({
         const { connectorIcon, tools, activeAgentInstances, isConfigured, isAgentActive } = data;
         const connectorTypeKey = `tool-type-${displayName}`;
         const isTypeExpanded = expandedApps[connectorTypeKey];
-        const needsConfiguration = connectorNeedsConfiguration(
-          activeAgentInstances,
-          isConfigured,
-          isAgentActive
-        );
-        const connectorStatusObj = { isConfigured, isAgentActive };
+        // Check if we have any configured instances at all
+        const needsConfiguration = activeAgentInstances.length === 0 || !activeAgentInstances.some(inst => inst.isConfigured);
 
         // Needs configuration - show with configure icon
         if (needsConfiguration) {
@@ -93,7 +89,7 @@ export const SidebarToolsSection: React.FC<SidebarToolsSectionProps> = ({
                       template={tool}
                       isSubItem
                       sectionType="tools"
-                      connectorStatus={connectorStatusObj}
+                      connectorStatus={{ isConfigured, isAgentActive: false }}
                       connectorIconPath={connectorIcon}
                       itemIcon={getToolIcon(tool.type, tool.defaultConfig?.appName || '')}
                     />
@@ -104,19 +100,20 @@ export const SidebarToolsSection: React.FC<SidebarToolsSectionProps> = ({
           );
         }
 
-        // Single active configured instance - make whole group draggable
+        // Single configured instance - make whole group draggable
         if (activeAgentInstances.length === 1) {
           const instance = activeAgentInstances[0];
           const instanceKey = `tool-instance-${instance._key || instance.name}`;
           const isInstanceExpanded = expandedApps[instanceKey];
           const toolGroupDragType = `tool-group-${data.connectorType.toLowerCase()}`;
+          // Use instance-specific status, not group-level status
           const dragData = createToolGroupDragData(
             tools,
             instance,
             data.connectorType,
             connectorIcon,
-            isConfigured,
-            isAgentActive
+            instance.isConfigured || false,
+            instance.isAgentActive || false
           );
 
           return (
@@ -153,7 +150,10 @@ export const SidebarToolsSection: React.FC<SidebarToolsSectionProps> = ({
                       template={tool}
                       isSubItem
                       sectionType="tools"
-                      connectorStatus={connectorStatusObj}
+                      connectorStatus={{ 
+                        isConfigured: instance.isConfigured || false, 
+                        isAgentActive: instance.isAgentActive || false 
+                      }}
                       connectorInstance={instance}
                       connectorIconPath={connectorIcon}
                       itemIcon={getToolIcon(tool.type, tool.defaultConfig?.appName || '')}
@@ -181,13 +181,14 @@ export const SidebarToolsSection: React.FC<SidebarToolsSectionProps> = ({
                 const instanceKey = `tool-instance-${instance._key || instance.id}`;
                 const isInstanceExpanded = expandedApps[instanceKey];
                 const toolGroupDragType = `tool-group-${data.connectorType.toLowerCase()}`;
+                // Use instance-specific status, not group-level status
                 const dragData = createToolGroupDragData(
                   tools,
                   instance,
                   data.connectorType,
                   connectorIcon,
-                  isConfigured,
-                  isAgentActive
+                  instance.isConfigured || false,
+                  instance.isAgentActive || false
                 );
 
                 return (
@@ -224,7 +225,10 @@ export const SidebarToolsSection: React.FC<SidebarToolsSectionProps> = ({
                             template={tool}
                             isSubItem
                             sectionType="tools"
-                            connectorStatus={connectorStatusObj}
+                            connectorStatus={{ 
+                              isConfigured: instance.isConfigured || false, 
+                              isAgentActive: instance.isAgentActive || false 
+                            }}
                             connectorInstance={instance}
                             connectorIconPath={connectorIcon}
                             itemIcon={getToolIcon(tool.type, tool.defaultConfig?.appName || '')}

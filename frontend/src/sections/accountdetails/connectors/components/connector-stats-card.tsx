@@ -600,7 +600,7 @@ export const ConnectorStatsCard = ({
       </Paper>
       <Snackbar
         open={snackbar.open}
-        autoHideDuration={4000}
+        autoHideDuration={10000}
         onClose={handleCloseSnackbar}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
         sx={{ mt: 6, mr: 2, zIndex: 9999 }}

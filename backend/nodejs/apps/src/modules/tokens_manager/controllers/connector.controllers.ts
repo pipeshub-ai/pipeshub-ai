@@ -566,6 +566,135 @@ export const updateConnectorInstanceConfig =
   };
 
 /**
+ * Update authentication configuration for a connector instance.
+ */
+export const updateConnectorInstanceAuthConfig =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorId } = req.params;
+      const { auth, baseUrl } = req.body;
+
+      if (!connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+
+      if (!auth) {
+        throw new BadRequestError('Auth configuration is required');
+      }
+
+      const config = {
+        auth,
+        baseUrl: baseUrl,
+      };
+
+      logger.info(`Updating connector instance auth config for ${connectorId}`);
+
+      const isAdmin = await isUserAdmin(req);
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+        'X-Is-Admin': isAdmin ? 'true' : 'false',
+      };
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/config/auth`,
+        HttpMethod.PUT,
+        headers,
+        config,
+      );
+
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Updating connector instance auth config',
+        'Connector instance not found',
+      );
+    } catch (error: any) {
+      logger.error('Error updating connector instance auth config', {
+        error: error.message,
+        connectorId: req.params.connectorId,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handledError = handleBackendError(
+        error,
+        'update connector instance auth config',
+      );
+      next(handledError);
+    }
+  };
+
+/**
+ * Update filters and sync configuration for a connector instance.
+ * Validates that connector is not active and authentication is valid.
+ */
+export const updateConnectorInstanceFiltersSyncConfig =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorId } = req.params;
+      const { sync, filters } = req.body;
+
+      if (!connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+
+      if (!sync && !filters) {
+        throw new BadRequestError('Sync or filters configuration is required');
+      }
+
+      const config = {
+        sync,
+        filters,
+      };
+
+      logger.info(`Updating connector instance filters-sync config for ${connectorId}`);
+
+      const isAdmin = await isUserAdmin(req);
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+        'X-Is-Admin': isAdmin ? 'true' : 'false',
+      };
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/config/filters-sync`,
+        HttpMethod.PUT,
+        headers,
+        config,
+      );
+
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Updating connector instance filters-sync config',
+        'Connector instance not found',
+      );
+    } catch (error: any) {
+      logger.error('Error updating connector instance filters-sync config', {
+        error: error.message,
+        connectorId: req.params.connectorId,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handledError = handleBackendError(
+        error,
+        'update connector instance filters-sync config',
+      );
+      next(handledError);
+    }
+  };
+
+/**
  * Delete a connector instance.
  */
 export const deleteConnectorInstance =

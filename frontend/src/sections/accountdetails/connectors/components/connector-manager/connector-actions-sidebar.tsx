@@ -21,7 +21,7 @@ import playIcon from '@iconify-icons/mdi/play';
 import keyIcon from '@iconify-icons/mdi/key';
 import deleteIcon from '@iconify-icons/mdi/delete';
 import editIcon from '@iconify-icons/mdi/pencil';
-import syncIcon from '@iconify-icons/mdi/sync';
+import filterIcon from '@iconify-icons/mdi/filter';
 import { Connector, ConnectorToggleType } from '../../types/types';
 
 interface ConnectorActionsSidebarProps {
@@ -241,7 +241,7 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
               variant="outlined"
               fullWidth
               size="small"
-              startIcon={<Iconify icon={syncIcon} width={14} height={14} />}
+              startIcon={<Iconify icon={filterIcon} width={14} height={14} />}
               onClick={onConfigureSync}
               sx={{
                 textTransform: 'none',
@@ -250,7 +250,7 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
                 borderRadius: 1,
               }}
             >
-              View Sync Settings
+              Filter Settings
             </Button>
           )}
 

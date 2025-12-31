@@ -38,7 +38,7 @@ interface FlowBuilderSidebarProps {
   loading: boolean;
   sidebarWidth: number;
   activeAgentConnectors: Connector[];
-  activeConnectors: Connector[];
+  configuredConnectors: Connector[];
   connectorRegistry: any[];
   isBusiness: boolean;
 }
@@ -49,7 +49,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
   loading,
   sidebarWidth,
   activeAgentConnectors,
-  activeConnectors,
+  configuredConnectors,
   connectorRegistry,
   isBusiness,
 }) => {
@@ -66,7 +66,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
   const [expandedApps, setExpandedApps] = useState<Record<string, boolean>>({});
 
   // Memoize all connectors
-  const allConnectors = useMemo(() => [...activeConnectors], [activeConnectors]);
+  const allConnectors = useMemo(() => [...configuredConnectors], [configuredConnectors]);
 
   // Filter templates based on search query
   const filteredTemplates = useMemo(
@@ -86,10 +86,11 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
     [allConnectors]
   );
 
-  // Group tools by connector type with agent instance info
+  // Group tools by connector type using configured connectors
+  // Uses configured (not active/sync-enabled) connectors so users see all their connectors
   const toolsGroupedByConnectorType = useMemo(
-    () => groupToolsByConnectorType(toolsByAppName, activeAgentConnectors, connectorRegistry),
-    [toolsByAppName, activeAgentConnectors, connectorRegistry]
+    () => groupToolsByConnectorType(toolsByAppName, configuredConnectors, connectorRegistry),
+    [toolsByAppName, configuredConnectors, connectorRegistry]
   );
 
   // Get memory-related nodes for Knowledge section

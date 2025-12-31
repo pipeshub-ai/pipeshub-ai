@@ -1,5 +1,5 @@
 // src/sections/agents/components/flow-builder-canvas.tsx
-import React, { useRef, useCallback } from 'react';
+import React, { useRef, useCallback, useMemo } from 'react';
 import {
   ReactFlow,
   MiniMap,
@@ -35,7 +35,7 @@ import playIcon from '@iconify-icons/mdi/play';
 // Import the enhanced FlowNode component
 import FlowNode from './flow-node';
 import { normalizeDisplayName } from '../../utils/agent';
-import type { NodeTemplate } from '../../types/agent';
+import type { AgentBuilderError, NodeTemplate } from '../../types/agent';
  
 interface FlowNodeData extends Record<string, unknown> {
   id: string;
@@ -63,9 +63,11 @@ interface FlowBuilderCanvasProps {
   setNodes: React.Dispatch<React.SetStateAction<Node<FlowNodeData>[]>>;
   sidebarOpen: boolean;
   sidebarWidth: number;
+  configuredConnectors?: any[];
+  activeAgentConnectors?: any[];
   onNodeEdit?: (nodeId: string, data: any) => void;
   onNodeDelete?: (nodeId: string) => void;
-  onError?: (error: string) => void;
+  onError?: (error: string | import('../../types/agent').AgentBuilderError) => void;
 }
 
 // Enhanced Controls Component that uses ReactFlow context
@@ -197,6 +199,8 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
   setNodes,
   sidebarOpen,
   sidebarWidth,
+  configuredConnectors = [],
+  activeAgentConnectors = [],
   onNodeEdit,
   onNodeDelete,
   onError,
@@ -257,23 +261,108 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
       const isConnectorConfigured = event.dataTransfer.getData('isConfigured') === 'true';
       const isConnectorAgentActive = event.dataTransfer.getData('isAgentActive') === 'true';
       
+      // Find connector from drag data - prioritize the specific connectorId from drag event
+      const findConnector = (): { id: string; name: string } | null => {
+        // If we have connectorId from drag data, use it directly (this is the specific instance being dragged)
+        if (connectorId) {
+          // Try to find the connector object to get the name, searching in both lists
+          const connector = 
+            configuredConnectors.find((c: any) => c._key === connectorId || (c as any).id === connectorId) ||
+            activeAgentConnectors.find((c: any) => c._key === connectorId || (c as any).id === connectorId);
+          
+          // Always return the connectorId from drag data (the specific instance the user dragged)
+          // This ensures we navigate to the correct connector instance, not just the first match
+          return {
+            id: connectorId, // Use the specific connectorId from drag data - this is the instance the user selected
+            name: connector?.name || connectorName || connectorType || template.defaultConfig?.appName || toolAppName || 'Connector'
+          };
+        }
+        
+        // Fallback: If no connectorId in drag data, try to find by connectorType/appName
+        // This should rarely happen if drag data is set correctly
+        const appName = template.defaultConfig?.appName || toolAppName || connectorType;
+        if (appName) {
+          const connector = configuredConnectors.find((c: any) => 
+            c.name?.toUpperCase() === appName.toUpperCase() || 
+            c.type?.toUpperCase() === appName.toUpperCase()
+          ) || activeAgentConnectors.find((c: any) => 
+            c.name?.toUpperCase() === appName.toUpperCase() || 
+            c.type?.toUpperCase() === appName.toUpperCase()
+          );
+          if (connector) {
+            return { id: connector._key || (connector as any).id, name: connector.name || appName };
+          }
+        }
+        
+        return null;
+      };
+      
       if (template.type.startsWith('tool-') && !template.type.startsWith('tool-group-')) {
         const appName = template.defaultConfig?.appName || toolAppName;
         
         if (!isConnectorConfigured || !isConnectorAgentActive) {
+          // Prevent the drop and show error with link to configure
+          const connector = findConnector();
+          
           if (onError) {
-            onError(
-              `Cannot add tool "${template.label}". The ${appName} connector must be configured and agent-active first. ` +
-              `Click the configure icon (⚙️) next to ${appName} in the Tools section to set it up.`
-            );
+            const connectorDisplayName = connector?.name || appName;
+            let message = '';
+            let actionLink: string | undefined;
+            
+            if (connector) {
+              if (!isConnectorConfigured) {
+                message = `The "${connectorDisplayName}" connector needs to be configured first.`;
+                actionLink = 'Configure Connector →';
+              } else if (!isConnectorAgentActive) {
+                message = `The "${connectorDisplayName}" connector needs to be enabled for agents to use this tool.`;
+                actionLink = 'Enable Connector for Agents →';
+              } else {
+                message = `The "${connectorDisplayName}" connector needs to be configured and enabled for agents.`;
+                actionLink = 'Configure & Enable Connector →';
+              }
+            } else {
+              message = `The "${appName}" connector must be configured and enabled for agents before you can use this tool.`;
+            }
+            
+            const errorMessage: AgentBuilderError = {
+              message,
+              connectorId: connector?.id,
+              connectorName: connectorDisplayName,
+              actionLink: connector ? actionLink : undefined,
+            };
+            onError(errorMessage);
           }
+          
+          // Return early - do not add the node to the canvas
           return;
         }
       }
 
-      // Validate: Only one tool-group (connector instance) per connector type
-      // This ensures we only have one active agent instance per type
+      // Validate tool-group drops: Check if connector is agent-active
       if (template.type.startsWith('tool-group-')) {
+        // Check if the connector instance is agent-active
+        if (!isConnectorAgentActive) {
+          const connector = findConnector();
+          
+          if (onError) {
+            const connectorDisplayName = connector?.name || connectorType || template.defaultConfig?.appName || 'Connector';
+            const errorMessage: import('../../types/agent').AgentBuilderError = {
+              message: connector
+                ? `The "${connectorDisplayName}" connector needs to be enabled for agents to use this tool group.`
+                : `The connector must be enabled for agents before you can use this tool group.`,
+              connectorId: connector?.id,
+              connectorName: connectorDisplayName,
+              actionLink: connector ? 'Enable Connector for Agents →' : undefined,
+            };
+            onError(errorMessage);
+          }
+          
+          // Return early - do not add the node to the canvas
+          return;
+        }
+
+        // Validate: Only one tool-group (connector instance) per connector type
+        // This ensures we only have one active agent instance per type
         const connectorAppType = connectorType || template.defaultConfig?.appName || template.defaultConfig?.connectorType;
         if (connectorAppType) {
           // Check if a tool-group with the same connector type already exists
@@ -378,7 +467,7 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
 
       setNodes((nds) => [...nds, newNode]);
     },
-    [setNodes, nodeTemplates, nodes, onError]
+    [setNodes, nodeTemplates, nodes, onError, configuredConnectors, activeAgentConnectors]
   );
 
   return (
