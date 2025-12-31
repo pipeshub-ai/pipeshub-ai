@@ -227,9 +227,6 @@ class OneDriveConnector(BaseConnector):
             # Check if item is deleted
             if hasattr(item, 'deleted') and item.deleted is not None:
                 self.logger.info(f"Item {item.id} has been deleted")
-                await self.data_entities_processor.on_record_deleted(
-                    record_id=item.id
-                )
                 return RecordUpdate(
                     record=None,
                     external_record_id=item.id,
@@ -591,9 +588,15 @@ class OneDriveConnector(BaseConnector):
         try:
             if record_update.is_deleted:
                 # Handle deletion
-                await self.data_entities_processor.on_record_deleted(
-                    record_id=record_update.external_record_id
-                )
+                async with self.data_store_provider.transaction() as tx_store:
+                    dbRecord = await tx_store.get_record_by_external_id(
+                        connector_id=self.connector_id,
+                        external_id=record_update.external_record_id
+                    )
+                    if dbRecord:
+                        await self.data_entities_processor.on_record_deleted(
+                            record_id=dbRecord.id
+                        )
 
             elif record_update.is_new:
                 # Handle new record - this will be done through the normal flow

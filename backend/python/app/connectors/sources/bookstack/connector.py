@@ -620,8 +620,7 @@ class BookStackConnector(BaseConnector):
                     if not user:
                         self.logger.warning(f"User {name} (ID: {user_id}) not found in the database, skipping role updates.")
                         continue
-                    user_key = f"{CollectionNames.USERS.value}/{user.id}"
-                    await tx_store.delete_edges_between_collections(user_key, CollectionNames.PERMISSION.value, CollectionNames.ROLES.value)
+                    await tx_store.delete_edges_between_collections(user.id, CollectionNames.USERS.value, CollectionNames.PERMISSION.value, CollectionNames.ROLES.value)
 
                 if not roles:
                     self.logger.info(f"User {name} (ID: {user_id}) has no roles assigned.")
