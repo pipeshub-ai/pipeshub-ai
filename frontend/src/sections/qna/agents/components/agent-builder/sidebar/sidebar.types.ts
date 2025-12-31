@@ -265,7 +265,7 @@ export interface FlowBuilderSidebarProps {
   /** Active agent-enabled connectors */
   activeAgentConnectors: Connector[];
   /** All active connectors */
-  activeConnectors: Connector[];
+  configuredConnectors: Connector[];
   /** Connector registry metadata */
   connectorRegistry: any[];
 }

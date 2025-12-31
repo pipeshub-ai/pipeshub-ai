@@ -144,6 +144,89 @@ class ReindexFailedRequest(BaseModel):
     origin: str     # CONNECTOR, UPLOAD
 
 
+async def get_validated_connector_instance(
+    connector_id: str,
+    request: Request,
+) -> Dict[str, Any]:
+    """
+    FastAPI dependency to validate user authentication, retrieve connector instance,
+    check beta access, and verify permissions.
+
+    This dependency centralizes common validation logic used across multiple
+    connector instance update endpoints to reduce code duplication.
+
+    Args:
+        connector_id: Unique connector instance key
+        request: FastAPI request object
+
+    Returns:
+        Dictionary containing the validated connector instance
+
+    Raises:
+        HTTPException: 401 if not authenticated, 404 if instance not found,
+                      403 for permission violations or beta access issues
+    """
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+
+    # Extract user information
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+
+    # Validate authentication
+    if not user_id or not org_id:
+        logger.error(f"User not authenticated: {user_id} {org_id}")
+        raise HTTPException(
+            status_code=HttpStatusCode.UNAUTHORIZED.value,
+            detail="User not authenticated"
+        )
+
+    # Retrieve connector instance
+    instance = await connector_registry.get_connector_instance(
+        connector_id=connector_id,
+        user_id=user_id,
+        org_id=org_id,
+        is_admin=is_admin
+    )
+
+    if not instance:
+        logger.error(f"Connector instance {connector_id} not found or access denied")
+        raise HTTPException(
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail=f"Connector instance {connector_id} not found or access denied"
+        )
+
+    # Check beta connector access
+    connector_type = instance.get("type", "")
+    await check_beta_connector_access(connector_type, request)
+
+    # Validate permissions
+    if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+        logger.error("Only administrators can update team connectors")
+        raise HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value,
+            detail="Only administrators can update team connectors"
+        )
+
+    if instance.get("createdBy") != user_id and not is_admin:
+        logger.error("Only the creator or an administrator can update this connector")
+        raise HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value,
+            detail="Only the creator or an administrator can update this connector"
+        )
+
+    if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+        logger.error("Only the creator can update this connector")
+        raise HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value,
+            detail="Only the creator can update this connector"
+        )
+
+    return instance
+
+
 async def get_arango_service(request: Request) -> BaseArangoService:
     container: ConnectorAppContainer = request.app.container
     arango_service = await container.arango_service()
@@ -3192,6 +3275,291 @@ async def get_connector_instance_config(
         )
 
 
+@router.put("/api/v1/connectors/{connector_id}/config/auth")
+async def update_connector_instance_auth_config(
+    connector_id: str,
+    request: Request,
+) -> Dict[str, Any]:
+    """
+    Update authentication configuration for a connector instance.
+
+    Request body must contain:
+    - auth: Authentication configuration
+    - base_url: Optional base URL for OAuth redirects
+
+    Args:
+        connector_id: Unique instance key
+        request: FastAPI request object
+
+    Returns:
+        Dictionary with updated configuration
+
+    Raises:
+        HTTPException: 400 for invalid data, 404 if instance not found
+    """
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+
+    try:
+        # Use dependency to validate and retrieve connector instance
+        instance = await get_validated_connector_instance(connector_id, request)
+
+        # Extract user info for later use
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        connector_type = instance.get("type", "")
+
+        body = await request.json()
+        base_url = body.get("baseUrl", "")
+
+        if "auth" not in body:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Auth configuration is required"
+            )
+
+        # Trim whitespace from config values before processing
+        body = _trim_connector_config(body)
+
+        # Additional validation: Connector must be disabled for auth config updates
+        if instance.get("isActive"):
+            logger.error("Cannot update authentication configuration while connector is active. Please disable the connector first.")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Cannot update authentication configuration while connector is active. Please disable the connector first."
+            )
+
+        config_service = container.config_service()
+        config_path = _get_config_path_for_instance(connector_id)
+
+        # Get existing config to merge with new values
+        existing_config = await config_service.get_config(config_path)
+        if not existing_config:
+            existing_config = {}
+
+        # Merge new auth configuration with existing config
+        new_config = existing_config.copy() if existing_config else {}
+        new_config["auth"] = body["auth"]
+
+        # Clear credentials and OAuth state when auth config is updated
+        new_config["credentials"] = None
+        new_config["oauth"] = None
+
+        # Add OAuth metadata from registry if applicable
+        auth_type = instance.get("authType", "").upper()
+        if auth_type in ["OAUTH", "OAUTH_ADMIN_CONSENT"]:
+            metadata = await connector_registry.get_connector_metadata(connector_type)
+            auth_metadata = metadata.get("config", {}).get("auth", {})
+
+            # Determine redirect URI
+            redirect_uri = auth_metadata.get("redirectUri", "")
+            if base_url:
+                redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+            else:
+                endpoints = await config_service.get_config(
+                    "/services/endpoints",
+                    use_cache=False
+                )
+                base_url = endpoints.get(
+                    "frontendPublicUrl",
+                    "http://localhost:3001"
+                )
+                redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+
+            new_config["auth"].update({
+                "authorizeUrl": auth_metadata.get("authorizeUrl", ""),
+                "tokenUrl": auth_metadata.get("tokenUrl", ""),
+                "scopes": auth_metadata.get("scopes", []),
+                "redirectUri": redirect_uri,
+                "authType": auth_type,
+            })
+
+        # Save configuration
+        await config_service.set_config(config_path, new_config)
+        logger.info(f"Updated auth config for instance {connector_id}")
+
+        # Cleanup existing connector instance if it exists (auth config changed)
+        # User will need to toggle/enable again to re-initialize with new auth config
+        if hasattr(container, 'connectors_map') and connector_id in container.connectors_map:
+            logger.info(f"Cleaning up existing instance for {connector_id} due to auth config update")
+            existing_connector = container.connectors_map.pop(connector_id)
+            try:
+                if hasattr(existing_connector, 'cleanup'):
+                    await existing_connector.cleanup()
+                logger.info(f"Cleaned up existing connector instance {connector_id}")
+            except Exception as e:
+                logger.error(f"Error cleaning up existing connector {connector_id}: {e}")
+
+        # Update instance status - mark as configured but not authenticated
+        # Connector will be initialized and authenticated when user clicks Enable
+        updates = {
+            "isConfigured": True,
+            "isAuthenticated": False,  # Will be set to True after successful toggle/enable
+            "isActive": False,  # Disable if auth config changed - user must re-enable
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            "updatedBy": user_id
+        }
+        updated_instance = await connector_registry.update_connector_instance(
+            connector_id=connector_id,
+            updates=updates,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin
+        )
+        if not updated_instance:
+            logger.error(f"Failed to update {instance.get('name')} connector instance")
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail=f"Failed to update {instance.get('name')} connector instance"
+            )
+
+        return {
+            "success": True,
+            "config": new_config,
+            "message": "Authentication configuration saved successfully."
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating auth config for instance {connector_id}: {e}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to update connector authentication configuration: {str(e)}"
+        )
+
+
+@router.put("/api/v1/connectors/{connector_id}/config/filters-sync")
+async def update_connector_instance_filters_sync_config(
+    connector_id: str,
+    request: Request,
+) -> Dict[str, Any]:
+    """
+    Update filters and sync configuration for a connector instance.
+
+    Request body can contain:
+    - sync: Sync settings
+    - filters: Filter configuration
+
+    Validation:
+    - Connector must be disabled (isActive = false)
+    - For OAUTH connectors, isAuthenticated must be true
+
+    Args:
+        connector_id: Unique instance key
+        request: FastAPI request object
+
+    Returns:
+        Dictionary with updated configuration
+
+    Raises:
+        HTTPException: 400 for invalid data, 404 if instance not found
+    """
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+
+    try:
+        # Use dependency to validate and retrieve connector instance
+        instance = await get_validated_connector_instance(connector_id, request)
+
+        # Extract user info for later use
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+
+        body = await request.json()
+
+        if "sync" not in body and "filters" not in body:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Sync or filters configuration is required"
+            )
+
+        # Trim whitespace from config values before processing
+        body = _trim_connector_config(body)
+
+        # Validation: Connector must be disabled
+        if instance.get("isActive"):
+            logger.error("Cannot update filters and sync configuration while connector is active. Please disable the connector first.")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Cannot update filters and sync configuration while connector is active. Please disable the connector first."
+            )
+
+        config_service = container.config_service()
+        config_path = _get_config_path_for_instance(connector_id)
+
+        # Get existing config to merge with new values
+        existing_config = await config_service.get_config(config_path)
+        if not existing_config:
+            existing_config = {}
+
+        # Merge new configuration with existing config
+        # Only update sections that are provided in the request
+        new_config = existing_config.copy() if existing_config else {}
+
+        # Update sync section if provided
+        if "sync" in body and isinstance(body["sync"], dict):
+            if "sync" in new_config and isinstance(new_config["sync"], dict):
+                new_config["sync"] = {**new_config["sync"], **body["sync"]}
+            else:
+                new_config["sync"] = body["sync"]
+
+        # Update filters section if provided
+        if "filters" in body and isinstance(body["filters"], dict):
+            # Initialize filters section if it doesn't exist
+            if "filters" not in new_config:
+                new_config["filters"] = {}
+
+            # Merge filters section: preserve sync and indexing separately
+            for key in ["sync", "indexing"]:
+                if key in body["filters"]:
+                    new_config["filters"][key] = body["filters"][key]
+
+        # Save configuration
+        await config_service.set_config(config_path, new_config)
+        logger.info(f"Updated filters-sync config for instance {connector_id}")
+
+        # For filters/sync updates, keep connector status as is
+        # Only update the timestamp
+        updates = {
+            "isConfigured": True,
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            "updatedBy": user_id
+        }
+        updated_instance = await connector_registry.update_connector_instance(
+            connector_id=connector_id,
+            updates=updates,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin
+        )
+        if not updated_instance:
+            logger.error(f"Failed to update {instance.get('name')} connector instance")
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail=f"Failed to update {instance.get('name')} connector instance"
+            )
+
+        return {
+            "success": True,
+            "config": new_config,
+            "message": "Filters and sync configuration saved successfully."
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating filters-sync config for instance {connector_id}: {e}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to update connector filters and sync configuration: {str(e)}"
+        )
+
+
 @router.put("/api/v1/connectors/{connector_id}/config")
 async def update_connector_instance_config(
     connector_id: str,
@@ -3221,56 +3589,18 @@ async def update_connector_instance_config(
     connector_registry = request.app.state.connector_registry
 
     try:
+        # Use dependency to validate and retrieve connector instance
+        instance = await get_validated_connector_instance(connector_id, request)
+
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
-        if not user_id or not org_id:
-            logger.error(f"User not authenticated: {user_id} {org_id}")
-            raise HTTPException(
-                status_code=HttpStatusCode.UNAUTHORIZED.value,
-                detail="User not authenticated"
-            )
+        connector_type = instance.get("type", "")
         body = await request.json()
         base_url = body.get("baseUrl", "")
 
         # Trim whitespace from config values before processing
         body = _trim_connector_config(body)
-
-        # Verify instance exists
-        instance = await connector_registry.get_connector_instance(
-            connector_id=connector_id,
-            user_id=user_id,
-            org_id=org_id,
-            is_admin=is_admin
-        )
-        if not instance:
-            logger.error(f"Connector instance {connector_id} not found or access denied")
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail=f"Connector instance {connector_id} not found or access denied"
-            )
-
-        connector_type = instance.get("type", "")
-        await check_beta_connector_access(connector_type, request)
-
-        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
-            logger.error("Only administrators can update team connectors")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only administrators can update team connectors"
-            )
-        if instance.get("createdBy") != user_id and not is_admin:
-            logger.error("Only the creator or an administrator can update this connector")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only the creator or an administrator can update this connector"
-            )
-        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
-            logger.error("Only the creator can update this connector")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only the creator can update this connector"
-            )
 
         # Prevent saving configuration when connector is active
         # Only allow filter/sync updates when connector is active (these don't require re-initialization)

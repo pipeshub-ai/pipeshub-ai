@@ -22,13 +22,13 @@ export const useAgentBuilderNodeTemplates = (
   availableModels: any[],
   availableKnowledgeBases: any[],
   activeAgentConnectors: Connector[],
-  activeConnectors: Connector[]
+  configuredConnectors: Connector[]
 ): UseAgentBuilderNodeTemplatesReturn => {
-  // activeConnectors is now passed as a parameter to avoid redundant API calls
+  // configuredConnectors is now passed as a parameter to avoid redundant API calls
   
   const nodeTemplates: NodeTemplate[] = useMemo(() => {
     const groupedTools = groupToolsByApp(availableTools);
-    const allConnectors = [...activeConnectors];
+    const allConnectors = [...configuredConnectors];
     
     // Create dynamic app memory nodes from connector data
     const dynamicAppKnowledgeNodes = allConnectors.map(connector => ({
@@ -51,7 +51,7 @@ export const useAgentBuilderNodeTemplates = (
 
     // Create connector instance nodes for both Knowledge and Tools sections
     // Each connector instance will be shown in both sections with appropriate categorization
-    const connectorGroupNodes = activeAgentConnectors.map(connector => ({
+    const connectorGroupNodes = configuredConnectors.map(connector => ({
       type: `connector-group-${connector._key}`,
       label: normalizeDisplayName(connector.name),
       description: `${connector.type} connector instance - Use in Tools or Knowledge`,
@@ -239,7 +239,7 @@ export const useAgentBuilderNodeTemplates = (
     ];
 
     return templates;
-  }, [availableTools, availableModels, availableKnowledgeBases, activeConnectors, activeAgentConnectors]);
+  }, [availableTools, availableModels, availableKnowledgeBases, configuredConnectors]);
 
   return { nodeTemplates };
 };

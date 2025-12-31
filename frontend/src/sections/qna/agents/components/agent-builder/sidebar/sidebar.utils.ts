@@ -124,36 +124,24 @@ export const groupConnectorInstances = (
 };
 
 /**
- * Group tools by connector type with active agent instance information
+ * Group tools by connector type with all configured connector instances
  * 
- * Creates a comprehensive mapping of tools grouped by connector type, including:
- * - All available tools for each connector type
- * - Active agent-enabled connector instances
- * - Configuration and activation status
+ * Uses configured connectors (not active/sync-enabled ones) because:
+ * - A connector can be configured but sync disabled
+ * - A connector can have agent enabled but sync disabled
+ * - We want to show all configured connectors so users can choose which instance to use
  * 
  * @param toolsByAppName - Tools already grouped by app name
- * @param activeAgentConnectors - Active connector instances with agent capabilities
+ * @param configuredConnectors - All configured connector instances (regardless of sync/agent status)
  * @param connectorRegistry - Connector registry metadata
  * @returns Comprehensive tool group data by connector type
- * 
- * @example
- * ```ts
- * const grouped = groupToolsByConnectorType(toolsByApp, agentConnectors, registry);
- * // {
- * //   "Gmail": {
- * //     tools: [...],
- * //     activeAgentInstances: [...],
- * //     isConfigured: true,
- * //     isAgentActive: true
- * //   }
- * // }
- * ```
  */
 export const groupToolsByConnectorType = (
   toolsByAppName: Record<string, NodeTemplate[]>,
-  activeAgentConnectors: Connector[],
+  configuredConnectors: Connector[],
   connectorRegistry: any[]
 ): GroupedToolsByConnectorType => {
+  // Build connector type lookup map
   const connectorTypeMap = new Map<string, any>();
   connectorRegistry.forEach((reg) => {
     connectorTypeMap.set(reg.type.toLowerCase(), reg);
@@ -161,12 +149,13 @@ export const groupToolsByConnectorType = (
 
   const grouped: GroupedToolsByConnectorType = {};
 
-  // First, collect all tools
+  // First, collect all tools by connector type
   Object.entries(toolsByAppName).forEach(([appName, tools]) => {
     const normalizedAppName = appName.toLowerCase();
     const registryEntry = connectorTypeMap.get(normalizedAppName);
     const displayName = normalizeDisplayName(appName);
 
+    // Skip calculator (built-in, no connector needed)
     if (displayName === 'Calculator') {
       return;
     }
@@ -185,18 +174,22 @@ export const groupToolsByConnectorType = (
     grouped[displayName].tools = tools;
   });
 
-  // Now add active AGENT instance information
-  activeAgentConnectors.forEach((connector) => {
+  // Add all configured connector instances to their respective groups
+  configuredConnectors.forEach((connector) => {
     const connectorType = connector.type || connector.appGroup || '';
     const displayName = normalizeDisplayName(connectorType);
+    const group = grouped[displayName];
 
-    if (grouped[displayName]) {
-      grouped[displayName].activeAgentInstances.push(connector);
-      if (connector.isConfigured === true) {
-        grouped[displayName].isConfigured = true;
+    if (group) {
+      // Add instance to the group
+      group.activeAgentInstances.push(connector);
+      
+      // Update group-level status flags
+      if (connector.isConfigured) {
+        group.isConfigured = true;
       }
-      if (connector.isAgentActive === true) {
-        grouped[displayName].isAgentActive = true;
+      if (connector.isAgentActive) {
+        group.isAgentActive = true;
       }
     }
   });
@@ -252,29 +245,20 @@ export const prepareDragData = (
 /**
  * Check if connector needs configuration
  * 
- * Determines if a connector requires setup before it can be used.
- * Returns true if:
- * - No active instances exist
- * - Not properly configured
- * - Agent capabilities not enabled
+ * Returns true if no configured instances exist at all.
+ * We show ALL configured connectors, and users get an error when dragging
+ * if the specific instance is not agent-active.
  * 
- * @param activeInstances - Array of active connector instances
- * @param isConfigured - Whether any instance is configured
- * @param isAgentActive - Whether any instance has agent capabilities
- * @returns True if configuration is needed
- * 
- * @example
- * ```ts
- * const needsSetup = connectorNeedsConfiguration([], false, false);
- * // true - no instances and not configured
- * ```
+ * @param configuredInstances - Array of configured connector instances
+ * @param isConfigured - Deprecated, kept for compatibility
+ * @param isAgentActive - Deprecated, kept for compatibility
+ * @returns True if no configured instances exist
  */
 export const connectorNeedsConfiguration = (
-  activeInstances: Connector[],
+  configuredInstances: Connector[],
   isConfigured: boolean,
   isAgentActive: boolean
-): boolean =>
-  activeInstances.length === 0 || !isConfigured || !isAgentActive;
+): boolean => configuredInstances.length === 0 || !configuredInstances.some(inst => inst.isConfigured);
 
 /**
  * Create tool group drag data

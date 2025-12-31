@@ -182,9 +182,17 @@ export class ConnectorApiService {
     
     const response = await axios.get(`${BASE_URL}/configured`, { params });
     if (!response.data) throw new Error('Failed to fetch configured connector instances');
+    
+    // Handle nested response structure: { success: true, connectors: { connectors: [...], pagination: {...} } }
+    const connectorsData = response.data.connectors;
+    const connectors = Array.isArray(connectorsData) 
+      ? connectorsData 
+      : (connectorsData?.connectors || []);
+    const pagination = connectorsData?.pagination || response.data.pagination || {};
+    
     return {
-      connectors: response.data.connectors || [],
-      pagination: response.data.pagination || {}
+      connectors,
+      pagination
     };
   }
 
@@ -212,6 +220,34 @@ export class ConnectorApiService {
       baseUrl: window.location.origin,
     });
     if (!response.data) throw new Error('Failed to update connector instance config');
+    return response.data.config;
+  }
+
+  /**
+   * Update authentication configuration for a connector instance
+   */
+  static async updateConnectorInstanceAuthConfig(connectorId: string, authConfig: any): Promise<any> {
+    // Trim whitespace from config before sending
+    const trimmedConfig = trimConnectorConfig({ auth: authConfig });
+    const response = await axios.put(`${BASE_URL}/${connectorId}/config/auth`, {
+      auth: trimmedConfig.auth,
+      baseUrl: window.location.origin,
+    });
+    if (!response.data) throw new Error('Failed to update connector instance auth config');
+    return response.data.config;
+  }
+
+  /**
+   * Update filters and sync configuration for a connector instance
+   */
+  static async updateConnectorInstanceFiltersSyncConfig(connectorId: string, filtersSyncConfig: any): Promise<any> {
+    // Trim whitespace from config before sending
+    const trimmedConfig = trimConnectorConfig(filtersSyncConfig);
+    const response = await axios.put(`${BASE_URL}/${connectorId}/config/filters-sync`, {
+      sync: trimmedConfig.sync,
+      filters: trimmedConfig.filters,
+    });
+    if (!response.data) throw new Error('Failed to update connector instance filters-sync config');
     return response.data.config;
   }
 
