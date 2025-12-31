@@ -543,7 +543,7 @@ class BaseArangoService:
                     RETURN doc
             )
 
-            // Get all records for the specific connector
+            // Get all records for the specific connector (excluding folders)
             LET records = (
                 FOR doc IN @@records
                     FILTER doc.orgId == org_id
@@ -551,6 +551,16 @@ class BaseArangoService:
                     FILTER doc.connectorId == @connector_id
                     FILTER doc.recordType != @drive_record_type
                     FILTER doc.isDeleted != true
+
+                    // Filter out folders by checking the connected file document via isOfType edge
+                    LET targetDoc = FIRST(
+                        FOR v IN 1..1 OUTBOUND doc._id @@is_of_type
+                            LIMIT 1
+                            RETURN v
+                    )
+
+                    // A record is valid if it's not a file, or if it is a file and not a folder.
+                    FILTER targetDoc == null OR NOT IS_SAME_COLLECTION("files", targetDoc._id) OR targetDoc.isFile == true
                     RETURN doc
             )
 
@@ -609,6 +619,7 @@ class BaseArangoService:
                 "@records": CollectionNames.RECORDS.value,
                 "drive_record_type": RecordTypes.DRIVE.value,
                 "@apps": CollectionNames.APPS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
             }
 
             # Execute the query
