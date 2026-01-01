@@ -14,13 +14,13 @@ from app.connectors.core.registry.connector import (
     CalendarConnector,
     DocsConnector,
     FormsConnector,
-    LinearConnector,
     MeetConnector,
     NotionConnector,
     SlackConnector,
     SlidesConnector,
     ZendeskConnector,
 )
+from app.connectors.sources.linear.connector import LinearConnector
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
@@ -62,6 +62,7 @@ class ConnectorFactory:
         "bookstack": BookStackConnector,
         "s3": S3Connector,
         "minio": MinIOConnector,
+        "linear": LinearConnector,
     }
 
     # Beta connector definitions - single source of truth
@@ -75,6 +76,7 @@ class ConnectorFactory:
         'docs': DocsConnector,
         'zendesk': ZendeskConnector,
         'linear': LinearConnector,
+        's3': S3Connector,
         'notion': NotionConnector,
         'airtable': AirtableConnector,
         'azureblob': AzureBlobConnector,
