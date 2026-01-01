@@ -1492,10 +1492,9 @@ class JiraConnector(BaseConnector):
                 )
 
                 # 4. Delete the issue itself and all its edges
-                await tx_store.arango_service.delete_records_and_relations(
-                    node_key=record_internal_id,
-                    hard_delete=True,
-                    transaction=tx_store.txn
+                await tx_store.delete_records_and_relations(
+                    record_key=record_internal_id,
+                    hard_delete=True
                 )
 
                 self.logger.info(
@@ -1549,10 +1548,9 @@ class JiraConnector(BaseConnector):
                     )
 
                 # Delete record and all its edges (indexer cleanup handled automatically)
-                await tx_store.arango_service.delete_records_and_relations(
-                    node_key=record.id,
-                    hard_delete=True,
-                    transaction=tx_store.txn
+                await tx_store.delete_records_and_relations(
+                    record_key=record.id,
+                    hard_delete=True
                 )
                 deleted_count += 1
                 self.logger.debug(f"  Deleted {child_type_name} {record.external_record_id}")
@@ -2761,10 +2759,9 @@ class JiraConnector(BaseConnector):
         """
         Helper method to delete an attachment record and log the action.
         """
-        await tx_store.arango_service.delete_records_and_relations(
-            node_key=record.id,
-            hard_delete=True,
-            transaction=tx_store.txn,
+        await tx_store.delete_records_and_relations(
+            record_key=record.id,
+            hard_delete=True
         )
         filename_info = f" (filename: {record.record_name})" if record.record_name else ""
         self.logger.info(
@@ -3193,10 +3190,9 @@ class JiraConnector(BaseConnector):
                     continue
 
                 # Comment no longer exists at source -> delete record and its relations
-                await tx_store.arango_service.delete_records_and_relations(
-                    node_key=record.id,
-                    hard_delete=True,
-                    transaction=tx_store.txn,
+                await tx_store.delete_records_and_relations(
+                    record_key=record.id,
+                    hard_delete=True
                 )
                 deleted_count += 1
                 self.logger.info(
@@ -3888,10 +3884,11 @@ class JiraConnector(BaseConnector):
                 return None
 
             # Get parent ticket's internal record ID
-            parent_ticket_record = await self.data_store_provider.arango_service.get_record_by_external_id(
-                connector_id=self.connector_id,
-                external_id=issue_id
-            )
+            async with self.data_store_provider.transaction() as tx_store:
+                parent_ticket_record = await tx_store.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=issue_id
+                )
             parent_node_id = parent_ticket_record.id if parent_ticket_record else None
 
             # Fetch comment from source
@@ -4020,10 +4017,11 @@ class JiraConnector(BaseConnector):
                 return None
 
             # Get parent ticket's internal record ID
-            parent_ticket_record = await self.data_store_provider.arango_service.get_record_by_external_id(
-                connector_id=self.connector_id,
-                external_id=issue_id
-            )
+            async with self.data_store_provider.transaction() as tx_store:
+                parent_ticket_record = await tx_store.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=issue_id
+                )
             parent_node_id = parent_ticket_record.id if parent_ticket_record else None
 
             # Fetch issue to get attachment metadata
