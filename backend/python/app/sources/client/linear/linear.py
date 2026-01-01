@@ -12,6 +12,10 @@ class LinearGraphQLClientViaToken(GraphQLClient):
     """Linear GraphQL client via API token."""
 
     def __init__(self, token: str, timeout: int = 30) -> None:
+        token = token.strip() if token else ""
+        if not token:
+            raise ValueError("Linear API token cannot be empty")
+        
         headers = {
             "Authorization": token,
             "Content-Type": "application/json",

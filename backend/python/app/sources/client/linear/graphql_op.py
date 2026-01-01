@@ -122,8 +122,8 @@ class LinearGraphQLOperations:
 
         "teams": {
             "query": """
-                query teams($first: Int, $filter: TeamFilter) {
-                    teams(first: $first, filter: $filter) {
+                query teams($first: Int, $after: String, $filter: TeamFilter) {
+                    teams(first: $first, after: $after, filter: $filter) {
                         nodes {
                             ...TeamFields
                             members {
@@ -142,7 +142,27 @@ class LinearGraphQLOperations:
                 }
             """,
             "fragments": ["TeamFields", "UserFields"],
-            "description": "Get teams with optional filtering"
+            "description": "Get teams with optional filtering and cursor-based pagination"
+        },
+
+        "users": {
+            "query": """
+                query users($first: Int, $after: String, $filter: UserFilter, $orderBy: PaginationOrderBy) {
+                    users(first: $first, after: $after, filter: $filter, orderBy: $orderBy) {
+                        nodes {
+                            ...UserFields
+                        }
+                        pageInfo {
+                            hasNextPage
+                            hasPreviousPage
+                            startCursor
+                            endCursor
+                        }
+                    }
+                }
+            """,
+            "fragments": ["UserFields"],
+            "description": "Get users with filtering and cursor-based pagination"
         },
 
         "issues": {
@@ -167,7 +187,7 @@ class LinearGraphQLOperations:
 
         "issue": {
             "query": """
-                query Issue($id: String!) {
+                query issue($id: String!) {
                     issue(id: $id) {
                         ...IssueFields
                         comments {
@@ -192,7 +212,7 @@ class LinearGraphQLOperations:
 
         "projects": {
             "query": """
-                query Projects($first: Int, $filter: ProjectFilter) {
+                query projects($first: Int, $filter: ProjectFilter) {
                     projects(first: $first, filter: $filter) {
                         nodes {
                             ...ProjectFields
@@ -237,7 +257,7 @@ class LinearGraphQLOperations:
 
         "organization": {
             "query": """
-                query Organization {
+                query organization {
                     organization {
                         id
                         name
