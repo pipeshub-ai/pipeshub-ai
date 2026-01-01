@@ -42,7 +42,7 @@ export function SimpleLayout({ sx, children, header, content }: SimpleLayoutProp
                 This is an info Alert.
               </Alert>
             ),
-            leftArea: <Logo />,
+            leftArea: <Logo href="/"/>,
             rightArea: (
               <Box display="flex" alignItems="center" gap={{ xs: 1, sm: 1.5 }}>
                 {/* -- Settings button -- */}
