@@ -14,45 +14,53 @@ import { logoClasses } from './classes';
 
 export type LogoProps = BoxProps & {
   href?: string;
-  isSingle?: boolean;
   disableLink?: boolean;
 };
 
 export const Logo = forwardRef<HTMLDivElement, LogoProps>(
   (
-    { width, href = '/', height, isSingle = true, disableLink = false, className, sx, ...other },
+    { width, href = '/', height, disableLink = false, className, sx, ...other },
     ref
   ) => {
     const { user } = useAuthContext();
 
     const [customLogo, setCustomLogo] = useState<string | null>('');
-    const isBusiness =
-      user?.accountType === 'business' ||
-      user?.accountType === 'organization' ||
-      user?.role === 'business';
+
     useEffect(() => {
+      let isMounted = true;
+
+      const isBusiness =
+        user?.accountType === 'business' ||
+        user?.accountType === 'organization' ||
+        user?.role === 'business';
+
       const fetchLogo = async () => {
+        if (!isBusiness) {
+          if (isMounted) setCustomLogo('');
+          return;
+        }
+
         try {
-          const orgId = await getOrgIdFromToken();
-          if (isBusiness) {
-            const logoUrl = await getOrgLogo(orgId);
+          const orgId = getOrgIdFromToken();
+          const logoUrl = await getOrgLogo(orgId);
+          if (isMounted) {
             setCustomLogo(logoUrl);
           }
         } catch (err) {
-          console.error(err, 'error in fetching logo');
+          console.error('Error in fetching logo:', err);
         }
       };
 
       fetchLogo();
-    }, [isBusiness]);
+
+      return () => {
+        isMounted = false;
+      };
+    }, [user]);
 
     const baseSize = {
       width: width ?? 40,
       height: height ?? 40,
-      ...(!isSingle && {
-        width: width ?? 102,
-        height: height ?? 36,
-      }),
     };
 
     return (
