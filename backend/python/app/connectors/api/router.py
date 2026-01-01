@@ -44,7 +44,6 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.api.middleware import WebhookAuthVerifier
 from app.connectors.core.base.connector.connector_service import BaseConnector
-from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
     OAuthToken,
@@ -5175,7 +5174,8 @@ async def _ensure_connector_initialized(
     logger.info(f"Initializing connector {connector_id} before use")
     try:
         config_service = container.config_service()
-        data_store_provider = ArangoDataStore(logger, arango_service)
+        # Use the container's data store (GraphDataStore with graph_provider)
+        data_store_provider = await container.data_store()
 
         connector_type = connector_type.replace(" ", "").lower()
 
