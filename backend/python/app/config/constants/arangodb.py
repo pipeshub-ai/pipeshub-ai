@@ -60,6 +60,7 @@ class Connectors(Enum):
     GCS = "GCS"
     AZURE_BLOB = "AZURE BLOB"
     AZURE_FILES = "AZURE FILES"
+    LINEAR = "LINEAR"
 
     UNKNOWN = "UNKNOWN"
 
@@ -78,6 +79,7 @@ class AppGroups(Enum):
     MINIO = "MinIO"
     GCS = "GCS"
     AZURE = "Azure"
+    LINEAR = "Linear"
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
