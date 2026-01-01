@@ -6,7 +6,7 @@ from app.models.graph import Node
 
 @dataclass
 class RecordGroup(Node):
-    id: str
+    _key: str
     org_id: str = ""
     name: str = ""
     description: Optional[str] = None
@@ -16,14 +16,10 @@ class RecordGroup(Node):
     source_created_at_timestamp: Optional[float] = None
     source_last_modified_timestamp: Optional[float] = None
 
-    @property
-    def key(self) -> str:
-        return self.id
-
 @dataclass
 class Record(Node):
     """Base record class for all types of records"""
-    id: str = ""
+    _key: str = ""
     org_id: str = ""
     record_name: str = ""
     external_record_id: str = ""
@@ -58,7 +54,7 @@ class Record(Node):
     def from_dict(data: Dict[str, Any]) -> 'Record':
         record = Record()
 
-        record.id = data.get("id", data.get("_key", ""))
+        record._key = data.get("_key", "")
         record.org_id = data.get("orgId", "")
         record.record_name = data.get("recordName", "")
         record.external_record_id = data.get("externalRecordId", "")
@@ -117,7 +113,7 @@ class Record(Node):
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "_key": self.id,
+            "_key": self._key,
             "orgId": self.org_id,
             "recordName": self.record_name,
             "externalRecordId": self.external_record_id,
@@ -159,12 +155,12 @@ class Record(Node):
 
     @property
     def key(self) -> str:
-        return self.id
+        return self._key
 
 @dataclass
 class FileRecord(Node):
     """Specific record type for files"""
-    id: str = ""
+    _key: str = ""
     org_id: str = ""
     name: str = ""
     is_file: bool = True
@@ -185,7 +181,7 @@ class FileRecord(Node):
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> 'FileRecord':
         file_record = FileRecord()
-        file_record.id = data.get("id", data.get("_key", ""))
+        file_record._key = data.get("_key", "")
         file_record.org_id = data.get("orgId", "")
         file_record.name = data.get("name", "")
 
@@ -215,7 +211,7 @@ class FileRecord(Node):
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "_key": self.id,
+            "_key": self._key,
             "orgId": self.org_id,
             "name": self.name,
             "isFile": self.is_file,
@@ -238,12 +234,12 @@ class FileRecord(Node):
 
     @property
     def key(self) -> str:
-        return self.id
+        return self._key
 
 @dataclass
 class MailRecord(Node):
     """Specific record type for emails"""
-    id: str
+    _key: str = ""
     thread_id: str = ""
     is_parent: bool = False
     subject: Optional[str] = None
@@ -256,7 +252,7 @@ class MailRecord(Node):
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> 'MailRecord':
         mail_record = MailRecord()
-        mail_record.id = data.get("id", data.get("_key", ""))
+        mail_record._key = data.get("_key", "")
         mail_record.thread_id = data.get("threadId", "")
         mail_record.is_parent = data.get("isParent", False)
         mail_record.subject = data.get("subject", None)
@@ -269,7 +265,7 @@ class MailRecord(Node):
         return mail_record
 
     def __post_init__(self) -> None:
-        if not self.id:
+        if not self._key:
             raise ValueError("id must be set")
         if not self.thread_id:
             raise ValueError("thread_id must be set")
@@ -283,7 +279,7 @@ class MailRecord(Node):
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "_key": self.id,
+            "_key": self._key,
             "threadId": self.thread_id,
             "isParent": self.is_parent,
             "subject": self.subject,
@@ -299,4 +295,4 @@ class MailRecord(Node):
 
     @property
     def key(self) -> str:
-        return self.id
+        return self._key
