@@ -148,7 +148,7 @@ const StreamingContent = React.memo(
     const showStreamingIndicator = isStreaming && processedContent.length > 0;
 
     const handleMouseEnter = useCallback(
-      (event: React.MouseEvent, citationRef: string, citationId: string) => {
+      (event: React.MouseEvent, citationRef: string, citationId: string, groupId: string) => {
         if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
 
         // Get the citation element's bounding rect for better positioning
@@ -227,125 +227,272 @@ const StreamingContent = React.memo(
       [citationMap, handleCloseHoverCard, aggregatedCitations, onViewPdf]
     );
 
+    // Helper function to truncate filename
+    const truncateFilename = useCallback((filename: string, maxLength: number = 50): string => {
+      if (!filename || filename.length <= maxLength) return filename;
+      return `${filename.substring(0, maxLength - 3)}...`;
+    }, []);
+
+    // Render a single citation number (hoverable)
+    const renderCitationNumber = useCallback(
+      (
+        citationNumber: number,
+        citationId: string,
+        groupId: string,
+        isHovered: boolean
+      ) => {
+        const citation = citationMap[citationNumber];
+        if (!citation) return null;
+
+        return (
+          <Box
+            component="span"
+            className={`citation-number citation-number-${citationId}`}
+            onMouseEnter={(e) => {
+              e.stopPropagation();
+              handleMouseEnter(e, `[${citationNumber}]`, citationId, groupId);
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleClick(e, `[${citationNumber}]`);
+            }}
+            onMouseLeave={handleMouseLeave}
+            sx={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              minWidth: '20px',
+              height: '20px',
+              px: 0.75,
+              borderRadius: '10px',
+              bgcolor: isHovered
+                ? 'primary.main'
+                : 'rgba(25, 118, 210, 0.08)',
+              color: isHovered ? 'white' : 'primary.main',
+              fontSize: '0.7rem',
+              fontWeight: 600,
+              transition: 'all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)',
+              textDecoration: 'none',
+              boxShadow: isHovered
+                ? '0 3px 8px rgba(25, 118, 210, 0.3)'
+                : '0 1px 3px rgba(0,0,0,0.06)',
+              border: '1px solid',
+              borderColor: isHovered
+                ? 'primary.main'
+                : 'rgba(25, 118, 210, 0.12)',
+              position: 'relative',
+              zIndex: 2,
+              cursor: 'pointer',
+              transform: isHovered ? 'scale(1.1) translateY(-1px)' : 'scale(1)',
+              ml: 0,
+            }}
+          >
+            {citationNumber}
+          </Box>
+        );
+      },
+      [citationMap, handleMouseEnter, handleClick, handleMouseLeave]
+    );
+
+    // Render a grouped citation (filename [1, 2, 3])
+    const renderGroupedCitation = useCallback(
+      (
+        group: { citations: number[]; recordName: string; recordId?: string },
+        lineIndex: number,
+        groupIndex: number
+      ) => {
+        // Create a unique groupId that includes line, group index, and messageId
+        const groupId = `citation-group-${lineIndex}-${groupIndex}-${messageId}`;
+        
+        // Check if any citation in this group is hovered
+        // Use groupId in citation ID to ensure uniqueness across different lines
+        const hoveredCitationIds = group.citations.map((num, idx) => 
+          `citation-${num}-${groupId}-${idx}`
+        );
+        const isGroupHovered = hoveredCitationIds.some(id => hoveredCitationId === id);
+
+        const truncatedName = truncateFilename(group.recordName, 50);
+
+        return (
+          <Box
+            key={groupId}
+            component="span"
+            sx={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              ml: 0.5,
+              mr: 0.25,
+              position: 'relative',
+              gap: 0.5,
+            }}
+          >
+            {truncatedName && (
+              <Typography
+                component="span"
+                className={`citation-record-name citation-record-name-${groupId}`}
+                sx={{
+                  fontSize: '0.7rem',
+                  fontWeight: isGroupHovered ? 600 : 500,
+                  color: isGroupHovered ? 'primary.main' : 'text.secondary',
+                  transition: 'all 0.2s ease',
+                  lineHeight: 1.2,
+                  maxWidth: '50ch',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  position: 'relative',
+                  zIndex: 1,
+                  pointerEvents: 'none', // Filenames are not hoverable
+                }}
+              >
+                {truncatedName}
+              </Typography>
+            )}
+            <Box
+              component="span"
+              sx={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 0,
+              }}
+            >
+              {group.citations.map((citationNumber, idx) => {
+                // Include groupId in citation ID to ensure uniqueness across different lines
+                // Format: citation-{number}-{groupId}-{indexInGroup}
+                const citationId = `citation-${citationNumber}-${groupId}-${idx}`;
+                const isHovered = hoveredCitationId === citationId;
+                return (
+                  <Fragment key={`${citationId}-${idx}`}>
+                    <Box component="span" sx={{ mx: 0.4 }}>
+                    {renderCitationNumber(citationNumber, citationId, groupId, isHovered)}
+                    </Box>
+              </Fragment>
+                );
+              })}
+            </Box>
+          </Box>
+        );
+      },
+      [hoveredCitationId, messageId, truncateFilename, renderCitationNumber]
+    );
+
     const renderContentPart = useCallback(
       (part: string, index: number) => {
         const citationMatch = part.match(/\[(\d+)\]/);
         if (citationMatch) {
+          // This should not be reached in normal flow since we process groups
+          // But keep as fallback - create a unique ID that includes index to ensure uniqueness
           const citationNumber = parseInt(citationMatch[1], 10);
           const citation = citationMap[citationNumber];
-          const citationId = `citation-${citationNumber}-${index}-${messageId}`;
-          const recordName = citation?.metadata?.recordName;
+          // Use a unique fallback ID that includes index to ensure uniqueness across different instances
+          const fallbackGroupId = `fallback-group-${index}-${messageId}`;
+          const citationId = `citation-${citationNumber}-${fallbackGroupId}-0`;
 
           if (!citation) {
             return <Fragment key={index}>{part}</Fragment>;
           }
 
           return (
-            <Box
-              key={citationId}
-              component="span"
-              onMouseEnter={(e) => handleMouseEnter(e, part, citationId)}
-              onClick={(e) => handleClick(e, part)}
-              onMouseLeave={handleMouseLeave}
-              sx={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                ml: 0.5,
-                mr: 0.25,
-                cursor: 'pointer',
-                position: 'relative',
-                gap: 0.5,
-                // Create a larger hover area with invisible padding
-                '&::before': {
-                  content: '""',
-                  position: 'absolute',
-                  top: -12,
-                  right: -12,
-                  bottom: -12,
-                  left: -12,
-                  zIndex: 1,
-                  // This creates an invisible larger hover area
-                },
-                '&:hover': {
-                  '& .citation-record-name': {
-                    color: 'primary.main',
-                    fontWeight: 600,
-                  },
-                  '& .citation-number': {
-                    transform: 'scale(1.1) translateY(-1px)',
-                    bgcolor: 'primary.main',
-                    color: 'white',
-                    boxShadow: '0 3px 8px rgba(25, 118, 210, 0.3)',
-                  },
-                },
-              }}
-            >
-              {recordName && (
-                <Typography
-                  component="span"
-                  className={`citation-record-name citation-record-name-${citationId}`}
-                  sx={{
-                    fontSize: '0.7rem',
-                    fontWeight: 500,
-                    color: 'text.secondary',
-                    transition: 'all 0.2s ease',
-                    lineHeight: 1.2,
-                    maxWidth: '120px',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                    position: 'relative',
-                    zIndex: 2,
-                  }}
-                >
-                  {recordName}
-                </Typography>
-              )}
-              <Box
-                component="span"
-                className={`citation-number citation-number-${citationId}`}
-                sx={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  minWidth: '20px',
-                  height: '20px',
-                  px: 0.75,
-                  borderRadius: '10px',
-                  bgcolor: 'rgba(25, 118, 210, 0.08)',
-                  color: 'primary.main',
-                  fontSize: '0.7rem',
-                  fontWeight: 600,
-                  transition: 'all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)',
-                  textDecoration: 'none',
-                  boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-                  border: '1px solid',
-                  borderColor: 'rgba(25, 118, 210, 0.12)',
-                  position: 'relative',
-                  zIndex: 2,
-                }}
-              >
-                {citationNumber}
-              </Box>
-            </Box>
+            <Fragment key={citationId}>
+              {renderCitationNumber(citationNumber, citationId, fallbackGroupId, hoveredCitationId === citationId)}
+            </Fragment>
           );
         }
         return <Fragment key={index}>{part}</Fragment>;
       },
-      [citationMap, handleMouseEnter, handleClick, handleMouseLeave, messageId]
+      [citationMap, messageId, hoveredCitationId, renderCitationNumber]
+    );
+
+    // Process text to group consecutive citations by filename on the same line
+    const processTextWithGroupedCitations = useCallback(
+      (text: string, lineIndex: number): React.ReactNode[] => {
+        if (!text) return [text];
+
+        // Split by citations while keeping the citations
+        const parts = text.split(/(\[\d+\])/g);
+        const result: React.ReactNode[] = [];
+        let currentGroup: { citations: number[]; recordName: string; recordId?: string } | null = null;
+        let groupIndex = 0;
+
+        for (let i = 0; i < parts.length; i += 1) {
+          const part = parts[i];
+          const citationMatch = part.match(/\[(\d+)\]/);
+
+          if (citationMatch) {
+            const citationNumber = parseInt(citationMatch[1], 10);
+            const citation = citationMap[citationNumber];
+
+            if (citation) {
+              const recordName = citation.metadata?.recordName || '';
+              const recordId = citation.metadata?.recordId;
+
+              // Check if this citation belongs to the current group
+              if (
+                currentGroup &&
+                currentGroup.recordName === recordName &&
+                currentGroup.recordId === recordId
+              ) {
+                // Add to existing group
+                currentGroup.citations.push(citationNumber);
+              } else {
+                // Start a new group
+                if (currentGroup) {
+                  // Render the previous group
+                  result.push(
+                    renderGroupedCitation(currentGroup, lineIndex, groupIndex)
+                  );
+                  groupIndex += 1;
+                }
+                currentGroup = {
+                  citations: [citationNumber],
+                  recordName,
+                  recordId,
+                };
+              }
+            } else {
+              // Citation not found, render as-is
+              if (currentGroup) {
+                result.push(renderGroupedCitation(currentGroup, lineIndex, groupIndex));
+                currentGroup = null;
+                groupIndex += 1;
+              }
+              result.push(renderContentPart(part, lineIndex * 1000 + i));
+            }
+          } else {
+            // Non-citation text - break the group if there's actual content
+            // (empty strings between adjacent citations are fine and won't break grouping)
+            if (currentGroup && part.trim().length > 0) {
+              // Render the current group before non-whitespace text
+              result.push(renderGroupedCitation(currentGroup, lineIndex, groupIndex));
+              currentGroup = null;
+              groupIndex += 1;
+            }
+            // Add whitespace or text (whitespace between citations is preserved but doesn't break grouping)
+            if (part) {
+              result.push(part);
+            }
+          }
+        }
+
+        // Render any remaining group
+        if (currentGroup) {
+          result.push(renderGroupedCitation(currentGroup, lineIndex, groupIndex));
+        }
+
+        return result;
+      },
+      [citationMap, renderGroupedCitation, renderContentPart]
     );
 
     const processChildrenForCitations = useCallback(
       (children: React.ReactNode): React.ReactNode =>
         React.Children.toArray(children).flatMap((child, childIndex) => {
           if (typeof child === 'string') {
-            return child
-              .split(/(\[\d+\])/g)
-              .map((part, partIndex) => renderContentPart(part, childIndex * 1000 + partIndex));
+            return processTextWithGroupedCitations(child, childIndex);
           }
           return child;
         }),
-      [renderContentPart]
+      [processTextWithGroupedCitations]
     );
 
     return (
