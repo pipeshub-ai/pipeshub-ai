@@ -17,6 +17,7 @@ from app.connectors.core.registry.connector import (
     GmailConnector,
     GoogleDriveConnector,
 )
+from app.connectors.sources.s3.connector import S3Connector
 from app.connectors.core.registry.connector_registry import (
     ConnectorRegistry,
 )
@@ -206,6 +207,7 @@ async def initialize_connector_registry(app_container: ConnectorAppContainer) ->
         logger.info("✅ Connectors registered")
         registry.register_connector(GoogleDriveConnector)
         registry.register_connector(GmailConnector)
+        registry.register_connector(S3Connector)
         logger.info(f"Registered {len(registry._connectors)} connectors")
 
         # Sync with database

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from datetime import datetime
 from typing import Optional, Tuple
 
 from app.agents.tools.decorator import tool
@@ -173,6 +174,12 @@ class S3:
                 type=ParameterType.STRING,
                 description="Marker for pagination",
                 required=False
+            ),
+            ToolParameter(
+                name="timestamp",
+                type=ParameterType.STRING,
+                description="ISO format timestamp (e.g., '2024-01-01T00:00:00Z'). If provided, only objects modified after this timestamp will be returned. If null, all objects are returned.",
+                required=False
             )
         ]
     )
@@ -181,7 +188,8 @@ class S3:
         bucket_name: str,
         prefix: Optional[str] = None,
         max_keys: Optional[int] = None,
-        marker: Optional[str] = None
+        marker: Optional[str] = None,
+        timestamp: Optional[str] = None
     ) -> Tuple[bool, str]:
         """List objects in an S3 bucket"""
         """
@@ -190,6 +198,7 @@ class S3:
             prefix: Prefix to filter objects
             max_keys: Maximum number of objects to return
             marker: Marker for pagination
+            timestamp: ISO format timestamp. If provided, only objects modified after this timestamp will be returned
         Returns:
             Tuple[bool, str]: True if successful, False otherwise
         """
@@ -203,6 +212,55 @@ class S3:
             ))
 
             if response.success:
+                # Filter by timestamp if provided
+                if timestamp is not None:
+                    try:
+                        # Parse the timestamp string to datetime
+                        # Handle both 'Z' and timezone offset formats
+                        timestamp_clean = timestamp.replace('Z', '+00:00') if timestamp.endswith('Z') else timestamp
+                        filter_timestamp = datetime.fromisoformat(timestamp_clean)
+                        
+                        # Parse response data to filter
+                        response_data = json.loads(response.to_json())
+                        
+                        # Filter objects based on LastModified
+                        if response_data.get('data') and 'Contents' in response_data['data']:
+                            filtered_contents = []
+                            for obj in response_data['data']['Contents']:
+                                # LastModified is typically a string in ISO format when serialized
+                                last_modified_str = obj.get('LastModified')
+                                if last_modified_str:
+                                    try:
+                                        # Parse ISO format string, handling both 'Z' and timezone offsets
+                                        if isinstance(last_modified_str, str):
+                                            last_modified_clean = last_modified_str.replace('Z', '+00:00') if last_modified_str.endswith('Z') else last_modified_str
+                                            last_modified = datetime.fromisoformat(last_modified_clean)
+                                        else:
+                                            # If it's already a datetime object (unlikely in JSON, but handle it)
+                                            last_modified = last_modified_str
+                                        
+                                        # Only include objects modified after the timestamp
+                                        if last_modified > filter_timestamp:
+                                            filtered_contents.append(obj)
+                                    except (ValueError, AttributeError) as e:
+                                        # Skip objects with invalid LastModified timestamps
+                                        logger.warning(f"Skipping object {obj.get('Key', 'unknown')} due to invalid LastModified: {e}")
+                                        continue
+                            
+                            # Update the response with filtered contents
+                            response_data['data']['Contents'] = filtered_contents
+                            # Update KeyCount if it exists
+                            if 'KeyCount' in response_data['data']:
+                                response_data['data']['KeyCount'] = len(filtered_contents)
+                            
+                            return True, json.dumps(response_data)
+                        else:
+                            # No Contents in response, return as is
+                            return True, response.to_json()
+                    except ValueError as e:
+                        logger.error(f"Error parsing timestamp: {e}")
+                        return False, json.dumps({"error": f"Invalid timestamp format: {str(e)}"})
+                
                 return True, response.to_json()
             else:
                 return False, response.to_json()
