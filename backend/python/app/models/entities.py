@@ -2,8 +2,6 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
-
 from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
@@ -12,6 +10,7 @@ from app.config.constants.arangodb import (
 )
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from pydantic import BaseModel, Field
 
 
 class RecordGroupType(str, Enum):
@@ -45,6 +44,9 @@ class RecordType(str, Enum):
     SHAREPOINT_LIST = "SHAREPOINT_LIST"
     SHAREPOINT_LIST_ITEM = "SHAREPOINT_LIST_ITEM"
     SHAREPOINT_DOCUMENT_LIBRARY = "SHAREPOINT_DOCUMENT_LIBRARY"
+    NOTION_PAGE = "NOTION_PAGE"
+    NOTION_DATABASE = "NOTION_DATABASE"
+    NOTION_DATA_SOURCE = "NOTION_DATA_SOURCE"
     OTHERS = "OTHERS"
 
 
@@ -1016,3 +1018,17 @@ class AppRole(BaseModel):
             source_created_at=arango_doc.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_doc.get("sourceLastModifiedTimestamp"),
         )
+
+# Rebuild models to resolve forward references after all imports are complete
+# This is necessary due to circular imports between entities.py and blocks.py
+Record.model_rebuild()
+FileRecord.model_rebuild()
+MessageRecord.model_rebuild()
+MailRecord.model_rebuild()
+WebpageRecord.model_rebuild()
+CommentRecord.model_rebuild()
+TicketRecord.model_rebuild()
+SharePointListRecord.model_rebuild()
+SharePointListItemRecord.model_rebuild()
+SharePointDocumentLibraryRecord.model_rebuild()
+SharePointPageRecord.model_rebuild()

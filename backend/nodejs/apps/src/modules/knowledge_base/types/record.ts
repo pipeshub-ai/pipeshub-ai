@@ -8,7 +8,8 @@ export type ConnectorName =
   | 'JIRA'
   | 'SLACK'
   | 'SHAREPOINT ONLINE'
-  | 'GMAIL';
+  | 'GMAIL'
+  | 'NOTION';
 export type IndexingStatus =
   | 'NOT_STARTED'
   | 'PAUSED'

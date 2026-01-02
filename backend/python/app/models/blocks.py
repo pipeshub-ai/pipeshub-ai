@@ -1,9 +1,12 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator
+
+if TYPE_CHECKING:
+    from app.models.entities import RecordType
 
 
 class Point(BaseModel):
@@ -34,6 +37,7 @@ class BlockType(str, Enum):
     HEADING = "heading"
     QUOTE = "quote"
     DIVIDER = "divider"
+    CHILD_RECORD = "child_record"
 
 class DataFormat(str, Enum):
     TXT = "txt"
@@ -104,11 +108,18 @@ class TableCellMetadata(BaseModel):
     column_header: Optional[bool] = None
     row_header: Optional[bool] = None
 
+class ChildRecord(BaseModel):
+    """Metadata specific to child record blocks"""
+    record_id: Optional[str] = None
+    record_name: Optional[str] = None
+    record_type: Optional["RecordType"] = None
+
 class TableRowMetadata(BaseModel):
     """Metadata specific to table row blocks"""
     row_number: Optional[int] = None
     row_span: Optional[int] = None
     is_header: bool = False
+    children_records: Optional[List[ChildRecord]] = None
 
 class TableMetadata(BaseModel):
     """Metadata specific to table blocks"""

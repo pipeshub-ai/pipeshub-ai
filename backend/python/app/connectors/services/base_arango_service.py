@@ -13950,48 +13950,79 @@ class BaseArangoService:
         self,
         file_key: str,
         md5_checksum: str,
-        size_in_bytes: int,
+        size_in_bytes: Optional[int],
         transaction: Optional[TransactionDatabase] = None,
     ) -> List[str]:
         """
-        Find duplicate files based on MD5 checksum and file size
+        Find duplicate files based on MD5 checksum and optionally file size.
+        
+        If size_in_bytes is None or 0, only MD5 checksum is used for duplicate detection.
+        If size_in_bytes is provided (non-zero), both MD5 and size are checked.
 
         Args:
             md5_checksum (str): MD5 checksum of the file
-            size_in_bytes (int): Size of the file in bytes
+            size_in_bytes (Optional[int]): Size of the file in bytes. If None or 0, only MD5 is checked.
             transaction (Optional[TransactionDatabase]): Optional database transaction
 
         Returns:
-            List[str]: List of file keys that match both criteria
+            List[str]: List of file keys that match the criteria
         """
         try:
-            self.logger.info(
-                "🔍 Finding duplicate files with MD5: %s and size: %d bytes",
-                md5_checksum,
-                size_in_bytes,
-            )
+            # Determine if we should check size (only if provided and non-zero)
+            check_size = size_in_bytes is not None and size_in_bytes > 0
+            
+            if check_size:
+                self.logger.info(
+                    "🔍 Finding duplicate files with MD5: %s and size: %d bytes",
+                    md5_checksum,
+                    size_in_bytes,
+                )
+            else:
+                self.logger.info(
+                    "🔍 Finding duplicate files with MD5: %s (size not checked)",
+                    md5_checksum,
+                )
 
-            query = f"""
-            FOR file IN {CollectionNames.FILES.value}
-                FILTER file.md5Checksum == @md5_checksum
-                AND file.sizeInBytes == @size_in_bytes
-                AND file._key != @file_key
-                LET record = (
-                    FOR r IN {CollectionNames.RECORDS.value}
-                        FILTER r._key == file._key
-                        RETURN r
-                )[0]
-                RETURN record
-            """
-
-            db = transaction if transaction else self.db
-            cursor = db.aql.execute(
-                query,
-                bind_vars={
+            # Build query conditionally based on whether size should be checked
+            if check_size:
+                query = f"""
+                FOR file IN {CollectionNames.FILES.value}
+                    FILTER file.md5Checksum == @md5_checksum
+                    AND file.sizeInBytes == @size_in_bytes
+                    AND file._key != @file_key
+                    LET record = (
+                        FOR r IN {CollectionNames.RECORDS.value}
+                            FILTER r._key == file._key
+                            RETURN r
+                    )[0]
+                    RETURN record
+                """
+                bind_vars = {
                     "md5_checksum": md5_checksum,
                     "size_in_bytes": size_in_bytes,
                     "file_key": file_key
                 }
+            else:
+                query = f"""
+                FOR file IN {CollectionNames.FILES.value}
+                    FILTER file.md5Checksum == @md5_checksum
+                    AND file._key != @file_key
+                    LET record = (
+                        FOR r IN {CollectionNames.RECORDS.value}
+                            FILTER r._key == file._key
+                            RETURN r
+                    )[0]
+                    RETURN record
+                """
+                bind_vars = {
+                    "md5_checksum": md5_checksum,
+                    "file_key": file_key
+                }
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query,
+                bind_vars=bind_vars
             )
 
             duplicate_records = list(cursor)

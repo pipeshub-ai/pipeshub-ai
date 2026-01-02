@@ -997,6 +997,66 @@ class Processor:
             self.logger.error(f"❌ Error processing DOCX document: {str(e)}")
             raise
 
+    async def process_blocks(
+        self, recordName, recordId, version, source, orgId, blocks_data, virtual_record_id
+    ) -> None:
+        """Process BlocksContainer and attach to record for indexing
+
+        Args:
+            recordName (str): Name of the record
+            recordId (str): ID of the record
+            version (str): Version of the record
+            source (str): Source of the document
+            orgId (str): Organization ID
+            blocks_data (bytes|str|dict): BlocksContainer data (JSON string, bytes, or dict)
+            virtual_record_id (str): Virtual record ID
+        """
+        self.logger.info(
+            f"🚀 Starting Blocks Container processing for record: {recordName}"
+        )
+
+        try:
+            # Deserialize blocks_data to BlocksContainer
+            if isinstance(blocks_data, bytes):
+                blocks_data = blocks_data.decode('utf-8')
+            
+            if isinstance(blocks_data, str):
+                blocks_dict = json.loads(blocks_data)
+            elif isinstance(blocks_data, dict):
+                blocks_dict = blocks_data
+            else:
+                raise ValueError(f"Invalid blocks_data type: {type(blocks_data)}")
+            
+            # Convert dict to BlocksContainer
+            block_containers = BlocksContainer(**blocks_dict)
+
+            # Get record from database
+            record = await self.arango_service.get_document(
+                recordId, CollectionNames.RECORDS.value
+            )
+
+            if record is None:
+                self.logger.error(f"❌ Record {recordId} not found in database")
+                raise Exception(f"Record {recordId} not found in graph db")
+            
+            # Convert to Record entity and attach blocks
+            record = convert_record_dict_to_record(record)
+            record.block_containers = block_containers
+            record.virtual_record_id = virtual_record_id
+            
+            # Apply indexing pipeline
+            ctx = TransformContext(record=record)
+            pipeline = IndexingPipeline(
+                document_extraction=self.document_extraction, 
+                sink_orchestrator=self.sink_orchestrator
+            )
+            await pipeline.apply(ctx)
+            self.logger.info("✅ Blocks Container processing completed successfully")
+
+        except Exception as e:
+            self.logger.error(f"❌ Error processing Blocks Container: {str(e)}")
+            raise
+
     async def process_excel_document(
         self, recordName, recordId, version, source, orgId, excel_binary, virtual_record_id
     ) -> None:

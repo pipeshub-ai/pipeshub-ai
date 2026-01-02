@@ -19,4 +19,10 @@ def get_oauth_config(app_name: str, auth_config: dict) -> OAuthConfig:
     elif app_name.lower() == Connectors.DROPBOX_PERSONAL.value.lower():
         oauth_config.token_access_type = "offline"
 
+    elif app_name.lower() == Connectors.NOTION.value.lower():
+        # Notion requires Basic Auth with JSON body
+        oauth_config.additional_params["use_basic_auth"] = True
+        oauth_config.additional_params["use_json_body"] = True
+        oauth_config.additional_params["notion_version"] = "2025-09-03"
+
     return oauth_config
