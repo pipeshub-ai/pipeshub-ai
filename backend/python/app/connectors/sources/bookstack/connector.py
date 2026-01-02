@@ -4,7 +4,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Awaitable, Callable, Dict, List, NoReturn, Optional, Tuple, Set, Any
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -35,15 +35,15 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
 )
 from app.connectors.core.registry.filters import (
+    FilterCategory,
     FilterCollection,
     FilterField,
-    IndexingFilterKey,
-    SyncFilterKey,
-    FilterType,
     FilterOption,
     FilterOptionsResponse,
-    FilterCategory,
+    FilterType,
+    IndexingFilterKey,
     OptionSourceType,
+    SyncFilterKey,
     load_connector_filters,
 )
 from app.connectors.sources.bookstack.common.apps import BookStackApp
@@ -1153,31 +1153,30 @@ class BookStackConnector(BaseConnector):
         """
         Generic function to fetch a list of content items (like shelves, books),
         and sync them as record groups with permissions.
-        
+
         Args:
             content_type_name: Type of content (bookshelf, book, chapter)
             list_method: API method to list items
             roles_details: Role details for permission parsing
             parent_filter_ids: For chapters, only sync those with book_id in this set
-            
+
         Returns:
             Set of synced item IDs (useful for filtering child content types)
         """
         self.logger.info(f"Starting sync for {content_type_name}s as record groups.")
-        
+
         # Get book ID filter if syncing books
         book_ids = None
         book_ids_operator = None
         if content_type_name == "book":
             book_ids_filter = self.sync_filters.get(SyncFilterKey.BOOK_IDS)
-            print(f"\n\n\n\n\n --Debug--: book_ids_filter={book_ids_filter}")
             if book_ids_filter:
                 book_ids = set(int(bid) for bid in book_ids_filter.get_value())  # Convert to set of integers
                 book_ids_operator = book_ids_filter.get_operator()
                 if book_ids:
                     action = "Excluding" if book_ids_operator.value == "not_in" else "Including"
                     self.logger.info(f"🔍 Filter: {action} books by IDs: {book_ids}")
-        
+
         all_items = []
         offset = 0
 
@@ -1456,7 +1455,7 @@ class BookStackConnector(BaseConnector):
         roles_details: Dict[int, Dict],
         last_sync_timestamp: str,
         book_ids: Optional[Set[int]] = None,
-        book_ids_operator: Optional[Any] = None
+        book_ids_operator: Optional[str] = None
     ) -> None:
 
         tasks = {
@@ -1503,7 +1502,7 @@ class BookStackConnector(BaseConnector):
         content_type: str,
         roles_details: Dict[int, Dict],
         book_ids: Optional[Set[int]] = None,
-        book_ids_operator: Optional[Any] = None
+        book_ids_operator: Optional[str] = None
     ) -> None:
         """
         Handles a create event for any record group type (book, chapter, bookshelf).
@@ -1651,7 +1650,6 @@ class BookStackConnector(BaseConnector):
 
             pages_page = pages_data.get("data", [])
 
-            print(f"DEBUG: pages_response:", response)
             if not pages_page:
                 self.logger.info("No more pages to sync.")
                 break
@@ -1969,7 +1967,7 @@ class BookStackConnector(BaseConnector):
         created_after: Optional[datetime] = None,
         created_before: Optional[datetime] = None,
         book_ids: Optional[Set[int]] = None,
-        book_ids_operator: Optional[Any] = None
+        book_ids_operator: Optional[str] = None
     ) -> None:
         """
         Handles a 'page_create' or 'page_update' event by fetching the page's
@@ -2387,13 +2385,13 @@ class BookStackConnector(BaseConnector):
             page=page,
             count=limit
         )
-        
+
         if not response.success:
             raise RuntimeError(f"Failed to fetch books: {response.error}")
-        
+
         books_list = response.data.get("data", [])
         total = response.data.get("total", 0)
-        
+
         # Convert to FilterOption objects
         options = [
             FilterOption(
@@ -2402,10 +2400,10 @@ class BookStackConnector(BaseConnector):
             )
             for book in books_list
         ]
-        
+
         # Calculate if there are more pages
         has_more = (page * limit) < total
-        
+
         return FilterOptionsResponse(
             success=True,
             options=options,

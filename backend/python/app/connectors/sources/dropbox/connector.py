@@ -50,15 +50,15 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
 )
 from app.connectors.core.registry.filters import (
-    FilterCollection,
-    IndexingFilterKey,
-    SyncFilterKey,
-    FilterField,
     FilterCategory,
-    FilterOption,
-    OptionSourceType,
-    FilterType,
+    FilterCollection,
+    FilterField,
     FilterOperator,
+    FilterOption,
+    FilterType,
+    IndexingFilterKey,
+    OptionSourceType,
+    SyncFilterKey,
     load_connector_filters,
 )
 
@@ -343,7 +343,7 @@ class DropboxConnector(BaseConnector):
             # 0. Apply date filters if provided
             if not self._pass_date_filters(entry, modified_after, modified_before, created_after, created_before):
                 return None
-            
+
             if not self._pass_extension_filter(entry):
                 self.logger.debug(f"Skipping item {entry.name} (ID: {entry.id}) due to extention filters.")
                 return
@@ -567,7 +567,7 @@ class DropboxConnector(BaseConnector):
                     is_shared = True
                 if new_permissions is not None and len(new_permissions) == 1:
                     is_shared = new_permissions[0].type == PermissionType.GROUP
-                
+
                 file_record.is_shared = is_shared
 
                 # If no explicit permissions were found (e.g., personal file),
@@ -737,20 +737,20 @@ class DropboxConnector(BaseConnector):
                 return False
 
         return True
-    
+
     def _pass_extension_filter(self, entry: Union[FileMetadata, FolderMetadata, DeletedMetadata]) -> bool:
         """
         Checks if the Dropbox entry passes the configured file extensions filter.
-        
+
         For MULTISELECT filters:
         - Operator IN: Only allow files with extensions in the selected list
         - Operator NOT_IN: Allow files with extensions NOT in the selected list
-        
+
         Folders and deleted items always pass this filter to maintain directory structure.
-        
+
         Args:
             entry: The Dropbox file/folder/deleted metadata
-            
+
         Returns:
             True if the entry passes the filter (should be kept), False otherwise
         """
@@ -760,45 +760,45 @@ class DropboxConnector(BaseConnector):
         # Deleted items should pass through so deletions are processed.
         if not isinstance(entry, FileMetadata):
             return True
-        
+
         # 2. Get the extensions filter
         extensions_filter = self.sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
-        
+
         # If no filter configured or filter is empty, allow all files
         if extensions_filter is None or extensions_filter.is_empty():
             return True
-        
+
         # 3. Get the file extension from the entry name
         # The extension is stored without the dot (e.g., "pdf", "docx")
         file_extension = None
         if entry.name and "." in entry.name:
             file_extension = entry.name.rsplit(".", 1)[-1].lower()
-        
+
         # 4. Handle files without extensions
         if file_extension is None:
             operator = extensions_filter.get_operator()
             operator_str = operator.value if hasattr(operator, 'value') else str(operator)
             return operator_str == FilterOperator.NOT_IN
-        
+
         # 5. Get the list of extensions from the filter value
         allowed_extensions = extensions_filter.value
         if not isinstance(allowed_extensions, list):
             return True  # Invalid filter value, allow the file
-        
+
         # Normalize extensions (lowercase, without dots)
         normalized_extensions = [ext.lower().lstrip(".") for ext in allowed_extensions]
-        
+
         # 6. Apply the filter based on operator
         operator = extensions_filter.get_operator()
         operator_str = operator.value if hasattr(operator, 'value') else str(operator)
-        
+
         if operator_str == FilterOperator.IN:
             # Only allow files with extensions in the list
             return file_extension in normalized_extensions
         elif operator_str == FilterOperator.NOT_IN:
             # Allow files with extensions NOT in the list
             return file_extension not in normalized_extensions
-        
+
         # Unknown operator, default to allowing the file
         return True
 

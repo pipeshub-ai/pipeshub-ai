@@ -35,14 +35,14 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
 )
 from app.connectors.core.registry.filters import (
+    FilterCategory,
     FilterCollection,
     FilterField,
-    FilterType,
-    FilterCategory,
-    OptionSourceType,
-    FilterOption,
     FilterOperator,
+    FilterOption,
+    FilterType,
     IndexingFilterKey,
+    OptionSourceType,
     SyncFilterKey,
     load_connector_filters,
 )
@@ -268,7 +268,7 @@ class OneDriveConnector(BaseConnector):
             if not self._pass_date_filters(item):
                 self.logger.debug(f"Skipping item {item.name} (ID: {item.id}) due to date filters.")
                 return # Skip this item
-            
+
             if not self._pass_extension_filter(item):
                 self.logger.debug(f"Skipping item {item.name} (ID: {item.id}) due to extention filters.")
                 return
@@ -333,7 +333,7 @@ class OneDriveConnector(BaseConnector):
                     item.parent_reference.drive_id,
                     item.id,
                 )
-            
+
             is_shared = hasattr(item, 'shared') and item.shared is not None
 
             file_record = FileRecord(
@@ -542,34 +542,34 @@ class OneDriveConnector(BaseConnector):
                     return False
 
         return True
-    
+
     def _pass_extension_filter(self, item: DriveItem) -> bool:
         """
         Checks if the DriveItem passes the configured file extensions filter.
-        
+
         For MULTISELECT filters:
         - Operator IN: Only allow files with extensions in the selected list
         - Operator NOT_IN: Allow files with extensions NOT in the selected list
-        
+
         Folders always pass this filter to maintain directory structure.
         """
         # 1. ALWAYS Allow Folders
         if item.folder is not None:
             return True
-        
+
         # 2. Get the extensions filter
         extensions_filter = self.sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
-        
+
         # If no filter configured or filter is empty, allow all files
         if extensions_filter is None or extensions_filter.is_empty():
             return True
-        
+
         # 3. Get the file extension from the item
         # The extension is stored without the dot (e.g., "pdf", "docx")
         file_extension = None
         if item.name and "." in item.name:
             file_extension = item.name.rsplit(".", 1)[-1].lower()
-        
+
         # Files without extensions: behavior depends on operator
         # If using IN operator and file has no extension, it won't match any allowed extensions
         # If using NOT_IN operator and file has no extension, it passes (not in excluded list)
@@ -579,26 +579,26 @@ class OneDriveConnector(BaseConnector):
             if operator_str == FilterOperator.NOT_IN:
                 return True
             return False
-        
+
         # 4. Get the list of extensions from the filter value
         allowed_extensions = extensions_filter.value
         if not isinstance(allowed_extensions, list):
             return True  # Invalid filter value, allow the file
-        
+
         # Normalize extensions (lowercase, without dots)
         normalized_extensions = [ext.lower().lstrip(".") for ext in allowed_extensions]
-        
+
         # 5. Apply the filter based on operator
         operator = extensions_filter.get_operator()
         operator_str = operator.value if hasattr(operator, 'value') else str(operator)
-        
+
         if operator_str == FilterOperator.IN:
             # Only allow files with extensions in the list
             return file_extension in normalized_extensions
         elif operator_str == FilterOperator.NOT_IN:
             # Allow files with extensions NOT in the list
             return file_extension not in normalized_extensions
-        
+
         # Unknown operator, default to allowing the file
         return True
 

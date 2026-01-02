@@ -1625,8 +1625,6 @@ class BookStackDataSource:
             body=None
         )
 
-        print("request:", request)
-
         try:
             response = await self.http.execute(request)
             return BookStackResponse(success=True, data=response.json())

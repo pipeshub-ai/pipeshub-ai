@@ -223,6 +223,7 @@ class SyncFilterKey(str, Enum):
     PROJECT_IDS = "project_ids"
     PROJECT_KEYS = "project_keys"
     SITE_IDS = "site_ids"
+    SITE_NAMES = "site_names"
     CHANNEL_IDS = "channel_ids"
     BOOK_IDS = "book_ids"
 
@@ -231,6 +232,7 @@ class SyncFilterKey(str, Enum):
     FILE_EXTENSIONS = "file_extensions"
     MAX_FILE_SIZE = "max_file_size"
     PAGE_IDS = "page_ids"
+    PAGE_NAMES = "page_names"
     BLOGPOST_IDS = "blogpost_ids"
 
     # User filters
@@ -252,6 +254,7 @@ class IndexingFilterKey(str, Enum):
     PROJECTS = "projects"
     SITES = "sites"
     CHANNELS = "channels"
+    LISTS = "lists"
 
     # Content types
     PAGES = "pages"
