@@ -130,11 +130,11 @@ class GitHubDataSource:
             return GitHubResponse(success=False, error=str(e))
 
 
-    def list_issues(self, owner: str, repo: str, state: str = "open", labels: Sequence[str] | None = None, assignee: str | None = None) -> GitHubResponse[list[Issue]]:
+    def list_issues(self, owner: str, repo: str, state: str = "open", labels: Sequence[str] | None = None, assignee: str | None = None,since:str |None = None) -> GitHubResponse[list[Issue]]:
         """List issues with filters."""
         try:
             r = self._repo(owner, repo)
-            params = self._not_none(labels=labels, assignee=assignee)
+            params = self._not_none(labels=labels, assignee=assignee, since=since)
             issues = list(r.get_issues(state=state, **params))
             return GitHubResponse(success=True, data=issues)
         except Exception as e:
