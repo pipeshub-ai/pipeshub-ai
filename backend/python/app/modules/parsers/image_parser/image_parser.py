@@ -23,7 +23,19 @@ class ImageParser:
 
     def parse_image(self, image_content: bytes, extension: str) -> BlocksContainer:
         base64_encoded_content = base64.b64encode(image_content).decode("utf-8")
-        base64_image = f"data:image/{extension};base64,{base64_encoded_content}"
+
+        # Handle SVG images by converting to PNG
+        if extension.lower() == 'svg':
+            self.logger.debug("Detected SVG image; converting to PNG")
+            try:
+                png_base64 = self.svg_base64_to_png_base64(base64_encoded_content)
+                base64_image = f"data:image/png;base64,{png_base64}"
+            except Exception as e:
+                self.logger.warning(f"Failed to convert SVG to PNG: {e}")
+                raise ValueError("Failed to convert SVG to PNG")
+        else:
+            base64_image = f"data:image/{extension};base64,{base64_encoded_content}"
+
         self.logger.debug(f"Base64 image: {base64_image[:100]}")
 
         image_block = Block(
