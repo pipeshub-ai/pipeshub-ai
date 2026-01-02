@@ -945,7 +945,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                               whiteSpace: 'nowrap',
                             }}
                           >
-                            {recordInfo.connector || 'UPLOAD'}
+                            {recordInfo.connector || 'KB'}
                           </Typography>
                         </Button>
                         {recordInfo.extension && (
