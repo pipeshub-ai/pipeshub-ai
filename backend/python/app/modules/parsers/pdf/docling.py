@@ -31,8 +31,10 @@ class DoclingProcessor():
             InputFormat.MD: MarkdownFormatOption(),
         })
 
-    async def load_document(self, doc_name: str, content: bytes, page_number: int = None) -> BlocksContainer|bool:
-        stream = BytesIO(content)
+    async def load_document(self, doc_name: str, content: bytes | BytesIO, page_number: int = None) -> BlocksContainer:
+        # Handle both bytes and BytesIO objects
+        stream = content if isinstance(content, BytesIO) else BytesIO(content)
+        
         source = DocumentStream(name=doc_name, stream=stream)
         conv_res: ConversionResult = await asyncio.to_thread(self.converter.convert, source)
         if conv_res.status.value != SUCCESS_STATUS:
