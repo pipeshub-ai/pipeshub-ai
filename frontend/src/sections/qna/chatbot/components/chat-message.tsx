@@ -148,7 +148,7 @@ const StreamingContent = React.memo(
     const showStreamingIndicator = isStreaming && processedContent.length > 0;
 
     const handleMouseEnter = useCallback(
-      (event: React.MouseEvent, citationRef: string, citationId: string, groupId: string) => {
+      (event: React.MouseEvent, citationRef: string, citationId: string) => {
         if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
 
         // Get the citation element's bounding rect for better positioning
@@ -238,7 +238,6 @@ const StreamingContent = React.memo(
       (
         citationNumber: number,
         citationId: string,
-        groupId: string,
         isHovered: boolean
       ) => {
         const citation = citationMap[citationNumber];
@@ -250,7 +249,7 @@ const StreamingContent = React.memo(
             className={`citation-number citation-number-${citationId}`}
             onMouseEnter={(e) => {
               e.stopPropagation();
-              handleMouseEnter(e, `[${citationNumber}]`, citationId, groupId);
+              handleMouseEnter(e, `[${citationNumber}]`, citationId);
             }}
             onClick={(e) => {
               e.stopPropagation();
@@ -362,9 +361,9 @@ const StreamingContent = React.memo(
                 const citationId = `citation-${citationNumber}-${groupId}-${idx}`;
                 const isHovered = hoveredCitationId === citationId;
                 return (
-                  <Fragment key={`${citationId}-${idx}`}>
+                  <Fragment key={citationId}>
                     <Box component="span" sx={{ mx: 0.4 }}>
-                    {renderCitationNumber(citationNumber, citationId, groupId, isHovered)}
+                    {renderCitationNumber(citationNumber, citationId, isHovered)}
                     </Box>
               </Fragment>
                 );
@@ -394,7 +393,7 @@ const StreamingContent = React.memo(
 
           return (
             <Fragment key={citationId}>
-              {renderCitationNumber(citationNumber, citationId, fallbackGroupId, hoveredCitationId === citationId)}
+              {renderCitationNumber(citationNumber, citationId, hoveredCitationId === citationId)}
             </Fragment>
           );
         }
