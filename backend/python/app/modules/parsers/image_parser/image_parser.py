@@ -32,7 +32,7 @@ class ImageParser:
                 base64_image = f"data:image/png;base64,{png_base64}"
             except Exception as e:
                 self.logger.warning(f"Failed to convert SVG to PNG: {e}")
-                raise ValueError("Failed to convert SVG to PNG")
+                raise ValueError(f"Failed to convert SVG to PNG: {e}") from e
         else:
             base64_image = f"data:image/{extension};base64,{base64_encoded_content}"
 
