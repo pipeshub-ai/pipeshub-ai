@@ -14056,18 +14056,18 @@ class BaseArangoService:
         record_key: str,
         md5_checksum: str,
         record_type: Optional[str] = None,
+        size_in_bytes: Optional[int] = None,
         transaction: Optional[TransactionDatabase] = None,
     ) -> List[Dict]:
         """
-        Find duplicate records based on MD5 checksum and content size.
+        Find duplicate records based on MD5 checksum.
         This method queries the RECORDS collection and works for all record types.
 
         Args:
             record_key (str): The key of the current record to exclude from results
             md5_checksum (str): MD5 checksum of the record content
-            size_in_bytes (int): Size of the record content in bytes
-            org_id (str): Organization ID to filter records
             record_type (Optional[str]): Optional record type to filter by
+            size_in_bytes (Optional[int]): Optional file size in bytes to filter by
             transaction (Optional[TransactionDatabase]): Optional database transaction
 
         Returns:
@@ -14096,6 +14096,12 @@ class BaseArangoService:
                 AND record.recordType == @record_type
                 """
                 bind_vars["record_type"] = record_type
+
+            if size_in_bytes is not None:
+                query += """
+                AND record.sizeInBytes == @size_in_bytes
+                """
+                bind_vars["size_in_bytes"] = size_in_bytes
 
             query += """
                 RETURN record
@@ -14260,6 +14266,7 @@ class BaseArangoService:
                 return 0
 
             md5_checksum = ref_record.get("md5Checksum")
+            size_in_bytes = ref_record.get("sizeInBytes")
 
             if not md5_checksum:
                 self.logger.warning(f"Record {record_id} missing md5Checksum")
@@ -14271,16 +14278,27 @@ class BaseArangoService:
                 FILTER record.md5Checksum == @md5_checksum
                 AND record._key != @record_id
                 AND record.indexingStatus == @queued_status
+            """
+            
+            bind_vars = {
+                "md5_checksum": md5_checksum,
+                "record_id": record_id,
+                "queued_status": "QUEUED"
+            }
+
+            if size_in_bytes is not None:
+                query += """
+                AND record.sizeInBytes == @size_in_bytes
+                """
+                bind_vars["size_in_bytes"] = size_in_bytes
+
+            query += """
                 RETURN record
             """
-
+            
             cursor = db.aql.execute(
                 query,
-                bind_vars={
-                    "md5_checksum": md5_checksum,
-                    "record_id": record_id,
-                    "queued_status": "QUEUED"
-                }
+                bind_vars=bind_vars
             )
 
             queued_records = list(cursor)
