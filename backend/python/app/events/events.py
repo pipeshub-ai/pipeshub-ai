@@ -166,7 +166,6 @@ class EventProcessor:
         Args:
             content: The content to hash (bytes or string)
             doc: The document dictionary to update
-            event_type: The event type for handling update events
 
         Returns:
             True if duplicate was found and handled (caller should return early)
@@ -174,6 +173,7 @@ class EventProcessor:
         """
         # Calculate MD5 from content
         md5_checksum = doc.get("md5Checksum")
+        size_in_bytes = doc.get("sizeInBytes")
         record_type = doc.get("recordType")
 
         if md5_checksum is None and content:
@@ -190,8 +190,10 @@ class EventProcessor:
         duplicate_records = await self.arango_service.find_duplicate_records(
             doc.get('_key'),
             md5_checksum,
-            record_type
+            record_type,
+            size_in_bytes
         )
+
         duplicate_records = [r for r in duplicate_records if r is not None]
 
         if not duplicate_records:
@@ -199,55 +201,50 @@ class EventProcessor:
             return False
 
         # Check for processed or in-progress duplicates
-        for attempt in range(60):
-            processed_duplicate = next(
-                (r for r in duplicate_records
-                 if (r.get("virtualRecordId") and r.get("indexingStatus") == ProgressStatus.COMPLETED.value)
-                 or (r.get("indexingStatus") == ProgressStatus.EMPTY.value)),
-                None
+        processed_duplicate = next(
+            (r for r in duplicate_records
+                if (r.get("virtualRecordId") and r.get("indexingStatus") == ProgressStatus.COMPLETED.value)
+                or (r.get("indexingStatus") == ProgressStatus.EMPTY.value)),
+            None
+        )
+
+        if processed_duplicate:
+            # Use data from processed duplicate
+            doc.update({
+                "isDirty": False,
+                "summaryDocumentId": processed_duplicate.get("summaryDocumentId"),
+                "virtualRecordId": processed_duplicate.get("virtualRecordId"),
+                "indexingStatus": processed_duplicate.get("indexingStatus"),
+                "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
+                "extractionStatus": processed_duplicate.get("extractionStatus"),
+                "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
+            })
+            await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+
+            # Copy all relationships from the processed duplicate to this document
+            await self.arango_service.copy_document_relationships(
+                processed_duplicate.get("_key"),
+                doc.get("_key")
             )
+            return True  # Duplicate handled
 
-            if processed_duplicate:
-                # Use data from processed duplicate
-                doc.update({
-                    "isDirty": False,
-                    "summaryDocumentId": processed_duplicate.get("summaryDocumentId"),
-                    "virtualRecordId": processed_duplicate.get("virtualRecordId"),
-                    "indexingStatus": processed_duplicate.get("indexingStatus"),
-                    "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
-                    "extractionStatus": processed_duplicate.get("extractionStatus"),
-                    "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
-                })
-                await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+        # Check if any duplicate is in progress
+        in_progress = next(
+            (r for r in duplicate_records if r.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value),
+            None
+        )
 
-                # Copy all relationships from the processed duplicate to this document
-                await self.arango_service.copy_document_relationships(
-                    processed_duplicate.get("_key"),
-                    doc.get("_key")
-                )
-                return True  # Duplicate handled
+        # TODO: handle race condition here
+        if in_progress:
+            self.logger.info(f"🚀 Duplicate record {in_progress.get('_key')} is being processed, changing status to QUEUED.")
 
-            # Check if any duplicate is in progress
-            in_progress = next(
-                (r for r in duplicate_records if r.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value),
-                None
-            )
+            doc.update({
+                "indexingStatus": ProgressStatus.QUEUED.value,
+            })
+            await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+            return True  # Marked as queued
 
-            # TODO: handle race condition here
-            if in_progress:
-                self.logger.info(f"🚀 Duplicate record {in_progress.get('_key')} is being processed, changing status to QUEUED.")
-                self.logger.info(f"Retried {attempt} times")
-
-                doc.update({
-                    "indexingStatus": ProgressStatus.QUEUED.value,
-                })
-                await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
-                return True  # Marked as queued
-            else:
-                # No record is being processed, we can proceed
-                break
-
-        self.logger.info(f"🚀 No processed duplicate found, proceeding with processing for {doc.get('_key')}")
+        self.logger.info(f"🚀 No duplicate found, proceeding with processing for {doc.get('_key')}")
         return False  # No duplicate found, proceed with processing
 
     async def on_event(self, event_data: dict) -> None:
