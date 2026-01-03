@@ -54,10 +54,8 @@ from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterField,
     FilterOperator,
-    FilterOption,
     FilterType,
     IndexingFilterKey,
-    OptionSourceType,
     SyncFilterKey,
     load_connector_filters,
 )

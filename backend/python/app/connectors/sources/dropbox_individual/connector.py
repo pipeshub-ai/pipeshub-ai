@@ -44,14 +44,9 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
 )
 from app.connectors.core.registry.filters import (
-    FilterCategory,
     FilterCollection,
-    FilterField,
     FilterOperator,
-    FilterOption,
-    FilterType,
     IndexingFilterKey,
-    OptionSourceType,
     SyncFilterKey,
     load_connector_filters,
 )

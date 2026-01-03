@@ -39,10 +39,8 @@ from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterField,
     FilterOperator,
-    FilterOption,
     FilterType,
     IndexingFilterKey,
-    OptionSourceType,
     SyncFilterKey,
     load_connector_filters,
 )
@@ -591,7 +589,7 @@ class OneDriveConnector(BaseConnector):
 
                         if files_disabled or shared_disabled:
                             record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
-                        
+
 
                         yield (record_update.record, record_update.new_permissions or [], record_update)
 

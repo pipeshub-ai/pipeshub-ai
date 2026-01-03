@@ -2379,7 +2379,7 @@ class BookStackConnector(BaseConnector):
             has_more=has_more,
             cursor=None
         )
-    
+
     def _get_book_id_filter(self) -> Tuple[Optional[Set[int]], Optional[Any]]:
         book_ids_filter = self.sync_filters.get(SyncFilterKey.BOOK_IDS)
         if not book_ids_filter or book_ids_filter.is_empty():

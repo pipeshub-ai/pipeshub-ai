@@ -3,9 +3,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Type, Union
 
-from app.connectors.core.registry.filters import FilterCategory, FilterField, FilterType, FilterOption, OptionSourceType
 from app.config.constants.arangodb import ExtensionTypes
-
+from app.connectors.core.registry.filters import (
+    FilterCategory,
+    FilterField,
+    FilterOption,
+    FilterType,
+    OptionSourceType,
+)
 
 
 class ConnectorScope(str, Enum):
