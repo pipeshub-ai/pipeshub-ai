@@ -119,6 +119,7 @@ class DataSourceEntitiesProcessor:
             "record_type": parent_record_type,
             "record_group_type": record.record_group_type,
             "version": 0,
+            "mime_type": MimeTypes.UNKNOWN.value,
         }
 
         # Map RecordType to appropriate Record class

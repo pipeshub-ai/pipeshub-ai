@@ -12,25 +12,6 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import google.oauth2.credentials
 import jwt
-from dependency_injector.wiring import Provide, inject
-from fastapi import (
-    APIRouter,
-    BackgroundTasks,
-    Depends,
-    File,
-    HTTPException,
-    Query,
-    Request,
-    UploadFile,
-)
-from fastapi.responses import Response, StreamingResponse
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaIoBaseDownload
-from jose import JWTError
-from pydantic import BaseModel, ValidationError
-
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AccountType,
@@ -78,6 +59,24 @@ from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import get_oauth_config
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from dependency_injector.wiring import Provide, inject
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
+from fastapi.responses import Response, StreamingResponse
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaIoBaseDownload
+from jose import JWTError
+from pydantic import BaseModel, ValidationError
 
 logger = create_logger("connector_service")
 
@@ -3062,9 +3061,9 @@ async def create_connector_instance(
                     "redirectUri": redirect_uri
                 }
                 # Preserve user-provided authorizeUrl and tokenUrl if they exist
-                if "authorizeUrl" not in prepared_config["auth"] or not prepared_config["auth"].get("authorizeUrl"):
+                if not prepared_config["auth"].get("authorizeUrl"):
                     oauth_updates["authorizeUrl"] = auth_metadata.get("authorizeUrl", "")
-                if "tokenUrl" not in prepared_config["auth"] or not prepared_config["auth"].get("tokenUrl"):
+                if not prepared_config["auth"].get("tokenUrl"):
                     oauth_updates["tokenUrl"] = auth_metadata.get("tokenUrl", "")
                 prepared_config["auth"].update(oauth_updates)
 
@@ -3379,9 +3378,9 @@ async def update_connector_instance_auth_config(
                 "authType": auth_type,
             }
             # Preserve user-provided authorizeUrl and tokenUrl if they exist
-            if "authorizeUrl" not in new_config["auth"] or not new_config["auth"].get("authorizeUrl"):
+            if not new_config["auth"].get("authorizeUrl"):
                 oauth_updates["authorizeUrl"] = auth_metadata.get("authorizeUrl", "")
-            if "tokenUrl" not in new_config["auth"] or not new_config["auth"].get("tokenUrl"):
+            if not new_config["auth"].get("tokenUrl"):
                 oauth_updates["tokenUrl"] = auth_metadata.get("tokenUrl", "")
             new_config["auth"].update(oauth_updates)
 
@@ -3697,9 +3696,9 @@ async def update_connector_instance_config(
                     "authType": auth_type,
                 }
                 # Preserve user-provided authorizeUrl and tokenUrl if they exist
-                if "authorizeUrl" not in new_config["auth"] or not new_config["auth"].get("authorizeUrl"):
+                if not new_config["auth"].get("authorizeUrl"):
                     oauth_updates["authorizeUrl"] = auth_metadata.get("authorizeUrl", "")
-                if "tokenUrl" not in new_config["auth"] or not new_config["auth"].get("tokenUrl"):
+                if not new_config["auth"].get("tokenUrl"):
                     oauth_updates["tokenUrl"] = auth_metadata.get("tokenUrl", "")
                 new_config["auth"].update(oauth_updates)
 
