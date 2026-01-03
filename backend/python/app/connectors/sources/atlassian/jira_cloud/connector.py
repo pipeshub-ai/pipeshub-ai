@@ -3093,8 +3093,11 @@ class JiraConnector(BaseConnector):
                     comment_name = f"Comment by {author_name} on {issue_key}"
 
                 # Create CommentRecord
-                # Use parent issue's weburl for comment weburl
-                comment_weburl = f"{self.site_url}/browse/{issue_key}" if self.site_url and issue_key else None
+                # Use parent issue's weburl for comment weburl with focusedCommentId parameter
+                if self.site_url and issue_key and comment_id:
+                    comment_weburl = f"{self.site_url}/browse/{issue_key}?focusedCommentId={comment_id}"
+                else:
+                    comment_weburl = None
 
                 comment_record = CommentRecord(
                     id=record_id,
@@ -3955,8 +3958,11 @@ class JiraConnector(BaseConnector):
                 parent_assignee_email = parent_fields.get("assignee", {}).get("emailAddress")
                 parent_permissions = self._build_permissions(parent_reporter_email, parent_assignee_email, parent_creator_email)
 
-            # Use parent issue's weburl for comment weburl
-            comment_weburl = f"{self.site_url}/browse/{issue_key}" if (self.site_url and issue_key) else None
+            # Use parent issue's weburl for comment weburl with focusedCommentId parameter
+            if self.site_url and issue_key and comment_id:
+                comment_weburl = f"{self.site_url}/browse/{issue_key}?focusedCommentId={comment_id}"
+            else:
+                comment_weburl = None
 
             # Create updated CommentRecord preserving record ID
             comment_record = CommentRecord(
