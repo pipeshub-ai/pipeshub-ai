@@ -1,4 +1,5 @@
 """Linear Connector Implementation"""
+from datetime import datetime
 from logging import Logger
 from typing import (
     Any,
@@ -7,6 +8,7 @@ from typing import (
     Optional,
     Tuple,
 )
+from uuid import uuid4
 
 from fastapi.responses import StreamingResponse
 
@@ -20,6 +22,7 @@ from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint
 from app.connectors.core.registry.connector_builder import (
     AuthField,
+    CommonFields,
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
@@ -36,18 +39,14 @@ from app.connectors.core.registry.filters import (
 from app.connectors.sources.linear.common.apps import LinearApp
 from app.models.entities import (
     AppUser,
-    IndexingStatus,
+    AppUserGroup,
     Record,
     RecordGroup,
     RecordGroupType,
-    TicketRecord,
-    CommentRecord,
 )
-from app.models.permission import Permission
-from uuid import uuid4
+from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.linear.linear import LinearClient
 from app.sources.external.linear.linear import LinearDataSource
-
 
 # Config path for Linear connector
 LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
@@ -55,7 +54,7 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
 
 @ConnectorBuilder("Linear")\
     .in_group(AppGroups.LINEAR.value)\
-    .with_auth_type("API_TOKEN")\
+    .with_auth_type("OAUTH")\
     .with_description("Sync issues, comments, and projects from Linear")\
     .with_categories(["Issue Tracking", "Project Management"])\
     .with_scopes([ConnectorScope.TEAM.value])\
@@ -63,7 +62,7 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
         .with_icon("/assets/icons/connectors/linear.svg")
         .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
-            "Linear API Setup",
+            "Linear OAuth Setup",
             "https://linear.app/developers/docs/authentication",
             "setup"
         ))
@@ -72,20 +71,33 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
             'https://docs.pipeshub.com/connectors/linear/linear',
             'pipeshub'
         ))
-        .with_redirect_uri("", False)
+        .with_redirect_uri("connectors/oauth/callback/Linear", True)
         .add_auth_field(AuthField(
-            name="apiToken",
-            display_name="API Token",
-            placeholder="Enter your Linear API Token",
-            description="Personal API Key from Linear (https://linear.app/settings/api)",
+            name="clientId",
+            display_name="Client ID",
+            placeholder="Enter your Linear OAuth Client ID",
+            description="OAuth Client ID from Linear (https://linear.app/settings/api)",
+            field_type="TEXT",
+            max_length=2000
+        ))
+        .add_auth_field(AuthField(
+            name="clientSecret",
+            display_name="Client Secret",
+            placeholder="Enter your Linear OAuth Client Secret",
+            description="OAuth Client Secret from Linear",
             field_type="PASSWORD",
             max_length=2000,
             is_secret=True
         ))
+        .with_oauth_urls(
+            "https://linear.app/oauth/authorize",
+            "https://api.linear.app/oauth/token",
+            ["read", "write"]  # Linear OAuth scopes
+        )
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
-        .with_agent_support(False)
+        .with_agent_support(True)
         .add_filter_field(FilterField(
             name="team_ids",
             display_name="Teams",
@@ -95,6 +107,7 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
             default_value=[],
             option_source_type=OptionSourceType.DYNAMIC
         ))
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
         .add_filter_field(FilterField(
             name="issues",
             display_name="Index Issues",
@@ -137,6 +150,7 @@ class LinearConnector(BaseConnector):
         self.data_source: Optional[LinearDataSource] = None
         self.organization_id: Optional[str] = None
         self.organization_name: Optional[str] = None
+        self.organization_url_key: Optional[str] = None
         self.connector_id = connector_id
         self.connector_name = Connectors.LINEAR
 
@@ -182,6 +196,7 @@ class LinearConnector(BaseConnector):
 
             self.organization_id = org_data.get("id")
             self.organization_name = org_data.get("name")
+            self.organization_url_key = org_data.get("urlKey")
 
             self.logger.info(f"✅ Linear client initialized successfully for organization: {self.organization_name}")
             return True
@@ -189,18 +204,6 @@ class LinearConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize Linear client: {e}")
             return False
-
-    async def _get_api_token(self) -> str:
-        """
-        Get API token from config
-        """
-        config_path = LINEAR_CONFIG_PATH.format(connector_id=self.connector_id)
-        config = await self.config_service.get_config(config_path)
-        auth_config = config.get("auth", {}) if config else {}
-        api_token = auth_config.get("apiToken")
-        if not api_token:
-            raise ValueError("Linear API token not found in configuration")
-        return api_token
 
     async def _get_fresh_datasource(self) -> LinearDataSource:
         """
@@ -221,7 +224,7 @@ class LinearConnector(BaseConnector):
     ) -> FilterOptionsResponse:
         """
         Get dynamic filter options for a given filter field.
-        
+
         Args:
             filter_key: The filter field name (e.g., "team_ids")
             page: Page number (1-indexed)
@@ -243,20 +246,19 @@ class LinearConnector(BaseConnector):
     ) -> FilterOptionsResponse:
         """
         Get team options for the team_ids filter with cursor-based pagination.
-        
+
         Linear uses cursor-based pagination. For the first page, we don't pass a cursor.
         For subsequent pages, we use the cursor from the previous response.
         """
         # Ensure datasource is initialized
         if not self.data_source:
             await self.init()
-        
+
         datasource = await self._get_fresh_datasource()
 
         try:
             # Build filter for server-side search if provided
             # Linear TeamFilter supports name filtering, but syntax may vary
-            # TODO: Implement proper server-side filtering when Linear filter syntax is confirmed
             filter_dict: Optional[Dict[str, Any]] = None
 
             # Fetch teams with pagination
@@ -362,13 +364,28 @@ class LinearConnector(BaseConnector):
             else:
                 self.logger.info("📋 No sync filters - will fetch all teams")
 
-            # Step 4: Fetch and sync teams (convert to RecordGroups)
-            teams = await self._fetch_teams(allowed_team_ids)
-            if teams:
-                await self.data_entities_processor.on_new_record_groups(teams)
-                self.logger.info(f"👥 Synced {len(teams)} Linear teams as RecordGroups")
+            # Step 4: Build email map from already-synced users for team member lookup
+            user_email_map: Dict[str, AppUser] = {}
+            if linear_users:
+                for app_user in linear_users:
+                    if app_user.email:
+                        user_email_map[app_user.email.lower()] = app_user
 
-            # TODO: Step 5 - Sync issues for teams
+            # Step 5: Fetch and sync teams (as both UserGroups and RecordGroups)
+            team_user_groups, team_record_groups = await self._fetch_teams(allowed_team_ids, user_email_map)
+
+            # Step 6a: Sync teams as UserGroups (membership tracking)
+            if team_user_groups:
+                await self.data_entities_processor.on_new_user_groups(team_user_groups)
+                total_members = sum(len(members) for _, members in team_user_groups)
+                self.logger.info(f"👥 Synced {len(team_user_groups)} Linear teams as UserGroups ({total_members} total memberships)")
+
+            # Step 6b: Sync teams as RecordGroups (content organization)
+            if team_record_groups:
+                await self.data_entities_processor.on_new_record_groups(team_record_groups)
+                self.logger.info(f"📁 Synced {len(team_record_groups)} Linear teams as RecordGroups")
+
+            # TODO: Step 7 - Sync issues for teams
 
             self.logger.info("✅ Linear sync completed")
 
@@ -386,7 +403,7 @@ class LinearConnector(BaseConnector):
 
         all_users: List[Dict[str, Any]] = []
         cursor: Optional[str] = None
-        page_size = 50  # Fetch 50 users per page
+        page_size = 50
 
         datasource = await self._get_fresh_datasource()
 
@@ -457,27 +474,36 @@ class LinearConnector(BaseConnector):
         self.logger.info(f"📥 Fetched {len(all_users)} Linear users, converted {len(app_users)} to AppUser")
         return app_users
 
+
     async def _fetch_teams(
-        self, team_ids: Optional[List[str]] = None
-    ) -> List[Tuple[RecordGroup, List[Permission]]]:
+        self, team_ids: Optional[List[str]] = None, user_email_map: Optional[Dict[str, AppUser]] = None
+    ) -> Tuple[
+        List[Tuple[AppUserGroup, List[AppUser]]],
+        List[Tuple[RecordGroup, List[Permission]]]
+    ]:
         """
-        Fetch Linear teams and convert them to RecordGroups with permissions.
-        
-        Similar to how Jira projects become RecordGroups, Linear teams become RecordGroups.
-        Teams are the containers for issues in Linear, just like projects in Jira.
-        
+        Fetch Linear teams and convert them to both UserGroups and RecordGroups.
+
+        Dual approach:
+        - UserGroups: Track WHO is in each team (membership management)
+        - RecordGroups: Track WHAT each team contains (issues/content organization)
+        - Permissions: UserGroup → RecordGroup for private teams, ORG → RecordGroup for public teams
+
         Args:
             team_ids: Optional list of team IDs to fetch. If None, fetch all teams.
-        
+            user_email_map: Optional map of email -> AppUser for already-synced users.
+
         Returns:
-            List of tuples: (RecordGroup, List[Permission])
+            Tuple of:
+            - List of (AppUserGroup, List[AppUser]) for membership tracking
+            - List of (RecordGroup, List[Permission]) for content organization
         """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
 
         all_teams: List[Dict[str, Any]] = []
         cursor: Optional[str] = None
-        page_size = 50  # Fetch 50 teams per page
+        page_size = 50
 
         datasource = await self._get_fresh_datasource()
 
@@ -513,7 +539,8 @@ class LinearConnector(BaseConnector):
             if not cursor:
                 break
 
-        # Convert teams to RecordGroups with permissions
+        # Convert teams to both UserGroups and RecordGroups
+        user_groups: List[Tuple[AppUserGroup, List[AppUser]]] = []
         record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
 
         for team in all_teams:
@@ -522,17 +549,50 @@ class LinearConnector(BaseConnector):
             team_key = team.get("key")
             team_description = team.get("description")
             is_private = team.get("private", False)
+            team_members = team.get("members", {}).get("nodes", [])
 
             if not team_id or not team_name:
                 self.logger.warning(f"Skipping team with missing id or name: {team}")
                 continue
 
+            # Extract parent team information
+            parent_team = team.get("parent")
+            parent_external_group_id = None
+            if parent_team:
+                parent_external_group_id = parent_team.get("id")
+                self.logger.debug(f"Team {team_key} has parent team: {parent_team.get('name')} ({parent_external_group_id})")
+
             # Build team URL if we have organization urlKey
             web_url: Optional[str] = None
-            if self.organization_name and team_key:
-                web_url = f"https://linear.app/{self.organization_name.lower().replace(' ', '-')}/team/{team_key}"
+            if self.organization_url_key and team_key:
+                web_url = f"https://linear.app/{self.organization_url_key}/team/{team_key}"
 
-            # Create RecordGroup
+            # 1. Create UserGroup for membership tracking
+            user_group = AppUserGroup(
+                id=str(uuid4()),
+                org_id=self.data_entities_processor.org_id,
+                source_user_group_id=team_id,
+                connector_id=self.connector_id,
+                app_name=Connectors.LINEAR,
+                name=team_name,
+                description=team_description,
+            )
+
+            # Get AppUser objects for team members (use already-synced users)
+            member_app_users: List[AppUser] = []
+            for member in team_members:
+                member_email = member.get("email")
+                if member_email and user_email_map:
+                    # Look up already-synced AppUser by email
+                    app_user = user_email_map.get(member_email.lower())
+                    if app_user:
+                        member_app_users.append(app_user)
+                    else:
+                        self.logger.warning(f"⚠️ Team member {member_email} not found in synced users - skipping")
+
+            user_groups.append((user_group, member_app_users))
+
+            # 2. Create RecordGroup for content organization
             record_group = RecordGroup(
                 id=str(uuid4()),
                 org_id=self.data_entities_processor.org_id,
@@ -544,19 +604,36 @@ class LinearConnector(BaseConnector):
                 group_type=RecordGroupType.PROJECT,
                 description=team_description,
                 web_url=web_url,
+                parent_external_group_id=parent_external_group_id,
             )
 
-            # Private teams should have permissions (for now, we'll handle this later)
+            # 3. Handle permissions based on team privacy
             permissions: List[Permission] = []
-            
-            # TODO: For private teams, we may need to fetch team members and create permissions
+
             if is_private:
-                self.logger.debug(f"Team {team_key} is private - permissions will be handled later")
+                # For private teams: Grant access via UserGroup
+                permissions.append(Permission(
+                    entity_type=EntityType.GROUP,
+                    external_id=team_id,
+                    type=PermissionType.READ,
+                ))
+                self.logger.info(f"Team {team_key} is private - added UserGroup permission (external_id={team_id})")
+            else:
+                # For public teams: All org members can access
+                permissions.append(Permission(
+                    entity_type=EntityType.ORG,
+                    type=PermissionType.READ,
+                    external_id=None
+                ))
+                self.logger.info(f"Team {team_key} is public - added org-level permission for all org members")
 
             record_groups.append((record_group, permissions))
 
-        self.logger.info(f"📥 Fetched {len(all_teams)} Linear teams, converted {len(record_groups)} to RecordGroups")
-        return record_groups
+        self.logger.info(
+            f"📥 Fetched {len(all_teams)} Linear teams, "
+            f"created {len(user_groups)} UserGroups and {len(record_groups)} RecordGroups"
+        )
+        return user_groups, record_groups
 
     async def run_incremental_sync(self) -> None:
         """
@@ -581,7 +658,6 @@ class LinearConnector(BaseConnector):
             int: Epoch timestamp in milliseconds or None if parsing fails
         """
         try:
-            from datetime import datetime
             # Parse ISO 8601 format: '2025-01-01T12:00:00.000Z'
             # Replace 'Z' with '+00:00' for proper ISO format parsing
             dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
@@ -601,7 +677,7 @@ class LinearConnector(BaseConnector):
             # Test by fetching organization info (simple API call)
             datasource = await self._get_fresh_datasource()
             response = await datasource.organization()
-            
+
             if response.success and response.data is not None:
                 self.logger.info("✅ Linear connection test successful")
                 return True
@@ -625,7 +701,7 @@ class LinearConnector(BaseConnector):
             if not self.data_source:
                 await self.init()
 
-            datasource = await self._get_fresh_datasource()
+            await self._get_fresh_datasource()
 
             # For now, return empty content
             # TODO: Implement proper content streaming for Linear issues/comments
@@ -686,7 +762,7 @@ class LinearConnector(BaseConnector):
             if not self.data_source:
                 await self.init()
 
-            datasource = await self._get_fresh_datasource()
+            await self._get_fresh_datasource()
 
             # TODO: Implement reindex logic for Linear records
             # For now, just log that reindex was called
