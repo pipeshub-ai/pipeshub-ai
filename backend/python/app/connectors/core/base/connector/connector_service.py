@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from logging import Logger
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi.responses import StreamingResponse
 
@@ -34,6 +34,28 @@ class BaseConnector(ABC):
         self.data_store_provider = data_store_provider
         self.config_service = config_service
         self.connector_id = connector_id
+
+    @property
+    def connector_metadata(self) -> Dict[str, Any]:
+        """
+        Get all connector metadata from the @Connector decorator.
+
+        Returns:
+            Dictionary containing all metadata fields including name, appGroup,
+            authType, config, resilienceConfig, etc.
+        """
+        return getattr(self.__class__, '_connector_metadata', {})
+
+    @property
+    def resilience_config(self) -> Dict[str, Any]:
+        """
+        Get resilience configuration for rate limiting and retries.
+
+        Returns:
+            Dictionary with resilience settings (enabled, rate_limit, max_retries,
+            base_delay, max_delay). Returns default values if not specified in decorator.
+        """
+        return self.connector_metadata.get('resilienceConfig', {})
 
     @abstractmethod
     async def init(self) -> bool:
