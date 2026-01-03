@@ -3094,8 +3094,8 @@ class JiraConnector(BaseConnector):
 
                 # Create CommentRecord
                 # Use parent issue's weburl for comment weburl
-                comment_weburl = f"{self.site_url}/browse/{issue_key}" if self.site_url else None
-                
+                comment_weburl = f"{self.site_url}/browse/{issue_key}" if self.site_url and issue_key else None
+
                 comment_record = CommentRecord(
                     id=record_id,
                     org_id=self.data_entities_processor.org_id,
@@ -3950,12 +3950,9 @@ class JiraConnector(BaseConnector):
                 parent_data = parent_response.json()
                 issue_key = parent_data.get("key")
                 parent_fields = parent_data.get("fields", {})
-                parent_creator = parent_fields.get("creator", {})
-                parent_reporter = parent_fields.get("reporter", {})
-                parent_assignee = parent_fields.get("assignee", {})
-                parent_creator_email = parent_creator.get("emailAddress")
-                parent_reporter_email = parent_reporter.get("emailAddress")
-                parent_assignee_email = parent_assignee.get("emailAddress")
+                parent_creator_email = parent_fields.get("creator", {}).get("emailAddress")
+                parent_reporter_email = parent_fields.get("reporter", {}).get("emailAddress")
+                parent_assignee_email = parent_fields.get("assignee", {}).get("emailAddress")
                 parent_permissions = self._build_permissions(parent_reporter_email, parent_assignee_email, parent_creator_email)
 
             # Use parent issue's weburl for comment weburl
