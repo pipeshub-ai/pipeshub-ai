@@ -3093,6 +3093,9 @@ class JiraConnector(BaseConnector):
                     comment_name = f"Comment by {author_name} on {issue_key}"
 
                 # Create CommentRecord
+                # Use parent issue's weburl for comment weburl
+                comment_weburl = f"{self.site_url}/browse/{issue_key}" if self.site_url else None
+                
                 comment_record = CommentRecord(
                     id=record_id,
                     org_id=self.data_entities_processor.org_id,
@@ -3117,6 +3120,7 @@ class JiraConnector(BaseConnector):
                     preview_renderable=False,
                     is_dependent_node=True,  # Comments are dependent nodes
                     parent_node_id=parent_node_id,  # Internal record ID of parent ticket
+                    weburl=comment_weburl,
                 )
 
                 # Set indexing status based on filters
@@ -3932,6 +3936,31 @@ class JiraConnector(BaseConnector):
             # Increment version
             version = record.version + 1 if hasattr(record, 'version') else 1
 
+            # Get parent issue to fetch permissions and issue key for weburl
+            datasource_for_parent = await self._get_fresh_datasource()
+            parent_response = await datasource_for_parent.get_issue(
+                issueIdOrKey=issue_id,
+                expand=[]
+            )
+
+            # Extract issue key from parent issue for weburl
+            issue_key = None
+            parent_permissions = []
+            if parent_response.status == HttpStatusCode.OK.value:
+                parent_data = parent_response.json()
+                issue_key = parent_data.get("key")
+                parent_fields = parent_data.get("fields", {})
+                parent_creator = parent_fields.get("creator", {})
+                parent_reporter = parent_fields.get("reporter", {})
+                parent_assignee = parent_fields.get("assignee", {})
+                parent_creator_email = parent_creator.get("emailAddress")
+                parent_reporter_email = parent_reporter.get("emailAddress")
+                parent_assignee_email = parent_assignee.get("emailAddress")
+                parent_permissions = self._build_permissions(parent_reporter_email, parent_assignee_email, parent_creator_email)
+
+            # Use parent issue's weburl for comment weburl
+            comment_weburl = f"{self.site_url}/browse/{issue_key}" if (self.site_url and issue_key) else None
+
             # Create updated CommentRecord preserving record ID
             comment_record = CommentRecord(
                 id=record.id,
@@ -3957,27 +3986,8 @@ class JiraConnector(BaseConnector):
                 preview_renderable=False,
                 is_dependent_node=True,  # Comments are dependent nodes
                 parent_node_id=parent_node_id,  # Internal record ID of parent ticket
+                weburl=comment_weburl,
             )
-
-            # Get parent issue to fetch permissions
-            datasource_for_parent = await self._get_fresh_datasource()
-            parent_response = await datasource_for_parent.get_issue(
-                issueIdOrKey=issue_id,
-                expand=[]
-            )
-
-            # Build parent issue permissions (creator, reporter, and assignee)
-            parent_permissions = []
-            if parent_response.status == HttpStatusCode.OK.value:
-                parent_data = parent_response.json()
-                parent_fields = parent_data.get("fields", {})
-                parent_creator = parent_fields.get("creator", {})
-                parent_reporter = parent_fields.get("reporter", {})
-                parent_assignee = parent_fields.get("assignee", {})
-                parent_creator_email = parent_creator.get("emailAddress")
-                parent_reporter_email = parent_reporter.get("emailAddress")
-                parent_assignee_email = parent_assignee.get("emailAddress")
-                parent_permissions = self._build_permissions(parent_reporter_email, parent_assignee_email, parent_creator_email)
 
             # Comment inherits parent permissions
             comment_permissions = parent_permissions.copy()
