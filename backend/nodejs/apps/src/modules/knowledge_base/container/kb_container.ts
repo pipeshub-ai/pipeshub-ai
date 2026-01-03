@@ -33,6 +33,7 @@ export class KnowledgeBaseContainer {
     // Initialize and bind services
     await this.initializeServices(container, appConfig);
 
+
     this.instance = container;
     return container;
   }
