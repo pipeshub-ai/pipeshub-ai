@@ -14175,7 +14175,7 @@ class BaseArangoService:
                 AND record._key != @record_id
                 AND record.indexingStatus == @queued_status
             """
-            
+
             bind_vars = {
                 "md5_checksum": md5_checksum,
                 "record_id": record_id,
@@ -14191,7 +14191,7 @@ class BaseArangoService:
             query += """
                 RETURN record
             """
-            
+
             cursor = db.aql.execute(
                 query,
                 bind_vars=bind_vars
@@ -14310,7 +14310,7 @@ class BaseArangoService:
                 AND record._key != @record_id
                 AND record.indexingStatus == @queued_status
             """
-            
+
             bind_vars = {
                 "md5_checksum": md5_checksum,
                 "record_id": record_id,

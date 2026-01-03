@@ -13,7 +13,6 @@ from app.config.constants.arangodb import (
     ExtensionTypes,
     MimeTypes,
     ProgressStatus,
-    RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
@@ -314,7 +313,7 @@ class EventProcessor:
                         if await self._check_duplicate_by_md5(html_content, doc):
                             self.logger.info("Duplicate Gmail message detected, skipping processing")
                             return
-                        
+
                     except Exception as e:
                         self.logger.error(f"❌ Error in Gmail MD5/duplicate processing: {repr(e)}")
                         raise
