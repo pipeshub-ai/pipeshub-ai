@@ -560,7 +560,7 @@ class BaseGmailSyncService(ABC):
 
                     # Create new message record
                     headers = message.get("headers", {})
-                    subject = headers.get("Subject", "No Subject")
+                    subject = headers.get("Subject", "No Subject") or "No Subject"
 
                     message_record = {
                         "_key": str(uuid.uuid4()),
@@ -1561,7 +1561,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                             message_event = {
                                 "orgId": org_id,
                                 "recordId": message_key,
-                                "recordName": headers.get("Subject", "No Subject"),
+                                "recordName": headers.get("Subject", "No Subject") or "No Subject",
                                 "recordType": RecordTypes.MAIL.value,
                                 "recordVersion": 0,
                                 "eventType": EventTypes.NEW_RECORD.value,
@@ -1868,7 +1868,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                         message_event = {
                             "orgId": org_id,
                             "recordId": message_key,
-                            "recordName": headers.get("Subject", "No Subject"),
+                            "recordName": headers.get("Subject", "No Subject") or "No Subject",
                             "recordType": RecordTypes.MAIL.value,
                             "recordVersion": 0,
                             "eventType": EventTypes.NEW_RECORD.value,
@@ -2776,7 +2776,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                         message_event = {
                             "orgId": org_id,
                             "recordId": message_key,
-                            "recordName": headers.get("Subject", "No Subject"),
+                            "recordName": headers.get("Subject", "No Subject") or "No Subject",
                             "recordType": RecordTypes.MAIL.value,
                             "recordVersion": 0,
                             "eventType": EventTypes.NEW_RECORD.value,
