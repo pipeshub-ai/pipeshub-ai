@@ -5,6 +5,8 @@ import { KeyValueStoreService } from '../../../libs/services/keyValueStore.servi
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
+import { SwaggerService } from '../../docs/swagger.container';
+import { registerEnterpriseSearchSwagger } from '../docs/swagger';
 
 const loggerConfig = {
   service: 'Enterprise Search Service',
@@ -32,6 +34,12 @@ export class EnterpriseSearchAgentContainer {
       .inTransientScope();
     // Initialize and bind services
     await this.initializeServices(container, appConfig);
+
+    // Register Swagger documentation if SwaggerService is available
+    if (container.isBound(SwaggerService)) {
+      const swaggerService = container.get<SwaggerService>(SwaggerService);
+      registerEnterpriseSearchSwagger(swaggerService);
+    }
 
     this.instance = container;
     return container;
