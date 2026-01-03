@@ -86,6 +86,33 @@ const formatDate = (createdAt: Date) => {
   }).format(date);
 };
 
+// Citation sizing constants
+const CITATION_SIZE_CONFIG = {
+  // Scale factors for dynamic sizing
+  NUM_DIGITS_SCALE: 0.15,
+  GROUP_SIZE_SCALE: 0.05,
+  GROUP_DIGITS_SCALE: 0.1,
+  GROUP_SIZE_SCALE_ALT: 0.08,
+  
+  // Base and minimum sizes
+  BASE_SIZE: 20,
+  MIN_SIZE: 16,
+  BASE_FONT_SIZE: 0.7,
+  MIN_FONT_SIZE: 0.55,
+  BASE_PADDING: 0.75,
+  MIN_PADDING: 0.3,
+  BASE_BORDER_RADIUS: 10,
+  MIN_BORDER_RADIUS: 8,
+  BASE_GAP: 0.3,
+  MIN_GAP: 0.2,
+  
+  // Group citation sizing
+  BASE_FILENAME_LENGTH: 50,
+  MIN_FILENAME_LENGTH: 20,
+  BASE_GROUP_FONT_SIZE: 0.7,
+  MIN_GROUP_FONT_SIZE: 0.6,
+} as const;
+
 // StreamingContent component
 const StreamingContent = React.memo(
   ({
@@ -236,14 +263,17 @@ const StreamingContent = React.memo(
     // Calculate citation size dynamically based on number length and group size
     const getCitationSize = useCallback((citationNumber: number, groupSize: number = 1) => {
       const numDigits = citationNumber.toString().length;
-      const scaleFactor = Math.min(1, 1 / (1 + (numDigits - 1) * 0.15 + (groupSize - 1) * 0.05));
+      const scaleFactor = Math.min(
+        1,
+        1 / (1 + (numDigits - 1) * CITATION_SIZE_CONFIG.NUM_DIGITS_SCALE + (groupSize - 1) * CITATION_SIZE_CONFIG.GROUP_SIZE_SCALE)
+      );
       
       return {
-        size: Math.max(16, 20 * scaleFactor),
-        fontSize: Math.max(0.55, 0.7 * scaleFactor),
-        padding: Math.max(0.3, 0.75 * scaleFactor),
-        borderRadius: Math.max(8, 10 * scaleFactor),
-        gap: Math.max(0.2, 0.3 * scaleFactor),
+        size: Math.max(CITATION_SIZE_CONFIG.MIN_SIZE, CITATION_SIZE_CONFIG.BASE_SIZE * scaleFactor),
+        fontSize: Math.max(CITATION_SIZE_CONFIG.MIN_FONT_SIZE, CITATION_SIZE_CONFIG.BASE_FONT_SIZE * scaleFactor),
+        padding: Math.max(CITATION_SIZE_CONFIG.MIN_PADDING, CITATION_SIZE_CONFIG.BASE_PADDING * scaleFactor),
+        borderRadius: Math.max(CITATION_SIZE_CONFIG.MIN_BORDER_RADIUS, CITATION_SIZE_CONFIG.BASE_BORDER_RADIUS * scaleFactor),
+        gap: Math.max(CITATION_SIZE_CONFIG.MIN_GAP, CITATION_SIZE_CONFIG.BASE_GAP * scaleFactor),
       };
     }, []);
 
@@ -329,11 +359,17 @@ const StreamingContent = React.memo(
 
         // Calculate dynamic sizes based on group size
         const maxCitationDigits = Math.max(...group.citations.map(n => n.toString().length));
-        const sizeScale = Math.min(1, 1 / (1 + (maxCitationDigits - 1) * 0.1 + (groupSize - 1) * 0.08));
-        const filenameMaxLength = Math.max(20, Math.floor(50 * sizeScale));
-        const fontSize = Math.max(0.6, 0.7 * sizeScale);
-        const maxWidth = `${Math.max(20, Math.floor(50 * sizeScale))}ch`;
-        const gap = Math.max(0.2, 0.3 * sizeScale);
+        const sizeScale = Math.min(
+          1,
+          1 / (1 + (maxCitationDigits - 1) * CITATION_SIZE_CONFIG.GROUP_DIGITS_SCALE + (groupSize - 1) * CITATION_SIZE_CONFIG.GROUP_SIZE_SCALE_ALT)
+        );
+        const filenameMaxLength = Math.max(
+          CITATION_SIZE_CONFIG.MIN_FILENAME_LENGTH,
+          Math.floor(CITATION_SIZE_CONFIG.BASE_FILENAME_LENGTH * sizeScale)
+        );
+        const fontSize = Math.max(CITATION_SIZE_CONFIG.MIN_GROUP_FONT_SIZE, CITATION_SIZE_CONFIG.BASE_GROUP_FONT_SIZE * sizeScale);
+        const maxWidth = `${filenameMaxLength}ch`;
+        const gap = Math.max(CITATION_SIZE_CONFIG.MIN_GAP, CITATION_SIZE_CONFIG.BASE_GAP * sizeScale);
 
         const truncatedName = truncateFilename(group.recordName, filenameMaxLength);
 
@@ -351,7 +387,7 @@ const StreamingContent = React.memo(
               position: 'relative',
               gap: 0.5,
               maxWidth: '100%',
-              wordBreak: 'break-word',
+              overflowWrap: 'break-word',
             }}
           >
             {truncatedName && (
@@ -529,8 +565,7 @@ const StreamingContent = React.memo(
           width: '100%',
           maxWidth: '100%',
           overflow: 'hidden', // Prevent overflow
-          wordWrap: 'break-word', // Break long words
-          overflowWrap: 'break-word', // Additional word breaking
+          overflowWrap: 'break-word', // Break long words
         }}
       >
         {/* Streaming indicator */}
@@ -618,10 +653,11 @@ const StreamingContent = React.memo(
             width: '100%',
             maxWidth: '100%',
             overflow: 'hidden',
-            wordWrap: 'break-word',
             overflowWrap: 'break-word',
-            '& *': {
+            // Target specific elements that can cause overflow
+            '& p, & li, & span, & strong, & em, & code': {
               maxWidth: '100%',
+              overflowWrap: 'break-word',
             },
           }}
         >
@@ -639,8 +675,7 @@ const StreamingContent = React.memo(
                     fontSize: '0.90rem',
                     lineHeight: 1.6,
                     letterSpacing: '0.01em',
-                    wordBreak: 'break-word',
-                    overflowWrap: 'break-word', // Additional word breaking
+                    overflowWrap: 'break-word',
                     color: 'text.primary',
                     fontWeight: 400,
                     // Ensure citations don't overflow
@@ -675,7 +710,6 @@ const StreamingContent = React.memo(
                   pl: 2.5, 
                   mb: 1.5, 
                   '& li': { mb: 0.5 },
-                  wordWrap: 'break-word',
                   overflowWrap: 'break-word',
                   maxWidth: '100%',
                 }}
@@ -690,7 +724,6 @@ const StreamingContent = React.memo(
                   pl: 2.5, 
                   mb: 1.5, 
                   '& li': { mb: 0.5 },
-                  wordWrap: 'break-word',
                   overflowWrap: 'break-word',
                   maxWidth: '100%',
                 }}
@@ -706,7 +739,6 @@ const StreamingContent = React.memo(
                   sx={{ 
                     mb: 0.5, 
                     lineHeight: 1.6,
-                    wordWrap: 'break-word',
                     overflowWrap: 'break-word',
                     maxWidth: '100%',
                     '& .citation-number, & .citation-record-name': {
@@ -784,7 +816,7 @@ const StreamingContent = React.memo(
                       : {},
                   }}
                 >
-                  <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordWrap: 'break-word' }}>
+                  <pre style={{ margin: 0, whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
                     <code style={{ color: 'inherit' }}>{children}</code>
                   </pre>
                 </Box>
@@ -831,7 +863,6 @@ const StreamingContent = React.memo(
                 component="strong" 
                 sx={{ 
                   fontWeight: 600,
-                  wordWrap: 'break-word',
                   overflowWrap: 'break-word',
                 }}
               >
@@ -843,7 +874,6 @@ const StreamingContent = React.memo(
                 component="em" 
                 sx={{ 
                   fontStyle: 'italic',
-                  wordWrap: 'break-word',
                   overflowWrap: 'break-word',
                 }}
               >
@@ -1250,8 +1280,7 @@ const ChatMessage = React.memo(
                   ? '0 4px 20px rgba(0, 0, 0, 0.15)'
                   : '0 2px 12px rgba(0, 0, 0, 0.08)',
               overflow: 'hidden', // Prevent content overflow
-              wordWrap: 'break-word', // Break long words
-              overflowWrap: 'break-word', // Additional word breaking
+              overflowWrap: 'break-word', // Break long words
               '&:hover': {
                 borderColor: (themeVal) => {
                   if (message.type === 'user') {
@@ -1285,7 +1314,7 @@ const ChatMessage = React.memo(
                   fontSize: '14px',
                   lineHeight: 1.6,
                   letterSpacing: '0.1px',
-                  wordBreak: 'break-word',
+                  overflowWrap: 'break-word',
                   fontFamily:
                     '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
                   color: (themeVal) =>
