@@ -124,8 +124,9 @@ class DataSourceEntitiesProcessor:
 
         # Map RecordType to appropriate Record class
         if parent_record_type == RecordType.FILE:
+            file_params = {k: v for k, v in base_params.items() if k != "mime_type"}
             return FileRecord(
-                **base_params,
+                **file_params,
                 is_file=False,
                 extension=None,
                 mime_type=MimeTypes.FOLDER.value,
@@ -868,15 +869,11 @@ class DataSourceEntitiesProcessor:
 
     async def get_all_active_users(self) -> List[User]:
         async with self.data_store_provider.transaction() as tx_store:
-            users = await tx_store.get_users(self.org_id, active=True)
-
-            return [User.from_arango_user(user) for user in users if user is not None]
+            return await tx_store.get_users(self.org_id, active=True)
 
     async def get_all_app_users(self, connector_id: str) -> List[AppUser]:
         async with self.data_store_provider.transaction() as tx_store:
-            app_users = await tx_store.get_app_users(self.org_id, connector_id)
-
-            return [AppUser.from_arango_user(app_user) for app_user in app_users if app_user is not None]
+            return await tx_store.get_app_users(self.org_id, connector_id)
 
     async def on_user_group_member_removed(
         self,

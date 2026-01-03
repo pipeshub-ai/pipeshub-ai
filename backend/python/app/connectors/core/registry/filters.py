@@ -220,6 +220,7 @@ class SyncFilterKey(str, Enum):
     SPACE_KEYS = "space_keys"
     FOLDER_IDS = "folder_ids"
     FOLDERS = "folders"
+    CUSTOM_FOLDERS = "custom_folders"
     PROJECT_IDS = "project_ids"
     PROJECT_KEYS = "project_keys"
     SITE_IDS = "site_ids"
