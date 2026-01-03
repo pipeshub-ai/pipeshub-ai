@@ -26,6 +26,11 @@ class LinearGraphQLOperations:
                 key
                 description
                 private
+                parent {
+                    id
+                    name
+                    key
+                }
                 createdAt
                 updatedAt
             }
