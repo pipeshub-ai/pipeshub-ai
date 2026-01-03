@@ -15,7 +15,7 @@ class LinearGraphQLClientViaToken(GraphQLClient):
         token = token.strip() if token else ""
         if not token:
             raise ValueError("Linear API token cannot be empty")
-        
+
         headers = {
             "Authorization": token,
             "Content-Type": "application/json",
@@ -36,8 +36,14 @@ class LinearGraphQLClientViaOAuth(GraphQLClient):
     """Linear GraphQL client via OAuth token."""
 
     def __init__(self, oauth_token: str, timeout: int = 30) -> None:
+        # Format token as Bearer token if not already formatted
+        if oauth_token and not oauth_token.startswith("Bearer "):
+            auth_header = f"Bearer {oauth_token}"
+        else:
+            auth_header = oauth_token
+
         headers = {
-            "Authorization": oauth_token,
+            "Authorization": auth_header,
             "Content-Type": "application/json",
         }
         super().__init__(

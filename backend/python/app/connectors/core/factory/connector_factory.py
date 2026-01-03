@@ -19,7 +19,6 @@ from app.connectors.core.registry.connector import (
     SlidesConnector,
     ZendeskConnector,
 )
-from app.connectors.sources.linear.connector import LinearConnector
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
@@ -40,6 +39,7 @@ from app.connectors.sources.google.drive.team.connector import (
     GoogleDriveTeamConnector,
 )
 from app.connectors.sources.google_cloud_storage.connector import GCSConnector
+from app.connectors.sources.linear.connector import LinearConnector
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
