@@ -200,33 +200,7 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
-        .add_filter_field(FilterField(
-            name="file_extensions",
-            display_name="Sync Files with Extensions",
-            filter_type=FilterType.MULTISELECT,
-            category=FilterCategory.SYNC,
-            description="Sync files with specific extensions",
-            default_value=True,
-            option_source_type=OptionSourceType.STATIC,
-            options=[
-                FilterOption(id="pdf", label=".pdf"),
-                FilterOption(id="docx", label=".docx"),
-                FilterOption(id="xlsx", label=".xlsx"),
-                FilterOption(id="pptx", label=".pptx"),
-                FilterOption(id="txt", label=".txt"),
-                FilterOption(id="csv", label=".csv"),
-                FilterOption(id="md", label=".md"),
-                FilterOption(id="mdx", label=".mdx"),
-                FilterOption(id="html", label=".html"),
-                FilterOption(id="png", label=".png"),
-                FilterOption(id="jpg", label=".jpg"),
-                FilterOption(id="jpeg", label=".jpeg"),
-                FilterOption(id="webp", label=".webp"),
-                FilterOption(id="svg", label=".svg"),
-                FilterOption(id="heic", label=".heic"),
-                FilterOption(id="heif", label=".heif"),
-            ]
-        ))
+        .add_filter_field(CommonFields.file_extension_filter())
         .add_filter_field(FilterField(
             name="shared",
             display_name="Index Shared Items",
@@ -236,6 +210,7 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
             default_value=True
         ))
         .with_webhook_config(True, ["file.added", "file.modified", "file.deleted"])
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .add_sync_custom_field(CommonFields.batch_size_field())
         .with_sync_support(True)
@@ -302,10 +277,6 @@ class DropboxConnector(BaseConnector):
         auth_config = config.get("auth")
         app_key = auth_config.get("clientId")
         app_secret = auth_config.get("clientSecret")
-
-        self.sync_filters, self.indexing_filters = await load_connector_filters(
-            self.config_service, "dropbox", self.connector_id, self.logger
-        )
 
         try:
             config = DropboxTokenConfig(
@@ -660,9 +631,9 @@ class DropboxConnector(BaseConnector):
                     created_before=created_before
                 )
                 if record_update and record_update.record:
-                    if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                        record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
-                    if record_update.record.is_shared and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True):
+                    files_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
+                    shared_disabled = record_update.record.is_shared and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True)
+                    if files_disabled or shared_disabled:
                         record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
                     yield (record_update.record, record_update.new_permissions or [], record_update)
@@ -1330,6 +1301,10 @@ class DropboxConnector(BaseConnector):
         """Runs a full synchronization from the Dropbox account root."""
         try:
             self.logger.info("Starting Dropbox full sync.")
+
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "dropbox", self.connector_id, self.logger
+            )
 
             # Step 1: fetch and sync all users
             self.logger.info("Syncing users...")

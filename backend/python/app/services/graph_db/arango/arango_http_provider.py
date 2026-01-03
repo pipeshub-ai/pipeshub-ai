@@ -4349,7 +4349,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 # ArangoDB REST API returns graph info with 'graph' key containing the definition
                 graph_def = graph_info.get('graph', graph_info)  # Handle both nested and direct formats
                 edge_definitions = graph_def.get('edgeDefinitions', [])
-                edge_collections = [e.get('edge_collection') for e in edge_definitions if e.get('edge_collection')]
+                edge_collections = [e.get('collection') for e in edge_definitions if e.get('collection')]
 
                 if not edge_collections:
                     self.logger.warning(f"⚠️ Graph '{graph_name}' has no edge collections defined.")

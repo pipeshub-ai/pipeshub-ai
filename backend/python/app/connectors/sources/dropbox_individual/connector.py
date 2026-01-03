@@ -184,42 +184,9 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
-        .add_filter_field(FilterField(
-            name="file_extensions",
-            display_name="Sync Files with Extensions",
-            filter_type=FilterType.MULTISELECT,
-            category=FilterCategory.SYNC,
-            description="Sync files with specific extensions",
-            default_value=True,
-            option_source_type=OptionSourceType.STATIC,
-            options=[
-                FilterOption(id="pdf", label=".pdf"),
-                FilterOption(id="docx", label=".docx"),
-                FilterOption(id="xlsx", label=".xlsx"),
-                FilterOption(id="pptx", label=".pptx"),
-                FilterOption(id="txt", label=".txt"),
-                FilterOption(id="csv", label=".csv"),
-                FilterOption(id="md", label=".md"),
-                FilterOption(id="mdx", label=".mdx"),
-                FilterOption(id="html", label=".html"),
-                FilterOption(id="png", label=".png"),
-                FilterOption(id="jpg", label=".jpg"),
-                FilterOption(id="jpeg", label=".jpeg"),
-                FilterOption(id="webp", label=".webp"),
-                FilterOption(id="svg", label=".svg"),
-                FilterOption(id="heic", label=".heic"),
-                FilterOption(id="heif", label=".heif"),
-            ]
-        ))
-        # .add_filter_field(FilterField(
-        #     name="shared",
-        #     display_name="Index Shared Items",
-        #     filter_type=FilterType.BOOLEAN,
-        #     category=FilterCategory.INDEXING,
-        #     description="Enable indexing of shared items",
-        #     default_value=True
-        # ))
+        .add_filter_field(CommonFields.file_extension_filter())
         .with_webhook_config(True, ["file.added", "file.modified", "file.deleted"])
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .add_sync_custom_field(CommonFields.batch_size_field())
         .with_sync_support(True)
@@ -297,13 +264,6 @@ class DropboxIndividualConnector(BaseConnector):
         auth_config = config.get("auth")
         app_key = auth_config.get("clientId")
         app_secret = auth_config.get("clientSecret")
-
-        self.sync_filters, self.indexing_filters = await load_connector_filters(
-            self.config_service, "dropboxpersonal", self.connector_id, self.logger
-        )
-
-        self.logger.info(f"\n\n\n\nSync Filters:\n{self.sync_filters}")
-        self.logger.info(f"Indexing Filters:\n{self.indexing_filters}")
 
         try:
             config = DropboxTokenConfig(
@@ -964,6 +924,10 @@ class DropboxIndividualConnector(BaseConnector):
         """
         try:
             self.logger.info("🚀 Starting Dropbox Individual Sync")
+
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "dropboxpersonal", self.connector_id, self.logger
+            )
 
             # 1. Identify the User
             user_id, user_email = await self._get_current_user_info()

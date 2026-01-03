@@ -132,33 +132,7 @@ class OneDriveCredentials:
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
-        .add_filter_field(FilterField(
-            name="file_extensions",
-            display_name="Sync Files with Extensions",
-            filter_type=FilterType.MULTISELECT,
-            category=FilterCategory.SYNC,
-            description="Sync files with specific extensions",
-            default_value=True,
-            option_source_type=OptionSourceType.STATIC,
-            options=[
-                FilterOption(id="pdf", label=".pdf"),
-                FilterOption(id="docx", label=".docx"),
-                FilterOption(id="xlsx", label=".xlsx"),
-                FilterOption(id="pptx", label=".pptx"),
-                FilterOption(id="txt", label=".txt"),
-                FilterOption(id="csv", label=".csv"),
-                FilterOption(id="md", label=".md"),
-                FilterOption(id="mdx", label=".mdx"),
-                FilterOption(id="html", label=".html"),
-                FilterOption(id="png", label=".png"),
-                FilterOption(id="jpg", label=".jpg"),
-                FilterOption(id="jpeg", label=".jpeg"),
-                FilterOption(id="webp", label=".webp"),
-                FilterOption(id="svg", label=".svg"),
-                FilterOption(id="heic", label=".heic"),
-                FilterOption(id="heif", label=".heif"),
-            ]
-        ))
+        .add_filter_field(CommonFields.file_extension_filter())
         .add_filter_field(FilterField(
             name="shared",
             display_name="Index Shared Items",
@@ -217,13 +191,6 @@ class OneDriveConnector(BaseConnector):
         if not all((tenant_id, client_id, client_secret)):
             self.logger.error("Incomplete OneDrive config. Ensure tenantId, clientId, and clientSecret are configured.")
             raise ValueError("Incomplete OneDrive credentials. Ensure tenantId, clientId, and clientSecret are configured.")
-
-        self.sync_filters, self.indexing_filters = await load_connector_filters(
-            self.config_service, "onedrive", self.connector_id, self.logger
-        )
-
-        self.logger.info(f"\n\n\n\nSync Filters:\n{self.sync_filters}")
-        self.logger.info(f"Indexing Filters:\n{self.indexing_filters}")
 
         has_admin_consent = auth_config.get("hasAdminConsent", False)
         credentials = OneDriveCredentials(
@@ -391,8 +358,8 @@ class OneDriveConnector(BaseConnector):
                 is_updated = True
                 await self._update_folder_children_permissions(
                     drive_id=item.parent_reference.drive_id,
-                        folder_id=item.id
-                    )
+                    folder_id=item.id
+                )
 
 
             return RecordUpdate(
@@ -619,10 +586,12 @@ class OneDriveConnector(BaseConnector):
                         # For deleted items, yield with empty permissions
                         yield (None, [], record_update)
                     elif record_update.record:
-                        if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                        files_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
+                        shared_disabled = record_update.record.is_shared and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True)
+
+                        if files_disabled or shared_disabled:
                             record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
-                        if record_update.record.is_shared and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True):
-                            record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                        
 
                         yield (record_update.record, record_update.new_permissions or [], record_update)
 
@@ -1138,6 +1107,10 @@ class OneDriveConnector(BaseConnector):
             # This is necessary because the connector instance may be reused across multiple
             # scheduled runs that are days apart, causing the HTTP session to timeout
             await self._reinitialize_credential_if_needed()
+
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "onedrive", self.connector_id, self.logger
+            )
 
             # Step 1: Sync users
             self.logger.info("Syncing users...")

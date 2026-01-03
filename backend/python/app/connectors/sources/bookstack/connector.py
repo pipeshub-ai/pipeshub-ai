@@ -136,6 +136,7 @@ class RecordUpdate:
             default_value=[],
             option_source_type=OptionSourceType.DYNAMIC
         ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(False)
@@ -1166,17 +1167,7 @@ class BookStackConnector(BaseConnector):
         self.logger.info(f"Starting sync for {content_type_name}s as record groups.")
 
         # Get book ID filter if syncing books
-        book_ids = None
-        book_ids_operator = None
-        if content_type_name == "book":
-            book_ids_filter = self.sync_filters.get(SyncFilterKey.BOOK_IDS)
-            if book_ids_filter:
-                book_ids = set(int(bid) for bid in book_ids_filter.get_value())  # Convert to set of integers
-                book_ids_operator = book_ids_filter.get_operator()
-                if book_ids:
-                    action = "Excluding" if book_ids_operator.value == "not_in" else "Including"
-                    self.logger.info(f"🔍 Filter: {action} books by IDs: {book_ids}")
-
+        book_ids, book_ids_operator = self._get_book_id_filter()
         all_items = []
         offset = 0
 
@@ -1416,15 +1407,7 @@ class BookStackConnector(BaseConnector):
         self.logger.info("Starting incremental sync for record groups (books, shelves, and chapters).")
 
         # Get book ID filter
-        book_ids = None
-        book_ids_operator = None
-        book_ids_filter = self.sync_filters.get(SyncFilterKey.BOOK_IDS)
-        if book_ids_filter:
-            book_ids = set(int(bid) for bid in book_ids_filter.get_value())
-            book_ids_operator = book_ids_filter.get_operator()
-            if book_ids:
-                action = "Excluding" if book_ids_operator.value == "not_in" else "Including"
-                self.logger.info(f"🔍 Filter: {action} books by IDs: {book_ids}")
+        book_ids, book_ids_operator = self._get_book_id_filter()
 
         await self._sync_record_groups_events(
             content_type="bookshelf",
@@ -1606,15 +1589,7 @@ class BookStackConnector(BaseConnector):
         self.logger.info("Starting sync for pages as records.")
 
         # Get book ID filter
-        book_ids = None
-        book_ids_operator = None
-        book_ids_filter = self.sync_filters.get(SyncFilterKey.BOOK_IDS)
-        if book_ids_filter:
-            book_ids = set(int(bid) for bid in book_ids_filter.get_value())
-            book_ids_operator = book_ids_filter.get_operator()
-            if book_ids:
-                action = "Excluding" if book_ids_operator.value == "not_in" else "Including"
-                self.logger.info(f"🔍 Filter: {action} pages from books with IDs: {book_ids}")
+        book_ids, book_ids_operator = self._get_book_id_filter()
 
         # Get date filters
         modified_after, modified_before, created_after, created_before = self._get_date_filters()
@@ -1871,15 +1846,7 @@ class BookStackConnector(BaseConnector):
         self.logger.info(f"Starting incremental record (page) sync from: {last_sync_timestamp}")
 
         # Get book ID filter
-        book_ids = None
-        book_ids_operator = None
-        book_ids_filter = self.sync_filters.get(SyncFilterKey.BOOK_IDS)
-        if book_ids_filter:
-            book_ids = set(int(bid) for bid in book_ids_filter.get_value())
-            book_ids_operator = book_ids_filter.get_operator()
-            if book_ids:
-                action = "Excluding" if book_ids_operator.value == "not_in" else "Including"
-                self.logger.info(f"🔍 Filter: {action} pages from books with IDs: {book_ids}")
+        book_ids, book_ids_operator = self._get_book_id_filter()
 
         # Get date filters for client-side filtering
         modified_after, modified_before, created_after, created_before = self._get_date_filters()
@@ -2412,6 +2379,20 @@ class BookStackConnector(BaseConnector):
             has_more=has_more,
             cursor=None
         )
+    
+    def _get_book_id_filter(self) -> Tuple[Optional[Set[int]], Optional[Any]]:
+        book_ids_filter = self.sync_filters.get(SyncFilterKey.BOOK_IDS)
+        if not book_ids_filter or book_ids_filter.is_empty():
+            return None, None
+
+        book_ids = set(int(bid) for bid in book_ids_filter.get_value())
+        book_ids_operator = book_ids_filter.get_operator()
+
+        if book_ids:
+            action = "Excluding" if book_ids_operator.value == "not_in" else "Including"
+            self.logger.info(f"🔍 Filter: {action} books by IDs: {book_ids}")
+
+        return book_ids, book_ids_operator
 
     @classmethod
     async def create_connector(

@@ -206,33 +206,7 @@ class SiteMetadata:
             default_value=[],
             option_source_type=OptionSourceType.DYNAMIC
         ))
-        .add_filter_field(FilterField(
-            name="file_extensions",
-            display_name="Sync Files with Extensions",
-            filter_type=FilterType.MULTISELECT,
-            category=FilterCategory.SYNC,
-            description="Sync files with specific extensions",
-            default_value=True,
-            option_source_type=OptionSourceType.STATIC,
-            options=[
-                FilterOption(id="pdf", label=".pdf"),
-                FilterOption(id="docx", label=".docx"),
-                FilterOption(id="xlsx", label=".xlsx"),
-                FilterOption(id="pptx", label=".pptx"),
-                FilterOption(id="txt", label=".txt"),
-                FilterOption(id="csv", label=".csv"),
-                FilterOption(id="md", label=".md"),
-                FilterOption(id="mdx", label=".mdx"),
-                FilterOption(id="html", label=".html"),
-                FilterOption(id="png", label=".png"),
-                FilterOption(id="jpg", label=".jpg"),
-                FilterOption(id="jpeg", label=".jpeg"),
-                FilterOption(id="webp", label=".webp"),
-                FilterOption(id="svg", label=".svg"),
-                FilterOption(id="heic", label=".heic"),
-                FilterOption(id="heif", label=".heif"),
-            ]
-        ))
+        .add_filter_field(CommonFields.file_extension_filter())
         .add_filter_field(CommonFields.modified_date_filter("Filter pages and blogposts by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter pages and blogposts by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
