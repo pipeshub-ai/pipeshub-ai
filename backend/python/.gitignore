@@ -7,4 +7,5 @@ tests/
 google_test
 celerybeat-schedule.*
 .env
+cleanup.sh
 __pycache__/

@@ -4,7 +4,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Awaitable, Callable, Dict, List, NoReturn, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -35,8 +35,14 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
 )
 from app.connectors.core.registry.filters import (
+    FilterCategory,
     FilterCollection,
+    FilterField,
+    FilterOption,
+    FilterOptionsResponse,
+    FilterType,
     IndexingFilterKey,
+    OptionSourceType,
     SyncFilterKey,
     load_connector_filters,
 )
@@ -121,6 +127,16 @@ class RecordUpdate:
         .add_filter_field(CommonFields.modified_date_filter("Filter content by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter content by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
+        .add_filter_field(FilterField(
+            name="book_ids",
+            display_name="Book Name",
+            description="Filter content by book names. Display: Name (slug)",
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            default_value=[],
+            option_source_type=OptionSourceType.DYNAMIC
+        ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(False)
@@ -201,9 +217,6 @@ class BookStackConnector(BaseConnector):
             token_id = credentials_config.get("token_id")
             token_secret = credentials_config.get("token_secret")
 
-            self.sync_filters, self.indexing_filters = await load_connector_filters(
-                self.config_service, "bookstack", self.connector_id, self.logger
-            )
 
             if not all([base_url, token_id, token_secret]):
                 self.logger.error(
@@ -450,6 +463,13 @@ class BookStackConnector(BaseConnector):
         """
         try:
             self.logger.info("Starting BookStack full sync.")
+
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "bookstack", self.connector_id, self.logger
+            )
+
+            self.logger.info(f"sync filters: {self.sync_filters}")
+            self.logger.info(f"Indexing filters: {self.indexing_filters}")
 
             # Step 1: Sync all users
             self.logger.info("Syncing users...")
@@ -1097,46 +1117,57 @@ class BookStackConnector(BaseConnector):
             )
 
     async def _sync_record_groups_full(self, roles_details: Dict[int, Dict]) -> None:
-        """
-        Sync all record groups (shelves, books, and chapters) from BookStack
-        and their associated permissions.
-        """
         self.logger.info("Starting sync for shelves, books, and chapters as record groups.")
 
-        # Sync all shelves as record groups
+        # Sync shelves (no filtering)
         await self._sync_content_type_as_record_group(
             content_type_name="bookshelf",
             list_method=self.data_source.list_shelves,
             roles_details=roles_details
         )
 
-        # Sync all books as record groups
-        await self._sync_content_type_as_record_group(
+        # Sync books with filtering - returns filtered book IDs
+        filtered_book_ids = await self._sync_content_type_as_record_group(
             content_type_name="book",
             list_method=self.data_source.list_books,
             roles_details=roles_details
         )
 
-        # Sync all chapters as record groups
+        # Sync chapters - filtered by parent book IDs
         await self._sync_content_type_as_record_group(
             content_type_name="chapter",
             list_method=self.data_source.list_chapters,
-            roles_details=roles_details
+            roles_details=roles_details,
+            parent_filter_ids=filtered_book_ids
         )
 
         self.logger.info("✅ Finished syncing all record groups.")
+
 
     async def _sync_content_type_as_record_group(
         self,
         content_type_name: str,
         list_method: Callable[..., Awaitable[BookStackResponse]],
-        roles_details: Dict[int, Dict]
-    ) -> None:
+        roles_details: Dict[int, Dict],
+        parent_filter_ids: Optional[Set[int]] = None
+    ) -> Optional[Set[int]]:
         """
         Generic function to fetch a list of content items (like shelves, books),
         and sync them as record groups with permissions.
+
+        Args:
+            content_type_name: Type of content (bookshelf, book, chapter)
+            list_method: API method to list items
+            roles_details: Role details for permission parsing
+            parent_filter_ids: For chapters, only sync those with book_id in this set
+
+        Returns:
+            Set of synced item IDs (useful for filtering child content types)
         """
         self.logger.info(f"Starting sync for {content_type_name}s as record groups.")
+
+        # Get book ID filter if syncing books
+        book_ids, book_ids_operator = self._get_book_id_filter()
         all_items = []
         offset = 0
 
@@ -1151,22 +1182,35 @@ class BookStackConnector(BaseConnector):
             if not items_page:
                 break
 
+            # Apply book ID filter for books
+            if content_type_name == "book" and book_ids:
+                if book_ids_operator.value == "in":
+                    items_page = [b for b in items_page if b.get("id") in book_ids]
+                elif book_ids_operator.value == "not_in":
+                    items_page = [b for b in items_page if b.get("id") not in book_ids]
+
+            # Apply parent filter for chapters
+            if content_type_name == "chapter" and parent_filter_ids is not None:
+                items_page = [ch for ch in items_page if ch.get("book_id") in parent_filter_ids]
+
             all_items.extend(items_page)
-            offset += len(items_page)
+            offset += len(response.data.get("data", []))
             if offset >= response.data.get("total", 0):
                 break
 
         if not all_items:
             self.logger.info(f"No {content_type_name}s found to sync.")
-            return
+            return set() if content_type_name == "book" else None
 
         self.logger.info(f"Found {len(all_items)} {content_type_name}s. Fetching permissions...")
+
+        # Collect IDs for return (used for filtering child content)
+        synced_ids = {item.get("id") for item in all_items if item.get("id")}
 
         # Concurrently create RecordGroup and fetch permissions for each item
         tasks = []
         for item in all_items:
             parent_external_id = None
-            # A chapter's parent is always a book
             if content_type_name == "chapter" and item.get("book_id"):
                 parent_external_id = f"book/{item.get('book_id')}"
 
@@ -1185,6 +1229,9 @@ class BookStackConnector(BaseConnector):
             )
         else:
             self.logger.warning(f"No {content_type_name} record groups were processed.")
+
+        # Return synced IDs for books (to filter chapters)
+        return synced_ids if content_type_name == "book" else None
 
     async def _create_record_group_with_permissions(
         self, item: Dict, content_type_name: str, roles_details: Dict[int, Dict], parent_external_id: Optional[str] = None
@@ -1357,7 +1404,10 @@ class BookStackConnector(BaseConnector):
         """
         Sync all record groups (books, shelves and chapter) from BookStack as RecordGroup objects, handling new/updated/deleted record groups.
         """
-        self.logger.info("Starting sync for record groups (books and shelves) as record groups.")
+        self.logger.info("Starting incremental sync for record groups (books, shelves, and chapters).")
+
+        # Get book ID filter
+        book_ids, book_ids_operator = self._get_book_id_filter()
 
         await self._sync_record_groups_events(
             content_type="bookshelf",
@@ -1368,16 +1418,28 @@ class BookStackConnector(BaseConnector):
         await self._sync_record_groups_events(
             content_type="book",
             roles_details=roles_details,
-            last_sync_timestamp=last_sync_timestamp
+            last_sync_timestamp=last_sync_timestamp,
+            book_ids=book_ids,
+            book_ids_operator=book_ids_operator
         )
 
         await self._sync_record_groups_events(
             content_type="chapter",
             roles_details=roles_details,
-            last_sync_timestamp=last_sync_timestamp
+            last_sync_timestamp=last_sync_timestamp,
+            book_ids=book_ids,
+            book_ids_operator=book_ids_operator
         )
 
-    async def _sync_record_groups_events(self, content_type: str, roles_details: Dict[int, Dict], last_sync_timestamp: str) -> None:
+
+    async def _sync_record_groups_events(
+        self,
+        content_type: str,
+        roles_details: Dict[int, Dict],
+        last_sync_timestamp: str,
+        book_ids: Optional[Set[int]] = None,
+        book_ids_operator: Optional[str] = None
+    ) -> None:
 
         tasks = {
             "create": self.data_source.list_audit_log(filter={'type': f'{content_type}_create', 'created_at:gte': last_sync_timestamp}),
@@ -1393,14 +1455,14 @@ class BookStackConnector(BaseConnector):
         if create_response and create_response.success and create_response.data.get('data'):
             self.logger.info(f"Found {len(create_response.data['data'])} new {content_type}(s) to create.")
             for event in create_response.data['data']:
-                await self._handle_record_group_create_event(event, content_type, roles_details)
+                await self._handle_record_group_create_event(event, content_type, roles_details, book_ids, book_ids_operator)
 
         # --- Handle Update Events ---
         update_response = event_responses.get("update")
         if update_response and update_response.success and update_response.data.get('data'):
             self.logger.info(f"Found {len(update_response.data['data'])} updated {content_type}(s) to update.")
             for event in update_response.data['data']:
-                await self._handle_record_group_create_event(event, content_type, roles_details)
+                await self._handle_record_group_create_event(event, content_type, roles_details, book_ids, book_ids_operator)
 
         # --- Handle Delete Events ---
         delete_response = event_responses.get("delete")
@@ -1411,19 +1473,35 @@ class BookStackConnector(BaseConnector):
 
         permissions_update_response = event_responses.get("permissions_update")
         if permissions_update_response and permissions_update_response.success and permissions_update_response.data.get('data'):
-            self.logger.info(f"Found {len(permissions_update_response.data['data'])} updated {content_type}(s) to update.")
+            self.logger.info(f"Found {len(permissions_update_response.data['data'])} permission updates for {content_type}(s).")
             for event in permissions_update_response.data['data']:
                 if event.get("loggable_type") == content_type:
-                    await self._handle_record_group_create_event(event, content_type, roles_details)
+                    await self._handle_record_group_create_event(event, content_type, roles_details, book_ids, book_ids_operator)
 
 
-    async def _handle_record_group_create_event(self, event: Dict, content_type: str, roles_details: Dict[int, Dict]) -> None:
+    async def _handle_record_group_create_event(
+        self,
+        event: Dict,
+        content_type: str,
+        roles_details: Dict[int, Dict],
+        book_ids: Optional[Set[int]] = None,
+        book_ids_operator: Optional[str] = None
+    ) -> None:
         """
         Handles a create event for any record group type (book, chapter, bookshelf).
         """
         item_id, item_name = self._parse_id_and_name_from_event(event)
         if item_id is None:
             return  # Parser already logged the error
+
+        # Apply book filter for books
+        if content_type == "book" and book_ids:
+            if book_ids_operator.value == "in" and item_id not in book_ids:
+                self.logger.debug(f"Skipping book ID {item_id} - not in filter list")
+                return
+            elif book_ids_operator.value == "not_in" and item_id in book_ids:
+                self.logger.debug(f"Skipping book ID {item_id} - in exclusion list")
+                return
 
         self.logger.info(f"{content_type} created/updated: '{item_name}' (ID: {item_id}). Fetching details...")
 
@@ -1447,12 +1525,22 @@ class BookStackConnector(BaseConnector):
 
         item_details = response.data
 
-        # 3. Determine parent ID if it's a chapter
+        # 3. Apply book filter for chapters (check parent book_id)
+        if content_type == "chapter" and book_ids:
+            chapter_book_id = item_details.get("book_id")
+            if book_ids_operator.value == "in" and chapter_book_id not in book_ids:
+                self.logger.debug(f"Skipping chapter ID {item_id} - parent book {chapter_book_id} not in filter list")
+                return
+            elif book_ids_operator.value == "not_in" and chapter_book_id in book_ids:
+                self.logger.debug(f"Skipping chapter ID {item_id} - parent book {chapter_book_id} in exclusion list")
+                return
+
+        # 4. Determine parent ID if it's a chapter
         parent_external_id = None
         if content_type == "chapter" and item_details.get("book_id"):
             parent_external_id = f"book/{item_details.get('book_id')}"
 
-        # 4. Reuse your existing function to build the RecordGroup and its permissions
+        # 5. Reuse your existing function to build the RecordGroup and its permissions
         record_group_tuple = await self._create_record_group_with_permissions(
             item=item_details,
             content_type_name=content_type,
@@ -1460,7 +1548,7 @@ class BookStackConnector(BaseConnector):
             parent_external_id=parent_external_id
         )
 
-        # 5. Process the new record group
+        # 6. Process the new record group
         if record_group_tuple:
             # The processor expects a list of tuples
             await self.data_entities_processor.on_new_record_groups([record_group_tuple])
@@ -1500,6 +1588,9 @@ class BookStackConnector(BaseConnector):
         """
         self.logger.info("Starting sync for pages as records.")
 
+        # Get book ID filter
+        book_ids, book_ids_operator = self._get_book_id_filter()
+
         # Get date filters
         modified_after, modified_before, created_after, created_before = self._get_date_filters()
 
@@ -1533,11 +1624,19 @@ class BookStackConnector(BaseConnector):
                 break
 
             pages_page = pages_data.get("data", [])
+
             if not pages_page:
                 self.logger.info("No more pages to sync.")
                 break
 
-            self.logger.info(f"Processing page {offset + 1} to {offset + len(pages_page)}...")
+            # Apply book ID filter
+            if book_ids:
+                if book_ids_operator.value == "in":
+                    pages_page = [p for p in pages_page if p.get("book_id") in book_ids]
+                elif book_ids_operator.value == "not_in":
+                    pages_page = [p for p in pages_page if p.get("book_id") not in book_ids]
+
+            self.logger.info(f"Processing {len(pages_page)} pages (offset {offset})...")
 
             # Process each page from the current API response
             for page in pages_page:
@@ -1571,7 +1670,7 @@ class BookStackConnector(BaseConnector):
                         batch_records = []
                         await asyncio.sleep(0.1)
 
-            offset += len(pages_page)
+            offset += len(pages_data.get("data", []))  # Use original count for offset
             if offset >= pages_data.get("total", 0):
                 break
 
@@ -1746,6 +1845,9 @@ class BookStackConnector(BaseConnector):
         """
         self.logger.info(f"Starting incremental record (page) sync from: {last_sync_timestamp}")
 
+        # Get book ID filter
+        book_ids, book_ids_operator = self._get_book_id_filter()
+
         # Get date filters for client-side filtering
         modified_after, modified_before, created_after, created_before = self._get_date_filters()
 
@@ -1771,7 +1873,9 @@ class BookStackConnector(BaseConnector):
                     modified_after=modified_after,
                     modified_before=modified_before,
                     created_after=created_after,
-                    created_before=created_before
+                    created_before=created_before,
+                    book_ids=book_ids,
+                    book_ids_operator=book_ids_operator
                 )
 
         # 3. Process Update Events
@@ -1784,7 +1888,9 @@ class BookStackConnector(BaseConnector):
                     modified_after=modified_after,
                     modified_before=modified_before,
                     created_after=created_after,
-                    created_before=created_before
+                    created_before=created_before,
+                    book_ids=book_ids,
+                    book_ids_operator=book_ids_operator
                 )
 
         permissions_update_response = event_responses.get("permissions_update")
@@ -1797,7 +1903,9 @@ class BookStackConnector(BaseConnector):
                         modified_after=modified_after,
                         modified_before=modified_before,
                         created_after=created_after,
-                        created_before=created_before
+                        created_before=created_before,
+                        book_ids=book_ids,
+                        book_ids_operator=book_ids_operator
                     )
 
         # 4. Process Delete Events (no date filter needed - if it was deleted, handle it)
@@ -1815,6 +1923,7 @@ class BookStackConnector(BaseConnector):
 
         self.logger.info("✅ Finished incremental record sync.")
 
+
     async def _handle_page_upsert_event(
         self,
         event: Dict,
@@ -1823,7 +1932,9 @@ class BookStackConnector(BaseConnector):
         modified_after: Optional[datetime] = None,
         modified_before: Optional[datetime] = None,
         created_after: Optional[datetime] = None,
-        created_before: Optional[datetime] = None
+        created_before: Optional[datetime] = None,
+        book_ids: Optional[Set[int]] = None,
+        book_ids_operator: Optional[str] = None
     ) -> None:
         """
         Handles a 'page_create' or 'page_update' event by fetching the page's
@@ -1858,6 +1969,16 @@ class BookStackConnector(BaseConnector):
         except json.JSONDecodeError:
             self.logger.error(f"Failed to decode JSON for page ID {page_id}. Content: {json_content_str}")
             return
+
+        # Apply book ID filter
+        if book_ids:
+            page_book_id = page_details.get("book_id")
+            if book_ids_operator.value == "in" and page_book_id not in book_ids:
+                self.logger.debug(f"Skipping page '{page_name}' (ID: {page_id}) - book {page_book_id} not in filter list")
+                return
+            elif book_ids_operator.value == "not_in" and page_book_id in book_ids:
+                self.logger.debug(f"Skipping page '{page_name}' (ID: {page_id}) - book {page_book_id} in exclusion list")
+                return
 
         # Apply date filters - skip if page doesn't pass
         if not self._pass_date_filters(
@@ -2203,9 +2324,75 @@ class BookStackConnector(BaseConnector):
         limit: int = 20,
         search: Optional[str] = None,
         cursor: Optional[str] = None
-    ) -> NoReturn:
+    ) -> FilterOptionsResponse:
         """BookStack connector does not support dynamic filter options."""
-        raise NotImplementedError("BookStack connector does not support dynamic filter options")
+
+        if filter_key == "book_ids":
+            return await self._get_book_options(page, limit, search, cursor)
+        else:
+            raise ValueError(f"Unsupported filter key: {filter_key}")
+
+    async def _get_book_options(
+        self,
+        page: int,
+        limit: int,
+        search: Optional[str],
+        cursor: Optional[str]
+    ) -> FilterOptionsResponse:
+        """
+        Get dynamic filter options for BookStack books with page-based pagination.
+        """
+
+        search = search.strip() if search else ""
+
+        # Use search API - empty string lists all books
+        response = await self.data_source.search_all(
+            query=search,
+            type="book",
+            page=page,
+            count=limit
+        )
+
+        if not response.success:
+            raise RuntimeError(f"Failed to fetch books: {response.error}")
+
+        books_list = response.data.get("data", [])
+        total = response.data.get("total", 0)
+
+        # Convert to FilterOption objects
+        options = [
+            FilterOption(
+                id=str(book.get("id")),
+                label=book.get("name")+" ("+book.get("slug")+")"
+            )
+            for book in books_list
+        ]
+
+        # Calculate if there are more pages
+        has_more = (page * limit) < total
+
+        return FilterOptionsResponse(
+            success=True,
+            options=options,
+            page=page,
+            limit=limit,
+            has_more=has_more,
+            cursor=None
+        )
+
+    def _get_book_id_filter(self) -> Tuple[Optional[Set[int]], Optional[Any]]:
+        book_ids_filter = self.sync_filters.get(SyncFilterKey.BOOK_IDS)
+        if not book_ids_filter or book_ids_filter.is_empty():
+            return None, None
+
+        book_ids = set(int(bid) for bid in book_ids_filter.get_value())
+        book_ids_operator = book_ids_filter.get_operator()
+
+        if book_ids:
+            action = "Excluding" if book_ids_operator.value == "not_in" else "Including"
+            self.logger.info(f"🔍 Filter: {action} books by IDs: {book_ids}")
+
+        return book_ids, book_ids_operator
 
     @classmethod
     async def create_connector(

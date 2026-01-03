@@ -4848,6 +4848,7 @@ async def get_filter_field_options(
     Raises:
         HTTPException: 400/401/403/404 for various error conditions
     """
+
     container = request.app.container
     logger = container.logger()
     connector_registry = request.app.state.connector_registry
@@ -4880,7 +4881,7 @@ async def get_filter_field_options(
             )
 
         # Check if connector is configured (has credentials)
-        if not instance.get("isAuthenticated", False):
+        if instance.get("authType", "") == "OAUTH" and not instance.get("isAuthenticated", False):
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Connector is not authenticated. Please configure the connector with valid credentials first."
@@ -5215,7 +5216,7 @@ async def _ensure_connector_initialized(
         # Test connection
         logger.info(f"Testing connection for connector {connector_id}")
         try:
-            connection_ok = connector.test_connection_and_access()
+            connection_ok = await connector.test_connection_and_access()
             if not connection_ok:
                 error_msg = "Connection test failed. Please verify your credentials have proper access."
                 logger.error(f"❌ {error_msg}")

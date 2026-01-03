@@ -45,6 +45,7 @@ from app.connectors.core.registry.connector_builder import (
 )
 from app.connectors.core.registry.filters import (
     FilterCollection,
+    FilterOperator,
     IndexingFilterKey,
     SyncFilterKey,
     load_connector_filters,
@@ -178,7 +179,9 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
+        .add_filter_field(CommonFields.file_extension_filter())
         .with_webhook_config(True, ["file.added", "file.modified", "file.deleted"])
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .add_sync_custom_field(CommonFields.batch_size_field())
         .with_sync_support(True)
@@ -257,11 +260,6 @@ class DropboxIndividualConnector(BaseConnector):
         app_key = auth_config.get("clientId")
         app_secret = auth_config.get("clientSecret")
 
-        self.sync_filters, self.indexing_filters = await load_connector_filters(
-            self.config_service, "dropboxpersonal", self.connector_id, self.logger
-        )
-
-
         try:
             config = DropboxTokenConfig(
                 token=access_token,
@@ -337,11 +335,14 @@ class DropboxIndividualConnector(BaseConnector):
             RecordUpdate object or None if entry should be skipped
         """
         try:
-
             # 0. Apply date filters
             if not self._pass_date_filters(
                 entry, modified_after, modified_before, created_after, created_before
             ):
+                return None
+
+            if not self._pass_extension_filter(entry):
+                self.logger.debug(f"Skipping item {entry.name} (ID: {entry.id}) due to extention filters.")
                 return None
 
             # 1. Handle Deleted Items (Deletion from db not implemented yet)
@@ -609,10 +610,11 @@ class DropboxIndividualConnector(BaseConnector):
                     created_after=created_after,
                     created_before=created_before
                 )
-                if record_update:
-                    if record_update.record:
-                        if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                            record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                if record_update and record_update.record:
+                    if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                        record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                    if record_update.record.is_shared and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True):
+                        record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
                     yield (record_update.record, record_update.new_permissions or [], record_update)
                 await asyncio.sleep(0)
@@ -685,6 +687,70 @@ class DropboxIndividualConnector(BaseConnector):
                 self.logger.debug(f"Skipping {entry.name}: created {created_date} after cutoff {created_before}")
                 return False
 
+        return True
+
+    def _pass_extension_filter(self, entry: Union[FileMetadata, FolderMetadata, DeletedMetadata]) -> bool:
+        """
+        Checks if the Dropbox entry passes the configured file extensions filter.
+
+        For MULTISELECT filters:
+        - Operator IN: Only allow files with extensions in the selected list
+        - Operator NOT_IN: Allow files with extensions NOT in the selected list
+
+        Folders and deleted items always pass this filter to maintain directory structure.
+
+        Args:
+            entry: The Dropbox file/folder/deleted metadata
+
+        Returns:
+            True if the entry passes the filter (should be kept), False otherwise
+        """
+        # 1. ALWAYS Allow Folders and Deleted items
+        # We must sync folders regardless of extension to ensure the directory structure
+        # exists for any files that might be inside them.
+        # Deleted items should pass through so deletions are processed.
+        if not isinstance(entry, FileMetadata):
+            return True
+
+        # 2. Get the extensions filter
+        extensions_filter = self.sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
+
+        # If no filter configured or filter is empty, allow all files
+        if extensions_filter is None or extensions_filter.is_empty():
+            return True
+
+        # 3. Get the file extension from the entry name
+        # The extension is stored without the dot (e.g., "pdf", "docx")
+        file_extension = None
+        if entry.name and "." in entry.name:
+            file_extension = entry.name.rsplit(".", 1)[-1].lower()
+
+        # 4. Handle files without extensions
+        if file_extension is None:
+            operator = extensions_filter.get_operator()
+            operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+            return operator_str == FilterOperator.NOT_IN
+
+        # 5. Get the list of extensions from the filter value
+        allowed_extensions = extensions_filter.value
+        if not isinstance(allowed_extensions, list):
+            return True  # Invalid filter value, allow the file
+
+        # Normalize extensions (lowercase, without dots)
+        normalized_extensions = [ext.lower().lstrip(".") for ext in allowed_extensions]
+
+        # 6. Apply the filter based on operator
+        operator = extensions_filter.get_operator()
+        operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+
+        if operator_str == FilterOperator.IN:
+            # Only allow files with extensions in the list
+            return file_extension in normalized_extensions
+        elif operator_str == FilterOperator.NOT_IN:
+            # Allow files with extensions NOT in the list
+            return file_extension not in normalized_extensions
+
+        # Unknown operator, default to allowing the file
         return True
 
     def _get_date_filters(self) -> Tuple[Optional[datetime], Optional[datetime], Optional[datetime], Optional[datetime]]:
@@ -853,6 +919,10 @@ class DropboxIndividualConnector(BaseConnector):
         """
         try:
             self.logger.info("🚀 Starting Dropbox Individual Sync")
+
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "dropboxpersonal", self.connector_id, self.logger
+            )
 
             # 1. Identify the User
             user_id, user_email = await self._get_current_user_info()

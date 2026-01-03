@@ -58,6 +58,19 @@ async def main() -> None:
     users = await data_source.list_users(filter={"email":"harshit@pipeshub.app"})
     print(users)
 
+    print("\nSearch all")
+    search = await data_source.search_all(query="", type="book")
+    print(search)
+
+    print("\nList books with filters")
+    books = await data_source.list_books(
+        filter=[
+            ("id:ne", "1"),
+            ("id:ne", "3")
+        ]
+    )
+    print(books)
+
     # response = await data_source.list_users(
     #             count=50, 
     #             offset=0
@@ -65,15 +78,15 @@ async def main() -> None:
     # print(response)
 
     # #List a particular user
-    print("\nList a particular user:")
-    user1 = await data_source.get_user(user_id=1)
+    # print("\nList a particular user:")
+    # user1 = await data_source.get_user(user_id=1)
     # user2 = await data_source.get_user(id=2)
-    print(user1)
+    # print(user1)
     # print(user2)
 
-    print("\nList roles:")
-    roles = await data_source.list_roles()
-    print(roles)
+    # print("\nList roles:")
+    # roles = await data_source.list_roles()
+    # print(roles)
 
     # print("\nGet role details")
     # role = await data_source.get_role(role_id=7)
@@ -112,17 +125,17 @@ async def main() -> None:
     # chapter = await data_source.get_chapter(chapter_id=1)
     # print(chapter)
 
-    print("\nList Pages")
-    pages = await data_source.list_pages()
-    print(pages)
+    # print("\nList Pages")
+    # pages = await data_source.list_pages()
+    # print(pages)
 
     # print("\nGet page")
     # page = await data_source.get_page(page_id=1)
     # print(page)
 
-    print("\n List attachments")
-    attachments = await data_source.list_attachments()
-    print(attachments)
+    # print("\n List attachments")
+    # attachments = await data_source.list_attachments()
+    # print(attachments)
 
     # print("\nList Permissions")
     # permissions = await data_source.get_content_permissions(content_type="page", content_id=12)
