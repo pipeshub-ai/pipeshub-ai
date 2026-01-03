@@ -1783,7 +1783,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
                     RETURN MERGE(user, {{
                         sourceUserId: edge.sourceUserId,
-                        appName: UPPER(app.name)
+                        appName: UPPER(app.type),
+                        connectorId: app._key
                     }})
             """
 

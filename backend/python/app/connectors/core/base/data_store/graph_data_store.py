@@ -134,10 +134,12 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.get_app_role_by_external_id(connector_id, external_id, transaction=self.txn)
 
     async def get_users(self, org_id: str, active: bool = True) -> List[User]:
-        return await self.graph_provider.get_users(org_id, active)
+        users_dict = await self.graph_provider.get_users(org_id, active)
+        return [User.from_arango_user(user_dict) for user_dict in users_dict if user_dict is not None]
 
     async def get_app_users(self, org_id: str, connector_id: str) -> List[AppUser]:
-        return await self.graph_provider.get_app_users(org_id, connector_id)
+        app_users_dict = await self.graph_provider.get_app_users(org_id, connector_id)
+        return [AppUser.from_arango_user(user_dict) for user_dict in app_users_dict if user_dict is not None]
 
     async def get_user_groups(self, connector_id: str, org_id: str) -> List[AppUserGroup]:
         return await self.graph_provider.get_user_groups(connector_id, org_id, transaction=self.txn)

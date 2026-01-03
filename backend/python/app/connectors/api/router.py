@@ -3056,12 +3056,17 @@ async def create_connector_instance(
             # Add OAuth metadata from registry if OAuth-based
             auth_type = metadata.get("authType", "").upper()
             if auth_type in ["OAUTH", "OAUTH_ADMIN_CONSENT"]:
-                prepared_config["auth"].update({
-                    "authorizeUrl": auth_metadata.get("authorizeUrl", ""),
-                    "tokenUrl": auth_metadata.get("tokenUrl", ""),
+                # Only use registry defaults if user hasn't provided these values
+                oauth_updates = {
                     "scopes": auth_metadata.get("scopes", []),
                     "redirectUri": redirect_uri
-                })
+                }
+                # Preserve user-provided authorizeUrl and tokenUrl if they exist
+                if "authorizeUrl" not in prepared_config["auth"] or not prepared_config["auth"].get("authorizeUrl"):
+                    oauth_updates["authorizeUrl"] = auth_metadata.get("authorizeUrl", "")
+                if "tokenUrl" not in prepared_config["auth"] or not prepared_config["auth"].get("tokenUrl"):
+                    oauth_updates["tokenUrl"] = auth_metadata.get("tokenUrl", "")
+                prepared_config["auth"].update(oauth_updates)
 
             prepared_config["auth"].update({
                 "authType": auth_type,
@@ -3367,13 +3372,18 @@ async def update_connector_instance_auth_config(
                 )
                 redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
-            new_config["auth"].update({
-                "authorizeUrl": auth_metadata.get("authorizeUrl", ""),
-                "tokenUrl": auth_metadata.get("tokenUrl", ""),
+            # Only use registry defaults if user hasn't provided these values
+            oauth_updates = {
                 "scopes": auth_metadata.get("scopes", []),
                 "redirectUri": redirect_uri,
                 "authType": auth_type,
-            })
+            }
+            # Preserve user-provided authorizeUrl and tokenUrl if they exist
+            if "authorizeUrl" not in new_config["auth"] or not new_config["auth"].get("authorizeUrl"):
+                oauth_updates["authorizeUrl"] = auth_metadata.get("authorizeUrl", "")
+            if "tokenUrl" not in new_config["auth"] or not new_config["auth"].get("tokenUrl"):
+                oauth_updates["tokenUrl"] = auth_metadata.get("tokenUrl", "")
+            new_config["auth"].update(oauth_updates)
 
         # Save configuration
         await config_service.set_config(config_path, new_config)
@@ -3680,13 +3690,18 @@ async def update_connector_instance_config(
                     )
                     redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
-                new_config["auth"].update({
-                    "authorizeUrl": auth_metadata.get("authorizeUrl", ""),
-                    "tokenUrl": auth_metadata.get("tokenUrl", ""),
+                # Only use registry defaults if user hasn't provided these values
+                oauth_updates = {
                     "scopes": auth_metadata.get("scopes", []),
                     "redirectUri": redirect_uri,
                     "authType": auth_type,
-                })
+                }
+                # Preserve user-provided authorizeUrl and tokenUrl if they exist
+                if "authorizeUrl" not in new_config["auth"] or not new_config["auth"].get("authorizeUrl"):
+                    oauth_updates["authorizeUrl"] = auth_metadata.get("authorizeUrl", "")
+                if "tokenUrl" not in new_config["auth"] or not new_config["auth"].get("tokenUrl"):
+                    oauth_updates["tokenUrl"] = auth_metadata.get("tokenUrl", "")
+                new_config["auth"].update(oauth_updates)
 
         # Save configuration
         await config_service.set_config(config_path, new_config)
