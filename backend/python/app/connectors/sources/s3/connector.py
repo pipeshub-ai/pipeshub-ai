@@ -53,7 +53,7 @@ from app.models.entities import FileRecord, IndexingStatus, Record
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.s3.s3 import S3Client
 from app.sources.external.s3.s3 import S3DataSource
-from app.utils.streaming import stream_content
+from app.utils.streaming import logger, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -85,15 +85,15 @@ def get_parent_path_from_key(key: str) -> Optional[str]:
 def get_mimetype_for_s3(key: str, is_folder: bool = False) -> MimeTypes:
     """Determines the correct MimeTypes enum member for an S3 object."""
     if is_folder:
-        return MimeTypes.FOLDER
+        return MimeTypes.FOLDER.value
 
     mime_type_str, _ = mimetypes.guess_type(key)
     if mime_type_str:
         try:
             return MimeTypes(mime_type_str)
         except ValueError:
-            return MimeTypes.BIN
-    return MimeTypes.BIN
+            return MimeTypes.BIN.value
+    return MimeTypes.BIN.value
 
 
 @ConnectorBuilder("S3")\
@@ -725,6 +725,13 @@ class S3Connector(BaseConnector):
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         """Stream S3 object content."""
+        # Check if record is a file (not a folder)
+        if isinstance(record, FileRecord) and not record.is_file:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Cannot stream folder content",
+            )
+        
         signed_url = await self.get_signed_url(record)
         if not signed_url:
             raise HTTPException(

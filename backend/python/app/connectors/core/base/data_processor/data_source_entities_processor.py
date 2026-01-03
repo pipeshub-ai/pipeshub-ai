@@ -124,11 +124,15 @@ class DataSourceEntitiesProcessor:
 
         # Map RecordType to appropriate Record class
         if parent_record_type == RecordType.FILE:
+            file_params = {k: v for k, v in base_params.items() if k != "mime_type"}
             return FileRecord(
-                **base_params,
+                **file_params,
+                external_record_group_id=record.external_record_group_id,
                 is_file=False,
                 extension=None,
                 mime_type=MimeTypes.FOLDER.value,
+                size_in_bytes=0,  # Folders have 0 size
+                weburl="",  # Ensure webUrl is a string, not None
             )
         elif parent_record_type in [RecordType.WEBPAGE, RecordType.CONFLUENCE_PAGE,
                                      RecordType.CONFLUENCE_BLOGPOST, RecordType.SHAREPOINT_PAGE]:
@@ -162,6 +166,7 @@ class DataSourceEntitiesProcessor:
                     parent_record_type=record.parent_record_type,
                     record=record,
                 )
+                self.logger.info(f"parent_record: {parent_record}")
                 await tx_store.batch_upsert_records([parent_record])
 
             if parent_record and isinstance(parent_record, Record):
