@@ -408,9 +408,8 @@ class RecordEventHandler(BaseEventService):
             if record is None:
                 return
 
-            record_type = record.get("recordType")
-
-            if record_type == RecordTypes.FILE.value and event_type != EventTypes.DELETE_RECORD.value:
+            # Update queued duplicates for ALL record types (not just FILE)
+            if event_type != EventTypes.DELETE_RECORD.value:
                 record = await self.event_processor.arango_service.get_document(
                     record_id, CollectionNames.RECORDS.value
                 )
@@ -419,15 +418,6 @@ class RecordEventHandler(BaseEventService):
                     self.logger.warning(f"Record {record_id} not found in database")
                     return
 
-                # if record is None:
-                #     self.logger.warning(f"Record {record_id} not found in database")
-                #     self.logger.warning(f"Triggering next queued duplicate for record {record_id}")
-                #     if md5_checksum and size_in_bytes:
-                #         await self._trigger_next_queued_duplicate(md5_checksum, size_in_bytes, None)
-                #     else:
-                #         self.logger.warning(f"Missing md5Checksum or sizeInBytes, skipping next queued duplicate")
-                #     return
-
                 indexing_status = record.get("indexingStatus")
                 virtual_record_id = record.get("virtualRecordId")
                 if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:
@@ -435,7 +425,7 @@ class RecordEventHandler(BaseEventService):
                 elif indexing_status == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:
                     # Find and trigger indexing for the next queued duplicate
                     self.logger.info(f"🔄 Current record {record_id} has status {indexing_status}, triggering next queued duplicate")
-                    await self._trigger_next_queued_duplicate(record_id,virtual_record_id)
+                    await self._trigger_next_queued_duplicate(record_id, virtual_record_id)
 
     async def __update_document_status(
         self,

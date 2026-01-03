@@ -14050,53 +14050,59 @@ class BaseArangoService:
         cursor = self.db.aql.execute(query)
         return list(cursor)
 
-    async def find_duplicate_files(
+
+    async def find_duplicate_records(
         self,
-        file_key: str,
+        record_key: str,
         md5_checksum: str,
-        size_in_bytes: int,
+        record_type: Optional[str] = None,
         transaction: Optional[TransactionDatabase] = None,
-    ) -> List[str]:
+    ) -> List[Dict]:
         """
-        Find duplicate files based on MD5 checksum and file size
+        Find duplicate records based on MD5 checksum and content size.
+        This method queries the RECORDS collection and works for all record types.
 
         Args:
-            md5_checksum (str): MD5 checksum of the file
-            size_in_bytes (int): Size of the file in bytes
+            record_key (str): The key of the current record to exclude from results
+            md5_checksum (str): MD5 checksum of the record content
+            size_in_bytes (int): Size of the record content in bytes
+            org_id (str): Organization ID to filter records
+            record_type (Optional[str]): Optional record type to filter by
             transaction (Optional[TransactionDatabase]): Optional database transaction
 
         Returns:
-            List[str]: List of file keys that match both criteria
+            List[Dict]: List of duplicate records that match both criteria
         """
         try:
             self.logger.info(
-                "🔍 Finding duplicate files with MD5: %s and size: %d bytes",
+                "🔍 Finding duplicate records with MD5: %s",
                 md5_checksum,
-                size_in_bytes,
             )
 
+            # Build query with optional record type filter
             query = f"""
-            FOR file IN {CollectionNames.FILES.value}
-                FILTER file.md5Checksum == @md5_checksum
-                AND file.sizeInBytes == @size_in_bytes
-                AND file._key != @file_key
-                LET record = (
-                    FOR r IN {CollectionNames.RECORDS.value}
-                        FILTER r._key == file._key
-                        RETURN r
-                )[0]
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.md5Checksum == @md5_checksum
+                AND record._key != @record_key
+            """
+
+            bind_vars = {
+                "md5_checksum": md5_checksum,
+                "record_key": record_key,
+            }
+
+            if record_type:
+                query += """
+                AND record.recordType == @record_type
+                """
+                bind_vars["record_type"] = record_type
+
+            query += """
                 RETURN record
             """
 
             db = transaction if transaction else self.db
-            cursor = db.aql.execute(
-                query,
-                bind_vars={
-                    "md5_checksum": md5_checksum,
-                    "size_in_bytes": size_in_bytes,
-                    "file_key": file_key
-                }
-            )
+            cursor = db.aql.execute(query, bind_vars=bind_vars)
 
             duplicate_records = list(cursor)
 
@@ -14112,7 +14118,7 @@ class BaseArangoService:
 
         except Exception as e:
             self.logger.error(
-                "Failed to find duplicate files: %s",
+                "Failed to find duplicate records: %s",
                 str(e)
             )
             if transaction:
@@ -14212,12 +14218,13 @@ class BaseArangoService:
         transaction: Optional[TransactionDatabase] = None,
     ) -> int:
         """
-        Find all QUEUED duplicate records with the same file md5 hash and update their status.
+        Find all QUEUED duplicate records with the same md5 hash and update their status.
+        Works with all record types by querying the RECORDS collection directly.
 
         Args:
             record_id (str): The record ID to use as reference for finding duplicates
             new_indexing_status (str): The new indexing status to set
-            new_extraction_status (Optional[str]): The new extraction status to set (if provided)
+            virtual_record_id (Optional[str]): The virtual record ID to set on duplicates
             transaction (Optional[TransactionDatabase]): Optional database transaction
 
         Returns:
@@ -14228,50 +14235,42 @@ class BaseArangoService:
                 f"🔍 Finding QUEUED duplicate records for record {record_id}"
             )
 
-            # First get the file info for the reference record
-            file_query = f"""
-            FOR file IN {CollectionNames.FILES.value}
-                FILTER file._key == @record_id
-                RETURN file
+            # First get the record info for the reference record
+            record_query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record._key == @record_id
+                RETURN record
             """
 
             db = transaction if transaction else self.db
             cursor = db.aql.execute(
-                file_query,
+                record_query,
                 bind_vars={"record_id": record_id}
             )
 
-            file_doc = None
+            ref_record = None
             try:
-                file_doc = cursor.next()
+                ref_record = cursor.next()
             except StopIteration:
-                self.logger.info(f"No file found for record {record_id}, skipping queued duplicate update")
+                self.logger.info(f"No record found for {record_id}, skipping queued duplicate update")
                 return 0
 
-            if not file_doc:
-                self.logger.info(f"No file found for record {record_id}, skipping queued duplicate update")
+            if not ref_record:
+                self.logger.info(f"No record found for {record_id}, skipping queued duplicate update")
                 return 0
 
-            md5_checksum = file_doc.get("md5Checksum")
-            size_in_bytes = file_doc.get("sizeInBytes")
+            md5_checksum = ref_record.get("md5Checksum")
 
-            if not md5_checksum or size_in_bytes is None:
-                self.logger.warning(f"File {record_id} missing md5Checksum or sizeInBytes")
+            if not md5_checksum:
+                self.logger.warning(f"Record {record_id} missing md5Checksum")
                 return 0
 
-            # Find all queued duplicate records
+            # Find all queued duplicate records directly from RECORDS collection
             query = f"""
-            FOR file IN {CollectionNames.FILES.value}
-                FILTER file.md5Checksum == @md5_checksum
-                AND file.sizeInBytes == @size_in_bytes
-                AND file._key != @record_id
-                LET record = (
-                    FOR r IN {CollectionNames.RECORDS.value}
-                        FILTER r._key == file._key
-                        AND r.indexingStatus == @queued_status
-                        RETURN r
-                )[0]
-                FILTER record != null
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.md5Checksum == @md5_checksum
+                AND record._key != @record_id
+                AND record.indexingStatus == @queued_status
                 RETURN record
             """
 
@@ -14279,7 +14278,6 @@ class BaseArangoService:
                 query,
                 bind_vars={
                     "md5_checksum": md5_checksum,
-                    "size_in_bytes": size_in_bytes,
                     "record_id": record_id,
                     "queued_status": "QUEUED"
                 }
@@ -14345,7 +14343,8 @@ class BaseArangoService:
         transaction: Optional[TransactionDatabase] = None,
     ) -> Optional[dict]:
         """
-        Find the next QUEUED duplicate record with the same file md5 hash.
+        Find the next QUEUED duplicate record with the same md5 hash.
+        Works with all record types by querying the RECORDS collection directly.
 
         Args:
             record_id (str): The record ID to use as reference for finding duplicates
@@ -14359,50 +14358,42 @@ class BaseArangoService:
                 f"🔍 Finding next QUEUED duplicate record for record {record_id}"
             )
 
-            # First get the file info for the reference record
-            file_query = f"""
-            FOR file IN {CollectionNames.FILES.value}
-                FILTER file._key == @record_id
-                RETURN file
+            # First get the record info for the reference record
+            record_query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record._key == @record_id
+                RETURN record
             """
 
             db = transaction if transaction else self.db
             cursor = db.aql.execute(
-                file_query,
+                record_query,
                 bind_vars={"record_id": record_id}
             )
 
-            file_doc = None
+            ref_record = None
             try:
-                file_doc = cursor.next()
+                ref_record = cursor.next()
             except StopIteration:
-                self.logger.info(f"No file found for record {record_id}, skipping queued duplicate search")
+                self.logger.info(f"No record found for {record_id}, skipping queued duplicate search")
                 return None
 
-            if not file_doc:
-                self.logger.info(f"No file found for record {record_id}, skipping queued duplicate search")
+            if not ref_record:
+                self.logger.info(f"No record found for {record_id}, skipping queued duplicate search")
                 return None
 
-            md5_checksum = file_doc.get("md5Checksum")
-            size_in_bytes = file_doc.get("sizeInBytes")
+            md5_checksum = ref_record.get("md5Checksum")
 
-            if not md5_checksum or size_in_bytes is None:
-                self.logger.warning(f"File {record_id} missing md5Checksum or sizeInBytes")
+            if not md5_checksum:
+                self.logger.warning(f"Record {record_id} missing md5Checksum")
                 return None
 
-            # Find the first queued duplicate record
+            # Find the first queued duplicate record directly from RECORDS collection
             query = f"""
-            FOR file IN {CollectionNames.FILES.value}
-                FILTER file.md5Checksum == @md5_checksum
-                AND file.sizeInBytes == @size_in_bytes
-                AND file._key != @record_id
-                LET record = (
-                    FOR r IN {CollectionNames.RECORDS.value}
-                        FILTER r._key == file._key
-                        AND r.indexingStatus == @queued_status
-                        RETURN r
-                )[0]
-                FILTER record != null
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.md5Checksum == @md5_checksum
+                AND record._key != @record_id
+                AND record.indexingStatus == @queued_status
                 LIMIT 1
                 RETURN record
             """
@@ -14411,7 +14402,6 @@ class BaseArangoService:
                 query,
                 bind_vars={
                     "md5_checksum": md5_checksum,
-                    "size_in_bytes": size_in_bytes,
                     "record_id": record_id,
                     "queued_status": "QUEUED"
                 }
