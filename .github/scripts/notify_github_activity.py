@@ -10,6 +10,7 @@ import os
 import re
 import requests  # type: ignore
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 
 class GitHubActivityNotifier:
@@ -27,7 +28,7 @@ class GitHubActivityNotifier:
             "X-GitHub-Api-Version": "2022-11-28"
         }
     
-    def get_recent_stargazers(self, hours) -> List[Dict[str, Any]]:
+    def get_recent_stargazers(self, hours: int) -> List[Dict[str, Any]]:
         """
         Fetch stargazers from the last N hours.
         
@@ -146,7 +147,7 @@ class GitHubActivityNotifier:
             print(f"❌ Error fetching stargazers: {e}")
             return []
 
-    def get_recent_forks(self, hours) -> List[Dict[str, Any]]:
+    def get_recent_forks(self, hours: int) -> List[Dict[str, Any]]:
         """
         Fetch forks from the last N hours.
         Cutoff time is calculated as: current_time - hours
@@ -254,13 +255,28 @@ class GitHubActivityNotifier:
         
         if blog:
             blog = blog.strip()
-            if 'linkedin.com' in blog.lower():
-                result['linkedin_url'] = blog if blog.startswith('http') else f"https://{blog}"
-            elif 'twitter.com' in blog.lower() or 'x.com' in blog.lower():
-                if not result['twitter_url']:
-                    result['twitter_url'] = blog if blog.startswith('http') else f"https://{blog}"
-            else:
-                result['website'] = blog if blog.startswith('http') else f"https://{blog}"
+            # Normalize URL by adding scheme if missing
+            normalized_url = blog if blog.startswith('http') else f"https://{blog}"
+            
+            try:
+                parsed = urlparse(normalized_url)
+                hostname = parsed.netloc.lower()
+                
+                # Remove port if present (e.g., "example.com:8080" -> "example.com")
+                if hostname and ':' in hostname:
+                    hostname = hostname.split(':')[0]
+                
+                # Check hostname exactly or with www prefix (not substring)
+                if hostname and (hostname == 'linkedin.com' or hostname == 'www.linkedin.com'):
+                    result['linkedin_url'] = normalized_url
+                elif hostname and hostname in ('twitter.com', 'www.twitter.com', 'x.com', 'www.x.com'):
+                    if not result['twitter_url']:
+                        result['twitter_url'] = normalized_url
+                else:
+                    result['website'] = normalized_url
+            except Exception:
+                # Fallback to treating as website if URL parsing fails
+                result['website'] = normalized_url
         
         if bio:
             # LinkedIn
@@ -451,7 +467,7 @@ class GitHubActivityNotifier:
         }
         self.send_slack_message(message)
     
-    def run(self, hours) -> None:
+    def run(self, hours: int) -> None:
         """Main execution."""
         print("=" * 70)
         print(f"GitHub Activity Notifier - {self.owner}/{self.repo}")
@@ -486,7 +502,7 @@ class GitHubActivityNotifier:
                     message = self.format_slack_message(
                         user_details, "starred", starred_at, social_links
                     )
-                    #self.send_slack_message(message)
+                    self.send_slack_message(message)
         
         # Process forks
         if forks:
@@ -513,13 +529,13 @@ class GitHubActivityNotifier:
                     message = self.format_slack_message(
                         user_details, "forked", created_at, social_links
                     )
-                    #self.send_slack_message(message)
+                    self.send_slack_message(message)
         
         # Send summary
         print(f"\n{'='*70}")
         print("Sending Summary")
         print(f"{'='*70}")
-        #self.send_summary(len(stargazers), len(forks), hours)
+        self.send_summary(len(stargazers), len(forks), hours)
         
         print(f"\n{'='*70}")
         print("✓ Completed!")
