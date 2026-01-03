@@ -191,8 +191,8 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
                 "metadata": enhanced_metadata,
                 "citationType": "vectordb|document",
             })
-            new_citation_num += 1
             citation_mapping[old_citation_key] = new_citation_num
+            new_citation_num += 1
 
     # Replace citation numbers in answer text - always use regular brackets for output
     def replace_citation(match) -> str:
