@@ -546,10 +546,11 @@ class S3Connector(BaseConnector):
             else:
                 timestamp_ms = get_epoch_timestamp_in_ms()
 
-            # Get existing record if it exists (use normalized key for external_id)
+            # Get existing record if it exists (use bucket_name/path format for external_id)
+            external_record_id = f"{bucket_name}/{normalized_key}"
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id, external_id=normalized_key
+                    connector_id=self.connector_id, external_id=external_record_id
                 )
 
             # Determine record type
@@ -561,7 +562,7 @@ class S3Connector(BaseConnector):
 
             # Get parent path (returns path without leading slash)
             parent_path = get_parent_path_from_key(normalized_key)
-            parent_external_id = parent_path if parent_path else None
+            parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else bucket_name
 
             # Generate web URL (S3 console URL format)
             web_url = f"https://s3.console.aws.amazon.com/s3/object/{bucket_name}?prefix={normalized_key}"
@@ -589,7 +590,7 @@ class S3Connector(BaseConnector):
                 record_type=record_type,
                 record_group_type=RecordGroupType.DRIVE.value,
                 external_record_group_id=bucket_name,
-                external_record_id=normalized_key,  # Full path without leading slash: a/b/c/file.txt
+                external_record_id=external_record_id,  # bucket_name/path format: my-bucket/a/b/c/file.txt
                 external_revision_id=obj.get("ETag", "").strip('"'),
                 version=0 if not existing_record else existing_record.version + 1,
                 origin=OriginTypes.CONNECTOR.value,
@@ -600,7 +601,8 @@ class S3Connector(BaseConnector):
                 weburl=web_url,
                 signed_url=None,  # Will be generated on demand
                 fetch_signed_url=signed_url_route,  # Route for Kafka to fetch signed URL
-                parent_external_record_id=parent_external_id,  # Parent path without leading slash: a/b/c
+                parent_external_record_id=parent_external_id,  # bucket_name/parent_path format: my-bucket/a/b/c, or bucket_name if root
+                parent_record_type=RecordType.FILE,
                 size_in_bytes=obj.get("Size", 0) if is_file else 0,
                 is_file=is_file,
                 extension=extension,
@@ -692,10 +694,18 @@ class S3Connector(BaseConnector):
                 self.logger.warning(f"No bucket name found for record: {record.id}")
                 return None
 
-            key = record.external_record_id
-            if not key:
-                self.logger.warning(f"No key found for record: {record.id}")
+            external_record_id = record.external_record_id
+            if not external_record_id:
+                self.logger.warning(f"No external_record_id found for record: {record.id}")
                 return None
+
+            # Extract the actual key from external_record_id (format: bucket_name/path)
+            # Remove the bucket prefix to get the actual S3 key
+            if external_record_id.startswith(f"{bucket_name}/"):
+                key = external_record_id[len(f"{bucket_name}/"):]
+            else:
+                # Fallback: if format is unexpected, use as-is
+                key = external_record_id.lstrip("/")
 
             # Generate presigned URL (valid for 1 hour)
             response = await self.data_source.generate_presigned_url(
@@ -886,15 +896,20 @@ class S3Connector(BaseConnector):
         """Check if record has been updated at source and fetch updated data."""
         try:
             bucket_name = record.external_record_group_id
-            key = record.external_record_id
+            external_record_id = record.external_record_id
 
-            if not bucket_name or not key:
-                self.logger.warning(f"Missing bucket or key for record {record.id}")
+            if not bucket_name or not external_record_id:
+                self.logger.warning(f"Missing bucket or external_record_id for record {record.id}")
                 return None
 
-            # Normalize key (external_record_id should already be normalized, but ensure it)
-            # Only remove leading slashes, keep trailing slash for folders
-            normalized_key = key.lstrip("/")
+            # Extract the actual key from external_record_id (format: bucket_name/path)
+            # Remove the bucket prefix to get the actual S3 key
+            if external_record_id.startswith(f"{bucket_name}/"):
+                normalized_key = external_record_id[len(f"{bucket_name}/"):]
+            else:
+                # Fallback: if format is unexpected, use as-is
+                normalized_key = external_record_id.lstrip("/")
+            
             if not normalized_key:
                 self.logger.warning(f"Invalid key for record {record.id}")
                 return None
@@ -907,7 +922,7 @@ class S3Connector(BaseConnector):
 
             if not response.success:
                 # Object might have been deleted
-                self.logger.warning(f"Object {key} not found in bucket {bucket_name}")
+                self.logger.warning(f"Object {normalized_key} not found in bucket {bucket_name}")
                 return None
 
             obj_metadata = response.data
@@ -942,7 +957,7 @@ class S3Connector(BaseConnector):
 
             # Get parent path (returns path without leading slash)
             parent_path = get_parent_path_from_key(normalized_key)
-            parent_external_id = parent_path if parent_path else None
+            parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else bucket_name
 
             # Generate web URL
             web_url = f"https://s3.console.aws.amazon.com/s3/object/{bucket_name}?prefix={normalized_key}"
@@ -959,6 +974,9 @@ class S3Connector(BaseConnector):
             # Extract record name (remove trailing slash for folders)
             record_name = normalized_key.rstrip("/").split("/")[-1] or normalized_key.rstrip("/")
             
+            # Create updated FileRecord with bucket_name/path format
+            updated_external_record_id = f"{bucket_name}/{normalized_key}"
+            
             # Create updated FileRecord
             updated_record = FileRecord(
                 id=record.id,
@@ -966,7 +984,7 @@ class S3Connector(BaseConnector):
                 record_type=RecordType.FOLDER if is_folder else RecordType.FILE,
                 record_group_type=RecordGroupType.DRIVE.value,
                 external_record_group_id=bucket_name,
-                external_record_id=normalized_key,  # Full path without leading slash: a/b/c/file.txt
+                external_record_id=updated_external_record_id,  # bucket_name/path format: my-bucket/a/b/c/file.txt
                 external_revision_id=current_etag,
                 version=record.version + 1,
                 origin=OriginTypes.CONNECTOR.value,
@@ -977,7 +995,8 @@ class S3Connector(BaseConnector):
                 weburl=web_url,
                 signed_url=None,
                 fetch_signed_url=signed_url_route,
-                parent_external_record_id=parent_external_id,  # Parent path without leading slash: a/b/c
+                parent_external_record_id=parent_external_id,  # bucket_name/parent_path format: my-bucket/a/b/c, or bucket_name if root
+                parent_record_type=RecordType.FILE ,
                 size_in_bytes=obj_metadata.get("ContentLength", 0) if is_file else 0,
                 is_file=is_file,
                 extension=extension,
@@ -987,7 +1006,7 @@ class S3Connector(BaseConnector):
             )
 
             # Get permissions
-            permissions = await self._create_s3_permissions(bucket_name, key)
+            permissions = await self._create_s3_permissions(bucket_name, normalized_key)
 
             return updated_record, permissions
 
