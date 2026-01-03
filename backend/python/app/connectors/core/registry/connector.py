@@ -635,52 +635,6 @@ class AzureBlobConnector:
         return True
 
 
-@ConnectorBuilder("Linear")\
-    .in_group("Linear")\
-    .with_auth_type("API_TOKEN")\
-    .with_description("Sync issues and projects from Linear")\
-    .with_categories(["Issue Tracking"])\
-    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
-    .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/linear.svg")
-        .add_documentation_link(DocumentationLink(
-            "Linear API Token Setup",
-            "https://linear.app/developers/docs/authentication",
-            "setup"
-        ))
-        .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/linear/linear',
-            'pipeshub'
-        ))
-        .with_redirect_uri("", False)
-        .add_auth_field(AuthField(
-            name="apiToken",
-            display_name="API Token",
-            placeholder="Enter your API Token",
-            description="The API Token from Linear instance (https://linear.app/settings/api)",
-            field_type="PASSWORD",
-            max_length=2000,
-            is_secret=True
-        ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
-        .with_sync_support(False)
-        .with_agent_support(True)
-    )\
-    .build_decorator()
-class LinearConnector:
-    """Linear connector built with the builder pattern"""
-
-    def __init__(self) -> None:
-        self.name = "Linear"
-
-    def connect(self) -> bool:
-        """Connect to Linear"""
-        print(f"Connecting to {self.name}")
-        return True
-
-
 @ConnectorBuilder("S3")\
     .in_group("S3")\
     .with_auth_type("ACCESS_KEY")\

@@ -14,7 +14,6 @@ from app.connectors.core.registry.connector import (
     CalendarConnector,
     DocsConnector,
     FormsConnector,
-    LinearConnector,
     MeetConnector,
     NotionConnector,
     S3Connector,
@@ -32,6 +31,7 @@ from app.connectors.sources.dropbox.connector import DropboxConnector
 from app.connectors.sources.dropbox_individual.connector import (
     DropboxIndividualConnector,
 )
+from app.connectors.sources.linear.connector import LinearConnector
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
@@ -59,6 +59,7 @@ class ConnectorFactory:
         "servicenow": ServiceNowConnector,
         "web": WebConnector,
         "bookstack": BookStackConnector,
+        "linear": LinearConnector,
     }
 
     # Beta connector definitions - single source of truth
@@ -71,7 +72,6 @@ class ConnectorFactory:
         'slides': SlidesConnector,
         'docs': DocsConnector,
         'zendesk': ZendeskConnector,
-        'linear': LinearConnector,
         's3': S3Connector,
         'notion': NotionConnector,
         'airtable': AirtableConnector,

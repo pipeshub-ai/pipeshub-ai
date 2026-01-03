@@ -11,30 +11,41 @@ async def main() -> None:
     LINEAR_API_TOKEN = os.getenv("LINEAR_API_TOKEN")
 
     if not LINEAR_API_TOKEN:
-        print("Please set LINEAR_API_TOKEN environment variable")
+        print("❌ Please set LINEAR_API_TOKEN environment variable")
+        print("   Get your token from: https://linear.app/settings/api")
+        print("   Then set it with: $env:LINEAR_API_TOKEN = 'your_token_here'")
         return
-
+    
     # Initialize Linear client and data source
-    print("Initializing Linear client...")
     client = LinearClient.build_with_config(LinearTokenConfig(token=LINEAR_API_TOKEN))
     data_source = LinearDataSource(client)
     
     try:
         # Validate connection
         print("Validating connection...")
-        is_connected = await data_source.organization()
-        if not is_connected:
-            print("Failed to connect to Linear API")
+        org_response = await data_source.organization()
+        if not org_response.success:
+            print(f"Failed to connect to Linear API: {org_response.message}")
+            if org_response.errors:
+                for error in org_response.errors:
+                    print(f"  Error: {error.message}")
             return
-        print("Connected successfully!")
+        
+        org_data = org_response.data.get("organization", {}) if org_response.data else {}
+        if org_data:
+            print(f"Connected successfully!")
+            print(f"Organization: {org_data.get('name', 'Unknown')} (ID: {org_data.get('id', 'Unknown')})")
+        else:
+            print("Connection successful but no organization data returned")
 
         # Get current user information
         print("\n=== Getting current user info ===")
         user_response = await data_source.viewer()
         if user_response.success:
-            user_data = user_response.data.get("organization", {})
-            print(f"Organization: {user_data.get('name')} (ID: {user_data.get('id')})")
-            print(f"Organization URL Key: {user_data.get('urlKey')}")
+            user_data = user_response.data.get("organization", {}) if user_response.data else {}
+            if user_data:
+                print(f"Organization: {user_data.get('name')} (ID: {user_data.get('id')})")
+                print(f"Organization URL Key: {user_data.get('urlKey')}")
         else:
             print(f"Failed to get user info: {user_response.message}")
             print("Note: Linear API may not support the viewer query in the current schema")
@@ -43,8 +54,8 @@ async def main() -> None:
         print("\n=== Getting teams ===")
         teams_response = await data_source.teams(first=10)
         if teams_response.success:
-            teams_data = teams_response.data.get("teams", {})
-            teams = teams_data.get("nodes", [])
+            teams_data = teams_response.data.get("teams", {}) if teams_response.data else {}
+            teams = teams_data.get("nodes", []) if teams_data else []
             print(f"Found {len(teams)} teams:")
             for team in teams[:3]:  # Show first 3 teams
                 print(f"  - {team.get('name')} (ID: {team.get('id')}, Key: {team.get('key')})")
@@ -69,8 +80,12 @@ async def main() -> None:
                 print(f"Found {len(found_issues)} issues:")
                 for issue in found_issues:
                     print(f"  - {issue.get('identifier')}: {issue.get('title')}")
-                    print(f"    Status: {issue.get('state', {}).get('name')}")
-                    print(f"    Assignee: {issue.get('assignee', {}).get('name', 'Unassigned')}")
+                    state = issue.get('state')
+                    state_name = state.get('name') if state else 'Unknown'
+                    print(f"    Status: {state_name}")
+                    assignee = issue.get('assignee')
+                    assignee_name = assignee.get('name') if assignee else 'Unassigned'
+                    print(f"    Assignee: {assignee_name}")
             else:
                 print(f"Failed to get issues: {issues_response.message}")
         else:
