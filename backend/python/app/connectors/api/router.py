@@ -12,6 +12,25 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import google.oauth2.credentials
 import jwt
+from dependency_injector.wiring import Provide, inject
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
+from fastapi.responses import Response, StreamingResponse
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaIoBaseDownload
+from jose import JWTError
+from pydantic import BaseModel, ValidationError
+
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AccountType,
@@ -59,24 +78,6 @@ from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import get_oauth_config
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from dependency_injector.wiring import Provide, inject
-from fastapi import (
-    APIRouter,
-    BackgroundTasks,
-    Depends,
-    File,
-    HTTPException,
-    Query,
-    Request,
-    UploadFile,
-)
-from fastapi.responses import Response, StreamingResponse
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaIoBaseDownload
-from jose import JWTError
-from pydantic import BaseModel, ValidationError
 
 logger = create_logger("connector_service")
 
