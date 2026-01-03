@@ -14401,6 +14401,7 @@ class BaseArangoService:
                 return None
 
             md5_checksum = ref_record.get("md5Checksum")
+            size_in_bytes = ref_record.get("sizeInBytes")
 
             if not md5_checksum:
                 self.logger.warning(f"Record {record_id} missing md5Checksum")
@@ -14412,17 +14413,28 @@ class BaseArangoService:
                 FILTER record.md5Checksum == @md5_checksum
                 AND record._key != @record_id
                 AND record.indexingStatus == @queued_status
+            """
+            
+            bind_vars = {
+                "md5_checksum": md5_checksum,
+                "record_id": record_id,
+                "queued_status": "QUEUED"
+            }
+
+            if size_in_bytes is not None:
+                query += """
+                AND record.sizeInBytes == @size_in_bytes
+                """
+                bind_vars["size_in_bytes"] = size_in_bytes
+
+            query += """
                 LIMIT 1
                 RETURN record
             """
 
             cursor = db.aql.execute(
                 query,
-                bind_vars={
-                    "md5_checksum": md5_checksum,
-                    "record_id": record_id,
-                    "queued_status": "QUEUED"
-                }
+                bind_vars=bind_vars
             )
 
             queued_record = None
