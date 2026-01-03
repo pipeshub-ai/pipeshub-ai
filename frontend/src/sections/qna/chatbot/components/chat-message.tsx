@@ -233,15 +233,32 @@ const StreamingContent = React.memo(
       return `${filename.substring(0, maxLength - 3)}...`;
     }, []);
 
+    // Calculate citation size dynamically based on number length and group size
+    const getCitationSize = useCallback((citationNumber: number, groupSize: number = 1) => {
+      const numDigits = citationNumber.toString().length;
+      const scaleFactor = Math.min(1, 1 / (1 + (numDigits - 1) * 0.15 + (groupSize - 1) * 0.05));
+      
+      return {
+        size: Math.max(16, 20 * scaleFactor),
+        fontSize: Math.max(0.55, 0.7 * scaleFactor),
+        padding: Math.max(0.3, 0.75 * scaleFactor),
+        borderRadius: Math.max(8, 10 * scaleFactor),
+        gap: Math.max(0.2, 0.3 * scaleFactor),
+      };
+    }, []);
+
     // Render a single citation number (hoverable)
     const renderCitationNumber = useCallback(
       (
         citationNumber: number,
         citationId: string,
-        isHovered: boolean
-      ) => {
+        isHovered: boolean,
+        groupSize: number = 1
+      ): React.ReactElement | null => {
         const citation = citationMap[citationNumber];
         if (!citation) return null;
+
+        const size = getCitationSize(citationNumber, groupSize);
 
         return (
           <Box
@@ -260,15 +277,15 @@ const StreamingContent = React.memo(
               display: 'inline-flex',
               alignItems: 'center',
               justifyContent: 'center',
-              minWidth: '20px',
-              height: '20px',
-              px: 0.75,
-              borderRadius: '10px',
+              minWidth: `${size.size}px`,
+              height: `${size.size}px`,
+              px: size.padding,
+              borderRadius: `${size.borderRadius}px`,
               bgcolor: isHovered
                 ? 'primary.main'
                 : 'rgba(25, 118, 210, 0.08)',
               color: isHovered ? 'white' : 'primary.main',
-              fontSize: '0.7rem',
+              fontSize: `${size.fontSize}rem`,
               fontWeight: 600,
               transition: 'all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)',
               textDecoration: 'none',
@@ -284,13 +301,15 @@ const StreamingContent = React.memo(
               cursor: 'pointer',
               transform: isHovered ? 'scale(1.1) translateY(-1px)' : 'scale(1)',
               ml: 0,
+              flexShrink: 0,
+              lineHeight: 1,
             }}
           >
             {citationNumber}
           </Box>
         );
       },
-      [citationMap, handleMouseEnter, handleClick, handleMouseLeave]
+      [citationMap, handleMouseEnter, handleClick, handleMouseLeave, getCitationSize]
     );
 
     // Render a grouped citation (filename [1, 2, 3])
@@ -300,17 +319,23 @@ const StreamingContent = React.memo(
         lineIndex: number,
         groupIndex: number
       ) => {
-        // Create a unique groupId that includes line, group index, and messageId
         const groupId = `citation-group-${lineIndex}-${groupIndex}-${messageId}`;
+        const groupSize = group.citations.length;
         
-        // Check if any citation in this group is hovered
-        // Use groupId in citation ID to ensure uniqueness across different lines
         const hoveredCitationIds = group.citations.map((num, idx) => 
           `citation-${num}-${groupId}-${idx}`
         );
         const isGroupHovered = hoveredCitationIds.some(id => hoveredCitationId === id);
 
-        const truncatedName = truncateFilename(group.recordName, 50);
+        // Calculate dynamic sizes based on group size
+        const maxCitationDigits = Math.max(...group.citations.map(n => n.toString().length));
+        const sizeScale = Math.min(1, 1 / (1 + (maxCitationDigits - 1) * 0.1 + (groupSize - 1) * 0.08));
+        const filenameMaxLength = Math.max(20, Math.floor(50 * sizeScale));
+        const fontSize = Math.max(0.6, 0.7 * sizeScale);
+        const maxWidth = `${Math.max(20, Math.floor(50 * sizeScale))}ch`;
+        const gap = Math.max(0.2, 0.3 * sizeScale);
+
+        const truncatedName = truncateFilename(group.recordName, filenameMaxLength);
 
         return (
           <Box
@@ -319,10 +344,14 @@ const StreamingContent = React.memo(
             sx={{
               display: 'inline-flex',
               alignItems: 'center',
+              flexWrap: 'wrap',
               ml: 0.5,
               mr: 0.25,
+              mb: 0.25,
               position: 'relative',
               gap: 0.5,
+              maxWidth: '100%',
+              wordBreak: 'break-word',
             }}
           >
             {truncatedName && (
@@ -330,18 +359,19 @@ const StreamingContent = React.memo(
                 component="span"
                 className={`citation-record-name citation-record-name-${groupId}`}
                 sx={{
-                  fontSize: '0.7rem',
+                  fontSize: `${fontSize}rem`,
                   fontWeight: isGroupHovered ? 600 : 500,
                   color: isGroupHovered ? 'primary.main' : 'text.secondary',
                   transition: 'all 0.2s ease',
                   lineHeight: 1.2,
-                  maxWidth: '50ch',
+                  maxWidth,
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
                   whiteSpace: 'nowrap',
                   position: 'relative',
                   zIndex: 1,
-                  pointerEvents: 'none', // Filenames are not hoverable
+                  pointerEvents: 'none',
+                  flexShrink: 1,
                 }}
               >
                 {truncatedName}
@@ -352,20 +382,18 @@ const StreamingContent = React.memo(
               sx={{
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: 0,
+                flexWrap: 'wrap',
+                gap,
+                maxWidth: '100%',
               }}
             >
               {group.citations.map((citationNumber, idx) => {
-                // Include groupId in citation ID to ensure uniqueness across different lines
-                // Format: citation-{number}-{groupId}-{indexInGroup}
                 const citationId = `citation-${citationNumber}-${groupId}-${idx}`;
                 const isHovered = hoveredCitationId === citationId;
                 return (
                   <Fragment key={citationId}>
-                    <Box component="span" sx={{ mx: 0.4 }}>
-                    {renderCitationNumber(citationNumber, citationId, isHovered)}
-                    </Box>
-              </Fragment>
+                    {renderCitationNumber(citationNumber, citationId, isHovered, groupSize)}
+                  </Fragment>
                 );
               })}
             </Box>
@@ -393,7 +421,7 @@ const StreamingContent = React.memo(
 
           return (
             <Fragment key={citationId}>
-              {renderCitationNumber(citationNumber, citationId, hoveredCitationId === citationId)}
+              {renderCitationNumber(citationNumber, citationId, hoveredCitationId === citationId, 1)}
             </Fragment>
           );
         }
@@ -495,7 +523,16 @@ const StreamingContent = React.memo(
     );
 
     return (
-      <Box sx={{ position: 'relative' }}>
+      <Box 
+        sx={{ 
+          position: 'relative',
+          width: '100%',
+          maxWidth: '100%',
+          overflow: 'hidden', // Prevent overflow
+          wordWrap: 'break-word', // Break long words
+          overflowWrap: 'break-word', // Additional word breaking
+        }}
+      >
         {/* Streaming indicator */}
         {showStreamingIndicator && (
           <Box
@@ -576,7 +613,18 @@ const StreamingContent = React.memo(
           </Box>
         )} */}
 
-       
+        <Box
+          sx={{
+            width: '100%',
+            maxWidth: '100%',
+            overflow: 'hidden',
+            wordWrap: 'break-word',
+            overflowWrap: 'break-word',
+            '& *': {
+              maxWidth: '100%',
+            },
+          }}
+        >
           <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           components={{
@@ -592,8 +640,13 @@ const StreamingContent = React.memo(
                     lineHeight: 1.6,
                     letterSpacing: '0.01em',
                     wordBreak: 'break-word',
+                    overflowWrap: 'break-word', // Additional word breaking
                     color: 'text.primary',
                     fontWeight: 400,
+                    // Ensure citations don't overflow
+                    '& .citation-number, & .citation-record-name': {
+                      maxWidth: '100%',
+                    },
                   }}
                 >
                   {processedChildren}
@@ -616,19 +669,51 @@ const StreamingContent = React.memo(
               </Typography>
             ),
             ul: ({ children }) => (
-              <Box component="ul" sx={{ pl: 2.5, mb: 1.5, '& li': { mb: 0.5 } }}>
+              <Box 
+                component="ul" 
+                sx={{ 
+                  pl: 2.5, 
+                  mb: 1.5, 
+                  '& li': { mb: 0.5 },
+                  wordWrap: 'break-word',
+                  overflowWrap: 'break-word',
+                  maxWidth: '100%',
+                }}
+              >
                 {children}
               </Box>
             ),
             ol: ({ children }) => (
-              <Box component="ol" sx={{ pl: 2.5, mb: 1.5, '& li': { mb: 0.5 } }}>
+              <Box 
+                component="ol" 
+                sx={{ 
+                  pl: 2.5, 
+                  mb: 1.5, 
+                  '& li': { mb: 0.5 },
+                  wordWrap: 'break-word',
+                  overflowWrap: 'break-word',
+                  maxWidth: '100%',
+                }}
+              >
                 {children}
               </Box>
             ),
             li: ({ children }) => {
               const processedChildren = processChildrenForCitations(children);
               return (
-                <Typography component="li" sx={{ mb: 0.5, lineHeight: 1.6 }}>
+                <Typography 
+                  component="li" 
+                  sx={{ 
+                    mb: 0.5, 
+                    lineHeight: 1.6,
+                    wordWrap: 'break-word',
+                    overflowWrap: 'break-word',
+                    maxWidth: '100%',
+                    '& .citation-number, & .citation-record-name': {
+                      maxWidth: '100%',
+                    },
+                  }}
+                >
                   {processedChildren}
                 </Typography>
               );
@@ -742,12 +827,26 @@ const StreamingContent = React.memo(
               </Box>
             ),
             strong: ({ children }) => (
-              <Box component="strong" sx={{ fontWeight: 600 }}>
+              <Box 
+                component="strong" 
+                sx={{ 
+                  fontWeight: 600,
+                  wordWrap: 'break-word',
+                  overflowWrap: 'break-word',
+                }}
+              >
                 {processChildrenForCitations(children)}
               </Box>
             ),
             em: ({ children }) => (
-              <Box component="em" sx={{ fontStyle: 'italic' }}>
+              <Box 
+                component="em" 
+                sx={{ 
+                  fontStyle: 'italic',
+                  wordWrap: 'break-word',
+                  overflowWrap: 'break-word',
+                }}
+              >
                 {processChildrenForCitations(children)}
               </Box>
             ),
@@ -834,6 +933,7 @@ const StreamingContent = React.memo(
         >
           {processedContent}
         </ReactMarkdown>
+        </Box>
 
         <Popper
           open={Boolean(popperAnchor && hoveredCitationId)}
@@ -1149,6 +1249,9 @@ const ChatMessage = React.memo(
                 themeVal.palette.mode === 'dark'
                   ? '0 4px 20px rgba(0, 0, 0, 0.15)'
                   : '0 2px 12px rgba(0, 0, 0, 0.08)',
+              overflow: 'hidden', // Prevent content overflow
+              wordWrap: 'break-word', // Break long words
+              overflowWrap: 'break-word', // Additional word breaking
               '&:hover': {
                 borderColor: (themeVal) => {
                   if (message.type === 'user') {
