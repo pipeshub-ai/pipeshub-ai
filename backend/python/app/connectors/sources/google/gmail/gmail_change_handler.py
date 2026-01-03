@@ -97,7 +97,7 @@ class GmailChangeHandler:
                         "isParent": message_data.get("threadId")
                         == message_id,  # Check if threadId and messageId are same
                         "internalDate": message_data.get("internalDate"),
-                        "subject": headers.get("Subject", "No Subject") or "No Subject",
+                        "subject": headers.get("Subject") or "No Subject",
                         "from": headers.get("From", [""])[0],
                         "to": headers.get("To", []),
                         "cc": headers.get("Cc", []),
@@ -111,7 +111,7 @@ class GmailChangeHandler:
                     record = {
                         "_key": message_record["_key"],
                         "orgId": org_id,
-                        "recordName": headers.get("Subject", "No Subject") or "No Subject",
+                        "recordName": headers.get("Subject") or "No Subject",
                         "externalRecordId": message_id,
                         "externalRevisionId": None,
                         "recordType": RecordTypes.MAIL.value,
@@ -381,7 +381,7 @@ class GmailChangeHandler:
                     message_event = {
                         "orgId": org_id,
                         "recordId": message_record["_key"],
-                        "recordName": headers.get("Subject", "No Subject") or "No Subject",
+                        "recordName": headers.get("Subject") or "No Subject",
                         "recordType": RecordTypes.MAIL.value,
                         "recordVersion": 0,
                         "eventType": EventTypes.NEW_RECORD.value,
@@ -603,7 +603,7 @@ class GmailChangeHandler:
                                 "orgId": org_id,
                                 "recordId": existing_message["_key"],
                                 "virtualRecordId": existing_message.get("virtualRecordId", None),
-                                "recordName": existing_message.get("recordName", "No Subject") or "No Subject",
+                                "recordName": existing_message.get("recordName") or "No Subject",
                                 "recordType": RecordTypes.MAIL.value,
                                 "recordVersion": 0,
                                 "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{existing_message['_key']}/signedUrl",
