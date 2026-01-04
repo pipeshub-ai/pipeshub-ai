@@ -793,7 +793,7 @@ export const useConnectorConfig = ({
           const errorMessage = error?.response?.data?.detail || error?.message || 'Beta connectors are not enabled. This connector is a beta connector and cannot be accessed. Please enable beta connectors in platform settings to use this connector.';
           setSaveError(errorMessage);
         } else {
-          setSaveError('Failed to load connector configuration');
+          setSaveError(error?.response?.data?.detail || error?.message || 'Failed to load connector configuration');
         }
       } finally {
         if (isMounted) {
@@ -1569,7 +1569,7 @@ export const useConnectorConfig = ({
       onClose();
     } catch (error) {
       console.error('Error saving connector config:', error);
-      setSaveError('Failed to save configuration. Please try again.');
+      setSaveError(error?.response?.data?.detail || error?.message ||'Failed to save configuration. Please try again.');
     } finally {
       setSaving(false);
     }
