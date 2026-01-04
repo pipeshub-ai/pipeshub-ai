@@ -51,6 +51,7 @@ class RecordType(str, Enum):
     SHAREPOINT_LIST = "SHAREPOINT_LIST"
     SHAREPOINT_LIST_ITEM = "SHAREPOINT_LIST_ITEM"
     SHAREPOINT_DOCUMENT_LIBRARY = "SHAREPOINT_DOCUMENT_LIBRARY"
+    LINK = "LINK"
     OTHERS = "OTHERS"
 
 
@@ -509,6 +510,80 @@ class WebpageRecord(Record):
             source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
             source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
             virtual_record_id=record_doc.get("virtualRecordId"),
+        )
+
+class LinkRecord(Record):
+    """
+    Link record for URLs and attachments.
+    
+    Fields:
+    - url: The link URL (required)
+    - title: Link title (optional)
+    - is_public: Whether the link is publicly accessible (no auth required)
+    """
+    url: str
+    title: Optional[str] = None
+    is_public: bool = False
+
+    def to_kafka_record(self) -> Dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
+            "mimeType": self.mime_type,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+            "signedUrl": self.signed_url,
+            "signedUrlRoute": self.fetch_signed_url,
+            "webUrl": self.weburl,
+        }
+
+    def to_arango_record(self) -> Dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "url": self.url,
+            "title": self.title,
+            "isPublic": self.is_public,
+        }
+
+    @staticmethod
+    def from_arango_record(link_doc: Dict, record_doc: Dict) -> "LinkRecord":
+        """Create LinkRecord from ArangoDB documents (records + links collections)"""
+        conn_name_value = record_doc.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+
+        return LinkRecord(
+            id=record_doc.get("id", record_doc.get("_key")),
+            org_id=record_doc["orgId"],
+            record_name=record_doc["recordName"],
+            record_type=RecordType(record_doc["recordType"]),
+            external_record_id=record_doc["externalRecordId"],
+            external_revision_id=record_doc.get("externalRevisionId"),
+            external_record_group_id=record_doc.get("externalGroupId"),
+            parent_external_record_id=record_doc.get("externalParentId"),
+            version=record_doc["version"],
+            origin=OriginTypes(record_doc["origin"]),
+            connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
+            mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
+            weburl=record_doc.get("webUrl"),
+            created_at=record_doc.get("createdAtTimestamp"),
+            updated_at=record_doc.get("updatedAtTimestamp"),
+            source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
+            virtual_record_id=record_doc.get("virtualRecordId"),
+            url=link_doc["url"],
+            title=link_doc.get("title"),
+            is_public=link_doc.get("isPublic", False),
         )
 
 class CommentRecord(Record):

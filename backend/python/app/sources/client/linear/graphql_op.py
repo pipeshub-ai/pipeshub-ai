@@ -70,6 +70,16 @@ class LinearGraphQLOperations:
                         color
                     }
                 }
+                parent {
+                    id
+                    identifier
+                }
+                children {
+                    nodes {
+                        id
+                        identifier
+                    }
+                }
             }
         """,
 
@@ -172,8 +182,8 @@ class LinearGraphQLOperations:
 
         "issues": {
             "query": """
-                query issues($first: Int, $filter: IssueFilter, $orderBy: PaginationOrderBy) {
-                    issues(first: $first, filter: $filter, orderBy: $orderBy) {
+                query issues($first: Int, $after: String, $filter: IssueFilter) {
+                    issues(first: $first, after: $after, filter: $filter) {
                         nodes {
                             ...IssueFields
                         }
@@ -187,7 +197,7 @@ class LinearGraphQLOperations:
                 }
             """,
             "fragments": ["IssueFields", "UserFields", "TeamFields"],
-            "description": "Get issues with filtering and pagination"
+            "description": "Get issues with filtering and cursor-based pagination"
         },
 
         "issue": {
@@ -204,15 +214,33 @@ class LinearGraphQLOperations:
                             nodes {
                                 id
                                 title
+                                subtitle
                                 url
-                                metadata
+                                createdAt
+                                updatedAt
+                            }
+                        }
+                        documents {
+                            nodes {
+                                id
+                                title
+                                url
+                                slugId
+                                content
+                                createdAt
+                                updatedAt
+                                creator {
+                                    id
+                                    name
+                                    email
+                                }
                             }
                         }
                     }
                 }
             """,
             "fragments": ["IssueFields", "CommentFields", "UserFields", "TeamFields"],
-            "description": "Get single issue with comments and attachments"
+            "description": "Get single issue with comments, attachments, and documents"
         },
 
         "projects": {
@@ -274,6 +302,35 @@ class LinearGraphQLOperations:
             """,
             "fragments": [],
             "description": "Get organization information"
+        },
+
+        "comment": {
+            "query": """
+                query comment($id: String!) {
+                    comment(id: $id) {
+                        ...CommentFields
+                    }
+                }
+            """,
+            "fragments": ["CommentFields", "UserFields"],
+            "description": "Get single comment by ID"
+        },
+
+        "attachment": {
+            "query": """
+                query attachment($id: String!) {
+                    attachment(id: $id) {
+                        id
+                        title
+                        subtitle
+                        url
+                        createdAt
+                        updatedAt
+                    }
+                }
+            """,
+            "fragments": [],
+            "description": "Get single attachment by ID"
         }
     }
 

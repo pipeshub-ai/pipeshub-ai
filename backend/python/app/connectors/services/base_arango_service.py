@@ -38,6 +38,7 @@ from app.models.entities import (
     CommentRecord,
     FileRecord,
     IndexingStatus,
+    LinkRecord,
     MailRecord,
     Record,
     RecordGroup,
@@ -54,6 +55,7 @@ from app.schema.arango.documents import (
     comment_record_schema,
     department_schema,
     file_record_schema,
+    link_record_schema,
     mail_record_schema,
     orgs_schema,
     people_schema,
@@ -86,7 +88,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.RECORDS.value, record_schema),
     (CollectionNames.DRIVES.value, None),
     (CollectionNames.FILES.value, file_record_schema),
-    (CollectionNames.LINKS.value, None),
+    (CollectionNames.LINKS.value, link_record_schema),
     (CollectionNames.MAILS.value, mail_record_schema),
     (CollectionNames.WEBPAGES.value, webpage_record_schema),
     (CollectionNames.COMMENTS.value, comment_record_schema),
@@ -5453,6 +5455,8 @@ class BaseArangoService:
                 return TicketRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.COMMENTS.value:
                 return CommentRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.LINKS.value:
+                return LinkRecord.from_arango_record(type_doc, record_dict)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_dict)

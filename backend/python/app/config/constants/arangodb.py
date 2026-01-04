@@ -332,5 +332,6 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "TICKET": CollectionNames.TICKETS.value,
     "COMMENT": CollectionNames.COMMENTS.value,
     "INLINE_COMMENT": CollectionNames.COMMENTS.value,
+    "LINK": CollectionNames.LINKS.value,
     # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
 }
