@@ -51,7 +51,7 @@ class Connectors(Enum):
     DROPBOX_PERSONAL = "DROPBOX PERSONAL"
     WEB = "WEB"
     BOOKSTACK = "BOOKSTACK"
-
+    GITHUB = "GITHUB"
     SERVICENOW = "SERVICENOW"
 
     UNKNOWN = "UNKNOWN"
@@ -66,6 +66,7 @@ class AppGroups(Enum):
     SERVICENOW = "Servicenow"
     WEB = "Web"
     BOOKSTACK = "BookStack"
+    GITHUB  = "Github"
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
