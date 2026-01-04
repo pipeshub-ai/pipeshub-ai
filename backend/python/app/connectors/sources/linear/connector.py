@@ -1,8 +1,9 @@
 """Linear Connector Implementation"""
-from datetime import datetime
+from datetime import datetime, timezone
 from logging import Logger
 from typing import (
     Any,
+    AsyncGenerator,
     Dict,
     List,
     Optional,
@@ -19,7 +20,10 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
-from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint
+from app.connectors.core.base.sync_point.sync_point import (
+    SyncDataPointType,
+    SyncPoint,
+)
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -33,6 +37,7 @@ from app.connectors.core.registry.filters import (
     FilterOption,
     FilterOptionsResponse,
     FilterType,
+    IndexingFilterKey,
     OptionSourceType,
     load_connector_filters,
 )
@@ -40,13 +45,24 @@ from app.connectors.sources.linear.common.apps import LinearApp
 from app.models.entities import (
     AppUser,
     AppUserGroup,
+    CommentRecord,
+    Connectors,
+    FileRecord,
+    IndexingStatus,
+    LinkRecord,
+    MimeTypes,
+    OriginTypes,
     Record,
     RecordGroup,
     RecordGroupType,
+    RecordType,
+    TicketRecord,
+    WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.linear.linear import LinearClient
 from app.sources.external.linear.linear import LinearDataSource
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Config path for Linear connector
 LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
@@ -122,6 +138,30 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
             filter_type=FilterType.BOOLEAN,
             category=FilterCategory.INDEXING,
             description="Enable indexing of issue comments",
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name="issue_attachments",
+            display_name="Index Issue Attachments",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of issue attachments",
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name="issue_documents",
+            display_name="Index Issue Documents",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of issue documents",
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name="issue_files",
+            display_name="Index Issue Files",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of files extracted from issue descriptions and comments",
             default_value=True
         ))
     )\
@@ -385,7 +425,8 @@ class LinearConnector(BaseConnector):
                 await self.data_entities_processor.on_new_record_groups(team_record_groups)
                 self.logger.info(f"📁 Synced {len(team_record_groups)} Linear teams as RecordGroups")
 
-            # TODO: Step 7 - Sync issues for teams
+            # Step 7: Sync issues for teams
+            await self._sync_issues_for_teams(team_record_groups)
 
             self.logger.info("✅ Linear sync completed")
 
@@ -474,13 +515,7 @@ class LinearConnector(BaseConnector):
         self.logger.info(f"📥 Fetched {len(all_users)} Linear users, converted {len(app_users)} to AppUser")
         return app_users
 
-
-    async def _fetch_teams(
-        self, team_ids: Optional[List[str]] = None, user_email_map: Optional[Dict[str, AppUser]] = None
-    ) -> Tuple[
-        List[Tuple[AppUserGroup, List[AppUser]]],
-        List[Tuple[RecordGroup, List[Permission]]]
-    ]:
+    async def _fetch_teams(self, team_ids: Optional[List[str]] = None, user_email_map: Optional[Dict[str, AppUser]] = None) -> Tuple[List[Tuple[AppUserGroup, List[AppUser]]],List[Tuple[RecordGroup, List[Permission]]]]:
         """
         Fetch Linear teams and convert them to both UserGroups and RecordGroups.
 
@@ -635,15 +670,361 @@ class LinearConnector(BaseConnector):
         )
         return user_groups, record_groups
 
-    async def run_incremental_sync(self) -> None:
+    async def _sync_issues_for_teams(
+        self,
+        team_record_groups: List[Tuple[RecordGroup, List[Permission]]]
+    ) -> None:
         """
-        Incremental sync - calls run_sync which handles incremental logic.
+        Sync issues for all teams with batch processing and incremental sync.
+        Uses simple team-level sync points.
+        
+        Sync point logic:
+        - Before sync: Read last_sync_time
+        - Query: Fetch issues with updatedAt > last_sync_time
+        - After EACH batch: Update last_sync_time to max issue updated_at (fault tolerance)
+        - After all batches: Update last_sync_time to current time
+        
+        
+        Args:
+            team_record_groups: List of (RecordGroup, permissions) tuples for teams to sync
         """
-        self.logger.info(f"🔄 Starting Linear incremental sync for connector {self.connector_id}")
-        await self.run_sync()
-        self.logger.info("✅ Linear incremental sync completed")
+        if not team_record_groups:
+            self.logger.info("ℹ️ No teams to sync issues for")
+            return
+
+        for team_record_group, team_perms in team_record_groups:
+            try:
+                team_id = team_record_group.external_group_id
+                team_key = team_record_group.short_name or team_record_group.name
+                
+                self.logger.info(f"📋 Starting issue sync for team: {team_key}")
+
+                # Read team-level sync point
+                last_sync_time = await self._get_team_sync_checkpoint(team_key)
+                
+                if last_sync_time:
+                    self.logger.info(f"🔄 Incremental sync for team {team_key} from {last_sync_time}")
+
+                # Fetch and process issues for this team
+                total_records_processed = 0
+                max_issue_updated_at: Optional[int] = None
+                
+                async for batch_records in self._fetch_issues_for_team_batch(
+                    team_id=team_id,
+                    team_key=team_key,
+                    last_sync_time=last_sync_time
+                ):
+                    if not batch_records:
+                        continue
+                    
+                    # Find max updated_at in this batch
+                    for record, _ in batch_records:
+                        if isinstance(record, TicketRecord) and record.source_updated_at:
+                            if max_issue_updated_at is None or record.source_updated_at > max_issue_updated_at:
+                                max_issue_updated_at = record.source_updated_at
+                    
+                    # Process batch
+                    total_records_processed += len(batch_records)
+                    await self.data_entities_processor.on_new_records(batch_records)
+                    
+                    # Update sync point after each batch for fault tolerance
+                    # If sync fails here, next sync will resume from this point
+                    if max_issue_updated_at:
+                        await self._update_team_sync_checkpoint(team_key, max_issue_updated_at)
+
+                # After all batches complete successfully, update to current time
+                # This ensures next sync only fetches issues updated after this sync completed
+                await self._update_team_sync_checkpoint(team_key, get_epoch_timestamp_in_ms())
+
+                # Log final status
+                if total_records_processed > 0:
+                    self.logger.info(f"✅ Synced {total_records_processed} issues for team {team_key}")
+                else:
+                    self.logger.info(f"ℹ️ No new/updated issues for team {team_key}")
+
+            except Exception as e:
+                team_name = team_record_group.name or team_record_group.short_name or "unknown"
+                self.logger.error(f"❌ Error syncing issues for team {team_name}: {e}", exc_info=True)
+                continue
+
+    async def _fetch_issues_for_team_batch(
+        self,
+        team_id: str,
+        team_key: str,
+        last_sync_time: Optional[int] = None,
+        batch_size: int = 50
+    ) -> AsyncGenerator[List[Tuple[Record, List[Permission]]], None]:
+        """
+        Fetch issues for a team with pagination and incremental sync, yielding batches.
+        
+        Args:
+            team_id: Team ID
+            team_key: Team key (e.g., "ENG")
+            last_sync_time: Last sync timestamp in ms (for incremental sync)
+            batch_size: Number of issues to fetch per batch
+            
+        Yields:
+            Batches of (record, permissions) tuples
+        """
+        datasource = await self._get_fresh_datasource()
+        after_cursor: Optional[str] = None
+
+        # Build filter for team
+        team_filter: Dict[str, Any] = {
+            "team": {"id": {"eq": team_id}}
+        }
+
+        # Add incremental sync filter if last_sync_time is provided
+        if last_sync_time:
+            linear_datetime = self._linear_datetime_from_timestamp(last_sync_time)
+            if linear_datetime:
+                team_filter["updatedAt"] = {"gt": linear_datetime}
+                self.logger.info(f"🔄 Fetching issues for team {team_key} updated after {linear_datetime}")
+
+        # Order by updatedAt ASC - critical for sync point logic to work correctly
+        # This ensures each batch's max updatedAt >= previous batches, so checkpoint
+        order_by = {"updatedAt": "ASC"}
+
+        while True:
+            # Fetch issues batch ordered by updatedAt ASC
+            response = await datasource.issues(
+                first=batch_size,
+                after=after_cursor,
+                filter=team_filter,
+                orderBy=order_by
+            )
+
+            if not response.success:
+                self.logger.error(f"❌ Failed to fetch issues for team {team_key}: {response.message}")
+                break
+
+            issues_data = response.data.get("issues", {}) if response.data else {}
+            issues_list = issues_data.get("nodes", [])
+            page_info = issues_data.get("pageInfo", {})
+
+            if not issues_list:
+                break
+
+            self.logger.info(f"📋 Fetched {len(issues_list)} issues for team {team_key}")
+
+            # Process batch and transform to records
+            batch_records: List[Tuple[Record, List[Permission]]] = []
+            
+            # Use transaction context to look up existing records
+            async with self.data_store_provider.transaction() as tx_store:
+                for issue_data in issues_list:
+                    try:
+                        issue_id = issue_data.get("id", "")
+                        
+                        # Look up existing record to handle versioning
+                        existing_record = await tx_store.get_record_by_external_id(
+                            connector_id=self.connector_id,
+                            external_id=issue_id
+                        )
+                        
+                        # Transform issue to TicketRecord with existing record info
+                        ticket_record = self._transform_issue_to_ticket_record(
+                            issue_data, team_id, existing_record
+                        )
+                        
+                        # Set indexing status based on filters
+                        if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES):
+                            ticket_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                        
+                        # Records inherit permissions from RecordGroup (team), so pass empty list
+                        # Permissions are set on RecordGroup in _fetch_teams (ORG for public, GROUP for private)
+                        batch_records.append((ticket_record, []))
+
+                    except Exception as e:
+                        issue_id = issue_data.get("id", "unknown")
+                        self.logger.error(f"❌ Error processing issue {issue_id}: {e}", exc_info=True)
+                        continue
+
+            # Yield batch if we have records
+            if batch_records:
+                yield batch_records
+
+            # Check if there are more pages
+            if not page_info.get("hasNextPage", False):
+                break
+
+            after_cursor = page_info.get("endCursor")
+            if not after_cursor:
+                break
 
     # ==================== HELPER FUNCTIONS ====================
+    def _transform_issue_to_ticket_record(
+        self,
+        issue_data: Dict[str, Any],
+        team_id: str,
+        existing_record: Optional[Record] = None
+    ) -> TicketRecord:
+        """
+        Transform Linear issue data to TicketRecord.
+        This method is reusable for both initial sync and reindex operations.
+
+        Args:
+            issue_data: Raw issue data from Linear API (from GraphQL query)
+            team_id: Team ID for external_record_group_id
+            existing_record: Existing record from DB (if any) for version handling
+
+        Returns:
+            TicketRecord: Transformed ticket record
+        """
+        issue_id = issue_data.get("id", "")
+        if not issue_id:
+            raise ValueError("Issue data missing required 'id' field")
+        
+        identifier = issue_data.get("identifier", "")
+        title = issue_data.get("title", "")
+        
+        # Build record name: "ENG-123: Title" or fallback to identifier or title
+        if identifier and title:
+            record_name = f"{identifier}: {title}"
+        elif identifier:
+            record_name = identifier
+        elif title:
+            record_name = title
+        else:
+            # Last resort: use issue ID but log a warning
+            self.logger.warning(f"Issue {issue_id} missing both identifier and title, using ID as record name")
+            record_name = issue_id
+        
+        # Ensure team_id is not None or empty
+        if not team_id:
+            self.logger.error(f"Issue {issue_id} has no team_id, cannot create record without team association")
+            raise ValueError(f"team_id is required but was {team_id}")
+        
+        # Priority mapping (Linear uses numeric: 0=None, 1=Urgent, 2=High, 3=Medium, 4=Low)
+        priority_num = issue_data.get("priority")
+        priority_map = {1: "Urgent", 2: "High", 3: "Medium", 4: "Low"}
+        priority = priority_map.get(priority_num) if priority_num else None
+        
+        # State information
+        state = issue_data.get("state", {})
+        state_name = state.get("name") if state else None
+        state_type = state.get("type") if state else None
+        
+        # Assignee information
+        assignee = issue_data.get("assignee", {})
+        assignee_email = assignee.get("email") if assignee else None
+        assignee_name = assignee.get("displayName") or assignee.get("name") if assignee else None
+        
+        # Creator information
+        creator = issue_data.get("creator", {})
+        creator_email = creator.get("email") if creator else None
+        creator_name = creator.get("displayName") or creator.get("name") if creator else None
+        
+        # Parent issue (for sub-issues)
+        parent = issue_data.get("parent")
+        parent_external_record_id = parent.get("id") if parent else None
+        
+        # Timestamps
+        created_at = self._parse_linear_datetime(issue_data.get("createdAt", "")) or 0
+        updated_at = self._parse_linear_datetime(issue_data.get("updatedAt", "")) or 0
+        
+        # Handle versioning: use existing record's id and increment version if changed
+        is_new = existing_record is None
+        record_id = existing_record.id if existing_record else str(uuid4())
+        
+        if is_new:
+            version = 0
+        elif hasattr(existing_record, 'source_updated_at') and existing_record.source_updated_at != updated_at:
+            version = existing_record.version + 1
+            self.logger.debug(f"📝 Issue {identifier} changed, incrementing version to {version}")
+        else:
+            version = existing_record.version if existing_record else 0
+        
+        # Build web URL
+        weburl = issue_data.get("url")
+        if not weburl and self.organization_url_key and identifier:
+            weburl = f"https://linear.app/{self.organization_url_key}/issue/{identifier}"
+        
+        # Create TicketRecord
+        # Use updatedAt as external_revision_id so placeholders (None) will trigger update
+        external_revision_id = str(updated_at) if updated_at else None
+        
+        ticket = TicketRecord(
+            id=record_id,
+            org_id=self.data_entities_processor.org_id,
+            record_name=record_name,
+            record_type=RecordType.TICKET,
+            external_record_id=issue_id,
+            external_revision_id=external_revision_id,
+            external_record_group_id=team_id,
+            parent_external_record_id=parent_external_record_id,
+            parent_record_type=RecordType.TICKET if parent_external_record_id else None,
+            version=version,
+            origin=OriginTypes.CONNECTOR.value,
+            connector_name=self.connector_name,
+            connector_id=self.connector_id,
+            mime_type=MimeTypes.MARKDOWN.value,
+            weburl=weburl,
+            created_at=get_epoch_timestamp_in_ms(),
+            updated_at=get_epoch_timestamp_in_ms(),
+            source_created_at=created_at,
+            source_updated_at=updated_at,
+            status=state_name,
+            priority=priority,
+            type=state_type,
+            assignee=assignee_name,
+            preview_renderable=False,
+            assignee_email=assignee_email,
+            creator_email=creator_email,
+            creator_name=creator_name,
+            inherit_permissions=True,
+        )
+        
+        return ticket
+
+    async def _get_team_sync_checkpoint(self, team_key: str) -> Optional[int]:
+        """
+        Get team-specific sync checkpoint (last_sync_time).
+        
+        Args:
+            team_key: Team key (e.g., "ENG")
+            
+        Returns:
+            last_sync_time in ms or None if first sync
+        """
+        sync_point_key = f"team_{team_key}"
+        data = await self.issues_sync_point.read_sync_point(sync_point_key)
+        return data.get("last_sync_time") if data else None
+
+    async def _update_team_sync_checkpoint(self, team_key: str, timestamp: Optional[int] = None) -> None:
+        """
+        Update team-specific sync checkpoint.
+        
+        Args:
+            team_key: Team key (e.g., "ENG")
+            timestamp: Timestamp to set (if None, uses current time)
+        """
+        sync_point_key = f"team_{team_key}"
+        sync_time = timestamp if timestamp is not None else get_epoch_timestamp_in_ms()
+        
+        await self.issues_sync_point.update_sync_point(
+            sync_point_key, 
+            {"last_sync_time": sync_time}
+        )
+        self.logger.debug(f"💾 Updated sync checkpoint for team {team_key}: {sync_time}")
+
+    def _linear_datetime_from_timestamp(self, timestamp_ms: int) -> str:
+        """
+        Convert epoch timestamp (milliseconds) to Linear datetime format.
+        
+        Args:
+            timestamp_ms: Epoch timestamp in milliseconds
+            
+        Returns:
+            Linear datetime string in ISO 8601 format (e.g., "2024-01-15T10:30:00.000Z")
+        """
+        try:
+            # Convert using UTC to avoid local timezone skew in incremental sync filters
+            dt = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
+            return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        except (ValueError, OSError) as e:
+            self.logger.warning(f"Failed to convert timestamp {timestamp_ms} to Linear datetime: {e}")
+            return ""
 
     def _parse_linear_datetime(self, datetime_str: str) -> Optional[int]:
         """
@@ -667,6 +1048,14 @@ class LinearConnector(BaseConnector):
             return None
 
     # ==================== ABSTRACT METHODS ====================
+
+    async def run_incremental_sync(self) -> None:
+        """
+        Incremental sync - calls run_sync which handles incremental logic.
+        """
+        self.logger.info(f"🔄 Starting Linear incremental sync for connector {self.connector_id}")
+        await self.run_sync()
+        self.logger.info("✅ Linear incremental sync completed")
 
     async def test_connection_and_access(self) -> bool:
         """Test connection and access to Linear using DataSource"""
