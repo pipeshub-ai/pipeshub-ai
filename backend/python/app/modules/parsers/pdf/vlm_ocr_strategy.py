@@ -225,7 +225,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 self._active_llm_calls += 1
                 active_count = self._active_llm_calls
             
-            self.logger.debug(
+            self.logger.info(
                 f"🔄 [PARALLEL CHECK] Starting LLM call for page {page_number} | "
                 f"Timestamp: {start_time:.3f} | "
                 f"Active concurrent LLM calls: {active_count}"
@@ -243,7 +243,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             )
 
             # Call LLM
-            self.logger.debug(f"📤 Calling LLM for page {page_number}")
+            self.logger.info(f"📤 Calling LLM for page {page_number}")
             response = await self.llm.ainvoke([message])
 
             # Extract content
@@ -269,7 +269,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 self._active_llm_calls -= 1
                 active_count = self._active_llm_calls
             
-            self.logger.debug(
+            self.logger.info(
                 f"✅ [PARALLEL CHECK] Completed LLM call for page {page_number} | "
                 f"Timestamp: {end_time:.3f} | "
                 f"Duration: {duration:.3f}s | "
@@ -312,7 +312,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
 
         try:
             # Render page to base64 image
-            self.logger.debug(f"🖼️ Rendering page {page_number} to image")
+            self.logger.info(f"🖼️ Rendering page {page_number} to image")
             image_base64 = self._render_page_to_base64(page)
             # Call LLM to get markdown
             markdown = await self._call_llm_for_markdown(image_base64, page_number)
@@ -344,7 +344,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             """Process page with retry logic (3 total attempts)"""
             page_num = page.number + 1
             acquire_time = time.time()
-            self.logger.debug(
+            self.logger.info(
                 f"🔒 [PARALLEL CHECK] Page {page_num} waiting for semaphore | "
                 f"Timestamp: {acquire_time:.3f}"
             )
@@ -352,7 +352,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             async with semaphore:
                 semaphore_acquired_time = time.time()
                 wait_duration = semaphore_acquired_time - acquire_time
-                self.logger.debug(
+                self.logger.info(
                     f"🔓 [PARALLEL CHECK] Page {page_num} acquired semaphore | "
                     f"Timestamp: {semaphore_acquired_time:.3f} | "
                     f"Wait time: {wait_duration:.3f}s"
@@ -364,7 +364,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                     try:
                         result = await self.process_page(page)
                         release_time = time.time()
-                        self.logger.debug(
+                        self.logger.info(
                             f"🔓 [PARALLEL CHECK] Page {page_num} releasing semaphore | "
                             f"Timestamp: {release_time:.3f}"
                         )
@@ -380,7 +380,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                                 f"❌ All retries failed for page {page_num}"
                             )
                             release_time = time.time()
-                            self.logger.debug(
+                            self.logger.info(
                                 f"🔓 [PARALLEL CHECK] Page {page_num} releasing semaphore after error | "
                                 f"Timestamp: {release_time:.3f}"
                             )
@@ -389,7 +389,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         # Create tasks
         task_creation_time = time.time()
         tasks = [asyncio.create_task(process_page_with_retry(page)) for page in self.doc]
-        self.logger.debug(
+        self.logger.info(
             f"🚀 [PARALLEL CHECK] Created {len(tasks)} tasks for parallel execution | "
             f"Timestamp: {task_creation_time:.3f} | "
             f"Concurrency limit: {self.CONCURRENCY_LIMIT}"
@@ -398,14 +398,14 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         try:
             # Process all pages concurrently
             gather_start_time = time.time()
-            self.logger.debug(
+            self.logger.info(
                 f"⏳ [PARALLEL CHECK] Starting asyncio.gather for all tasks | "
                 f"Timestamp: {gather_start_time:.3f}"
             )
             pages_results = await asyncio.gather(*tasks)
             gather_end_time = time.time()
             gather_duration = gather_end_time - gather_start_time
-            self.logger.debug(
+            self.logger.info(
                 f"✅ [PARALLEL CHECK] Completed asyncio.gather for all tasks | "
                 f"Timestamp: {gather_end_time:.3f} | "
                 f"Total duration: {gather_duration:.3f}s"
@@ -442,16 +442,16 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
 
         try:
             # Load PDF with PyMuPDF
-            self.logger.debug("📄 Loading PDF with PyMuPDF")
+            self.logger.info("📄 Loading PDF with PyMuPDF")
             self.doc = fitz.open(stream=content, filetype="pdf")
             self.logger.info(f"📚 Loaded PDF with {len(self.doc)} pages")
 
             # Get multimodal LLM (prefers default, falls back to first available)
-            self.logger.debug("🤖 Getting multimodal LLM")
+            self.logger.info("🤖 Getting multimodal LLM")
             self.llm = await self._get_multimodal_llm()
 
             # Process document
-            self.logger.debug("⚙️ Processing document pages")
+            self.logger.info("⚙️ Processing document pages")
             self.document_analysis_result = await self._preprocess_document()
 
             self.logger.info("✅ Document loaded and processed successfully")
