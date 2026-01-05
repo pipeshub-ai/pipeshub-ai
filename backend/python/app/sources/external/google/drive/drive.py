@@ -42,18 +42,12 @@ class GoogleDriveDataSource:
         request = self.client.operations().get(**kwargs) # type: ignore
         return request.execute()
 
-    async def about_get(self) -> Dict[str, Any]:
-        """Google Drive API: Gets information about the user, the user's Drive, and system capabilities. For more information, see [Return user info](https://developers.google.com/workspace/drive/api/guides/user-info). Required: The `fields` parameter must be set. To return the exact fields you need, see [Return specific fields](https://developers.google.com/workspace/drive/api/guides/fields-parameter).
-
-        HTTP GET about
-
-        Returns:
-            Dict[str, Any]: API response
-        """
+    async def about_get(self, fields: Optional[str] = None) -> Dict[str, Any]:
         kwargs = {}
-        # No parameters for this method
-
-        request = self.client.about().get(**kwargs) # type: ignore
+        if fields is None:
+            fields = 'user(displayName,emailAddress,permissionId),storageQuota'
+        kwargs['fields'] = fields
+        request = self.client.about().get(**kwargs)
         return request.execute()
 
     async def apps_get(
@@ -1007,7 +1001,8 @@ class GoogleDriveDataSource:
         supportsTeamDrives: Optional[bool] = None,
         teamDriveId: Optional[str] = None,
         includePermissionsForView: Optional[str] = None,
-        includeLabels: Optional[str] = None
+        includeLabels: Optional[str] = None,
+        fields: Optional[str] = None
     ) -> Dict[str, Any]:
         """Google Drive API:  Lists the user's files. This method accepts the `q` parameter, which is a search query combining one or more search terms. For more information, see the [Search for files & folders](/workspace/drive/api/guides/search-files) guide. *Note:* This method returns *all* files by default, including trashed files. If you don't want trashed files to appear in the list, use the `trashed=false` query parameter to remove trashed files from the results.
 
@@ -1029,10 +1024,19 @@ class GoogleDriveDataSource:
             teamDriveId (str, optional): Deprecated: Use `driveId` instead.
             includePermissionsForView (str, optional): Specifies which additional view's permissions to include in the response. Only 'published' is supported.
             includeLabels (str, optional): A comma-separated list of IDs of labels to include in the `labelInfo` part of the response.
+            fields (str, optional): Specifies which fields to include in a partial response. See the [Partial responses](https://developers.google.com/drive/api/guides/performance#partial) guide for more information.
 
         Returns:
             Dict[str, Any]: API response
         """
+        # #region agent log
+        import json, inspect
+        sig = inspect.signature(self.files_list)
+        received_params = {k: v for k, v in locals().items() if k != 'self' and v is not None}
+        with open('/home/rogue/Programs/pipeshub-ai/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "drive.py:1030", "message": "files_list method entry", "data": {"received_params": list(received_params.keys()), "has_fields": "fields" in received_params, "method_params": list(sig.parameters.keys())}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
+        # #endregion
+        
         kwargs = {}
         if corpora is not None:
             kwargs['corpora'] = corpora
@@ -1064,6 +1068,13 @@ class GoogleDriveDataSource:
             kwargs['includePermissionsForView'] = includePermissionsForView
         if includeLabels is not None:
             kwargs['includeLabels'] = includeLabels
+        if fields is not None:
+            kwargs['fields'] = fields
+
+        # #region agent log
+        with open('/home/rogue/Programs/pipeshub-ai/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "drive.py:1062", "message": "kwargs before API call", "data": {"kwargs_keys": list(kwargs.keys()), "has_fields": "fields" in kwargs}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
+        # #endregion
 
         request = self.client.files().list(**kwargs) # type: ignore
         return request.execute()
