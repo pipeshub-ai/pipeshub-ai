@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import os
+import time
 from typing import Any, Dict
 
 import fitz
@@ -89,6 +90,9 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         self.llm = None
         self.llm_config = None
         self.document_analysis_result = None
+        # Track active LLM calls for parallel execution debugging
+        self._active_llm_calls = 0
+        self._active_llm_calls_lock = asyncio.Lock()
 
     def _create_llm_from_config(self, config: Dict[str, Any]) -> BaseChatModel:
         """Helper to create an LLM instance from a configuration dictionary."""
@@ -214,7 +218,19 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         Returns:
             str: Markdown content from LLM
         """
+        start_time = time.time()
         try:
+            # Increment active LLM calls counter
+            async with self._active_llm_calls_lock:
+                self._active_llm_calls += 1
+                active_count = self._active_llm_calls
+            
+            self.logger.debug(
+                f"🔄 [PARALLEL CHECK] Starting LLM call for page {page_number} | "
+                f"Timestamp: {start_time:.3f} | "
+                f"Active concurrent LLM calls: {active_count}"
+            )
+
             # Format prompt with page number
             prompt = self.DEFAULT_PROMPT
 
@@ -245,11 +261,40 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 if markdown_content.endswith("```"):
                     markdown_content = markdown_content[:-3].strip()
 
-            self.logger.debug(f"✅ Received markdown for page {page_number} ({len(markdown_content)} chars)")
+            end_time = time.time()
+            duration = end_time - start_time
+            
+            # Decrement active LLM calls counter
+            async with self._active_llm_calls_lock:
+                self._active_llm_calls -= 1
+                active_count = self._active_llm_calls
+            
+            self.logger.debug(
+                f"✅ [PARALLEL CHECK] Completed LLM call for page {page_number} | "
+                f"Timestamp: {end_time:.3f} | "
+                f"Duration: {duration:.3f}s | "
+                f"Active concurrent LLM calls: {active_count} | "
+                f"Markdown length: {len(markdown_content)} chars"
+            )
+            
             return markdown_content
 
         except Exception as e:
-            self.logger.error(f"❌ Error calling LLM for page {page_number}: {str(e)}")
+            end_time = time.time()
+            duration = end_time - start_time
+            
+            # Decrement active LLM calls counter on error
+            async with self._active_llm_calls_lock:
+                self._active_llm_calls -= 1
+                active_count = self._active_llm_calls
+            
+            self.logger.error(
+                f"❌ [PARALLEL CHECK] Error calling LLM for page {page_number} | "
+                f"Timestamp: {end_time:.3f} | "
+                f"Duration: {duration:.3f}s | "
+                f"Active concurrent LLM calls: {active_count} | "
+                f"Error: {str(e)}"
+            )
             raise
 
     async def process_page(self, page) -> Dict[str, Any]:
@@ -297,30 +342,74 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
 
         async def process_page_with_retry(page) -> Dict[str, Any]:
             """Process page with retry logic (3 total attempts)"""
+            page_num = page.number + 1
+            acquire_time = time.time()
+            self.logger.debug(
+                f"🔒 [PARALLEL CHECK] Page {page_num} waiting for semaphore | "
+                f"Timestamp: {acquire_time:.3f}"
+            )
+            
             async with semaphore:
+                semaphore_acquired_time = time.time()
+                wait_duration = semaphore_acquired_time - acquire_time
+                self.logger.debug(
+                    f"🔓 [PARALLEL CHECK] Page {page_num} acquired semaphore | "
+                    f"Timestamp: {semaphore_acquired_time:.3f} | "
+                    f"Wait time: {wait_duration:.3f}s"
+                )
+                
                 last_error = None
                 # Loop for initial attempt + MAX_RETRY_ATTEMPTS
                 for attempt in range(self.MAX_RETRY_ATTEMPTS + 1):
                     try:
-                        return await self.process_page(page)
+                        result = await self.process_page(page)
+                        release_time = time.time()
+                        self.logger.debug(
+                            f"🔓 [PARALLEL CHECK] Page {page_num} releasing semaphore | "
+                            f"Timestamp: {release_time:.3f}"
+                        )
+                        return result
                     except Exception as e:
                         last_error = e
                         if attempt < self.MAX_RETRY_ATTEMPTS:  # Not the last attempt
                             self.logger.warning(
-                                f"⚠️ Retry {attempt + 1}/2 for page {page.number + 1}: {str(e)}"
+                                f"⚠️ Retry {attempt + 1}/2 for page {page_num}: {str(e)}"
                             )
                         else:  # Last attempt failed
                             self.logger.error(
-                                f"❌ All retries failed for page {page.number + 1}"
+                                f"❌ All retries failed for page {page_num}"
+                            )
+                            release_time = time.time()
+                            self.logger.debug(
+                                f"🔓 [PARALLEL CHECK] Page {page_num} releasing semaphore after error | "
+                                f"Timestamp: {release_time:.3f}"
                             )
                             raise last_error
 
         # Create tasks
+        task_creation_time = time.time()
         tasks = [asyncio.create_task(process_page_with_retry(page)) for page in self.doc]
+        self.logger.debug(
+            f"🚀 [PARALLEL CHECK] Created {len(tasks)} tasks for parallel execution | "
+            f"Timestamp: {task_creation_time:.3f} | "
+            f"Concurrency limit: {self.CONCURRENCY_LIMIT}"
+        )
 
         try:
             # Process all pages concurrently
+            gather_start_time = time.time()
+            self.logger.debug(
+                f"⏳ [PARALLEL CHECK] Starting asyncio.gather for all tasks | "
+                f"Timestamp: {gather_start_time:.3f}"
+            )
             pages_results = await asyncio.gather(*tasks)
+            gather_end_time = time.time()
+            gather_duration = gather_end_time - gather_start_time
+            self.logger.debug(
+                f"✅ [PARALLEL CHECK] Completed asyncio.gather for all tasks | "
+                f"Timestamp: {gather_end_time:.3f} | "
+                f"Total duration: {gather_duration:.3f}s"
+            )
         except Exception:
             # Cancel all remaining tasks
             self.logger.error("❌ Cancelling all remaining tasks due to failure")
