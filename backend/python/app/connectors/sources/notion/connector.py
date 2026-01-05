@@ -11,7 +11,7 @@ import mimetypes
 from datetime import datetime, timezone
 from hashlib import md5
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
@@ -570,6 +570,17 @@ class NotionConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error during Notion reindex: {e}", exc_info=True)
             raise
+
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None
+    ) -> NoReturn:
+        """Outlook connector does not support dynamic filter options."""
+        raise NotImplementedError("Outlook connector does not support dynamic filter options")
 
     async def cleanup(self) -> None:
         """
@@ -2495,7 +2506,7 @@ class NotionConnector(BaseConnector):
                             weburl=page_url,
                             is_file=True,
                             extension=extension,
-                            size_in_bytes=None,  # Notion doesn't provide file size in comment attachments
+                            size_in_bytes=0,  # Notion doesn't provide file size in comment attachments
                             source_created_at=source_created_at,
                             source_updated_at=source_updated_at,
                         )
