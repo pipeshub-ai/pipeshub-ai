@@ -481,6 +481,17 @@ class BaseArangoService:
             self.logger.error(f"Failed to get user apps: {str(e)}")
             raise
 
+    async def _get_user_app_ids(self, user_id: str) -> List[str]:
+        """Gets a list of accessible app connector IDs for a user."""
+        try:
+            user_app_docs = await self.get_user_apps(user_id)
+            user_apps = [app['_key'] for app in user_app_docs]
+            self.logger.debug(f"User has access to {len(user_apps)} apps: {user_apps}")
+            return user_apps
+        except Exception as e:
+            self.logger.error(f"Failed to get user app ids: {str(e)}")
+            raise
+
     async def get_all_orgs(self, active: bool = True) -> list:
         """Get all organizations, optionally filtering by active status."""
         try:
@@ -682,10 +693,8 @@ class BaseArangoService:
             dict: Record details with permissions if accessible, None if not
         """
         try:
-            # Get user's accessible apps and extract connector IDs (_key)
-            user_app_docs = await self.get_user_apps(user_id)
-            user_apps = [app['_key'] for app in user_app_docs]
-            self.logger.debug(f"User has access to {len(user_apps)} apps: {user_apps}")
+            # Get user's accessible app connector ids
+            user_apps = await self._get_user_app_ids(user_id)
 
             # First check access and get permission paths
             access_query = f"""
@@ -1124,9 +1133,7 @@ class BaseArangoService:
             include_connector_records = source in ['all', 'connector']
 
             # Get user's accessible apps and extract connector IDs (_key)
-            user_app_docs = await self.get_user_apps(user_id)
-            user_apps = [app['_key'] for app in user_app_docs]
-            self.logger.debug(f"User has access to {len(user_apps)} apps: {user_apps}")
+            user_apps = await self._get_user_app_ids(user_id)
 
             # Build filter conditions function
             def build_record_filters(include_filter_vars: bool = True) -> str:
@@ -14409,10 +14416,8 @@ class BaseArangoService:
         )
 
         try:
-            # Get user's accessible apps and extract connector IDs (_key)
-            user_app_docs = await self.get_user_apps(user_id)
-            user_apps = [app['_key'] for app in user_app_docs]
-            self.logger.debug(f"User has access to {len(user_apps)} apps: {user_apps}")
+            # Get user's accessible app connector ids
+            user_apps = await self._get_user_app_ids(user_id)
 
             # Extract filters
             kb_ids = filters.get("kb") if filters else None
@@ -14446,8 +14451,7 @@ class BaseArangoService:
 
             // User -> Direct Records (via permission edges)
             LET directRecords = (
-                FOR records IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                    LET record = records
+                FOR record IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
                     {app_filter_condition}
                     RETURN DISTINCT record
             )
@@ -14455,8 +14459,7 @@ class BaseArangoService:
             // User -> Group -> Records (via belongs_to edges)
             LET groupRecords = (
                 FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FOR records IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                    LET record = records
+                FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                     {app_filter_condition}
                     RETURN DISTINCT record
             )
@@ -14464,8 +14467,7 @@ class BaseArangoService:
             // User -> Group -> Records (via permission edges)
             LET groupRecordsPermissionEdge = (
                 FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FOR records IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                    LET record = records
+                FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                     {app_filter_condition}
                     RETURN DISTINCT record
             )
@@ -14473,8 +14475,7 @@ class BaseArangoService:
             // User -> Organization -> Records (direct)
             LET orgRecords = (
                 FOR org, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FOR records IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
-                    LET record = records
+                FOR record IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
                     {app_filter_condition}
                     RETURN DISTINCT record
             )
