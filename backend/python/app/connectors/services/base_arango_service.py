@@ -682,6 +682,11 @@ class BaseArangoService:
             dict: Record details with permissions if accessible, None if not
         """
         try:
+            # Get user's accessible apps and extract connector IDs (_key)
+            user_app_docs = await self.get_user_apps(user_id)
+            user_apps = [app['_key'] for app in user_app_docs]
+            self.logger.debug(f"User has access to {len(user_apps)} apps: {user_apps}")
+
             # First check access and get permission paths
             access_query = f"""
             LET userDoc = FIRST(
@@ -690,6 +695,16 @@ class BaseArangoService:
                 RETURN user
             )
             LET recordDoc = DOCUMENT(CONCAT(@records, '/', @recordId))
+
+            // App access filter - check if user can access this record based on connector
+            LET hasAppAccess = (
+                recordDoc.origin == "UPLOAD" OR
+                (recordDoc.origin == "CONNECTOR" AND recordDoc.connectorId IN @user_apps)
+            )
+
+            // If user doesn't have app access, return null immediately
+            FILTER hasAppAccess
+
             LET kb = FIRST(
                 FOR k IN 1..1 OUTBOUND recordDoc._id @@belongs_to
                 RETURN k
@@ -896,6 +911,7 @@ class BaseArangoService:
                 "userId": user_id,
                 "orgId": org_id,
                 "recordId": record_id,
+                "user_apps": user_apps,
                 "@users": CollectionNames.USERS.value,
                 "records": CollectionNames.RECORDS.value,
                 "files": CollectionNames.FILES.value,
@@ -1110,7 +1126,7 @@ class BaseArangoService:
             # Get user's accessible apps and extract connector IDs (_key)
             user_app_docs = await self.get_user_apps(user_id)
             user_apps = [app['_key'] for app in user_app_docs]
-            self.logger.info(f"📱 User has access to {len(user_apps)} apps: {user_apps}")
+            self.logger.debug(f"User has access to {len(user_apps)} apps: {user_apps}")
 
             # Build filter conditions function
             def build_record_filters(include_filter_vars: bool = True) -> str:
@@ -1164,8 +1180,8 @@ class BaseArangoService:
 
                 FILTER isValidRecord
             '''
+
             #filter records that match the user's app connector_ids
-            # Now app_record_filter just uses the bind variable
             app_record_filter = 'FILTER record.connectorId IN @user_apps'
 
             main_query = f"""
@@ -1291,6 +1307,7 @@ class BaseArangoService:
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
 
+                        {app_record_filter}
                         {folder_filter}
                         {record_filter}
                         RETURN {{
@@ -1316,6 +1333,7 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
+                            {app_record_filter}
                             {folder_filter}
                             {record_filter}
 
@@ -1410,6 +1428,7 @@ class BaseArangoService:
                                 FILTER record.orgId == org_id OR record.orgId == null
                                 FILTER record.origin == "CONNECTOR"
 
+                                {app_record_filter}
                                 {folder_filter}
                                 {record_filter}
 
@@ -1447,6 +1466,7 @@ class BaseArangoService:
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
 
+                        {app_record_filter}
                         {folder_filter}
                         {record_filter}
 
@@ -1478,6 +1498,7 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
+                            {app_record_filter}
                             {folder_filter}
                             {record_filter}
 
@@ -1715,6 +1736,7 @@ class BaseArangoService:
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
 
+                        {app_record_filter}
                         {folder_filter}
                         {record_filter}
                         RETURN record._key
@@ -1737,6 +1759,7 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
+                            {app_record_filter}
                             {folder_filter}
                             {record_filter}
                             RETURN record._key
@@ -1814,6 +1837,7 @@ class BaseArangoService:
                                 FILTER record.orgId == org_id OR record.orgId == null
                                 FILTER record.origin == "CONNECTOR"
 
+                                {app_record_filter}
                                 {folder_filter}
                                 {record_filter}
 
@@ -1845,6 +1869,7 @@ class BaseArangoService:
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
 
+                        {app_record_filter}
                         {folder_filter}
                         {record_filter}
 
@@ -1870,6 +1895,7 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
+                            {app_record_filter}
                             {folder_filter}
                             {record_filter}
 
@@ -1973,6 +1999,7 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
+                            {app_record_filter}
                             {folder_filter}
                             {record_filter}
 
@@ -2073,6 +2100,7 @@ class BaseArangoService:
                                 FILTER record.orgId == org_id OR record.orgId == null
                                 FILTER record.origin == "CONNECTOR"
 
+                                {app_record_filter}
                                 {folder_filter}
 
                                 RETURN {{
@@ -2105,6 +2133,7 @@ class BaseArangoService:
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
 
+                        {app_record_filter}
                         {folder_filter}
                         {record_filter}
 
@@ -2136,6 +2165,7 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
+                            {app_record_filter}
                             {folder_filter}
 
                             // Get the role from the last edge in the path
@@ -14379,6 +14409,11 @@ class BaseArangoService:
         )
 
         try:
+            # Get user's accessible apps and extract connector IDs (_key)
+            user_app_docs = await self.get_user_apps(user_id)
+            user_apps = [app['_key'] for app in user_app_docs]
+            self.logger.debug(f"User has access to {len(user_apps)} apps: {user_apps}")
+
             # Extract filters
             kb_ids = filters.get("kb") if filters else None
             connector_ids = filters.get("apps") if filters else None
@@ -14392,6 +14427,14 @@ class BaseArangoService:
                 f"App filter: {has_app_filter} (Connector IDs: {connector_ids})"
             )
 
+            # App filter condition - only filter connector records by user's accessible apps
+            app_filter_condition = '''
+                FILTER (
+                    record.origin == "UPLOAD" OR
+                    (record.origin == "CONNECTOR" AND record.connectorId IN @user_apps)
+                )
+            '''
+
             # Build base query with common parts
             query = f"""
             LET userDoc = FIRST(
@@ -14404,28 +14447,36 @@ class BaseArangoService:
             // User -> Direct Records (via permission edges)
             LET directRecords = (
                 FOR records IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                RETURN DISTINCT records
+                    LET record = records
+                    {app_filter_condition}
+                    RETURN DISTINCT record
             )
 
             // User -> Group -> Records (via belongs_to edges)
             LET groupRecords = (
                 FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
                 FOR records IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                RETURN DISTINCT records
+                    LET record = records
+                    {app_filter_condition}
+                    RETURN DISTINCT record
             )
 
             // User -> Group -> Records (via permission edges)
             LET groupRecordsPermissionEdge = (
                 FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
                 FOR records IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                RETURN DISTINCT records
+                    LET record = records
+                    {app_filter_condition}
+                    RETURN DISTINCT record
             )
 
             // User -> Organization -> Records (direct)
             LET orgRecords = (
                 FOR org, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
                 FOR records IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
-                RETURN DISTINCT records
+                    LET record = records
+                    {app_filter_condition}
+                    RETURN DISTINCT record
             )
 
             // User -> Organization -> RecordGroup -> Records (direct and inherited)
@@ -14437,6 +14488,7 @@ class BaseArangoService:
 
                         FOR record, edge, path IN 0..2 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
                             FILTER IS_SAME_COLLECTION("records", record)
+                            {app_filter_condition}
                             RETURN DISTINCT record
             )
 
@@ -14451,6 +14503,7 @@ class BaseArangoService:
                 // Support nested RecordGroups (0..5 levels)
                 FOR record, edge, path IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
                 FILTER IS_SAME_COLLECTION("records", record)
+                {app_filter_condition}
                 RETURN DISTINCT record
             )
 
@@ -14461,6 +14514,7 @@ class BaseArangoService:
 
                 FOR record, edge, path IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
                 FILTER IS_SAME_COLLECTION("records", record)
+                {app_filter_condition}
                 RETURN DISTINCT record
             )
 
@@ -14479,6 +14533,7 @@ class BaseArangoService:
                     FILTER records.organization == @orgId
                     FOR record IN @@records
                         FILTER record != null AND record._key == records.file_key
+                        {app_filter_condition}
                         RETURN record
             )
             """
@@ -14733,6 +14788,7 @@ class BaseArangoService:
             bind_vars = {
                 "userId": user_id,
                 "orgId": org_id,
+                "user_apps": user_apps,
                 "@users": CollectionNames.USERS.value,
                 "@records": CollectionNames.RECORDS.value,
                 "@anyone": CollectionNames.ANYONE.value,
