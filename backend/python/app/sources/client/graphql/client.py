@@ -29,7 +29,7 @@ class GraphQLClient(ABC):
     def get_auth_header(self) -> Optional[str]:
         """
         Get the authorization header value for this client.
-        
+
         Returns:
             Authorization header value or None if not available
         """
