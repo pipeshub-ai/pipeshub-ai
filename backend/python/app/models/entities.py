@@ -521,7 +521,7 @@ class WebpageRecord(Record):
 class LinkRecord(Record):
     """
     Link record for URLs and attachments.
-    
+
     Fields:
     - url: The link URL (required)
     - title: Link title (optional)

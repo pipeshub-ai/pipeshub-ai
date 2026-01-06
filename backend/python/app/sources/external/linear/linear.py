@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import httpx
 
@@ -2032,52 +2032,38 @@ class LinearDataSource:
     def _get_auth_header(self) -> Optional[str]:
         """
         Get authentication header from Linear client.
-        
+
         Returns:
             Authorization header value or None if not available
         """
         linear_client = self._linear_client.get_client()
-        
-        # Extract token from client headers
-        if hasattr(linear_client, 'headers') and linear_client.headers:
-            return linear_client.headers.get("Authorization")
-        elif hasattr(linear_client, 'token'):
-            # For API token auth
-            return linear_client.token
-        elif hasattr(linear_client, 'oauth_token'):
-            # For OAuth token auth
-            oauth_token = linear_client.oauth_token
-            if oauth_token and not oauth_token.startswith("Bearer "):
-                return f"Bearer {oauth_token}"
-            else:
-                return oauth_token
-        
-        return None
+        return linear_client.get_auth_header()
 
-    async def download_file(self, file_url: str) -> bytes:
+    async def download_file(self, file_url: str) -> AsyncGenerator[bytes, None]:
         """
         Download file from Linear upload URL with authentication.
-        
+
         Args:
             file_url: URL of the file to download (e.g., from uploads.linear.app)
-            
-        Returns:
-            File content as bytes
-            
+
+        Yields:
+            File content as bytes in chunks
+
         Raises:
             ValueError: If file download fails
         """
         try:
             auth_header = self._get_auth_header()
-            
+
             headers = {}
             if auth_header:
                 headers["Authorization"] = auth_header
-            
+
             async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-                response = await client.get(file_url, headers=headers)
-                response.raise_for_status()
-                return response.content
+                async with client.stream("GET", file_url, headers=headers) as response:
+                    response.raise_for_status()
+                    async for chunk in response.aiter_bytes():
+                        yield chunk
         except httpx.HTTPStatusError as e:
             raise ValueError(f"Failed to fetch file content: HTTP {e.response.status_code}")
         except httpx.RequestError as e:

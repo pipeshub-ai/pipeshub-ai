@@ -1,3 +1,4 @@
+from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
 
 import aiohttp  # type: ignore
@@ -5,7 +6,7 @@ import aiohttp  # type: ignore
 from app.sources.client.graphql.response import GraphQLResponse
 
 
-class GraphQLClient:
+class GraphQLClient(ABC):
     """Generic GraphQL client for making GraphQL requests."""
 
     def __init__(
@@ -23,6 +24,16 @@ class GraphQLClient:
     # Note: We intentionally do not cache ClientSession instances. Creating a
     # short-lived session per request keeps session lifecycle bound to the
     # current event loop and avoids closing a session from a different loop.
+
+    @abstractmethod
+    def get_auth_header(self) -> Optional[str]:
+        """
+        Get the authorization header value for this client.
+        
+        Returns:
+            Authorization header value or None if not available
+        """
+        pass
 
     async def execute(
         self,

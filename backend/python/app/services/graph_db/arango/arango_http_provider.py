@@ -1452,7 +1452,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
                 FILTER record.webUrl == @weburl
-                {f"AND record.orgId == @org_id" if org_id else ""}
+                {"AND record.orgId == @org_id" if org_id else ""}
                 RETURN record
             """
 
@@ -1467,15 +1467,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 for record_dict in results:
                     record_data = self._translate_node_from_arango(record_dict)
                     record_type = record_data.get("recordType")
-                    
+
                     # Skip LinkRecords
                     if record_type == "LINK":
                         continue
-                    
+
                     # Return first non-LinkRecord found
                     self.logger.info("✅ Successfully retrieved record by weburl: %s", weburl)
                     return Record.from_arango_base_record(record_data)
-                
+
                 # All records were LinkRecords
                 self.logger.debug("⚠️ Only LinkRecords found for weburl: %s", weburl)
                 return None
