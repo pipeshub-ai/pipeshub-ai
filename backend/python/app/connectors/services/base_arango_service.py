@@ -1107,6 +1107,11 @@ class BaseArangoService:
             include_kb_records = source in ['all', 'local']
             include_connector_records = source in ['all', 'connector']
 
+            # Get user's accessible apps and extract connector IDs (_key)
+            user_app_docs = await self.get_user_apps(user_id)
+            user_apps = [app['_key'] for app in user_app_docs]
+            self.logger.info(f"📱 User has access to {len(user_apps)} apps: {user_apps}")
+
             # Build filter conditions function
             def build_record_filters(include_filter_vars: bool = True) -> str:
                 conditions = []
@@ -1141,6 +1146,7 @@ class BaseArangoService:
             perm_edge_filter = "FILTER permEdge.role IN @role_filter" if permissions else ""
             record_group_edge_filter = "FILTER recordGroupToRecordEdge.role IN @role_filter" if permissions else ""
             child_rg_edge_filter = "FILTER childRgToRecordEdge.role IN @role_filter" if permissions else ""
+            #filter folders out of the all records query
             folder_filter = '''
                 LET targetDoc = FIRST(
                     FOR v IN 1..1 OUTBOUND record._id isOfType
@@ -1158,6 +1164,9 @@ class BaseArangoService:
 
                 FILTER isValidRecord
             '''
+            #filter records that match the user's app connector_ids
+            # Now app_record_filter just uses the bind variable
+            app_record_filter = 'FILTER record.connectorId IN @user_apps'
 
             main_query = f"""
             LET user_from = @user_from
@@ -1330,6 +1339,7 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
+                            {app_record_filter}
                             {folder_filter}
                             {record_filter}
                             RETURN {{
@@ -1361,6 +1371,7 @@ class BaseArangoService:
                                 FILTER record.orgId == org_id OR record.orgId == null
                                 FILTER record.origin == "CONNECTOR"
 
+                                {app_record_filter}
                                 {folder_filter}
                                 {record_filter}
 
@@ -1745,6 +1756,7 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
+                            {app_record_filter}
                             {folder_filter}
                             {record_filter}
                             RETURN record._key
@@ -1773,6 +1785,7 @@ class BaseArangoService:
                                 FILTER record.orgId == org_id OR record.orgId == null
                                 FILTER record.origin == "CONNECTOR"
 
+                                {app_record_filter}
                                 {folder_filter}
                                 {record_filter}
 
@@ -1971,7 +1984,7 @@ class BaseArangoService:
             }
 
             LET allOrgAccessRecords = {
-                '''(
+                f'''(
                     FOR org, belongsEdge IN 1..1 ANY user_from @@belongs_to
                         FILTER belongsEdge.entityType == "ORGANIZATION"
                         FOR record, permEdge IN 1..1 ANY org._id @@permission
@@ -1982,6 +1995,7 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
+                            {app_record_filter}
                             LET targetDoc = FIRST(
                                 FOR v IN 1..1 OUTBOUND record._id isOfType
                                     LIMIT 1
@@ -1995,10 +2009,10 @@ class BaseArangoService:
                             )
 
                             FILTER isValidRecord
-                            RETURN {
+                            RETURN {{
                                 record: record,
-                                permission: { role: permEdge.role, type: permEdge.type }
-                            }
+                                permission: {{ role: permEdge.role, type: permEdge.type }}
+                            }}
                 )''' if include_connector_records else '[]'
             }
 
@@ -2024,6 +2038,7 @@ class BaseArangoService:
                                 FILTER record.orgId == org_id OR record.orgId == null
                                 FILTER record.origin == "CONNECTOR"
 
+                                {app_record_filter}
                                 {folder_filter}
 
                                 // Get the role from the last edge in the path
@@ -2208,6 +2223,7 @@ class BaseArangoService:
                 "skip": skip,
                 "limit": limit,
                 "kb_permissions": final_kb_roles,
+                "user_apps": user_apps,
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
@@ -2220,6 +2236,7 @@ class BaseArangoService:
                 "user_from": f"users/{user_id}",
                 "org_id": org_id,
                 "kb_permissions": final_kb_roles,
+                "user_apps": user_apps,
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
@@ -2231,6 +2248,7 @@ class BaseArangoService:
             filters_bind_vars = {
                 "user_from": f"users/{user_id}",
                 "org_id": org_id,
+                "user_apps": user_apps,
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
