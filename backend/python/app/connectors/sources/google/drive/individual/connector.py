@@ -235,6 +235,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             org_id = self.data_entities_processor.org_id
             
             # Get existing record from the database
+            # !!! IMPORTANT: Do not use tx_store directly here. Use the data_entities_processor instead.
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
                     connector_id=self.connector_id,
