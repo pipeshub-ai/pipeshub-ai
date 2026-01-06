@@ -48,6 +48,11 @@ from app.connectors.core.registry.filters import (
     FilterOptionsResponse,
     FilterOption,
     OptionSourceType,
+    IndexingFilterKey,
+    FilterCollection,
+    load_connector_filters,
+    MultiselectOperator,
+    ListOperator,
 )
 from app.connectors.sources.s3.common.apps import S3App
 from app.models.entities import FileRecord, IndexingStatus, Record
@@ -142,6 +147,29 @@ def get_mimetype_for_s3(key: str, is_folder: bool = False) -> MimeTypes:
             field_type="TEXT",
             max_length=2000
         ))
+        .add_filter_field(FilterField(
+            name="buckets",
+            display_name="Bucket Names",
+            filter_type=FilterType.MULTISELECT,
+            category=FilterCategory.SYNC,
+            description="Select specific S3 buckets to sync",
+            option_source_type=OptionSourceType.DYNAMIC,
+            default_value=[],
+            default_operator=MultiselectOperator.IN.value
+        ))
+        .add_filter_field(FilterField(
+            name="file_extensions",
+            display_name="File Extensions",
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            description="Filter files by extension (e.g., pdf, docx, txt). Leave empty to sync all files.",
+            option_source_type=OptionSourceType.MANUAL,
+            default_value=[],
+            default_operator=ListOperator.IN.value
+        ))
+        .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
+        .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
@@ -192,6 +220,10 @@ class S3Connector(BaseConnector):
         self.connector_scope: Optional[str] = None
         self.created_by: Optional[str] = None
         self.bucket_regions: Dict[str, str] = {}  # Cache for bucket-to-region mapping
+        
+        # Initialize filter collections
+        self.sync_filters: FilterCollection = FilterCollection()
+        self.indexing_filters: FilterCollection = FilterCollection()
 
     async def init(self) -> bool:
         """Initializes the S3 client using credentials from the config service."""
@@ -231,6 +263,12 @@ class S3Connector(BaseConnector):
                 connector_instance_id=self.connector_id,
             )
             self.data_source = S3DataSource(client)
+            
+            # Load connector filters
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "s3", self.connector_id, self.logger
+            )
+            
             self.logger.info("S3 client initialized successfully.")
             return True
         except Exception as e:
@@ -508,27 +546,46 @@ class S3Connector(BaseConnector):
                             # Apply filters
                             key = obj.get("Key", "")
                             
-                            # Filter by extension
-                            if allowed_extensions:
+                            # Determine if it's a folder (S3 uses keys ending with / for folders)
+                            is_folder = key.endswith("/")
+                            
+                            # Filter by extension (only for files, not folders)
+                            if not is_folder and allowed_extensions:
                                 ext = get_file_extension(key)
                                 if not ext or ext not in allowed_extensions:
                                     continue
                             
-                            # Filter by date
-                            last_modified = obj.get("LastModified")
-                            if last_modified:
-                                if isinstance(last_modified, datetime):
-                                    obj_timestamp_ms = int(last_modified.timestamp() * 1000)
-                                else:
-                                    obj_timestamp_ms = get_epoch_timestamp_in_ms()
-                                
-                                # Check modified date filter
-                                if modified_after and obj_timestamp_ms < modified_after:
-                                    continue
-                                if modified_before and obj_timestamp_ms > modified_before:
-                                    continue
-                                
-                                max_timestamp = max(max_timestamp, obj_timestamp_ms)
+                            # Filter by date (only for files, not folders)
+                            # For S3, LastModified is used for both created and modified time
+                            # since S3 doesn't track separate creation time
+                            if not is_folder:
+                                last_modified = obj.get("LastModified")
+                                if last_modified:
+                                    if isinstance(last_modified, datetime):
+                                        obj_timestamp_ms = int(last_modified.timestamp() * 1000)
+                                    else:
+                                        obj_timestamp_ms = get_epoch_timestamp_in_ms()
+                                    
+                                    # Check modified date filter
+                                    if modified_after and obj_timestamp_ms < modified_after:
+                                        continue
+                                    if modified_before and obj_timestamp_ms > modified_before:
+                                        continue
+                                    
+                                    # Check created date filter (using LastModified as creation time)
+                                    if created_after and obj_timestamp_ms < created_after:
+                                        continue
+                                    if created_before and obj_timestamp_ms > created_before:
+                                        continue
+                                    
+                                    max_timestamp = max(max_timestamp, obj_timestamp_ms)
+                            else:
+                                # For folders, update max_timestamp if available but don't filter
+                                last_modified = obj.get("LastModified")
+                                if last_modified:
+                                    if isinstance(last_modified, datetime):
+                                        obj_timestamp_ms = int(last_modified.timestamp() * 1000)
+                                        max_timestamp = max(max_timestamp, obj_timestamp_ms)
                             
                             record, permissions = await self._process_s3_object(
                                 obj, bucket_name
@@ -673,6 +730,10 @@ class S3Connector(BaseConnector):
                 mime_type=mime_type,
                 etag=obj.get("ETag", "").strip('"'),
             )
+
+            # Apply indexing filter - set AUTO_INDEX_OFF if manual sync is enabled or FILES filter is disabled
+            if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             # Create permissions (default: owner permission)
             permissions = await self._create_s3_permissions(bucket_name, key)
@@ -1116,6 +1177,10 @@ class S3Connector(BaseConnector):
                 mime_type=mime_type,
                 etag=current_etag,
             )
+
+            # Apply indexing filter - set AUTO_INDEX_OFF if manual sync is enabled or FILES filter is disabled
+            if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                updated_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             # Get permissions
             permissions = await self._create_s3_permissions(bucket_name, normalized_key)
