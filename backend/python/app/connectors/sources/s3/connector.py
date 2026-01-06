@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from logging import Logger
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import unquote
 
 from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
@@ -190,6 +191,7 @@ class S3Connector(BaseConnector):
         self.region: Optional[str] = None
         self.connector_scope: Optional[str] = None
         self.created_by: Optional[str] = None
+        self.bucket_regions: Dict[str, str] = {}  # Cache for bucket-to-region mapping
 
     async def init(self) -> bool:
         """Initializes the S3 client using credentials from the config service."""
@@ -278,6 +280,12 @@ class S3Connector(BaseConnector):
                     self.logger.warning("No buckets found")
                     return
 
+            # Fetch and cache regions for all buckets
+            self.logger.info(f"Fetching regions for {len(buckets_to_sync)} bucket(s)...")
+            for bucket_name in buckets_to_sync:
+                if bucket_name:
+                    await self._get_bucket_region(bucket_name)
+
             # Create record groups for buckets first
             await self._create_record_groups_for_buckets(buckets_to_sync)
 
@@ -363,6 +371,52 @@ class S3Connector(BaseConnector):
             await self.data_entities_processor.on_new_record_groups(record_groups)
             self.logger.info(f"Created {len(record_groups)} record group(s) for buckets")
 
+    async def _get_bucket_region(self, bucket_name: str) -> str:
+        """Get the region for a bucket, using cache if available.
+        
+        Args:
+            bucket_name: Name of the S3 bucket
+            
+        Returns:
+            Region name (e.g., 'us-east-1', 'us-west-2'). Falls back to configured region if fetch fails.
+        """
+        # Check cache first
+        if bucket_name in self.bucket_regions:
+            return self.bucket_regions[bucket_name]
+        
+        # Fetch region if not in cache
+        if not self.data_source:
+            self.logger.warning(f"Cannot fetch region for bucket {bucket_name}: data_source not initialized")
+            return self.region or "us-east-1"
+        
+        try:
+            response = await self.data_source.get_bucket_location(Bucket=bucket_name)
+            if response.success and response.data:
+                # AWS returns None or empty string for us-east-1 (the default region)
+                location = response.data.get("LocationConstraint")
+                if location is None or location == "":
+                    region = "us-east-1"
+                else:
+                    region = location
+                # Cache the result
+                self.bucket_regions[bucket_name] = region
+                self.logger.debug(f"Cached region for bucket {bucket_name}: {region}")
+                return region
+            else:
+                self.logger.warning(
+                    f"Failed to get region for bucket {bucket_name}: {response.error}. "
+                    f"Using configured region {self.region or 'us-east-1'}"
+                )
+        except Exception as e:
+            self.logger.warning(
+                f"Error fetching region for bucket {bucket_name}: {e}. "
+                f"Using configured region {self.region or 'us-east-1'}"
+            )
+        
+        # Fallback to configured region
+        fallback_region = self.region or "us-east-1"
+        return fallback_region
+
     async def _sync_bucket(self, bucket_name: str) -> None:
         """Sync objects from a specific bucket with pagination support and incremental sync."""
         if not self.data_source:
@@ -422,9 +476,18 @@ class S3Connector(BaseConnector):
                     )
 
                     if not response.success:
-                        self.logger.error(
-                            f"Failed to list objects in bucket {bucket_name}: {response.error}"
-                        )
+                        error_msg = response.error or "Unknown error"
+                        # Check if it's a permissions error
+                        if "AccessDenied" in error_msg or "not authorized" in error_msg:
+                            self.logger.error(
+                                f"Access denied when listing objects in bucket {bucket_name}: {error_msg}. "
+                                f"The IAM user may not have s3:ListBucket permission. "
+                                f"Streaming individual files (s3:GetObject) may still work."
+                            )
+                        else:
+                            self.logger.error(
+                                f"Failed to list objects in bucket {bucket_name}: {error_msg}"
+                            )
                         has_more = False
                         continue
 
@@ -707,20 +770,57 @@ class S3Connector(BaseConnector):
                 # Fallback: if format is unexpected, use as-is
                 key = external_record_id.lstrip("/")
 
-            # Generate presigned URL (valid for 1 hour)
+            # URL-decode the key if it's encoded (AWS expects raw keys)
+            # This handles cases where external_record_id might be URL-encoded
+            key = unquote(key)
+
+            # Get bucket-specific region (will use cache if available, or fetch on-demand)
+            bucket_region = await self._get_bucket_region(bucket_name)
+
+            # Log the key being used for debugging
+            self.logger.debug(
+                f"Generating presigned URL - Bucket: {bucket_name}, "
+                f"Region: {bucket_region}, Key: {key}, Record ID: {record.id}"
+            )
+
+            # Generate presigned URL (valid for 24 hours) using bucket-specific region
             response = await self.data_source.generate_presigned_url(
                 ClientMethod="get_object",
                 Params={"Bucket": bucket_name, "Key": key},
                 ExpiresIn=86400,  # 24 hours in seconds
+                region_name=bucket_region
             )
 
             if response.success:
                 return response.data
             else:
-                self.logger.error(f"Failed to generate presigned URL: {response.error}")
+                error_msg = response.error or "Unknown error"
+                # Distinguish between access denied and other errors (like invalid key due to encoding)
+                if "AccessDenied" in error_msg or "not authorized" in error_msg or "Forbidden" in error_msg:
+                    self.logger.error(
+                        f"❌ ACCESS DENIED: Failed to generate presigned URL due to permissions issue. "
+                        f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id} | "
+                        f"File: {record.record_name if hasattr(record, 'record_name') else 'unknown'}"
+                    )
+                elif "NoSuchKey" in error_msg or "NotFound" in error_msg:
+                    self.logger.error(
+                        f"❌ KEY NOT FOUND: The S3 key may be incorrect (possibly encoding issue with special characters). "
+                        f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id} | "
+                        f"File: {record.record_name if hasattr(record, 'record_name') else 'unknown'} | "
+                        f"Original external_record_id: {external_record_id}"
+                    )
+                else:
+                    self.logger.error(
+                        f"❌ FAILED: Failed to generate presigned URL. "
+                        f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
+                    )
                 return None
         except Exception as e:
-            self.logger.error(f"Error generating signed URL for record {record.id}: {e}")
+            self.logger.error(
+                f"Error generating signed URL for record {record.id}: {e} | "
+                f"Bucket: {bucket_name if 'bucket_name' in locals() else 'unknown'} | "
+                f"Key: {key if 'key' in locals() else 'unknown'}"
+            )
             return None
 
     async def stream_record(self, record: Record) -> StreamingResponse:
@@ -740,7 +840,7 @@ class S3Connector(BaseConnector):
             )
 
         return StreamingResponse(
-            stream_content(signed_url),
+            stream_content(signed_url, record_id=record.id, file_name=record.record_name),
             media_type=record.mime_type if record.mime_type else "application/octet-stream",
             headers={"Content-Disposition": f"attachment; filename={record.record_name}"},
         )
@@ -808,6 +908,11 @@ class S3Connector(BaseConnector):
                 bucket.get("Name") for bucket in buckets_data["Buckets"]
                 if bucket.get("Name")
             ]
+
+            # Fetch and cache regions for all buckets
+            for bucket_name in all_buckets:
+                if bucket_name:
+                    await self._get_bucket_region(bucket_name)
 
             # Apply search filter if provided
             if search:
@@ -1055,6 +1160,12 @@ class S3Connector(BaseConnector):
             if not buckets_to_sync:
                 self.logger.warning("No buckets to sync")
                 return
+
+            # Fetch and cache regions for all buckets
+            self.logger.info(f"Fetching regions for {len(buckets_to_sync)} bucket(s)...")
+            for bucket_name in buckets_to_sync:
+                if bucket_name:
+                    await self._get_bucket_region(bucket_name)
 
             # Sync each bucket (incremental sync uses last_sync_time from sync point)
             for bucket_name in buckets_to_sync:
