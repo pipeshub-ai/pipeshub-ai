@@ -387,8 +387,6 @@ ticket_record_schema = {
         "type": "object",
         "properties": {
             "orgId": {"type": "string"},
-            "summary": {"type": ["string", "null"]},
-            "description": {"type": ["string", "null"]},
             "status": {"type": ["string", "null"]},
             "priority": {"type": ["string", "null"]},
             "assignee": {"type": ["string", "null"]},

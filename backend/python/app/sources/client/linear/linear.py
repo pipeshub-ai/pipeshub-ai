@@ -31,6 +31,10 @@ class LinearGraphQLClientViaToken(GraphQLClient):
         """Get the GraphQL endpoint."""
         return self.endpoint
 
+    def get_auth_header(self) -> Optional[str]:
+        """Get the authorization header value."""
+        return self.token
+
 
 class LinearGraphQLClientViaOAuth(GraphQLClient):
     """Linear GraphQL client via OAuth token."""
@@ -56,6 +60,13 @@ class LinearGraphQLClientViaOAuth(GraphQLClient):
     def get_endpoint(self) -> str:
         """Get the GraphQL endpoint."""
         return self.endpoint
+
+    def get_auth_header(self) -> Optional[str]:
+        """Get the authorization header value."""
+        oauth_token = self.oauth_token
+        if oauth_token and not oauth_token.startswith("Bearer "):
+            return f"Bearer {oauth_token}"
+        return oauth_token
 
 class LinearTokenConfig(BaseModel):
     """Configuration for Linear GraphQL client via API token.
