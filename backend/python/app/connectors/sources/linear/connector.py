@@ -36,6 +36,7 @@ from app.connectors.core.registry.connector_builder import (
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterField,
+    FilterOperatorType,
     FilterOption,
     FilterOptionsResponse,
     FilterType,
@@ -553,7 +554,7 @@ class LinearConnector(BaseConnector):
     async def _fetch_teams(
         self,
         team_ids: Optional[List[str]] = None,
-        team_ids_operator: Optional[Any] = None,
+        team_ids_operator: Optional[FilterOperatorType] = None,
         user_email_map: Optional[Dict[str, AppUser]] = None
     ) -> Tuple[List[Tuple[AppUserGroup, List[AppUser]]],List[Tuple[RecordGroup, List[Permission]]]]:
         """
