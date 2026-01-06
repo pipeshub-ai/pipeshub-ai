@@ -370,9 +370,13 @@ link_record_schema = {
             "orgId": {"type": "string"},
             "url": {"type": "string"},
             "title": {"type": ["string", "null"]},
-            "isPublic": {"type": "boolean"},
+            "isPublic": {
+                "type": "string",
+                "enum": ["true", "false", "unknown"]
+            },
+            "linkedRecordId": {"type": ["string", "null"]},
         },
-        "required": ["orgId", "url"],
+        "required": ["orgId", "url", "isPublic"],
         "additionalProperties": False,
     },
     "level": "strict",

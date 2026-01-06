@@ -271,6 +271,10 @@ class GraphTransactionStore(TransactionStore):
         """Get record by Jira issue key (e.g., PROJ-123) by searching weburl pattern."""
         return await self.graph_provider.get_record_by_issue_key(connector_id, issue_key, transaction=self.txn)
 
+    async def get_record_by_weburl(self, weburl: str, org_id: Optional[str] = None) -> Optional[Record]:
+        """Get record by weburl (exact match)."""
+        return await self.graph_provider.get_record_by_weburl(weburl, org_id, transaction=self.txn)
+
     async def get_records_by_parent(
         self,
         connector_id: str,

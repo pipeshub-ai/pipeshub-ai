@@ -55,6 +55,12 @@ class RecordType(str, Enum):
     OTHERS = "OTHERS"
 
 
+class LinkPublicStatus(str, Enum):
+    """Status of link accessibility"""
+    TRUE = "true"
+    FALSE = "false"
+    UNKNOWN = "unknown"
+
 class IndexingStatus(str, Enum):
     """Status of record indexing for search and AI features"""
     NOT_STARTED = "NOT_STARTED"
@@ -520,10 +526,12 @@ class LinkRecord(Record):
     - url: The link URL (required)
     - title: Link title (optional)
     - is_public: Whether the link is publicly accessible (no auth required)
+    - linked_record_id: Internal record ID of a record that has the same weburl (optional)
     """
     url: str
     title: Optional[str] = None
-    is_public: bool = False
+    is_public: LinkPublicStatus = Field(description="Link public accessibility status")
+    linked_record_id: Optional[str] = Field(default=None, description="Internal record ID of linked record with same weburl")
 
     def to_kafka_record(self) -> Dict:
         return {
@@ -549,7 +557,8 @@ class LinkRecord(Record):
             "orgId": self.org_id,
             "url": self.url,
             "title": self.title,
-            "isPublic": self.is_public,
+            "isPublic": self.is_public.value,
+            "linkedRecordId": self.linked_record_id,
         }
 
     @staticmethod
@@ -583,7 +592,8 @@ class LinkRecord(Record):
             virtual_record_id=record_doc.get("virtualRecordId"),
             url=link_doc["url"],
             title=link_doc.get("title"),
-            is_public=link_doc.get("isPublic", False),
+            is_public=LinkPublicStatus(link_doc.get("isPublic", "unknown")),
+            linked_record_id=link_doc.get("linkedRecordId"),
         )
 
 class CommentRecord(Record):

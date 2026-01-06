@@ -1,4 +1,5 @@
 """Linear Connector Implementation"""
+import re
 from datetime import datetime, timezone
 from logging import Logger
 from typing import (
@@ -7,6 +8,7 @@ from typing import (
     Dict,
     List,
     Optional,
+    Set,
     Tuple,
 )
 from uuid import uuid4
@@ -39,6 +41,7 @@ from app.connectors.core.registry.filters import (
     FilterType,
     IndexingFilterKey,
     OptionSourceType,
+    SyncFilterKey,
     load_connector_filters,
 )
 from app.connectors.sources.linear.common.apps import LinearApp
@@ -49,6 +52,7 @@ from app.models.entities import (
     Connectors,
     FileRecord,
     IndexingStatus,
+    LinkPublicStatus,
     LinkRecord,
     MimeTypes,
     OriginTypes,
@@ -79,7 +83,7 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
         .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
             "Linear OAuth Setup",
-            "https://linear.app/developers/docs/authentication",
+            "https://linear.app/developers/oauth-2-0-authentication",
             "setup"
         ))
         .add_documentation_link(DocumentationLink(
@@ -123,6 +127,8 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
             default_value=[],
             option_source_type=OptionSourceType.DYNAMIC
         ))
+        .add_filter_field(CommonFields.modified_date_filter("Filter issues by modification date."))
+        .add_filter_field(CommonFields.created_date_filter("Filter issues by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .add_filter_field(FilterField(
             name="issues",
@@ -149,7 +155,7 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
             default_value=True
         ))
         .add_filter_field(FilterField(
-            name="issue_documents",
+            name="documents",
             display_name="Index Issue Documents",
             filter_type=FilterType.BOOLEAN,
             category=FilterCategory.INDEXING,
@@ -157,7 +163,7 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
             default_value=True
         ))
         .add_filter_field(FilterField(
-            name="issue_files",
+            name="files",
             display_name="Index Issue Files",
             filter_type=FilterType.BOOLEAN,
             category=FilterCategory.INDEXING,
@@ -198,6 +204,20 @@ class LinearConnector(BaseConnector):
         org_id = self.data_entities_processor.org_id
 
         self.issues_sync_point = SyncPoint(
+            connector_id=self.connector_id,
+            org_id=org_id,
+            sync_data_point_type=SyncDataPointType.RECORDS,
+            data_store_provider=data_store_provider
+        )
+
+        self.attachments_sync_point = SyncPoint(
+            connector_id=self.connector_id,
+            org_id=org_id,
+            sync_data_point_type=SyncDataPointType.RECORDS,
+            data_store_provider=data_store_provider
+        )
+
+        self.documents_sync_point = SyncPoint(
             connector_id=self.connector_id,
             org_id=org_id,
             sync_data_point_type=SyncDataPointType.RECORDS,
@@ -390,13 +410,19 @@ class LinearConnector(BaseConnector):
                 self.logger.info(f"👥 Synced {len(linear_users)} Linear users")
 
             # Step 3: Get team_ids filter and fetch teams
-            allowed_team_ids = None
+            team_ids_filter = None
+            team_ids = None
+            team_ids_operator = None
             if self.sync_filters:
                 team_ids_filter = self.sync_filters.get("team_ids")
                 if team_ids_filter:
-                    allowed_team_ids = team_ids_filter.get_value(default=[])
-                    if allowed_team_ids:
-                        self.logger.info(f"📋 Filtering teams by IDs: {allowed_team_ids}")
+                    team_ids = team_ids_filter.get_value(default=[])
+                    team_ids_operator = team_ids_filter.get_operator()
+                    if team_ids:
+                        # Extract operator value string (handles both enum and string)
+                        operator_value = team_ids_operator.value if hasattr(team_ids_operator, 'value') else str(team_ids_operator) if team_ids_operator else "in"
+                        action = "Excluding" if operator_value == "not_in" else "Including"
+                        self.logger.info(f"📋 Filter: {action} teams by IDs: {team_ids}")
                     else:
                         self.logger.info("📋 Team filter is empty, will fetch no teams")
                 else:
@@ -412,7 +438,11 @@ class LinearConnector(BaseConnector):
                         user_email_map[app_user.email.lower()] = app_user
 
             # Step 5: Fetch and sync teams (as both UserGroups and RecordGroups)
-            team_user_groups, team_record_groups = await self._fetch_teams(allowed_team_ids, user_email_map)
+            team_user_groups, team_record_groups = await self._fetch_teams(
+                team_ids=team_ids,
+                team_ids_operator=team_ids_operator,
+                user_email_map=user_email_map
+            )
 
             # Step 6a: Sync teams as UserGroups (membership tracking)
             if team_user_groups:
@@ -427,6 +457,12 @@ class LinearConnector(BaseConnector):
 
             # Step 7: Sync issues for teams
             await self._sync_issues_for_teams(team_record_groups)
+
+            # Step 8: Sync attachments separately (Linear doesn't update issue.updatedAt when attachments are added)
+            await self._sync_attachments(team_record_groups)
+
+            # Step 9: Sync documents separately (Linear doesn't update issue.updatedAt when documents are added)
+            await self._sync_documents(team_record_groups)
 
             self.logger.info("✅ Linear sync completed")
 
@@ -515,7 +551,12 @@ class LinearConnector(BaseConnector):
         self.logger.info(f"📥 Fetched {len(all_users)} Linear users, converted {len(app_users)} to AppUser")
         return app_users
 
-    async def _fetch_teams(self, team_ids: Optional[List[str]] = None, user_email_map: Optional[Dict[str, AppUser]] = None) -> Tuple[List[Tuple[AppUserGroup, List[AppUser]]],List[Tuple[RecordGroup, List[Permission]]]]:
+    async def _fetch_teams(
+        self,
+        team_ids: Optional[List[str]] = None,
+        team_ids_operator: Optional[Any] = None,
+        user_email_map: Optional[Dict[str, AppUser]] = None
+    ) -> Tuple[List[Tuple[AppUserGroup, List[AppUser]]],List[Tuple[RecordGroup, List[Permission]]]]:
         """
         Fetch Linear teams and convert them to both UserGroups and RecordGroups.
 
@@ -525,7 +566,8 @@ class LinearConnector(BaseConnector):
         - Permissions: UserGroup → RecordGroup for private teams, ORG → RecordGroup for public teams
 
         Args:
-            team_ids: Optional list of team IDs to fetch. If None, fetch all teams.
+            team_ids: Optional list of team IDs to include/exclude
+            team_ids_operator: Optional filter operator (IN or NOT_IN)
             user_email_map: Optional map of email -> AppUser for already-synced users.
 
         Returns:
@@ -547,8 +589,21 @@ class LinearConnector(BaseConnector):
             # Build filter if specific team IDs are requested
             filter_dict: Optional[Dict[str, Any]] = None
             if team_ids:
-                # Linear TeamFilter supports id filtering
-                filter_dict = {"id": {"in": team_ids}}
+                # Check operator: "in" (include) or "not_in" (exclude)
+                # Extract operator value string (handles both enum and string)
+                if team_ids_operator:
+                    operator_value = team_ids_operator.value if hasattr(team_ids_operator, 'value') else str(team_ids_operator)
+                else:
+                    operator_value = "in"  # Default to "in" if no operator specified
+                
+                is_exclude = operator_value == "not_in"
+                
+                if is_exclude:
+                    # Linear TeamFilter supports "nin" for not in
+                    filter_dict = {"id": {"nin": team_ids}}
+                else:
+                    # Linear TeamFilter supports "in" for include
+                    filter_dict = {"id": {"in": team_ids}}
 
             response = await datasource.teams(first=page_size, after=cursor, filter=filter_dict)
 
@@ -707,6 +762,10 @@ class LinearConnector(BaseConnector):
 
                 # Fetch and process issues for this team
                 total_records_processed = 0
+                total_tickets = 0
+                total_comments = 0
+                # Track max updatedAt ONLY from issues (TicketRecords)
+                # We query by issue.updatedAt, so sync point must be based on issue timestamps
                 max_issue_updated_at: Optional[int] = None
                 
                 async for batch_records in self._fetch_issues_for_team_batch(
@@ -717,28 +776,29 @@ class LinearConnector(BaseConnector):
                     if not batch_records:
                         continue
                     
-                    # Find max updated_at in this batch
+                    # Count records by type and track max issue updatedAt
                     for record, _ in batch_records:
-                        if isinstance(record, TicketRecord) and record.source_updated_at:
-                            if max_issue_updated_at is None or record.source_updated_at > max_issue_updated_at:
-                                max_issue_updated_at = record.source_updated_at
+                        if isinstance(record, TicketRecord):
+                            total_tickets += 1
+                            # Only track max from ISSUES - sync point must match issue query filter
+                            if record.source_updated_at:
+                                if max_issue_updated_at is None or record.source_updated_at > max_issue_updated_at:
+                                    max_issue_updated_at = record.source_updated_at
+                        elif isinstance(record, CommentRecord):
+                            total_comments += 1
                     
                     # Process batch
                     total_records_processed += len(batch_records)
                     await self.data_entities_processor.on_new_records(batch_records)
                     
                     # Update sync point after each batch for fault tolerance
-                    # If sync fails here, next sync will resume from this point
+                    # Uses max from ISSUES ONLY (we query by issue.updatedAt)
                     if max_issue_updated_at:
                         await self._update_team_sync_checkpoint(team_key, max_issue_updated_at)
 
-                # After all batches complete successfully, update to current time
-                # This ensures next sync only fetches issues updated after this sync completed
-                await self._update_team_sync_checkpoint(team_key, get_epoch_timestamp_in_ms())
-
                 # Log final status
                 if total_records_processed > 0:
-                    self.logger.info(f"✅ Synced {total_records_processed} issues for team {team_key}")
+                    self.logger.info(f"✅ Team {team_key}: {total_tickets} tickets, {total_comments} comments ({total_records_processed} total)")
                 else:
                     self.logger.info(f"ℹ️ No new/updated issues for team {team_key}")
 
@@ -774,12 +834,8 @@ class LinearConnector(BaseConnector):
             "team": {"id": {"eq": team_id}}
         }
 
-        # Add incremental sync filter if last_sync_time is provided
-        if last_sync_time:
-            linear_datetime = self._linear_datetime_from_timestamp(last_sync_time)
-            if linear_datetime:
-                team_filter["updatedAt"] = {"gt": linear_datetime}
-                self.logger.info(f"🔄 Fetching issues for team {team_key} updated after {linear_datetime}")
+        # Apply date filters to team_filter
+        self._apply_date_filters_to_linear_filter(team_filter, last_sync_time)
 
         # Order by updatedAt ASC - critical for sync point logic to work correctly
         # This ensures each batch's max updatedAt >= previous batches, so checkpoint
@@ -834,6 +890,33 @@ class LinearConnector(BaseConnector):
                         # Records inherit permissions from RecordGroup (team), so pass empty list
                         # Permissions are set on RecordGroup in _fetch_teams (ORG for public, GROUP for private)
                         batch_records.append((ticket_record, []))
+                        
+                        # Process comments for this issue
+                        comment_records = await self._process_issue_comments(
+                            issue_data, ticket_record, team_id, tx_store
+                        )
+                        batch_records.extend(comment_records)
+                        
+                        # Extract files from issue description
+                        issue_description = issue_data.get("description", "")
+                        if issue_description:
+                            # Get issue timestamps for file records
+                            issue_created_at = self._parse_linear_datetime(issue_data.get("createdAt", "")) or 0
+                            issue_updated_at = self._parse_linear_datetime(issue_data.get("updatedAt", "")) or 0
+                            
+                            file_records = await self._extract_files_from_markdown(
+                                markdown_text=issue_description,
+                                parent_external_id=issue_id,
+                                parent_node_id=ticket_record.id,
+                                parent_record_type=RecordType.TICKET,
+                                team_id=team_id,
+                                tx_store=tx_store,
+                                parent_created_at=issue_created_at,
+                                parent_updated_at=issue_updated_at
+                            )
+                            batch_records.extend(file_records)
+                        
+                        # because Linear doesn't update issue.updatedAt when attachments are added
 
                     except Exception as e:
                         issue_id = issue_data.get("id", "unknown")
@@ -852,7 +935,571 @@ class LinearConnector(BaseConnector):
             if not after_cursor:
                 break
 
+    async def _sync_attachments(
+        self,
+        team_record_groups: List[Tuple[RecordGroup, List[Permission]]]
+    ) -> None:
+        """
+        Sync attachments separately from issues.
+        
+        Linear doesn't update issue.updatedAt when attachments are added,
+        so we query attachments directly with their own sync point.
+        This ensures new attachments are captured even if the parent issue wasn't updated.
+        """
+        if not team_record_groups:
+            return
+
+        # Build team lookup map for quick access
+        team_map: Dict[str, Tuple[RecordGroup, List[Permission]]] = {}
+        for team_record_group, team_perms in team_record_groups:
+            team_id = team_record_group.external_group_id
+            if team_id:
+                team_map[team_id] = (team_record_group, team_perms)
+
+        try:
+            # Get attachments sync point (separate from issues sync point)
+            last_sync_time = await self._get_attachments_sync_checkpoint()
+            
+            datasource = await self._get_fresh_datasource()
+            after_cursor: Optional[str] = None
+            total_attachments = 0
+            max_attachment_updated_at: Optional[int] = None
+
+            # Build filter for attachments
+            attachment_filter: Dict[str, Any] = {}
+            # Apply date filters (includes checkpoint merge)
+            self._apply_date_filters_to_linear_filter(attachment_filter, last_sync_time)
+
+            while True:
+                response = await datasource.attachments(
+                    first=50,
+                    after=after_cursor,
+                    filter=attachment_filter if attachment_filter else None
+                )
+
+                if not response.success:
+                    self.logger.error(f"❌ Failed to fetch attachments: {response.message}")
+                    break
+
+                attachments_data = response.data.get("attachments", {}) if response.data else {}
+                attachments_list = attachments_data.get("nodes", [])
+                page_info = attachments_data.get("pageInfo", {})
+
+                if not attachments_list:
+                    break
+
+                self.logger.info(f"📎 Fetched {len(attachments_list)} attachments")
+
+                # Process attachments
+                batch_records: List[Tuple[Record, List[Permission]]] = []
+                
+                async with self.data_store_provider.transaction() as tx_store:
+                    for attachment_data in attachments_list:
+                        try:
+                            attachment_id = attachment_data.get("id", "")
+                            if not attachment_id:
+                                continue
+
+                            # Get parent issue info
+                            issue_data = attachment_data.get("issue", {})
+                            issue_id = issue_data.get("id", "")
+                            team_data = issue_data.get("team", {})
+                            team_id = team_data.get("id", "")
+
+                            if not team_id or team_id not in team_map:
+                                # Skip attachments from teams not in our sync scope
+                                continue
+
+                            # Get parent issue's internal record ID
+                            parent_record = await tx_store.get_record_by_external_id(
+                                connector_id=self.connector_id,
+                                external_id=issue_id
+                            )
+                            parent_node_id = parent_record.id if parent_record else None
+
+                            if not parent_node_id:
+                                # Parent issue not synced yet, skip this attachment
+                                self.logger.debug(f"⚠️ Skipping attachment {attachment_id}: parent issue {issue_id} not synced")
+                                continue
+
+                            # Check if attachment already exists
+                            existing_attachment = await tx_store.get_record_by_external_id(
+                                connector_id=self.connector_id,
+                                external_id=attachment_id
+                            )
+
+                            # Transform attachment to LinkRecord
+                            link_record = self._transform_attachment_to_link_record(
+                                attachment_data, issue_id, parent_node_id, team_id, existing_attachment
+                            )
+
+                            # Set indexing status based on filters
+                            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_ATTACHMENTS):
+                                link_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+                            # Look up related record by weburl
+                            if link_record.weburl:
+                                try:
+                                    related_record = await tx_store.get_record_by_weburl(
+                                        link_record.weburl,
+                                        org_id=self.data_entities_processor.org_id
+                                    )
+                                    if related_record:
+                                        link_record.linked_record_id = related_record.id
+                                        self.logger.info(f"🔗 Found related record {related_record.id} for attachment URL: {link_record.weburl}")
+                                except Exception as e:
+                                    self.logger.debug(f"⚠️ Could not fetch related record for URL {link_record.weburl}: {e}")
+
+                            batch_records.append((link_record, []))
+                            total_attachments += 1
+
+                            # Track max updatedAt
+                            if link_record.source_updated_at:
+                                if max_attachment_updated_at is None or link_record.source_updated_at > max_attachment_updated_at:
+                                    max_attachment_updated_at = link_record.source_updated_at
+
+                        except Exception as e:
+                            attachment_id = attachment_data.get("id", "unknown")
+                            self.logger.error(f"❌ Error processing attachment {attachment_id}: {e}", exc_info=True)
+                            continue
+
+                # Process batch
+                if batch_records:
+                    await self.data_entities_processor.on_new_records(batch_records)
+
+                # Update sync point after each batch
+                if max_attachment_updated_at:
+                    await self._update_attachments_sync_checkpoint(max_attachment_updated_at)
+
+                # Check for more pages
+                if page_info.get("hasNextPage") and page_info.get("endCursor"):
+                    after_cursor = page_info.get("endCursor")
+                else:
+                    break
+
+            if total_attachments > 0:
+                self.logger.info(f"✅ Synced {total_attachments} attachments")
+            else:
+                self.logger.info("ℹ️ No new/updated attachments")
+
+        except Exception as e:
+            self.logger.error(f"❌ Error syncing attachments: {e}", exc_info=True)
+
+    async def _sync_documents(
+        self,
+        team_record_groups: List[Tuple[RecordGroup, List[Permission]]]
+    ) -> None:
+        """
+        Sync documents separately from issues.
+        
+        Linear doesn't update issue.updatedAt when documents are added,
+        so we query documents directly with their own sync point.
+        This ensures new documents are captured even if the parent issue wasn't updated.
+        """
+        if not team_record_groups:
+            return
+
+        # Build team lookup map for quick access
+        team_map: Dict[str, Tuple[RecordGroup, List[Permission]]] = {}
+        for team_record_group, team_perms in team_record_groups:
+            team_id = team_record_group.external_group_id
+            if team_id:
+                team_map[team_id] = (team_record_group, team_perms)
+
+        try:
+            # Get documents sync point (separate from issues sync point)
+            last_sync_time = await self._get_documents_sync_checkpoint()
+            
+            datasource = await self._get_fresh_datasource()
+            after_cursor: Optional[str] = None
+            total_documents = 0
+            max_document_updated_at: Optional[int] = None
+
+            # Build filter for documents
+            document_filter: Dict[str, Any] = {}
+            # Apply date filters (includes checkpoint merge)
+            self._apply_date_filters_to_linear_filter(document_filter, last_sync_time)
+
+            while True:
+                response = await datasource.documents(
+                    first=50,
+                    after=after_cursor,
+                    filter=document_filter if document_filter else None
+                )
+
+                if not response.success:
+                    self.logger.error(f"❌ Failed to fetch documents: {response.message}")
+                    break
+
+                documents_data = response.data.get("documents", {}) if response.data else {}
+                documents_list = documents_data.get("nodes", [])
+                page_info = documents_data.get("pageInfo", {})
+
+                if not documents_list:
+                    break
+
+                self.logger.info(f"📄 Fetched {len(documents_list)} documents")
+
+                # Process documents
+                batch_records: List[Tuple[Record, List[Permission]]] = []
+                
+                async with self.data_store_provider.transaction() as tx_store:
+                    for document_data in documents_list:
+                        try:
+                            document_id = document_data.get("id", "")
+                            if not document_id:
+                                continue
+
+                            # Get parent issue info
+                            issue_data = document_data.get("issue")
+                            
+                            # Skip documents without an issue (standalone documents)
+                            # Track updatedAt to avoid refetching in next sync
+                            if not issue_data:
+                                document_updated_at = self._parse_linear_datetime(document_data.get("updatedAt", "")) or 0
+                                if document_updated_at:
+                                    if max_document_updated_at is None or document_updated_at > max_document_updated_at:
+                                        max_document_updated_at = document_updated_at
+                                self.logger.debug(f"⚠️ Skipping document {document_id}: no parent issue (standalone document)")
+                                continue
+                            
+                            issue_id = issue_data.get("id", "")
+                            issue_identifier = issue_data.get("identifier", "")
+                            team_data = issue_data.get("team", {})
+                            team_id = team_data.get("id", "")
+
+                            if not issue_id or not team_id:
+                                self.logger.debug(f"⚠️ Skipping document {document_id}: missing issue or team info")
+                                continue
+
+                            if team_id not in team_map:
+                                # Skip documents from teams not in our sync scope
+                                continue
+
+                            # Get parent issue's internal record ID
+                            parent_record = await tx_store.get_record_by_external_id(
+                                connector_id=self.connector_id,
+                                external_id=issue_id
+                            )
+                            parent_node_id = parent_record.id if parent_record else None
+
+                            if not parent_node_id:
+                                # Parent issue not synced yet, skip this document
+                                self.logger.debug(f"⚠️ Skipping document {document_id}: parent issue {issue_id} not synced")
+                                continue
+
+                            # Check if document already exists
+                            existing_document = await tx_store.get_record_by_external_id(
+                                connector_id=self.connector_id,
+                                external_id=document_id
+                            )
+
+                            # Transform document to WebpageRecord
+                            webpage_record = self._transform_document_to_webpage_record(
+                                document_data, issue_id, parent_node_id, team_id, existing_document
+                            )
+
+                            # Set indexing status based on filters
+                            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.DOCUMENTS):
+                                webpage_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+                            batch_records.append((webpage_record, []))
+                            total_documents += 1
+                            
+                            self.logger.debug(f"✅ Processed document {document_id[:8]} (issue: {issue_identifier})")
+
+                            # Track max updatedAt
+                            if webpage_record.source_updated_at:
+                                if max_document_updated_at is None or webpage_record.source_updated_at > max_document_updated_at:
+                                    max_document_updated_at = webpage_record.source_updated_at
+
+                        except Exception as e:
+                            document_id = document_data.get("id", "unknown")
+                            self.logger.error(f"❌ Error processing document {document_id}: {e}", exc_info=True)
+                            continue
+
+                    # Process batch inside transaction
+                    if batch_records:
+                        self.logger.info(f"💾 Processing batch of {len(batch_records)} documents")
+                        await self.data_entities_processor.on_new_records(batch_records)
+                        self.logger.debug(f"✅ Batch processed successfully")
+                        batch_records = []  # Clear batch after processing
+
+                # Update sync point after each batch
+                if max_document_updated_at:
+                    await self._update_documents_sync_checkpoint(max_document_updated_at)
+
+                # Check for more pages
+                if page_info.get("hasNextPage") and page_info.get("endCursor"):
+                    after_cursor = page_info.get("endCursor")
+                else:
+                    break
+
+            if total_documents > 0:
+                self.logger.info(f"✅ Synced {total_documents} documents")
+            else:
+                self.logger.info("ℹ️ No new/updated documents")
+
+        except Exception as e:
+            self.logger.error(f"❌ Error syncing documents: {e}", exc_info=True)
+
     # ==================== HELPER FUNCTIONS ====================
+    async def _process_issue_comments(
+        self,
+        issue_data: Dict[str, Any],
+        ticket_record: TicketRecord,
+        team_id: str,
+        tx_store
+    ) -> List[Tuple[Record, List[Permission]]]:
+        """
+        Process comments for an issue.
+        
+        Args:
+            issue_data: Raw issue data from Linear API
+            ticket_record: The parent ticket record
+            team_id: Team ID for external_record_group_id
+            tx_store: Transaction store for looking up existing records
+            
+        Returns:
+            List of (CommentRecord, permissions) tuples
+        """
+        comment_records: List[Tuple[Record, List[Permission]]] = []
+        issue_id = issue_data.get("id", "")
+        issue_identifier = issue_data.get("identifier", "")
+        comments_data = issue_data.get("comments", {}).get("nodes", [])
+        
+        if not comments_data:
+            return comment_records
+        
+        for comment_data in comments_data:
+            try:
+                comment_id = comment_data.get("id", "")
+                if not comment_id:
+                    continue
+                
+                # Look up existing comment record to handle versioning
+                existing_comment = await tx_store.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=comment_id
+                )
+                
+                comment_record = self._transform_comment_to_comment_record(
+                    comment_data, issue_id, issue_identifier, ticket_record.id, team_id, existing_comment
+                )
+                
+                # Set indexing status based on filters
+                if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_COMMENTS):
+                    comment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                
+                # Comments inherit permissions from RecordGroup (team), so pass empty list
+                comment_records.append((comment_record, []))
+                
+                # Extract files from comment body
+                comment_body = comment_data.get("body", "")
+                if comment_body:
+                    # Get comment timestamps for file records
+                    comment_created_at = self._parse_linear_datetime(comment_data.get("createdAt", "")) or 0
+                    comment_updated_at = self._parse_linear_datetime(comment_data.get("updatedAt", "")) or 0
+                    
+                    file_records = await self._extract_files_from_markdown(
+                        markdown_text=comment_body,
+                        parent_external_id=comment_id,
+                        parent_node_id=ticket_record.id,  # Use ticket's internal ID, not comment's
+                        parent_record_type=RecordType.COMMENT,
+                        team_id=team_id,
+                        tx_store=tx_store,
+                        parent_created_at=comment_created_at,
+                        parent_updated_at=comment_updated_at
+                    )
+                    comment_records.extend(file_records)
+                
+            except Exception as e:
+                comment_id = comment_data.get("id", "unknown")
+                self.logger.error(f"❌ Error processing comment {comment_id} for issue {issue_id}: {e}", exc_info=True)
+                continue
+        
+        if comment_records:
+            issue_identifier = issue_data.get("identifier", issue_id)
+            self.logger.debug(f"💬 Issue {issue_identifier}: {len(comment_records)} comments")
+        
+        return comment_records
+
+    async def _extract_files_from_markdown(
+        self,
+        markdown_text: str,
+        parent_external_id: str,
+        parent_node_id: str,
+        parent_record_type: RecordType,
+        team_id: str,
+        tx_store,
+        parent_created_at: Optional[int] = None,
+        parent_updated_at: Optional[int] = None
+    ) -> List[Tuple[Record, List[Permission]]]:
+        """
+        Extract files from markdown text and create FileRecords.
+        
+        Args:
+            markdown_text: Markdown content to extract files from
+            parent_external_id: External ID of parent (issue or comment)
+            parent_node_id: Internal ID of parent record
+            parent_record_type: Type of parent record (TICKET or COMMENT)
+            team_id: Team ID for external_record_group_id
+            tx_store: Transaction store for looking up existing records
+            parent_created_at: Source created timestamp of parent (in ms)
+            parent_updated_at: Source updated timestamp of parent (in ms)
+            
+        Returns:
+            List of (FileRecord, permissions) tuples
+        """
+        file_records: List[Tuple[Record, List[Permission]]] = []
+        
+        if not markdown_text:
+            return file_records
+        
+        # Extract file URLs from markdown
+        file_urls = self._extract_file_urls_from_markdown(markdown_text)
+        
+        if not file_urls:
+            return file_records
+        
+        for file_info in file_urls:
+            try:
+                file_url = file_info["url"]
+                filename = file_info["filename"]
+                
+                # Look up existing file record
+                existing_file = await tx_store.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=file_url
+                )
+                
+                # Transform to FileRecord
+                file_record = self._transform_file_url_to_file_record(
+                    file_url=file_url,
+                    filename=filename,
+                    parent_external_id=parent_external_id,
+                    parent_node_id=parent_node_id,
+                    parent_record_type=parent_record_type,
+                    team_id=team_id,
+                    existing_record=existing_file,
+                    parent_created_at=parent_created_at,
+                    parent_updated_at=parent_updated_at
+                )
+                
+                # Set indexing status based on filters
+                if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.FILES):
+                    file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                
+                # Files inherit permissions from parent, so pass empty list
+                file_records.append((file_record, []))
+                
+            except Exception as e:
+                self.logger.error(f"❌ Error processing file {file_info.get('url', 'unknown')}: {e}", exc_info=True)
+                continue
+        
+        return file_records
+
+    def _extract_file_urls_from_markdown(self, markdown_text: str) -> List[Dict[str, str]]:
+        """
+        Extract file URLs from markdown text (images and file links).
+        Only extracts URLs from Linear uploads (uploads.linear.app).
+        
+        Args:
+            markdown_text: Markdown content to extract from
+            
+        Returns:
+            List of dicts with 'url', 'filename', 'alt_text' keys
+        """
+        if not markdown_text:
+            return []
+        
+        file_urls: List[Dict[str, str]] = []
+        seen_urls: Set[str] = set()
+        
+        # Pattern for markdown images: ![alt text](url)
+        image_pattern = r'!\[([^\]]*)\]\(([^)]+)\)'
+        
+        # Pattern for markdown links: [text](url) - only if URL looks like a file
+        link_pattern = r'\[([^\]]+)\]\(([^)]+)\)'
+        
+        # Extract images
+        for match in re.finditer(image_pattern, markdown_text):
+            alt_text = match.group(1) or ""
+            url = match.group(2).strip()
+            
+            # Only process Linear upload URLs
+            if "uploads.linear.app" in url and url not in seen_urls:
+                seen_urls.add(url)
+                filename = alt_text if alt_text else url.split("/")[-1].split("?")[0]
+                file_urls.append({
+                    "url": url,
+                    "filename": filename,
+                    "alt_text": alt_text
+                })
+        
+        # Extract file links (all Linear upload URLs, not just those with extensions)
+        for match in re.finditer(link_pattern, markdown_text):
+            link_text = match.group(1) or ""
+            url = match.group(2).strip()
+            
+            # Process all Linear upload URLs (images are already extracted above, so this catches file links)
+            if "uploads.linear.app" in url and url not in seen_urls:
+                seen_urls.add(url)
+                url_path = url.split("?")[0]  # Remove query params
+                filename = link_text if link_text else url_path.split("/")[-1]
+                file_urls.append({
+                    "url": url,
+                    "filename": filename,
+                    "alt_text": link_text
+                })
+        
+        return file_urls
+    
+    def _get_mime_type_from_url(self, url: str, filename: str = "") -> str:
+        """
+        Determine mime type from URL or filename extension.
+        
+        Args:
+            url: File URL
+            filename: Optional filename
+            
+        Returns:
+            Mime type string
+        """
+        # Extract extension from filename or URL
+        ext = ""
+        if filename and "." in filename:
+            ext = filename.split(".")[-1].lower()
+        elif "." in url:
+            url_path = url.split("?")[0]  # Remove query params
+            ext = url_path.split(".")[-1].lower()
+        
+        # Map common extensions to mime types
+        extension_to_mime = {
+            "pdf": MimeTypes.PDF.value,
+            "png": MimeTypes.PNG.value,
+            "jpg": MimeTypes.JPEG.value,
+            "jpeg": MimeTypes.JPEG.value,
+            "gif": MimeTypes.GIF.value,
+            "webp": MimeTypes.WEBP.value,
+            "svg": MimeTypes.SVG.value,
+            "doc": MimeTypes.DOC.value,
+            "docx": MimeTypes.DOCX.value,
+            "xls": MimeTypes.XLS.value,
+            "xlsx": MimeTypes.XLSX.value,
+            "ppt": MimeTypes.PPT.value,
+            "pptx": MimeTypes.PPTX.value,
+            "csv": MimeTypes.CSV.value,
+            "zip": MimeTypes.ZIP.value,
+            "json": MimeTypes.JSON.value,
+            "xml": MimeTypes.XML.value,
+            "txt": MimeTypes.PLAIN_TEXT.value,
+            "md": MimeTypes.MARKDOWN.value,
+            "html": MimeTypes.HTML.value,
+        }
+        
+        return extension_to_mime.get(ext, MimeTypes.UNKNOWN.value)
+
     def _transform_issue_to_ticket_record(
         self,
         issue_data: Dict[str, Any],
@@ -935,10 +1582,8 @@ class LinearConnector(BaseConnector):
         else:
             version = existing_record.version if existing_record else 0
         
-        # Build web URL
+        # Get web URL directly from Linear API response
         weburl = issue_data.get("url")
-        if not weburl and self.organization_url_key and identifier:
-            weburl = f"https://linear.app/{self.organization_url_key}/issue/{identifier}"
         
         # Create TicketRecord
         # Use updatedAt as external_revision_id so placeholders (None) will trigger update
@@ -977,15 +1622,419 @@ class LinearConnector(BaseConnector):
         
         return ticket
 
+    def _transform_comment_to_comment_record(
+        self,
+        comment_data: Dict[str, Any],
+        issue_id: str,
+        issue_identifier: str,
+        parent_node_id: str,
+        team_id: str,
+        existing_record: Optional[Record] = None
+    ) -> CommentRecord:
+        """
+        Transform Linear comment data to CommentRecord.
+        This method handles versioning similar to TicketRecord.
+        Follows Jira pattern for record naming.
+        
+        Args:
+            comment_data: Raw comment data from Linear API
+            issue_id: Parent issue external ID
+            issue_identifier: Parent issue identifier (e.g., "BAC-1")
+            parent_node_id: Internal record ID of parent ticket
+            team_id: Team ID for external_record_group_id
+            existing_record: Existing record from DB (if any) for version handling
+            
+        Returns:
+            CommentRecord: Transformed comment record
+        """
+        comment_id = comment_data.get("id", "")
+        if not comment_id:
+            raise ValueError("Comment data missing required 'id' field")
+        
+        body = comment_data.get("body", "")
+        user = comment_data.get("user", {})
+        author_source_id = user.get("id", "") if user else ""
+        author_name = user.get("displayName") or user.get("name") or "Unknown"
+        
+        # Timestamps
+        created_at = self._parse_linear_datetime(comment_data.get("createdAt", "")) or 0
+        updated_at = self._parse_linear_datetime(comment_data.get("updatedAt", "")) or 0
+        
+        # Use updatedAt as external_revision_id
+        external_revision_id = str(updated_at) if updated_at else None
+        
+        # Build record name following Jira pattern: "Comment by {author} on {issue_key}"
+        if issue_identifier:
+            record_name = f"Comment by {author_name} on {issue_identifier}"
+        else:
+            record_name = f"Comment by {author_name}"
+        
+        # Get web URL directly from Linear API response
+        weburl = comment_data.get("url")
+        
+        # Handle versioning: use existing record's id and increment version if changed
+        is_new = existing_record is None
+        record_id = existing_record.id if existing_record else str(uuid4())
+        
+        if is_new:
+            version = 0
+        elif hasattr(existing_record, 'source_updated_at') and existing_record.source_updated_at != updated_at:
+            version = existing_record.version + 1
+            self.logger.debug(f"📝 Comment {comment_id[:8]} changed, incrementing version to {version}")
+        else:
+            version = existing_record.version if existing_record else 0
+        
+        comment = CommentRecord(
+            id=record_id,
+            org_id=self.data_entities_processor.org_id,
+            record_name=record_name,
+            record_type=RecordType.COMMENT,
+            external_record_id=comment_id,
+            external_revision_id=external_revision_id,
+            external_record_group_id=team_id,
+            parent_external_record_id=issue_id,
+            parent_record_type=RecordType.TICKET,
+            version=version,
+            origin=OriginTypes.CONNECTOR.value,
+            connector_name=self.connector_name,
+            connector_id=self.connector_id,
+            mime_type=MimeTypes.MARKDOWN.value,
+            weburl=weburl,
+            created_at=get_epoch_timestamp_in_ms(),
+            updated_at=get_epoch_timestamp_in_ms(),
+            source_created_at=created_at,
+            source_updated_at=updated_at,
+            author_source_id=author_source_id,
+            preview_renderable=False,
+            is_dependent_node=True,
+            parent_node_id=parent_node_id,
+            inherit_permissions=True,
+        )
+        
+        return comment
+
+    def _transform_attachment_to_link_record(
+        self,
+        attachment_data: Dict[str, Any],
+        issue_id: str,
+        parent_node_id: str,
+        team_id: str,
+        existing_record: Optional[Record] = None
+    ) -> LinkRecord:
+        """
+        Transform Linear attachment data to LinkRecord.
+        This method handles versioning similar to TicketRecord.
+        
+        Args:
+            attachment_data: Raw attachment data from Linear API
+            issue_id: Parent issue external ID
+            parent_node_id: Internal record ID of parent ticket
+            team_id: Team ID for external_record_group_id
+            existing_record: Existing record from DB (if any) for version handling
+            
+        Returns:
+            LinkRecord: Transformed link record
+        """
+        attachment_id = attachment_data.get("id", "")
+        if not attachment_id:
+            raise ValueError("Attachment data missing required 'id' field")
+        
+        url = attachment_data.get("url", "")
+        if not url:
+            raise ValueError(f"Attachment {attachment_id} missing required 'url' field")
+        
+        title = attachment_data.get("title") or attachment_data.get("subtitle")
+        
+        # Timestamps
+        created_at = self._parse_linear_datetime(attachment_data.get("createdAt", "")) or 0
+        updated_at = self._parse_linear_datetime(attachment_data.get("updatedAt", "")) or 0
+        
+        # Use updatedAt as external_revision_id
+        external_revision_id = str(updated_at) if updated_at else None
+        
+        # Set is_public to UNKNOWN for Linear attachments (we don't know if they're public or private)
+        is_public = LinkPublicStatus.UNKNOWN
+        
+        # Build record name
+        record_name = title if title else url.split("/")[-1] or f"Attachment {attachment_id[:8]}"
+        
+        # Handle versioning: use existing record's id and increment version if changed
+        is_new = existing_record is None
+        record_id = existing_record.id if existing_record else str(uuid4())
+        
+        if is_new:
+            version = 0
+        elif hasattr(existing_record, 'source_updated_at') and existing_record.source_updated_at != updated_at:
+            version = existing_record.version + 1
+            self.logger.debug(f"📝 Attachment {attachment_id[:8]} changed, incrementing version to {version}")
+        else:
+            version = existing_record.version if existing_record else 0
+        
+        link = LinkRecord(
+            id=record_id,
+            org_id=self.data_entities_processor.org_id,
+            record_name=record_name,
+            record_type=RecordType.LINK,
+            external_record_id=attachment_id,
+            external_revision_id=external_revision_id,
+            external_record_group_id=team_id,
+            parent_external_record_id=issue_id,
+            parent_record_type=RecordType.TICKET,
+            version=version,
+            origin=OriginTypes.CONNECTOR.value,
+            connector_name=self.connector_name,
+            connector_id=self.connector_id,
+            mime_type=MimeTypes.MARKDOWN.value,
+            weburl=url,
+            url=url,
+            title=title,
+            is_public=is_public,
+            created_at=get_epoch_timestamp_in_ms(),
+            updated_at=get_epoch_timestamp_in_ms(),
+            source_created_at=created_at,
+            source_updated_at=updated_at,
+            preview_renderable=False,
+            is_dependent_node=True,
+            parent_node_id=parent_node_id,
+            inherit_permissions=True,
+        )
+        
+        return link
+
+    def _transform_document_to_webpage_record(
+        self,
+        document_data: Dict[str, Any],
+        issue_id: str,
+        parent_node_id: str,
+        team_id: str,
+        existing_record: Optional[Record] = None
+    ) -> WebpageRecord:
+        """
+        Transform Linear document data to WebpageRecord.
+        This method handles versioning similar to TicketRecord.
+        
+        Args:
+            document_data: Raw document data from Linear API
+            issue_id: Parent issue external ID
+            parent_node_id: Internal record ID of parent ticket
+            team_id: Team ID for external_record_group_id
+            existing_record: Existing record from DB (if any) for version handling
+            
+        Returns:
+            WebpageRecord: Transformed webpage record
+        """
+        document_id = document_data.get("id", "")
+        if not document_id:
+            raise ValueError("Document data missing required 'id' field")
+        
+        url = document_data.get("url", "")
+        if not url:
+            raise ValueError(f"Document {document_id} missing required 'url' field")
+        
+        title = document_data.get("title", "")
+        slug_id = document_data.get("slugId", "")
+        
+        # Timestamps
+        created_at = self._parse_linear_datetime(document_data.get("createdAt", "")) or 0
+        updated_at = self._parse_linear_datetime(document_data.get("updatedAt", "")) or 0
+        
+        # Use updatedAt as external_revision_id
+        external_revision_id = str(updated_at) if updated_at else None
+        
+        # Build record name
+        record_name = title if title else f"Document {document_id[:8]}"
+        
+        # Handle versioning: use existing record's id and increment version if changed
+        is_new = existing_record is None
+        record_id = existing_record.id if existing_record else str(uuid4())
+        
+        if is_new:
+            version = 0
+        elif hasattr(existing_record, 'source_updated_at') and existing_record.source_updated_at != updated_at:
+            version = existing_record.version + 1
+            self.logger.debug(f"📝 Document {document_id[:8]} changed, incrementing version to {version}")
+        else:
+            version = existing_record.version if existing_record else 0
+        
+        webpage = WebpageRecord(
+            id=record_id,
+            org_id=self.data_entities_processor.org_id,
+            record_name=record_name,
+            record_type=RecordType.WEBPAGE,
+            external_record_id=document_id,
+            external_revision_id=external_revision_id,
+            external_record_group_id=team_id,
+            parent_external_record_id=issue_id,
+            parent_record_type=RecordType.TICKET,
+            version=version,
+            origin=OriginTypes.CONNECTOR.value,
+            connector_name=self.connector_name,
+            connector_id=self.connector_id,
+            mime_type=MimeTypes.MARKDOWN.value,
+            weburl=url,
+            created_at=get_epoch_timestamp_in_ms(),
+            updated_at=get_epoch_timestamp_in_ms(),
+            source_created_at=created_at,
+            source_updated_at=updated_at,
+            preview_renderable=True,
+            is_dependent_node=True,
+            parent_node_id=parent_node_id,
+            inherit_permissions=True,
+        )
+        
+        return webpage
+
+    def _transform_file_url_to_file_record(
+        self,
+        file_url: str,
+        filename: str,
+        parent_external_id: str,
+        parent_node_id: str,
+        parent_record_type: RecordType,
+        team_id: str,
+        existing_record: Optional[Record] = None,
+        parent_created_at: Optional[int] = None,
+        parent_updated_at: Optional[int] = None
+    ) -> FileRecord:
+        """
+        Transform a file URL to FileRecord.
+        
+        Args:
+            file_url: URL of the file
+            filename: Name of the file
+            parent_external_id: External ID of parent (issue or comment)
+            parent_node_id: Internal ID of parent record
+            parent_record_type: Type of parent record (TICKET or COMMENT)
+            team_id: Team ID for external_record_group_id
+            existing_record: Existing record from DB (if any) for version handling
+            parent_created_at: Source created timestamp of parent (in ms)
+            parent_updated_at: Source updated timestamp of parent (in ms)
+            
+        Returns:
+            FileRecord: Transformed file record
+        """
+        # Use URL as external_record_id (unique identifier)
+        file_id = file_url
+        
+        # Extract extension and determine mime type
+        extension = None
+        if "." in filename:
+            extension = filename.split(".")[-1].lower()
+        
+        mime_type = self._get_mime_type_from_url(file_url, filename)
+        
+        # Handle versioning
+        is_new = existing_record is None
+        record_id = existing_record.id if existing_record else str(uuid4())
+        
+        if is_new:
+            version = 0
+        else:
+            # For files, we don't track updatedAt, so keep same version unless URL changed
+            version = existing_record.version if existing_record else 0
+        
+        file_record = FileRecord(
+            id=record_id,
+            org_id=self.data_entities_processor.org_id,
+            record_name=filename,
+            record_type=RecordType.FILE,
+            external_record_id=file_id,
+            external_revision_id=None,
+            external_record_group_id=team_id,
+            parent_external_record_id=parent_external_id,
+            parent_record_type=parent_record_type,
+            version=version,
+            origin=OriginTypes.CONNECTOR.value,
+            connector_name=self.connector_name,
+            connector_id=self.connector_id,
+            mime_type=mime_type,
+            weburl=file_url,
+            created_at=get_epoch_timestamp_in_ms(),
+            updated_at=get_epoch_timestamp_in_ms(),
+            source_created_at=parent_created_at,
+            source_updated_at=parent_updated_at ,
+            preview_renderable=True,
+            is_dependent_node=True,
+            parent_node_id=parent_node_id,
+            inherit_permissions=True,
+            is_file=True,
+            extension=extension,
+            size_in_bytes=0,
+        )
+        
+        return file_record
+
+    def _apply_date_filters_to_linear_filter(
+        self,
+        linear_filter: Dict[str, Any],
+        last_sync_time: Optional[int] = None
+    ) -> None:
+        """
+        Apply date filters (modified/created) to Linear filter dict.
+        Merges filter values with checkpoint timestamp for incremental sync.
+        
+        Args:
+            linear_filter: Linear filter dict to modify (in-place)
+            last_sync_time: Last sync timestamp in ms (for incremental sync)
+        """
+        # Get modified filter from sync_filters
+        modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED) if self.sync_filters else None
+        modified_after_ts = None
+        modified_before_ts = None
+
+        if modified_filter:
+            modified_after_ts, modified_before_ts = modified_filter.get_value(default=(None, None))
+
+        # Get created filter from sync_filters
+        created_filter = self.sync_filters.get(SyncFilterKey.CREATED) if self.sync_filters else None
+        created_after_ts = None
+        created_before_ts = None
+
+        if created_filter:
+            created_after_ts, created_before_ts = created_filter.get_value(default=(None, None))
+
+        # Merge modified_after with checkpoint (use the latest)
+        if modified_after_ts and last_sync_time:
+            modified_after_ts = max(modified_after_ts, last_sync_time)
+            self.logger.info(f"🔄 Using latest modified_after: {modified_after_ts} (filter: {modified_after_ts}, checkpoint: {last_sync_time})")
+        elif modified_after_ts:
+            self.logger.info(f"🔍 Using filter: Fetching issues modified after {modified_after_ts}")
+        elif last_sync_time:
+            modified_after_ts = last_sync_time
+            self.logger.info(f"🔄 Incremental sync: Fetching issues updated after {modified_after_ts}")
+
+        # Apply modified date filters
+        if modified_after_ts:
+            linear_datetime = self._linear_datetime_from_timestamp(modified_after_ts)
+            if linear_datetime:
+                linear_filter["updatedAt"] = {"gt": linear_datetime}
+
+        if modified_before_ts:
+            linear_datetime = self._linear_datetime_from_timestamp(modified_before_ts)
+            if linear_datetime:
+                if "updatedAt" in linear_filter:
+                    linear_filter["updatedAt"]["lte"] = linear_datetime
+                else:
+                    linear_filter["updatedAt"] = {"lte": linear_datetime}
+
+        # Apply created date filters
+        if created_after_ts:
+            linear_datetime = self._linear_datetime_from_timestamp(created_after_ts)
+            if linear_datetime:
+                linear_filter["createdAt"] = {"gte": linear_datetime}
+
+        if created_before_ts:
+            linear_datetime = self._linear_datetime_from_timestamp(created_before_ts)
+            if linear_datetime:
+                if "createdAt" in linear_filter:
+                    linear_filter["createdAt"]["lte"] = linear_datetime
+                else:
+                    linear_filter["createdAt"] = {"lte": linear_datetime}
+
     async def _get_team_sync_checkpoint(self, team_key: str) -> Optional[int]:
         """
         Get team-specific sync checkpoint (last_sync_time).
-        
-        Args:
-            team_key: Team key (e.g., "ENG")
-            
-        Returns:
-            last_sync_time in ms or None if first sync
+
         """
         sync_point_key = f"team_{team_key}"
         data = await self.issues_sync_point.read_sync_point(sync_point_key)
@@ -994,10 +2043,7 @@ class LinearConnector(BaseConnector):
     async def _update_team_sync_checkpoint(self, team_key: str, timestamp: Optional[int] = None) -> None:
         """
         Update team-specific sync checkpoint.
-        
-        Args:
-            team_key: Team key (e.g., "ENG")
-            timestamp: Timestamp to set (if None, uses current time)
+
         """
         sync_point_key = f"team_{team_key}"
         sync_time = timestamp if timestamp is not None else get_epoch_timestamp_in_ms()
@@ -1007,6 +2053,36 @@ class LinearConnector(BaseConnector):
             {"last_sync_time": sync_time}
         )
         self.logger.debug(f"💾 Updated sync checkpoint for team {team_key}: {sync_time}")
+
+    async def _get_attachments_sync_checkpoint(self) -> Optional[int]:
+        """Get the attachments sync checkpoint timestamp."""
+        sync_point_key = "attachments_sync_point"
+        data = await self.attachments_sync_point.read_sync_point(sync_point_key)
+        return data.get("last_sync_time") if data else None
+
+    async def _update_attachments_sync_checkpoint(self, timestamp: int) -> None:
+        """Update the attachments sync checkpoint."""
+        sync_point_key = "attachments_sync_point"
+        await self.attachments_sync_point.update_sync_point(
+            sync_point_key,
+            {"last_sync_time": timestamp}
+        )
+        self.logger.debug(f"💾 Updated attachments sync point: {timestamp}")
+
+    async def _get_documents_sync_checkpoint(self) -> Optional[int]:
+        """Get the documents sync checkpoint timestamp."""
+        sync_point_key = "documents_sync_point"
+        data = await self.documents_sync_point.read_sync_point(sync_point_key)
+        return data.get("last_sync_time") if data else None
+
+    async def _update_documents_sync_checkpoint(self, timestamp: int) -> None:
+        """Update the documents sync checkpoint."""
+        sync_point_key = "documents_sync_point"
+        await self.documents_sync_point.update_sync_point(
+            sync_point_key,
+            {"last_sync_time": timestamp}
+        )
+        self.logger.debug(f"💾 Updated documents sync point: {timestamp}")
 
     def _linear_datetime_from_timestamp(self, timestamp_ms: int) -> str:
         """
@@ -1047,7 +2123,213 @@ class LinearConnector(BaseConnector):
             self.logger.debug(f"Failed to parse Linear datetime '{datetime_str}': {e}")
             return None
 
+    # ==================== CONTENT STREAMING HELPERS ====================
+
+    async def _fetch_issue_content(self, issue_id: str) -> str:
+        """Fetch full issue content for streaming.
+        
+        Args:
+            issue_id: Linear issue ID
+            
+        Returns:
+            Formatted markdown content for the issue
+        """
+        if not self.data_source:
+            raise ValueError("DataSource not initialized")
+
+        # Use DataSource to get issue details
+        datasource = await self._get_fresh_datasource()
+        response = await datasource.issue(id=issue_id)
+
+        if not response.success:
+            raise Exception(f"Failed to fetch issue content: {response.message}")
+
+        issue_data = response.data.get("issue", {}) if response.data else {}
+        if not issue_data:
+            raise Exception(f"No issue data found for ID: {issue_id}")
+
+        # Return only the description field
+        description = issue_data.get("description", "")
+        return description if description else ""
+
+    async def _fetch_comment_content(self, comment_id: str) -> str:
+        """Fetch comment content for streaming.
+        
+        Args:
+            comment_id: Linear comment ID
+            
+        Returns:
+            Formatted markdown content for the comment
+        """
+        if not self.data_source:
+            raise ValueError("DataSource not initialized")
+
+        # Use DataSource to get comment details
+        datasource = await self._get_fresh_datasource()
+        response = await datasource.comment(id=comment_id)
+
+        if not response.success:
+            raise Exception(f"Failed to fetch comment content: {response.message}")
+
+        comment_data = response.data.get("comment", {}) if response.data else {}
+        if not comment_data:
+            raise Exception(f"No comment data found for ID: {comment_id}")
+
+        # Return only the comment body
+        body = comment_data.get("body", "")
+        return body if body else ""
+
+    async def _fetch_document_content(self, document_id: str) -> str:
+        """Fetch document content for streaming.
+        
+        Args:
+            document_id: Linear document ID
+            
+        Returns:
+            Document content (markdown format)
+        """
+        if not self.data_source:
+            raise ValueError("DataSource not initialized")
+
+        # Use DataSource to get document details
+        datasource = await self._get_fresh_datasource()
+        
+        # Query document by ID using filter
+        response = await datasource.documents(
+            first=1,
+            filter={"id": {"eq": document_id}}
+        )
+
+        if not response.success:
+            raise Exception(f"Failed to fetch document content: {response.message}")
+
+        documents_data = response.data.get("documents", {}) if response.data else {}
+        documents_list = documents_data.get("nodes", [])
+        
+        if not documents_list:
+            raise Exception(f"No document data found for ID: {document_id}")
+
+        document_data = documents_list[0]
+        
+        # Return the content field (markdown)
+        content = document_data.get("content", "")
+        return content if content else ""
+
+
     # ==================== ABSTRACT METHODS ====================
+    async def stream_record(self, record: Record) -> StreamingResponse:
+        """
+        Stream record content (issue, comment, attachment, document, or file).
+        
+        Handles:
+        - TICKET: Stream issue description (markdown)
+        - COMMENT: Stream comment body (markdown)
+        - LINK: Stream attachment/link from weburl
+        - WEBPAGE: Stream document content (markdown)
+        - FILE: Stream file content from weburl
+        """
+        try:
+            if not self.data_source:
+                await self.init()
+
+            if record.record_type == RecordType.TICKET:
+                # Stream issue content (markdown format)
+                issue_id = record.external_record_id
+                content = await self._fetch_issue_content(issue_id)
+
+                return StreamingResponse(
+                    iter([content.encode('utf-8')]),
+                    media_type=MimeTypes.MARKDOWN.value,
+                    headers={
+                        "Content-Disposition": f'inline; filename="{record.external_record_id}.md"'
+                    }
+                )
+
+            elif record.record_type == RecordType.COMMENT:
+                # Stream comment content (markdown format)
+                comment_id = record.external_record_id.replace("comment_", "")
+                content = await self._fetch_comment_content(comment_id)
+
+                return StreamingResponse(
+                    iter([content.encode('utf-8')]),
+                    media_type=MimeTypes.MARKDOWN.value,
+                    headers={
+                        "Content-Disposition": f'inline; filename="{record.external_record_id}.md"'
+                    }
+                )
+
+            elif record.record_type == RecordType.LINK:
+                # Stream attachment/link as markdown (clickable link format)
+                if not record.weburl:
+                    raise ValueError(f"LinkRecord {record.external_record_id} missing weburl")
+                
+                # Return simple markdown link format (same as issue/comment descriptions)
+                link_name = record.record_name or 'Link'
+                markdown_content = f"# {link_name}\n\n[{record.weburl}]({record.weburl})"
+
+                return StreamingResponse(
+                    iter([markdown_content.encode('utf-8')]),
+                    media_type=MimeTypes.MARKDOWN.value,
+                    headers={
+                        "Content-Disposition": f'inline; filename="{record.external_record_id}.md"'
+                    }
+                )
+
+            elif record.record_type == RecordType.WEBPAGE:
+                # Stream document content (markdown format)
+                document_id = record.external_record_id
+                content = await self._fetch_document_content(document_id)
+
+                return StreamingResponse(
+                    iter([content.encode('utf-8')]),
+                    media_type=MimeTypes.MARKDOWN.value,
+                    headers={
+                        "Content-Disposition": f'inline; filename="{record.external_record_id}.md"'
+                    }
+                )
+
+            elif record.record_type == RecordType.FILE:
+                # Stream file content from weburl
+                if not record.weburl:
+                    raise ValueError(f"FileRecord {record.external_record_id} missing weburl")
+                
+                # Download file content and stream it with authentication
+                async def file_stream() -> AsyncGenerator[bytes, None]:
+                    if not self.data_source:
+                        await self.init()
+                    
+                    datasource = await self._get_fresh_datasource()
+                    try:
+                        file_content = await datasource.download_file(record.weburl)
+                        yield file_content
+                    except Exception as e:
+                        self.logger.error(f"❌ Error downloading file from {record.weburl}: {e}")
+                        raise
+                
+                # Determine filename from record_name or weburl
+                filename = record.record_name or record.external_record_id
+                # Safely access extension attribute (only exists on FileRecord)
+                extension = getattr(record, 'extension', None)
+                if extension:
+                    filename = f"{filename}.{extension}" if not filename.endswith(f".{extension}") else filename
+                
+                # Use record's mime_type if available, otherwise detect from extension
+                media_type = record.mime_type if record.mime_type else MimeTypes.UNKNOWN.value
+                
+                return StreamingResponse(
+                    file_stream(),
+                    media_type=media_type,
+                    headers={
+                        "Content-Disposition": f'attachment; filename="{filename}"'
+                    }
+                )
+
+            else:
+                raise ValueError(f"Unsupported record type for streaming: {record.record_type}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Error streaming record {record.external_record_id} ({record.record_type}): {e}", exc_info=True)
+            raise
 
     async def run_incremental_sync(self) -> None:
         """
@@ -1081,31 +2363,6 @@ class LinearConnector(BaseConnector):
         """Create a signed URL for a specific record"""
         # Linear doesn't support signed URLs, return empty string
         return ""
-
-    async def stream_record(self, record: Record) -> StreamingResponse:
-        """
-        Stream record content (issue or comment).
-        """
-        try:
-            if not self.data_source:
-                await self.init()
-
-            await self._get_fresh_datasource()
-
-            # For now, return empty content
-            # TODO: Implement proper content streaming for Linear issues/comments
-            content = ""
-            return StreamingResponse(
-                iter([content.encode('utf-8')]),
-                media_type="text/plain"
-            )
-        except Exception as e:
-            self.logger.error(f"❌ Failed to stream record: {e}")
-            return StreamingResponse(
-                iter([b"Error streaming record"]),
-                media_type="text/plain",
-                status_code=500
-            )
 
     async def handle_webhook_notification(self, notification: Dict) -> None:
         """Handle webhook notifications from Linear"""

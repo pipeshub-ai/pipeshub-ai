@@ -25,6 +25,7 @@ from app.models.entities import (
     AppUserGroup,
     CommentRecord,
     FileRecord,
+    LinkRecord,
     MailRecord,
     Person,
     Record,
@@ -1307,6 +1308,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return TicketRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.COMMENTS.value:
                 return CommentRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.LINKS.value:
+                return LinkRecord.from_arango_record(type_doc_data, record_data)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_data)
@@ -1422,6 +1425,66 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(
                 "❌ Failed to retrieve record for Jira issue key %s %s: %s", connector_id, issue_key, str(e)
             )
+            return None
+
+    async def get_record_by_weburl(
+        self,
+        weburl: str,
+        org_id: Optional[str] = None,
+        transaction: Optional[str] = None
+    ) -> Optional[Record]:
+        """
+        Get record by weburl (exact match).
+        Skips LinkRecords and returns the first non-LinkRecord found.
+
+        Args:
+            weburl: Web URL to search for
+            org_id: Optional organization ID to filter by
+            transaction: Optional transaction ID
+
+        Returns:
+            Optional[Record]: First non-LinkRecord found, None otherwise
+        """
+        try:
+            self.logger.info("🚀 Retrieving record by weburl: %s", weburl)
+
+            # Get all records with this weburl (not just one)
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.webUrl == @weburl
+                {f"AND record.orgId == @org_id" if org_id else ""}
+                RETURN record
+            """
+
+            bind_vars = {"weburl": weburl}
+            if org_id:
+                bind_vars["org_id"] = org_id
+
+            results = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
+
+            if results:
+                # Skip LinkRecords and return the first non-LinkRecord found
+                for record_dict in results:
+                    record_data = self._translate_node_from_arango(record_dict)
+                    record_type = record_data.get("recordType")
+                    
+                    # Skip LinkRecords
+                    if record_type == "LINK":
+                        continue
+                    
+                    # Return first non-LinkRecord found
+                    self.logger.info("✅ Successfully retrieved record by weburl: %s", weburl)
+                    return Record.from_arango_base_record(record_data)
+                
+                # All records were LinkRecords
+                self.logger.debug("⚠️ Only LinkRecords found for weburl: %s", weburl)
+                return None
+            else:
+                self.logger.warning("⚠️ No record found for weburl: %s", weburl)
+                return None
+
+        except Exception as e:
+            self.logger.error("❌ Failed to retrieve record by weburl %s: %s", weburl, str(e))
             return None
 
     async def get_records_by_parent(

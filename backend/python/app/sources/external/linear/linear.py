@@ -1,5 +1,7 @@
 from typing import Any, Dict, List, Optional
 
+import httpx
+
 from app.sources.client.graphql.response import GraphQLResponse
 from app.sources.client.linear.graphql_op import LinearGraphQLOperations
 from app.sources.client.linear.linear import (
@@ -489,12 +491,38 @@ class LinearDataSource:
             variables["orderBy"] = orderBy
 
         try:
+            # operation_name is optional - Postman query works without it
             response = await self._linear_client.get_client().execute(
-                query=query, variables=variables, operation_name="attachments"
+                query=query, variables=variables
             )
             return response
         except Exception as e:
             return GraphQLResponse(success=False, message=f"Failed to execute query attachments: {str(e)}")
+
+    async def documents(
+        self,
+        first: Optional[int] = None,
+        after: Optional[str] = None,
+        filter: Optional[Dict[str, Any]] = None
+    ) -> GraphQLResponse:
+        """Get documents"""
+        query = LinearGraphQLOperations.get_operation_with_fragments("query", "documents")
+        variables = {}
+        if first is not None:
+            variables["first"] = first
+        if after is not None:
+            variables["after"] = after
+        if filter is not None:
+            variables["filter"] = filter
+
+        try:
+            # operation_name is optional - Postman query works without it
+            response = await self._linear_client.get_client().execute(
+                query=query, variables=variables
+            )
+            return response
+        except Exception as e:
+            return GraphQLResponse(success=False, message=f"Failed to execute query documents: {str(e)}")
 
     # NOTIFICATION QUERIES
     async def notification(self, id: str) -> GraphQLResponse:
@@ -1996,3 +2024,63 @@ class LinearDataSource:
                     })
 
         return team_response
+
+    # =============================================================================
+    # FILE OPERATIONS
+    # =============================================================================
+
+    def _get_auth_header(self) -> Optional[str]:
+        """
+        Get authentication header from Linear client.
+        
+        Returns:
+            Authorization header value or None if not available
+        """
+        linear_client = self._linear_client.get_client()
+        
+        # Extract token from client headers
+        if hasattr(linear_client, 'headers') and linear_client.headers:
+            return linear_client.headers.get("Authorization")
+        elif hasattr(linear_client, 'token'):
+            # For API token auth
+            return linear_client.token
+        elif hasattr(linear_client, 'oauth_token'):
+            # For OAuth token auth
+            oauth_token = linear_client.oauth_token
+            if oauth_token and not oauth_token.startswith("Bearer "):
+                return f"Bearer {oauth_token}"
+            else:
+                return oauth_token
+        
+        return None
+
+    async def download_file(self, file_url: str) -> bytes:
+        """
+        Download file from Linear upload URL with authentication.
+        
+        Args:
+            file_url: URL of the file to download (e.g., from uploads.linear.app)
+            
+        Returns:
+            File content as bytes
+            
+        Raises:
+            ValueError: If file download fails
+        """
+        try:
+            auth_header = self._get_auth_header()
+            
+            headers = {}
+            if auth_header:
+                headers["Authorization"] = auth_header
+            
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                response = await client.get(file_url, headers=headers)
+                response.raise_for_status()
+                return response.content
+        except httpx.HTTPStatusError as e:
+            raise ValueError(f"Failed to fetch file content: HTTP {e.response.status_code}")
+        except httpx.RequestError as e:
+            raise ValueError(f"Failed to fetch file content: {str(e)}")
+        except Exception as e:
+            raise ValueError(f"Failed to fetch file content: {str(e)}")
