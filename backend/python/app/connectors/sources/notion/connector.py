@@ -46,8 +46,10 @@ from app.models.blocks import (
     BlockContainerIndex,
     BlockGroup,
     BlocksContainer,
+    BlockSubType,
     BlockType,
     ChildRecord,
+    ChildType,
     DataFormat,
     GroupType,
     TableMetadata,
@@ -1095,11 +1097,14 @@ class NotionConnector(BaseConnector):
                 self.logger.error(f"Error querying data source {data_source_id}: {e}", exc_info=True)
                 break
         
-        # Step 3: Delegate parsing to NotionBlockParser
+        # Step 3: Delegate parsing to NotionBlockParser with callbacks
+        # Use unified callbacks: one for records, one for users
         blocks, block_groups = await parser.parse_data_source_to_blocks(
             data_source_metadata=metadata,
             data_source_rows=all_rows,
-            data_source_id=data_source_id
+            data_source_id=data_source_id,
+            get_record_child_callback=lambda external_id: self.get_record_child_by_external_id(external_id, data_source_id),
+            get_user_child_callback=self.get_user_child_by_external_id
         )
         
         self.logger.info(f"Fetched data source {data_source_id}: {len(block_groups)} tables, {len(blocks)} rows")
@@ -1867,20 +1872,23 @@ class NotionConnector(BaseConnector):
         Creates real records with minimal info for children that haven't synced yet.
         These records will be automatically updated with full data when they sync.
         
-        Updates block.data['child_record_id'] by querying ArangoDB for records
-        with matching external_record_id. If not found, creates a real record.
+        Populates table_row_metadata.children_records with ChildRecord objects
+        by querying ArangoDB for records with matching external_record_id.
+        If not found, creates a minimal record.
         
         Args:
             blocks: List of blocks (modified in-place)
             parent_record: Optional parent record for permission inheritance
         """
         # Filter child reference blocks that need resolution
+        # Look for blocks with sub_type=CHILD_RECORD (child_page/child_database blocks)
         child_ref_blocks = [
             block for block in blocks 
-            if block.type == BlockType.CHILD_RECORD
+            if block.sub_type == BlockSubType.CHILD_RECORD
             and isinstance(block.data, dict)
             and block.data.get("child_external_id")
-            and not block.data.get("child_record_id")
+            # Check if already resolved (has children_records populated)
+            and (not block.table_row_metadata or not block.table_row_metadata.children_records)
         ]
         
         if not child_ref_blocks:
@@ -1903,7 +1911,12 @@ class NotionConnector(BaseConnector):
                 
                 if child_record:
                     # Existing record found (real or previously created minimal record)
-                    block.data["child_record_id"] = child_record.id
+                    child_record_obj = ChildRecord(
+                        child_type=ChildType.RECORD,
+                        record_id=child_record.id,
+                        record_name=child_record.record_name,
+                        record_type=child_record.record_type
+                    )
                     self.logger.debug(
                         f"✅ Resolved child reference: {child_external_id} -> {child_record.id}"
                     )
@@ -1932,12 +1945,22 @@ class NotionConnector(BaseConnector):
                     # Create record with empty permissions (will inherit from parent)
                     await self.data_entities_processor.on_new_records([(minimal_record, [])])
                     
-                    block.data["child_record_id"] = minimal_record.id
+                    child_record_obj = ChildRecord(
+                        child_type=ChildType.RECORD,
+                        record_id=minimal_record.id,
+                        record_name=minimal_record.record_name,
+                        record_type=minimal_record.record_type
+                    )
                     
                     self.logger.info(
                         f"✨ Created minimal record for unsynced child: {child_external_id} -> {minimal_record.id}. "
                         f"Will be enriched when child syncs."
                     )
+                
+                # Populate table_row_metadata.children_records
+                if not block.table_row_metadata:
+                    block.table_row_metadata = TableRowMetadata()
+                block.table_row_metadata.children_records = [child_record_obj]
 
             except Exception as e:
                 self.logger.error(
@@ -2027,6 +2050,7 @@ class NotionConnector(BaseConnector):
                     if child_record:
                         # Existing record found
                         children_records.append(ChildRecord(
+                            child_type=ChildType.RECORD,
                             record_id=child_record.id,
                             record_name=child_record.record_name,
                             record_type=child_record.record_type
@@ -2055,6 +2079,7 @@ class NotionConnector(BaseConnector):
                         await self.data_entities_processor.on_new_records([(minimal_record, [])])
                         
                         children_records.append(ChildRecord(
+                            child_type=ChildType.RECORD,
                             record_id=minimal_record.id,
                             record_name=child_title,
                             record_type=RecordType.NOTION_PAGE
@@ -2680,7 +2705,7 @@ class NotionConnector(BaseConnector):
                 weburl=page_url,
                 is_file=True,
                 extension=extension,
-                size_in_bytes=None,  # Notion doesn't provide file size in block data
+                size_in_bytes=0,  # Notion doesn't provide file size in block data
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
             )
@@ -2709,6 +2734,223 @@ class NotionConnector(BaseConnector):
                 return "".join([t.get("plain_text", "") for t in title_array]) or "Untitled"
         
         return "Untitled"
+
+    async def resolve_page_title_by_id(self, page_id: str) -> Optional[str]:
+        """
+        Resolve a Notion page ID to its title.
+        
+        Fetches the page from Notion API and extracts the title.
+        Can also check ArangoDB for existing record first.
+        
+        Args:
+            page_id: Notion page ID
+            
+        Returns:
+            Page title string, or None if not found
+        """
+        try:
+            # First check if we have the record in ArangoDB
+            async with self.data_store_provider.transaction() as tx_store:
+                record = await tx_store.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=page_id
+                )
+                if record and record.record_name:
+                    return record.record_name
+            
+            # If not in DB, fetch from Notion API
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.retrieve_page(page_id)
+            
+            if response.success and response.data:
+                page_data = response.data.json()
+                return self._extract_page_title(page_data)
+            
+            return None
+        except Exception as e:
+            self.logger.warning(f"Failed to resolve page title for {page_id}: {e}")
+            return None
+
+    async def resolve_user_name_by_id(self, user_id: str) -> Optional[str]:
+        """
+        Resolve a Notion user ID to the user's name.
+        
+        Fetches the user from Notion API and extracts name/email.
+        
+        Args:
+            user_id: Notion user ID
+            
+        Returns:
+            User name (or email if name not available), or None if not found
+        """
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.retrieve_user(user_id)
+            
+            if response.success and response.data:
+                user_data = response.data.json()
+                user_obj = user_data.get("object")
+                
+                if user_obj == "user":
+                    user_type = user_data.get("type", "")
+                    
+                    if user_type == "person":
+                        # Person user - get name or email
+                        person = user_data.get("person", {})
+                        name = user_data.get("name", "")
+                        if name:
+                            return name
+                        # Fallback to email if available
+                        email = person.get("email", "")
+                        if email:
+                            return email
+                    elif user_type == "bot":
+                        # Bot user - get name
+                        bot = user_data.get("bot", {})
+                        name = user_data.get("name", "")
+                        if name:
+                            return name
+                        # Fallback to owner info
+                        owner = bot.get("owner", {})
+                        if owner.get("type") == "user":
+                            return owner.get("user", {}).get("name", "Bot")
+            
+            return None
+        except Exception as e:
+            self.logger.warning(f"Failed to resolve user name for {user_id}: {e}")
+            return None
+
+    async def get_record_by_external_id(self, external_id: str) -> Optional[Record]:
+        """
+        Get record by external ID from ArangoDB.
+        
+        Args:
+            external_id: Notion external record ID
+            
+        Returns:
+            Record object if found, None otherwise
+        """
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                return await tx_store.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=external_id
+                )
+        except Exception as e:
+            self.logger.warning(f"Failed to get record for {external_id}: {e}")
+            return None
+
+    async def get_record_child_by_external_id(
+        self, 
+        external_id: str,
+        parent_data_source_id: Optional[str] = None
+    ) -> Optional[ChildRecord]:
+        """
+        Get or create ChildRecord for a record (page/datasource) by external ID.
+        
+        Combines record lookup, title resolution, and ChildRecord creation.
+        
+        Args:
+            external_id: Notion page/datasource ID
+            parent_data_source_id: Optional parent data source ID (for creating temporary records)
+            
+        Returns:
+            ChildRecord object if found/created, None otherwise
+        """
+        try:
+            # Query for existing record by external ID
+            record = await self.get_record_by_external_id(external_id)
+            
+            if record:
+                # Existing record found - return ChildRecord
+                self.logger.debug(f"✅ Found record: {external_id} -> {record.id}")
+                return ChildRecord(
+                    child_type=ChildType.RECORD,
+                    record_id=record.id,
+                    record_name=record.record_name,
+                    record_type=record.record_type
+                )
+            
+            # Record doesn't exist - resolve title and create temporary record if parent provided
+            page_title = await self.resolve_page_title_by_id(external_id)
+            
+            if parent_data_source_id:
+                # Create temporary record for row pages
+                self.logger.debug(f"⚠️ Record not found: {external_id}, creating temporary record")
+                
+                minimal_record = WebpageRecord(
+                    org_id=self.data_entities_processor.org_id,
+                    record_name=page_title or "Database Row",
+                    record_type=RecordType.NOTION_PAGE,
+                    external_record_id=external_id,
+                    external_revision_id="temporary",
+                    connector_id=self.connector_id,
+                    connector_name=Connectors.NOTION,
+                    record_group_type=RecordGroupType.NOTION_WORKSPACE,
+                    external_record_group_id=self.workspace_id,
+                    mime_type=MimeTypes.BLOCKS.value,
+                    indexing_status=IndexingStatus.AUTO_INDEX_OFF.value,
+                    version=1,
+                    origin=OriginTypes.CONNECTOR,
+                    inherit_permissions=True,
+                    parent_external_record_id=parent_data_source_id,
+                )
+                
+                await self.data_entities_processor.on_new_records([(minimal_record, [])])
+                
+                self.logger.info(f"✨ Created temporary record: {external_id} -> {minimal_record.id}")
+                
+                return ChildRecord(
+                    child_type=ChildType.RECORD,
+                    record_id=minimal_record.id,
+                    record_name=minimal_record.record_name,
+                    record_type=minimal_record.record_type
+                )
+            else:
+                # For relation pages without parent, just return ChildRecord with title
+                return ChildRecord(
+                    child_type=ChildType.RECORD,
+                    record_id=None,
+                    record_name=page_title or f"Page {external_id[:8]}",
+                    record_type=None,
+                )
+            
+        except Exception as e:
+            self.logger.error(f"Error getting record child for {external_id}: {e}")
+            return None
+
+    async def get_user_child_by_external_id(self, user_id: str) -> Optional[ChildRecord]:
+        """
+        Get ChildRecord for a user by external ID.
+        
+        Combines user name resolution and ChildRecord creation.
+        
+        Args:
+            user_id: Notion user ID
+            
+        Returns:
+            ChildRecord object if found, None otherwise
+        """
+        try:
+            user_name = await self.resolve_user_name_by_id(user_id)
+            
+            if user_name:
+                return ChildRecord(
+                    child_type=ChildType.USER,
+                    user_id=user_id,
+                    user_name=user_name,
+                )
+            
+            # Fallback if name resolution fails
+            return ChildRecord(
+                child_type=ChildType.USER,
+                user_id=user_id,
+                user_name=f"User {user_id[:8]}",
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Error getting user child for {user_id}: {e}")
+            return None
 
     def _parse_iso_timestamp(self, timestamp_str: str) -> Optional[int]:
         """Parse ISO 8601 timestamp to epoch milliseconds."""

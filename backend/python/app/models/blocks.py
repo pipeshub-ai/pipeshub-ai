@@ -37,6 +37,8 @@ class BlockType(str, Enum):
     HEADING = "heading"
     QUOTE = "quote"
     DIVIDER = "divider"
+
+class BlockSubType(str, Enum):
     CHILD_RECORD = "child_record"
 
 class DataFormat(str, Enum):
@@ -108,11 +110,21 @@ class TableCellMetadata(BaseModel):
     column_header: Optional[bool] = None
     row_header: Optional[bool] = None
 
+class ChildType(str, Enum):
+    """Type of child reference"""
+    RECORD = "record"
+    USER = "user"
+
 class ChildRecord(BaseModel):
-    """Metadata specific to child record blocks"""
-    record_id: Optional[str] = None
-    record_name: Optional[str] = None
-    record_type: Optional["RecordType"] = None
+    """Metadata for child references (records or users)"""
+    child_type: ChildType = Field(description="Type of child: 'record' or 'user'")
+    # For records
+    record_id: Optional[str] = Field(default=None, description="ArangoDB record ID (for records)")
+    record_name: Optional[str] = Field(default=None, description="Record name (for records)")
+    record_type: Optional["RecordType"] = Field(default=None, description="Record type (for records)")
+    # For users
+    user_id: Optional[str] = Field(default=None, description="Notion user ID (for users)")
+    user_name: Optional[str] = Field(default=None, description="User name (for users)")
 
 class TableRowMetadata(BaseModel):
     """Metadata specific to table row blocks"""
@@ -217,6 +229,7 @@ class Block(BaseModel):
     index: int = None
     parent_index: Optional[int] = Field(default=None, description="Index of the parent block group")
     type: BlockType
+    sub_type: Optional[BlockSubType] = None
     name: Optional[str] = None
     format: DataFormat = None
     comments: List[BlockComment] = Field(default_factory=list)

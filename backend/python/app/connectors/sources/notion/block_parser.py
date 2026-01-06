@@ -8,15 +8,20 @@ This parser is designed to be extensible - new block types can be easily added.
 import json
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
+
+# Type alias for relations and people tuple
+RelationsAndPeople = Tuple[List[str], List[str]]
 
 from app.models.blocks import (
     Block,
     BlockContainerIndex,
     BlockGroup,
+    BlockSubType,
     BlockType,
     ChildRecord,
+    ChildType,
     CodeMetadata,
     DataFormat,
     FileMetadata,
@@ -712,10 +717,9 @@ class NotionBlockParser:
         title = type_data.get("title", "Untitled Page")
         page_id = notion_block.get("id", "")
         
-        # Structure reference data as a dictionary
+        # Structure reference data as a dictionary (for display/context)
         reference_data = {
             "child_external_id": page_id,
-            "child_record_id": None,  # Will be resolved during streaming
             "child_record_type": "NOTION_PAGE",
             "child_record_name": title,
             "reference_type": "child_page",
@@ -726,7 +730,8 @@ class NotionBlockParser:
             id=str(uuid4()),
             index=block_index,
             parent_index=parent_group_index,
-            type=BlockType.CHILD_RECORD,
+            type=BlockType.TEXT,
+            sub_type=BlockSubType.CHILD_RECORD,
             format=DataFormat.JSON,
             data=reference_data,
             source_name=title,
@@ -736,6 +741,8 @@ class NotionBlockParser:
             ),
             source_creation_date=self._parse_timestamp(notion_block.get("created_time")),
             source_update_date=self._parse_timestamp(notion_block.get("last_edited_time")),
+            # Table row metadata will be populated by _resolve_child_reference_blocks
+            table_row_metadata=None,
         )
 
     async def _parse_child_database(
@@ -750,10 +757,9 @@ class NotionBlockParser:
         title = type_data.get("title", "Untitled Database")
         database_id = notion_block.get("id", "")
         
-        # Structure reference data as a dictionary
+        # Structure reference data as a dictionary (for display/context)
         reference_data = {
             "child_external_id": database_id,
-            "child_record_id": None,  # Will be resolved during streaming
             "child_record_type": "NOTION_DATA_SOURCE",
             "child_record_name": title,
             "reference_type": "child_database",
@@ -764,7 +770,8 @@ class NotionBlockParser:
             id=str(uuid4()),
             index=block_index,
             parent_index=parent_group_index,
-            type=BlockType.CHILD_RECORD,
+            type=BlockType.TEXT,
+            sub_type=BlockSubType.CHILD_RECORD,
             format=DataFormat.JSON,
             data=reference_data,
             source_name=title,
@@ -774,6 +781,8 @@ class NotionBlockParser:
             ),
             source_creation_date=self._parse_timestamp(notion_block.get("created_time")),
             source_update_date=self._parse_timestamp(notion_block.get("last_edited_time")),
+            # Table row metadata will be populated by _resolve_child_reference_blocks
+            table_row_metadata=None,
         )
 
     async def _parse_bookmark(
@@ -1066,58 +1075,48 @@ class NotionBlockParser:
         data_source_metadata: Dict[str, Any],
         data_source_rows: List[Dict[str, Any]],
         data_source_id: str,
+        get_record_child_callback: Optional[
+            Callable[[str], Awaitable[Optional[ChildRecord]]]
+        ] = None,
+        get_user_child_callback: Optional[
+            Callable[[str], Awaitable[Optional[ChildRecord]]]
+        ] = None,
     ) -> Tuple[List[Block], List[BlockGroup]]:
         """
         Parse Notion data source metadata and rows into TABLE blocks with LLM-enhanced summaries.
-
+        
         This method converts a data source (database view with rows) into a 
         BlocksContainer-compatible structure with a TABLE BlockGroup and 
         TABLE_ROW blocks. Uses LLM to generate table summary and row descriptions.
-
+        
         Args:
             data_source_metadata: Response from retrieve_data_source_by_id API
             data_source_rows: Combined results from query_data_source_by_id API (all pages)
             data_source_id: The data source ID for reference
-
+            get_record_child_callback: Optional async callback to get ChildRecord for a record.
+                                     Takes external_id (str) and returns Optional[ChildRecord]
+            get_user_child_callback: Optional async callback to get ChildRecord for a user.
+                                   Takes user_id (str) and returns Optional[ChildRecord]
+        
         Returns:
             Tuple of (List[Block], List[BlockGroup])
         """
         blocks: List[Block] = []
         block_groups: List[BlockGroup] = []
         
-        # Extract column definitions from properties
+        # Extract column definitions and description
         properties = data_source_metadata.get("properties", {})
         column_names = list(properties.keys())
         
+        description_raw = data_source_metadata.get("description") or []
+        description = self.extract_rich_text(description_raw)
         self.logger.debug(f"Parsing data source {data_source_id} with {len(column_names)} columns")
         
-        # Extract description - handle both string and rich text array formats
-        description_raw = data_source_metadata.get("description")
-        if isinstance(description_raw, list):
-            # Description is a rich text array (can be empty or contain rich text objects)
-            description = self.extract_plain_text(description_raw) if description_raw else ""
-        elif isinstance(description_raw, str):
-            description = description_raw
-        else:
-            description = ""
-        
-        # Generate table markdown
+        # Generate table markdown and get LLM-enhanced summary
         table_markdown = self._generate_data_source_markdown(column_names, data_source_rows)
-        
-        # Generate LLM summary and extract headers
-        table_summary = description  # Start with existing description
-        column_headers = column_names
-        
-        if self.config and table_markdown:
-            from app.utils.indexing_helpers import get_table_summary_n_headers
-            try:
-                response = await get_table_summary_n_headers(self.config, table_markdown)
-                if response:
-                    table_summary = response.summary or description
-                    column_headers = response.headers or column_names
-                    self.logger.debug(f"Generated table summary: {table_summary[:100]}...")
-            except Exception as e:
-                self.logger.warning(f"Failed to generate table summary: {e}")
+        table_summary, column_headers = await self._get_llm_enhanced_table_info(
+            table_markdown, description, column_names
+        )
         
         # Create TABLE BlockGroup
         table_group = BlockGroup(
@@ -1125,15 +1124,14 @@ class NotionBlockParser:
             index=0,
             type=GroupType.TABLE,
             source_group_id=data_source_id,
-            description=table_summary,  # Use LLM summary
+            description=table_summary,
             table_metadata=TableMetadata(
                 num_of_cols=len(column_names),
                 num_of_rows=len(data_source_rows) + 1,  # +1 for header
                 has_header=True,
-                column_names=column_headers,  # Use extracted headers
+                column_names=column_headers,
             ),
             format=DataFormat.JSON,
-            # Add data field with enriched information
             data={
                 "table_summary": table_summary,
                 "column_headers": column_headers,
@@ -1143,102 +1141,275 @@ class NotionBlockParser:
         )
         block_groups.append(table_group)
         
-        # Create header row
-        delimiter = "\u200B|\u200B"  # Zero-width space around pipe
-        header_natural_language_text = delimiter.join(column_names)
-        header_data = {
-            "row_natural_language_text": header_natural_language_text,  # Docling format
-            "row_number": 1,  # Docling format
-            "row": json.dumps({"cells": column_names}),  # Docling format - JSON string
-            # Extra Notion-specific fields:
-            "cells": column_names,  # Keep for easier access
-        }
-        
+        # Create header row block
+        delimiter = "\u200B|\u200B"
         header_block = Block(
             id=str(uuid4()),
             index=0,
-            parent_index=0,  # Points to table_group
+            parent_index=0,
             type=BlockType.TABLE_ROW,
-            data=header_data,
+            data={
+                "row_natural_language_text": delimiter.join(column_names),
+                "row_number": 1,
+                "row": json.dumps({"cells": column_names}),
+                "cells": column_names,
+            },
             format=DataFormat.JSON,
-            table_row_metadata=TableRowMetadata(
-                row_number=1,
-                is_header=True,
-            ),
+            table_row_metadata=TableRowMetadata(row_number=1, is_header=True),
         )
         blocks.append(header_block)
         table_group.children.append(BlockContainerIndex(block_index=0))
         
-        # Extract cell values for all data rows
-        all_cell_values_list = []
-        all_row_data_dicts = []
+        # Extract cell values and generate LLM row descriptions
+        row_cell_values, row_dicts, relations_and_people_list = await self._extract_row_cell_values(
+            data_source_rows, column_names, column_headers,
+            get_record_child_callback, get_user_child_callback
+        )
+        row_descriptions = await self._generate_llm_row_descriptions(
+            row_dicts, table_summary, column_headers
+        )
+        
+        # Create data row blocks
+        await self._create_data_row_blocks(
+            blocks, table_group, data_source_rows, row_cell_values, 
+            row_descriptions, delimiter, get_record_child_callback, get_user_child_callback,
+            relations_and_people_list
+        )
+        
+        self.logger.info(f"Parsed data source {data_source_id}: {len(column_names)} columns, {len(blocks)} rows")
+        
+        return blocks, block_groups
+
+
+    async def _get_llm_enhanced_table_info(
+        self, 
+        table_markdown: str, 
+        fallback_description: str, 
+        fallback_columns: List[str]
+    ) -> Tuple[str, List[str]]:
+        """
+        Use LLM to generate enhanced table summary and column headers.
+        Falls back to provided values if LLM is unavailable or fails.
+        """
+        table_summary = fallback_description
+        column_headers = fallback_columns
+        
+        if self.config and table_markdown:
+            from app.utils.indexing_helpers import get_table_summary_n_headers
+            try:
+                response = await get_table_summary_n_headers(self.config, table_markdown)
+                if response:
+                    table_summary = response.summary or fallback_description
+                    column_headers = response.headers or fallback_columns
+                    self.logger.debug(f"Generated table summary: {table_summary[:100]}...")
+            except Exception as e:
+                self.logger.warning(f"Failed to generate table summary: {e}")
+        
+        return table_summary, column_headers
+
+
+    def _extract_relations_and_people(
+        self,
+        properties: Dict[str, Any],
+    ) -> Tuple[List[str], List[str]]:
+        """
+        Extract relation page IDs and people user IDs from properties.
+        
+        Args:
+            properties: Dictionary of property name -> property object
+            
+        Returns:
+            Tuple of (relation_page_ids, people_user_ids)
+        """
+        relation_page_ids = []
+        people_user_ids = []
+        
+        for prop in properties.values():
+            if not isinstance(prop, dict):
+                continue
+                
+            prop_type = prop.get("type", "")
+            
+            if prop_type == "relation":
+                relations = prop.get("relation", [])
+                for rel in relations:
+                    page_id = rel.get("id")
+                    if page_id:
+                        relation_page_ids.append(page_id)
+            
+            elif prop_type == "people":
+                people = prop.get("people", [])
+                for person in people:
+                    user_id = person.get("id")
+                    if user_id:
+                        people_user_ids.append(user_id)
+            
+            elif prop_type == "rollup":
+                rollup = prop.get("rollup", {})
+                rollup_type = rollup.get("type", "")
+                if rollup_type == "array":
+                    arr = rollup.get("array", [])
+                    for item in arr:
+                        if isinstance(item, dict):
+                            item_type = item.get("type", "")
+                            if item_type == "people":
+                                people_list = item.get("people", [])
+                                for person in people_list:
+                                    user_id = person.get("id")
+                                    if user_id:
+                                        people_user_ids.append(user_id)
+                            elif item_type == "relation":
+                                # Rollup can contain relations too
+                                rel_id = item.get("id")
+                                if rel_id:
+                                    relation_page_ids.append(rel_id)
+        
+        return relation_page_ids, people_user_ids
+
+    async def _extract_row_cell_values(
+        self,
+        data_source_rows: List[Dict[str, Any]],
+        column_names: List[str],
+        column_headers: List[str],
+        get_record_child_callback: Optional[
+            Callable[[str], Awaitable[Optional[ChildRecord]]]
+        ] = None,
+        get_user_child_callback: Optional[
+            Callable[[str], Awaitable[Optional[ChildRecord]]]
+        ] = None,
+    ) -> Tuple[List[List[str]], List[Dict[str, str]], List[RelationsAndPeople]]:
+        """
+        Extract cell values from all rows and prepare data for LLM processing.
+        Also extracts relation and people IDs for later resolution.
+        
+        Returns:
+            Tuple of (cell_values_list, row_dicts_for_llm, relations_and_people_list)
+            relations_and_people_list contains (relation_page_ids, people_user_ids) for each row
+        """
+        cell_values_list = []
+        row_dicts = []
+        relations_and_people_list = []
         
         for page in data_source_rows:
             page_properties = page.get("properties", {})
+            
+            # Extract relations and people IDs
+            relation_page_ids, people_user_ids = self._extract_relations_and_people(page_properties)
+            relations_and_people_list.append((relation_page_ids, people_user_ids))
+            
+            # Extract cell values for this row (with resolved names if callbacks provided)
             cell_values = []
             for col_name in column_names:
                 prop = page_properties.get(col_name, {})
-                cell_value = self._extract_property_value(prop)
+                cell_value = await self._extract_property_value_with_resolution(
+                    prop, get_record_child_callback, get_user_child_callback
+                )
                 cell_values.append(cell_value)
-            all_cell_values_list.append(cell_values)
+            cell_values_list.append(cell_values)
             
-            # Prepare for LLM
+            # Create dictionary with column headers as keys for LLM
             row_dict = {
                 column_headers[i] if i < len(column_headers) else f"Column_{i+1}": cell_values[i]
                 for i in range(len(cell_values))
             }
-            all_row_data_dicts.append(row_dict)
+            row_dicts.append(row_dict)
         
-        # Generate LLM descriptions for all rows at once
-        row_descriptions = []
-        if self.config and all_row_data_dicts and table_summary:
-            from app.utils.indexing_helpers import get_rows_text
-            try:
-                table_data = {"grid": [[row] for row in all_row_data_dicts]}
-                row_descriptions, _ = await get_rows_text(self.config, table_data, table_summary, column_headers)
-                self.logger.debug(f"Generated {len(row_descriptions)} row descriptions")
-            except Exception as e:
-                self.logger.warning(f"Failed to generate row descriptions: {e}")
+        return cell_values_list, row_dicts, relations_and_people_list
+
+
+    async def _generate_llm_row_descriptions(
+        self,
+        row_dicts: List[Dict[str, str]],
+        table_summary: str,
+        column_headers: List[str],
+    ) -> List[str]:
+        """
+        Generate natural language descriptions for all rows using LLM.
+        Returns empty list if LLM is unavailable or fails.
+        """
+        if not (self.config and row_dicts and table_summary):
+            return []
         
-        # Create data rows with LLM descriptions
-        for row_num, (page, cell_values) in enumerate(zip(data_source_rows, all_cell_values_list), start=2):
+        from app.utils.indexing_helpers import get_rows_text
+        
+        try:
+            table_data = {"grid": [[row] for row in row_dicts]}
+            row_descriptions, _ = await get_rows_text(
+                self.config, table_data, table_summary, column_headers
+            )
+            self.logger.debug(f"Generated {len(row_descriptions)} row descriptions")
+            return row_descriptions
+        except Exception as e:
+            self.logger.warning(f"Failed to generate row descriptions: {e}")
+            return []
+
+
+    async def _create_data_row_blocks(
+        self,
+        blocks: List[Block],
+        table_group: BlockGroup,
+        data_source_rows: List[Dict[str, Any]],
+        row_cell_values: List[List[str]],
+        row_descriptions: List[str],
+        delimiter: str,
+        get_record_child_callback: Optional[
+            Callable[[str], Awaitable[Optional[ChildRecord]]]
+        ] = None,
+        get_user_child_callback: Optional[
+            Callable[[str], Awaitable[Optional[ChildRecord]]]
+        ] = None,
+        relations_and_people_list: Optional[List[Tuple[List[str], List[str]]]] = None,
+    ) -> None:
+        """
+        Create TABLE_ROW blocks for all data rows and add them to blocks list.
+        Mutates blocks and table_group.children in place.
+        
+        Args:
+            blocks: List to append blocks to
+            table_group: Table BlockGroup to add children to
+            data_source_rows: Raw Notion page data for each row
+            row_cell_values: Extracted cell values for each row
+            row_descriptions: LLM-generated descriptions for each row
+            delimiter: Delimiter for joining cell values
+            get_record_child_callback: Optional callback to get ChildRecord for a record
+            get_user_child_callback: Optional callback to get ChildRecord for a user
+            relations_and_people_list: List of (relation_page_ids, people_user_ids) tuples for each row
+        """
+        for row_num, (page, cell_values) in enumerate(
+            zip(data_source_rows, row_cell_values), start=2
+        ):
             page_properties = page.get("properties", {})
             
-            # Extract title for source_name
+            # Extract title property as source_name
             source_name = None
-            for prop_name, prop in page_properties.items():
+            for prop in page_properties.values():
                 if prop.get("type") == "title":
                     title_arr = prop.get("title", [])
                     source_name = "".join([t.get("plain_text", "") for t in title_arr])
                     break
             
-            # Use LLM description if available, otherwise fall back to delimiter-joined
+            # Use LLM description if available, otherwise delimiter-joined cells
             if row_descriptions and (row_num - 2) < len(row_descriptions):
                 row_natural_language_text = row_descriptions[row_num - 2]
             else:
-                delimiter = "\u200B|\u200B"
                 row_natural_language_text = delimiter.join(cell_values)
             
-            # Create row data matching Docling format while keeping Notion extras
-            row_data = {
-                "row_natural_language_text": row_natural_language_text,  # Docling format
-                "row_number": row_num,  # Docling format
-                "row": json.dumps({  # Docling format - JSON string of row structure
-                    "cells": cell_values,
-                    # Extra metadata for better reconstruction:
-                    "source_name": source_name,
-                    "page_id": page.get("id"),
-                }),
-                # Extra Notion-specific fields (good practice):
-                "cells": cell_values,  # Keep for easier access without JSON parsing
-            }
-            
+            # Create row block
             row_block = Block(
                 id=str(uuid4()),
                 index=len(blocks),
-                parent_index=0,  # Points to table_group
+                parent_index=0,
                 type=BlockType.TABLE_ROW,
-                data=row_data,
+                data={
+                    "row_natural_language_text": row_natural_language_text,
+                    "row_number": row_num,
+                    "row": json.dumps({
+                        "cells": cell_values,
+                        "source_name": source_name,
+                        "page_id": page.get("id"),
+                    }),
+                    "cells": cell_values,
+                },
                 format=DataFormat.JSON,
                 source_id=page.get("id"),
                 source_creation_date=self._parse_timestamp(page.get("created_time")),
@@ -1250,12 +1421,158 @@ class NotionBlockParser:
                     is_header=False,
                 ),
             )
+            
+            # Collect all child records (row page + relations + people)
+            all_children_records = []
+            
+            # 1. Fetch the row page's own record
+            if get_record_child_callback and page.get("id"):
+                try:
+                    row_page_record = await get_record_child_callback(page.get("id"))
+                    if row_page_record:
+                        all_children_records.append(row_page_record)
+                except Exception as e:
+                    self.logger.warning(f"Failed to fetch record info for row {page.get('id')}: {e}")
+            
+            # 2. Resolve relation pages and users
+            if relations_and_people_list and (row_num - 2) < len(relations_and_people_list):
+                relation_page_ids, people_user_ids = relations_and_people_list[row_num - 2]
+                
+                # Resolve relation pages
+                if relation_page_ids and get_record_child_callback:
+                    for page_id in relation_page_ids:
+                        try:
+                            child_record = await get_record_child_callback(page_id)
+                            if child_record:
+                                all_children_records.append(child_record)
+                        except Exception as e:
+                            self.logger.warning(f"Failed to resolve relation page {page_id}: {e}")
+                
+                # Resolve people users
+                if people_user_ids and get_user_child_callback:
+                    for user_id in people_user_ids:
+                        try:
+                            child_record = await get_user_child_callback(user_id)
+                            if child_record:
+                                all_children_records.append(child_record)
+                        except Exception as e:
+                            self.logger.warning(f"Failed to resolve user {user_id}: {e}")
+            
+            # Populate children_records if we have any
+            if all_children_records:
+                if not row_block.table_row_metadata:
+                    row_block.table_row_metadata = TableRowMetadata()
+                row_block.table_row_metadata.children_records = all_children_records
+                self.logger.debug(
+                    f"📎 Row {row_num} has {len(all_children_records)} child record(s): "
+                    f"{len([c for c in all_children_records if c.child_type == ChildType.RECORD])} records, "
+                    f"{len([c for c in all_children_records if c.child_type == ChildType.USER])} users"
+                )
+            
             blocks.append(row_block)
             table_group.children.append(BlockContainerIndex(block_index=row_block.index))
+
+    async def _extract_property_value_with_resolution(
+        self,
+        prop: Dict[str, Any],
+        get_record_child_callback: Optional[
+            Callable[[str], Awaitable[Optional[ChildRecord]]]
+        ] = None,
+        get_user_child_callback: Optional[
+            Callable[[str], Awaitable[Optional[ChildRecord]]]
+        ] = None,
+    ) -> str:
+        """
+        Extract property value with resolution of relation pages and people to names.
         
-        self.logger.info(f"Parsed data source {data_source_id}: {len(column_names)} columns, {len(blocks)} rows")
+        Args:
+            prop: Notion property object
+            get_record_child_callback: Optional callback to get ChildRecord for a record
+            get_user_child_callback: Optional callback to get ChildRecord for a user
+            
+        Returns:
+            String representation with resolved names
+        """
+        prop_type = prop.get("type", "")
         
-        return blocks, block_groups
+        if prop_type == "relation":
+            relations = prop.get("relation", [])
+            if not relations:
+                return ""
+            
+            if get_record_child_callback:
+                # Resolve page titles from ChildRecord
+                titles = []
+                for rel in relations:
+                    page_id = rel.get("id")
+                    if page_id:
+                        child_record = await get_record_child_callback(page_id)
+                        title = child_record.record_name if child_record else page_id
+                        titles.append(title)
+                return ", ".join(titles)
+            else:
+                # Fallback to IDs
+                return ", ".join([r.get("id", "") for r in relations if r.get("id")])
+        
+        elif prop_type == "people":
+            people = prop.get("people", [])
+            if not people:
+                return ""
+            
+            if get_user_child_callback:
+                # Resolve user names from ChildRecord
+                names = []
+                for person in people:
+                    user_id = person.get("id")
+                    if user_id:
+                        child_record = await get_user_child_callback(user_id)
+                        name = child_record.user_name if child_record else user_id
+                        names.append(name)
+                return ", ".join(names)
+            else:
+                # Fallback to IDs
+                return ", ".join([p.get("id", "") for p in people if p.get("id")])
+        
+        elif prop_type == "rollup":
+            rollup = prop.get("rollup", {})
+            rollup_type = rollup.get("type", "")
+            if rollup_type == "array":
+                arr = rollup.get("array", [])
+                values = []
+                for item in arr:
+                    if isinstance(item, dict):
+                        item_type = item.get("type", "")
+                        if item_type == "people" and get_user_child_callback:
+                            # Handle people in rollup
+                            people_list = item.get("people", [])
+                            people_names = []
+                            for person in people_list:
+                                user_id = person.get("id")
+                                if user_id:
+                                    child_record = await get_user_child_callback(user_id)
+                                    name = child_record.user_name if child_record else user_id
+                                    people_names.append(name)
+                            if people_names:
+                                values.append(", ".join(people_names))
+                        elif item_type == "relation" and get_record_child_callback:
+                            # Handle relations in rollup
+                            rel_id = item.get("id")
+                            if rel_id:
+                                child_record = await get_record_child_callback(rel_id)
+                                title = child_record.record_name if child_record else rel_id
+                                values.append(title)
+                        else:
+                            # Fallback to recursive extraction
+                            value = self._extract_property_value(item)
+                            if value:
+                                values.append(value)
+                return ", ".join(filter(None, values))
+            else:
+                # For non-array rollups, use regular extraction
+                return self._extract_property_value(prop)
+        else:
+            # For all other types, use regular extraction
+            return self._extract_property_value(prop)
 
     def _extract_property_value(self, prop: Dict[str, Any]) -> str:
         """
