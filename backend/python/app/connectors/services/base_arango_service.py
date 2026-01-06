@@ -693,8 +693,17 @@ class BaseArangoService:
             dict: Record details with permissions if accessible, None if not
         """
         try:
+
+            # Get user document to extract _key
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                self.logger.warning(f"User not found for userId: {user_id}")
+                return None
+
+            user_key = user.get('_key')
+
             # Get user's accessible app connector ids
-            user_apps = await self._get_user_app_ids(user_id)
+            user_apps = await self._get_user_app_ids(user_key)
 
             # First check access and get permission paths
             access_query = f"""
@@ -14416,8 +14425,15 @@ class BaseArangoService:
         )
 
         try:
+
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                self.logger.warning(f"User not found for userId: {user_id}")
+                return None
+
+            user_key = user.get('_key')
             # Get user's accessible app connector ids
-            user_apps = await self._get_user_app_ids(user_id)
+            user_apps = await self._get_user_app_ids(user_key)
 
             # Extract filters
             kb_ids = filters.get("kb") if filters else None
