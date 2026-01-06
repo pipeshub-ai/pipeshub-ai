@@ -80,6 +80,21 @@ class LinearGraphQLOperations:
                         identifier
                     }
                 }
+                comments {
+                    nodes {
+                        ...CommentFields
+                    }
+                }
+                attachments {
+                    nodes {
+                        id
+                        title
+                        subtitle
+                        url
+                        createdAt
+                        updatedAt
+                    }
+                }
             }
         """,
 
@@ -110,6 +125,7 @@ class LinearGraphQLOperations:
             fragment CommentFields on Comment {
                 id
                 body
+                url
                 createdAt
                 updatedAt
                 user {
@@ -196,7 +212,7 @@ class LinearGraphQLOperations:
                     }
                 }
             """,
-            "fragments": ["IssueFields", "UserFields", "TeamFields"],
+            "fragments": ["IssueFields", "CommentFields", "UserFields", "TeamFields"],
             "description": "Get issues with filtering and cursor-based pagination"
         },
 
@@ -331,6 +347,78 @@ class LinearGraphQLOperations:
             """,
             "fragments": [],
             "description": "Get single attachment by ID"
+        },
+
+        "attachments": {
+            "query": """
+                query Attachments($first: Int, $after: String, $filter: AttachmentFilter) {
+                    attachments(first: $first, after: $after, filter: $filter) {
+                        nodes {
+                            id
+                            title
+                            subtitle
+                            url
+                            createdAt
+                            updatedAt
+                            issue {
+                                id
+                                identifier
+                                team {
+                                    id
+                                    key
+                                }
+                            }
+                        }
+                        pageInfo {
+                            hasNextPage
+                            hasPreviousPage
+                            startCursor
+                            endCursor
+                        }
+                    }
+                }
+            """,
+            "fragments": [],
+            "description": "List attachments with optional filtering and pagination"
+        },
+
+        "documents": {
+            "query": """
+                query Documents($first: Int, $after: String, $filter: DocumentFilter) {
+                    documents(first: $first, after: $after, filter: $filter) {
+                        nodes {
+                            id
+                            title
+                            url
+                            slugId
+                            content
+                            createdAt
+                            updatedAt
+                            creator {
+                                id
+                                name
+                                email
+                            }
+                            issue {
+                                id
+                                identifier
+                                team {
+                                    id
+                                    key
+                                }
+                            }
+                        }
+                        pageInfo {
+                            hasNextPage
+                            hasPreviousPage
+                            startCursor
+                            endCursor
+                        }
+                    }
+                }
+            """,
+            "fragments": [],
+            "description": "List documents with optional filtering and pagination"
         }
     }
 
