@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from logging import Logger
-from typing import TYPE_CHECKING, AsyncContextManager, List, Optional
+from typing import TYPE_CHECKING, AsyncContextManager, Dict, List, Optional
 
 from app.models.entities import (
     Anyone,
@@ -138,6 +138,10 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def delete_user_group_by_id(self, group_id: str) -> None:
+        pass
+
+    @abstractmethod
     async def get_record_owner_source_user_email(self, record_id: str) -> Optional[str]:
         pass
 
@@ -207,6 +211,18 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def update_sync_point(self, sync_point: "SyncPoint") -> None:
+        pass
+
+    @abstractmethod
+    async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> List[Dict]:
+        pass
+
+    @abstractmethod
+    async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> Optional[Dict]:
+        pass
+
+    @abstractmethod
+    async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> None:
         pass
 
 

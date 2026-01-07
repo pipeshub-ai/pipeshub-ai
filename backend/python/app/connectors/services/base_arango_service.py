@@ -6431,6 +6431,45 @@ class BaseArangoService:
             self.logger.error("❌ Failed to get edge by from_key: %s and to_key: %s: %s", from_key, to_key, str(e))
             return None
 
+    async def get_edges_from_node(
+        self,
+        from_key: str,
+        collection: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> List[Dict]:
+        """
+        Get all edges originating from a specific node.
+
+        Args:
+            from_key: Source node key (e.g., "groups/12345")
+            collection: Edge collection name
+            transaction: Optional transaction database
+
+        Returns:
+            List[Dict]: List of edge documents
+        """
+        try:
+            self.logger.info("🚀 Getting edges from node: %s in collection: %s", from_key, collection)
+            query = """
+            FOR edge IN @@collection
+                FILTER edge._from == @from_key
+                RETURN edge
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"from_key": from_key, "@collection": collection})
+            edges = list(cursor)
+            count = len(edges)
+
+            if count > 0:
+                self.logger.info("✅ Successfully got %d edges from node: %s", count, from_key)
+            else:
+                self.logger.warning("⚠️ No edges found from node: %s in collection: %s", from_key, collection)
+
+            return edges
+        except Exception as e:
+            self.logger.error("❌ Failed to get edges from node: %s in collection: %s: %s", from_key, collection, str(e))
+            return []
+
     async def update_node(self, key: str, node_updates: Dict, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
         """
         Update a node by key
