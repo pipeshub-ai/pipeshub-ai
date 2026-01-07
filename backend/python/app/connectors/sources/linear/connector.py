@@ -170,6 +170,14 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
             description="Enable indexing of files extracted from issue descriptions and comments",
             default_value=True
         ))
+        .add_filter_field(FilterField(
+            name="projects",
+            display_name="Index Projects",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of projects",
+            default_value=True
+        ))
     )\
     .build_decorator()
 class LinearConnector(BaseConnector):
@@ -218,6 +226,13 @@ class LinearConnector(BaseConnector):
         )
 
         self.documents_sync_point = SyncPoint(
+            connector_id=self.connector_id,
+            org_id=org_id,
+            sync_data_point_type=SyncDataPointType.RECORDS,
+            data_store_provider=data_store_provider
+        )
+
+        self.projects_sync_point = SyncPoint(
             connector_id=self.connector_id,
             org_id=org_id,
             sync_data_point_type=SyncDataPointType.RECORDS,
@@ -463,6 +478,9 @@ class LinearConnector(BaseConnector):
 
             # Step 9: Sync documents separately (Linear doesn't update issue.updatedAt when documents are added)
             await self._sync_documents(team_record_groups)
+
+            # Step 10: Sync projects
+            await self._sync_projects_for_teams(team_record_groups)
 
             self.logger.info("✅ Linear sync completed")
 
@@ -912,7 +930,8 @@ class LinearConnector(BaseConnector):
                                 team_id=team_id,
                                 tx_store=tx_store,
                                 parent_created_at=issue_created_at,
-                                parent_updated_at=issue_updated_at
+                                parent_updated_at=issue_updated_at,
+                                parent_weburl=ticket_record.weburl
                             )
                             batch_records.extend(file_records)
 
@@ -1243,7 +1262,186 @@ class LinearConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error syncing documents: {e}", exc_info=True)
 
+    async def _sync_projects_for_teams(
+        self,
+        team_record_groups: List[Tuple[RecordGroup, List[Permission]]]
+    ) -> None:
+        """
+        Sync projects for all teams with batch processing and incremental sync.
+        Uses team-level sync points, exactly like _sync_issues_for_teams().
+
+        Sync point logic:
+        - Before sync: Read last_sync_time for each team
+        - Query: Fetch projects with teams filter and updatedAt > last_sync_time
+        - After EACH batch: Update last_sync_time to max project updated_at (fault tolerance)
+
+        Args:
+            team_record_groups: List of (RecordGroup, permissions) tuples for teams to sync
+        """
+        if not team_record_groups:
+            self.logger.info("ℹ️ No teams to sync projects for")
+            return
+
+        for team_record_group, team_perms in team_record_groups:
+            try:
+                team_id = team_record_group.external_group_id
+                team_key = team_record_group.short_name or team_record_group.name
+
+                self.logger.info(f"📋 Starting project sync for team: {team_key}")
+
+                # Read team-level sync point
+                last_sync_time = await self._get_team_project_sync_checkpoint(team_key)
+
+                if last_sync_time:
+                    self.logger.info(f"🔄 Incremental project sync for team {team_key} from {last_sync_time}")
+
+                # Fetch and process projects for this team
+                total_records_processed = 0
+                total_projects = 0
+                # Track max updatedAt ONLY from projects (TicketRecords)
+                # We query by project.updatedAt, so sync point must be based on project timestamps
+                max_project_updated_at: Optional[int] = None
+
+                async for batch_records in self._fetch_projects_for_team_batch(
+                    team_id=team_id,
+                    team_key=team_key,
+                    last_sync_time=last_sync_time
+                ):
+                    if not batch_records:
+                        continue
+
+                    # Count records by type and track max project updatedAt
+                    for record, _ in batch_records:
+                        if isinstance(record, TicketRecord):
+                            total_projects += 1
+                            # Only track max from PROJECTS - sync point must match project query filter
+                            if record.source_updated_at:
+                                if max_project_updated_at is None or record.source_updated_at > max_project_updated_at:
+                                    max_project_updated_at = record.source_updated_at
+
+                    # Process batch
+                    total_records_processed += len(batch_records)
+                    await self.data_entities_processor.on_new_records(batch_records)
+
+                    # Update sync point after each batch for fault tolerance
+                    # Uses max from PROJECTS ONLY (we query by project.updatedAt)
+                    if max_project_updated_at:
+                        await self._update_team_project_sync_checkpoint(team_key, max_project_updated_at)
+
+                # Log final status
+                if total_records_processed > 0:
+                    self.logger.info(f"✅ Team {team_key}: {total_projects} projects ({total_records_processed} total)")
+                else:
+                    self.logger.info(f"ℹ️ No new/updated projects for team {team_key}")
+
+            except Exception as e:
+                team_name = team_record_group.name or team_record_group.short_name or "unknown"
+                self.logger.error(f"❌ Error syncing projects for team {team_name}: {e}", exc_info=True)
+                continue
+
+    async def _fetch_projects_for_team_batch(
+        self,
+        team_id: str,
+        team_key: str,
+        last_sync_time: Optional[int] = None,
+        batch_size: int = 50
+    ) -> AsyncGenerator[List[Tuple[Record, List[Permission]]], None]:
+        """
+        Fetch projects for a team with pagination and incremental sync, yielding batches.
+        Follows exact same pattern as _fetch_issues_for_team_batch().
+
+        Args:
+            team_id: Team ID
+            team_key: Team key (e.g., "ENG")
+            last_sync_time: Last sync timestamp in ms (for incremental sync)
+            batch_size: Number of projects to fetch per batch
+
+        Yields:
+            Batches of (record, permissions) tuples
+        """
+        datasource = await self._get_fresh_datasource()
+        after_cursor: Optional[str] = None
+
+        # Build filter for team - projects use "accessibleTeams" filter
+        team_filter: Dict[str, Any] = {
+            "accessibleTeams": {
+                "some": {
+                    "id": {"eq": team_id}
+                }
+            }
+        }
+
+        # Apply date filters to team_filter
+        self._apply_date_filters_to_linear_filter(team_filter, last_sync_time)
+
+        while True:
+            # Fetch projects batch
+            response = await datasource.projects(
+                first=batch_size,
+                after=after_cursor,
+                filter=team_filter,
+                orderBy=None
+            )
+
+            if not response.success:
+                self.logger.error(f"❌ Failed to fetch projects for team {team_key}: {response.message}")
+                break
+
+            projects_data = response.data.get("projects", {}) if response.data else {}
+            projects_list = projects_data.get("nodes", [])
+            page_info = projects_data.get("pageInfo", {})
+
+            if not projects_list:
+                break
+
+            self.logger.info(f"📋 Fetched {len(projects_list)} projects for team {team_key}")
+
+            # Process batch and transform to records
+            batch_records: List[Tuple[Record, List[Permission]]] = []
+
+            # Use transaction context to look up existing records
+            async with self.data_store_provider.transaction() as tx_store:
+                for project_data in projects_list:
+                    try:
+                        project_id = project_data.get("id", "")
+
+                        # Look up existing record to handle versioning
+                        existing_record = await tx_store.get_record_by_external_id(
+                            connector_id=self.connector_id,
+                            external_id=project_id
+                        )
+
+                        # Transform project to TicketRecord with existing record info
+                        project_record = self._transform_project_to_ticket_record(
+                            project_data, team_id, existing_record
+                        )
+
+                        # Set indexing status based on filters
+                        if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.PROJECTS):
+                            project_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+                        # Records inherit permissions from RecordGroup (team), so pass empty list
+                        batch_records.append((project_record, []))
+
+                    except Exception as e:
+                        project_id = project_data.get("id", "unknown")
+                        self.logger.error(f"❌ Error processing project {project_id}: {e}", exc_info=True)
+                        continue
+
+            # Yield batch if we have records
+            if batch_records:
+                yield batch_records
+
+            # Check if there are more pages
+            if not page_info.get("hasNextPage", False):
+                break
+
+            after_cursor = page_info.get("endCursor")
+            if not after_cursor:
+                break
+
     # ==================== HELPER FUNCTIONS ====================
+
     async def _process_issue_comments(
         self,
         issue_data: Dict[str, Any],
@@ -1309,7 +1507,8 @@ class LinearConnector(BaseConnector):
                         team_id=team_id,
                         tx_store=tx_store,
                         parent_created_at=comment_created_at,
-                        parent_updated_at=comment_updated_at
+                        parent_updated_at=comment_updated_at,
+                        parent_weburl=comment_record.weburl
                     )
                     comment_records.extend(file_records)
 
@@ -1333,7 +1532,8 @@ class LinearConnector(BaseConnector):
         team_id: str,
         tx_store,
         parent_created_at: Optional[int] = None,
-        parent_updated_at: Optional[int] = None
+        parent_updated_at: Optional[int] = None,
+        parent_weburl: Optional[str] = None
     ) -> List[Tuple[Record, List[Permission]]]:
         """
         Extract files from markdown text and create FileRecords.
@@ -1347,6 +1547,7 @@ class LinearConnector(BaseConnector):
             tx_store: Transaction store for looking up existing records
             parent_created_at: Source created timestamp of parent (in ms)
             parent_updated_at: Source updated timestamp of parent (in ms)
+            parent_weburl: Web URL of parent record (used for file weburl)
 
         Returns:
             List of (FileRecord, permissions) tuples
@@ -1367,10 +1568,13 @@ class LinearConnector(BaseConnector):
                 file_url = file_info["url"]
                 filename = file_info["filename"]
 
+                # Extract file UUID from URL to use as external_record_id
+                external_id = file_url.rstrip('/').split('/')[-1] if file_url else file_url
+
                 # Look up existing file record
                 existing_file = await tx_store.get_record_by_external_id(
                     connector_id=self.connector_id,
-                    external_id=file_url
+                    external_id=external_id
                 )
 
                 # Transform to FileRecord
@@ -1383,7 +1587,8 @@ class LinearConnector(BaseConnector):
                     team_id=team_id,
                     existing_record=existing_file,
                     parent_created_at=parent_created_at,
-                    parent_updated_at=parent_updated_at
+                    parent_updated_at=parent_updated_at,
+                    parent_weburl=parent_weburl
                 )
 
                 # Set indexing status based on filters
@@ -1499,6 +1704,8 @@ class LinearConnector(BaseConnector):
         }
 
         return extension_to_mime.get(ext, MimeTypes.UNKNOWN.value)
+
+    # ==================== TRANSFORMATIONS ====================
 
     def _transform_issue_to_ticket_record(
         self,
@@ -1619,6 +1826,82 @@ class LinearConnector(BaseConnector):
             creator_name=creator_name,
             inherit_permissions=True,
         )
+
+        return ticket
+
+    def _transform_project_to_ticket_record(
+        self,
+        project_data: Dict[str, Any],
+        team_id: str,
+        existing_record: Optional[Record] = None
+    ) -> TicketRecord:
+        """
+        Transform Linear project to TicketRecord.
+        Normalizes project data to match issue structure and reuses _transform_issue_to_ticket_record().
+
+        Args:
+            project_data: Raw project data from Linear API
+            team_id: Team ID for external_record_group_id
+            existing_record: Existing record from DB (if any) for version handling
+
+        Returns:
+            TicketRecord: Transformed ticket record
+        """
+        project_id = project_data.get("id", "")
+        if not project_id:
+            raise ValueError("Project data missing required 'id' field")
+
+        # Build record_name: Use name directly (projects don't have meaningful identifiers like issues)
+        name = project_data.get("name", "")
+        slug_id = project_data.get("slugId", "")
+        if name:
+            record_name = name
+        elif slug_id:
+            record_name = slug_id
+        else:
+            self.logger.warning(f"Project {project_id} missing both slugId and name, using ID as record name")
+            record_name = project_id
+
+        # Normalize project data to match issue structure
+        normalized_data = project_data.copy()
+
+        # Map name -> title (projects use name, issues use title)
+        # Set title to the final record_name we want (since identifier will be empty, transform will use just title)
+        normalized_data["title"] = record_name
+        normalized_data["identifier"] = ""  # Projects don't have identifiers like issues
+
+        # Map status -> state (projects use status, issues use state)
+        status = project_data.get("status", {})
+        status_type = status.get("type") if status else None
+        if status:
+            normalized_data["state"] = {
+                "name": status.get("name"),
+                "type": status_type or "project"
+            }
+        else:
+            normalized_data["state"] = {"type": "project"}
+
+        # Map priorityLabel -> priority (projects have priorityLabel, issues have numeric priority)
+        priority_label = project_data.get("priorityLabel", "")
+        priority_map = {"Urgent": 1, "High": 2, "Medium": 3, "Low": 4, "No priority": None}
+        normalized_data["priority"] = priority_map.get(priority_label) if priority_label else None
+
+        # Map lead -> assignee (projects use lead, issues use assignee)
+        lead = project_data.get("lead", {})
+        if lead:
+            normalized_data["assignee"] = lead
+        else:
+            normalized_data["assignee"] = {}
+
+        # Projects don't have parent, so ensure it's None
+        normalized_data["parent"] = None
+
+        # Reuse existing transform function
+        ticket = self._transform_issue_to_ticket_record(normalized_data, team_id, existing_record)
+
+        # Override type to ensure it's "project" if status_type was None
+        if not ticket.type:
+            ticket.type = "project"
 
         return ticket
 
@@ -1894,7 +2177,8 @@ class LinearConnector(BaseConnector):
         team_id: str,
         existing_record: Optional[Record] = None,
         parent_created_at: Optional[int] = None,
-        parent_updated_at: Optional[int] = None
+        parent_updated_at: Optional[int] = None,
+        parent_weburl: Optional[str] = None
     ) -> FileRecord:
         """
         Transform a file URL to FileRecord.
@@ -1909,12 +2193,13 @@ class LinearConnector(BaseConnector):
             existing_record: Existing record from DB (if any) for version handling
             parent_created_at: Source created timestamp of parent (in ms)
             parent_updated_at: Source updated timestamp of parent (in ms)
+            parent_weburl: Web URL of parent record (used for file weburl instead of file_url)
 
         Returns:
             FileRecord: Transformed file record
         """
-        # Use URL as external_record_id (unique identifier)
-        file_id = file_url
+        # Extract file UUID from URL to use as external_record_id
+        file_id = file_url.rstrip('/').split('/')[-1] if file_url else file_url
 
         # Extract extension and determine mime type
         extension = None
@@ -1948,7 +2233,7 @@ class LinearConnector(BaseConnector):
             connector_name=self.connector_name,
             connector_id=self.connector_id,
             mime_type=mime_type,
-            weburl=file_url,
+            weburl=parent_weburl or file_url,  # Use parent's weburl if available, otherwise fallback to file_url
             created_at=get_epoch_timestamp_in_ms(),
             updated_at=get_epoch_timestamp_in_ms(),
             source_created_at=parent_created_at,
@@ -1963,6 +2248,8 @@ class LinearConnector(BaseConnector):
         )
 
         return file_record
+
+    # ==================== DATE FILTERS ====================
 
     def _apply_date_filters_to_linear_filter(
         self,
@@ -2031,6 +2318,8 @@ class LinearConnector(BaseConnector):
                 else:
                     linear_filter["createdAt"] = {"lte": linear_datetime}
 
+    # ==================== SYNC CHECKPOINTS ====================
+
     async def _get_team_sync_checkpoint(self, team_key: str) -> Optional[int]:
         """
         Get team-specific sync checkpoint (last_sync_time).
@@ -2053,6 +2342,29 @@ class LinearConnector(BaseConnector):
             {"last_sync_time": sync_time}
         )
         self.logger.debug(f"💾 Updated sync checkpoint for team {team_key}: {sync_time}")
+
+    async def _get_team_project_sync_checkpoint(self, team_key: str) -> Optional[int]:
+        """
+        Get team-specific project sync checkpoint (last_sync_time).
+        Uses projects_sync_point with team-specific key.
+        """
+        sync_point_key = f"team_{team_key}_projects"
+        data = await self.projects_sync_point.read_sync_point(sync_point_key)
+        return data.get("last_sync_time") if data else None
+
+    async def _update_team_project_sync_checkpoint(self, team_key: str, timestamp: Optional[int] = None) -> None:
+        """
+        Update team-specific project sync checkpoint.
+        Uses projects_sync_point with team-specific key.
+        """
+        sync_point_key = f"team_{team_key}_projects"
+        sync_time = timestamp if timestamp is not None else get_epoch_timestamp_in_ms()
+
+        await self.projects_sync_point.update_sync_point(
+            sync_point_key,
+            {"last_sync_time": sync_time}
+        )
+        self.logger.debug(f"💾 Updated project sync checkpoint for team {team_key}: {sync_time}")
 
     async def _get_attachments_sync_checkpoint(self) -> Optional[int]:
         """Get the attachments sync checkpoint timestamp."""
