@@ -103,19 +103,49 @@ class LinearGraphQLOperations:
                 id
                 name
                 description
-                state
-                progress
+                slugId
+                icon
+                color
                 url
+                priority
+                priorityLabel
+                progress
+                scope
+                health
+                content
+                trashed
                 createdAt
                 updatedAt
-                completedAt
+                archivedAt
+                startDate
                 targetDate
+                startedAt
+                completedAt
+                canceledAt
+                status {
+                    id
+                    name
+                    type
+                    color
+                }
+                creator {
+                    id
+                    name
+                    displayName
+                    email
+                }
                 lead {
-                    ...UserFields
+                    id
+                    name
+                    displayName
+                    email
                 }
                 teams {
                     nodes {
-                        ...TeamFields
+                        id
+                        name
+                        key
+                        private
                     }
                 }
             }
@@ -130,6 +160,110 @@ class LinearGraphQLOperations:
                 updatedAt
                 user {
                     ...UserFields
+                }
+            }
+        """,
+
+        "ProjectCommentFields": """
+            fragment ProjectCommentFields on Comment {
+                id
+                body
+                url
+                createdAt
+                updatedAt
+                editedAt
+                quotedText
+                resolvedAt
+                resolvingUser {
+                    id
+                    name
+                    displayName
+                    email
+                }
+                user {
+                    id
+                    name
+                    displayName
+                    email
+                }
+            }
+        """,
+
+        "ProjectUpdateCommentFields": """
+            fragment ProjectUpdateCommentFields on Comment {
+                id
+                body
+                url
+                createdAt
+                updatedAt
+                user {
+                    id
+                    name
+                    displayName
+                    email
+                }
+            }
+        """,
+
+        "ProjectMilestoneFields": """
+            fragment ProjectMilestoneFields on ProjectMilestone {
+                id
+                name
+                description
+                sortOrder
+                targetDate
+                createdAt
+                updatedAt
+                archivedAt
+            }
+        """,
+
+        "ProjectUpdateFields": """
+            fragment ProjectUpdateFields on ProjectUpdate {
+                id
+                body
+                health
+                url
+                createdAt
+                updatedAt
+                user {
+                    id
+                    name
+                    displayName
+                    email
+                }
+            }
+        """,
+
+        "ProjectExternalLinkFields": """
+            fragment ProjectExternalLinkFields on EntityExternalLink {
+                id
+                url
+                label
+                sortOrder
+                createdAt
+                updatedAt
+                creator {
+                    id
+                    name
+                    email
+                }
+            }
+        """,
+
+        "ProjectDocumentFields": """
+            fragment ProjectDocumentFields on Document {
+                id
+                title
+                content
+                url
+                slugId
+                createdAt
+                updatedAt
+                creator {
+                    id
+                    name
+                    email
                 }
             }
         """
@@ -261,15 +395,10 @@ class LinearGraphQLOperations:
 
         "projects": {
             "query": """
-                query projects($first: Int, $filter: ProjectFilter) {
-                    projects(first: $first, filter: $filter) {
+                query Projects($first: Int, $after: String, $filter: ProjectFilter, $orderBy: PaginationOrderBy) {
+                    projects(first: $first, after: $after, filter: $filter, orderBy: $orderBy) {
                         nodes {
                             ...ProjectFields
-                            issues {
-                                nodes {
-                                    ...IssueFields
-                                }
-                            }
                         }
                         pageInfo {
                             hasNextPage
@@ -280,8 +409,10 @@ class LinearGraphQLOperations:
                     }
                 }
             """,
-            "fragments": ["ProjectFields", "IssueFields", "UserFields", "TeamFields"],
-            "description": "Get projects with issues"
+            "fragments": [
+                "ProjectFields"
+            ],
+            "description": "Get projects with basic fields for sync (nested data fetched separately)"
         },
 
         "issueSearch": {
@@ -419,6 +550,57 @@ class LinearGraphQLOperations:
             """,
             "fragments": [],
             "description": "List documents with optional filtering and pagination"
+        },
+
+        "project": {
+            "query": """
+                query Project($id: String!) {
+                    project(id: $id) {
+                        ...ProjectFields
+                        content
+                        externalLinks {
+                            nodes {
+                                ...ProjectExternalLinkFields
+                            }
+                        }
+                        documents {
+                            nodes {
+                                ...ProjectDocumentFields
+                            }
+                        }
+                        projectMilestones {
+                            nodes {
+                                ...ProjectMilestoneFields
+                            }
+                        }
+                        comments {
+                            nodes {
+                                ...ProjectCommentFields
+                            }
+                        }
+                        projectUpdates {
+                            nodes {
+                                ...ProjectUpdateFields
+                                comments {
+                                    nodes {
+                                        ...ProjectUpdateCommentFields
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            """,
+            "fragments": [
+                "ProjectFields",
+                "ProjectExternalLinkFields",
+                "ProjectDocumentFields",
+                "ProjectMilestoneFields",
+                "ProjectCommentFields",
+                "ProjectUpdateFields",
+                "ProjectUpdateCommentFields"
+            ],
+            "description": "Get single project with all nested data"
         }
     }
 

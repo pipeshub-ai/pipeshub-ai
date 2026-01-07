@@ -213,7 +213,7 @@ class LinearDataSource:
 
     # PROJECT QUERIES
     async def project(self, id: str) -> GraphQLResponse:
-        """Get project by ID"""
+        """Get single project with all nested data"""
         query = LinearGraphQLOperations.get_operation_with_fragments("query", "project")
         variables = {"id": id}
 
@@ -232,7 +232,7 @@ class LinearDataSource:
         filter: Optional[Dict[str, Any]] = None,
         orderBy: Optional[Dict[str, Any]] = None
     ) -> GraphQLResponse:
-        """Get projects with issues"""
+        """Get projects with all nested data for sync"""
         query = LinearGraphQLOperations.get_operation_with_fragments("query", "projects")
         variables = {}
         if first is not None:
@@ -246,7 +246,7 @@ class LinearDataSource:
 
         try:
             response = await self._linear_client.get_client().execute(
-                query=query, variables=variables, operation_name="projects"
+                query=query, variables=variables, operation_name="Projects"
             )
             return response
         except Exception as e:
