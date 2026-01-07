@@ -460,8 +460,9 @@ class ConfluenceConnector(BaseConnector):
                 start += batch_size
 
                 # Check if we've reached the end
-                total_size = response_data.get("totalSize", 0)
-                if start >= total_size:
+                # FIX: Do not rely on totalSize as it returns incorrect values (e.g. 100) for /search/user
+                # Instead, stop if we received fewer results than requested
+                if len(users_data) < batch_size:
                     break
 
             self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email): {total_skipped}")
