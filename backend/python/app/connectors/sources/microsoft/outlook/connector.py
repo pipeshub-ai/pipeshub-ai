@@ -1375,7 +1375,8 @@ class OutlookConnector(BaseConnector):
 
                 # Set proper filename and content type
                 filename = record.record_name or "attachment"
-                headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+                safe_filename = filename.encode('latin-1', 'ignore').decode('latin-1') or f"record_{record.id}"
+                headers = {"Content-Disposition": f'attachment; filename="{safe_filename}"'}
                 media_type = record.mime_type or 'application/octet-stream'
 
                 return StreamingResponse(generate_attachment(), media_type=media_type, headers=headers)

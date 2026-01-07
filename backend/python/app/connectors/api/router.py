@@ -743,8 +743,9 @@ async def download_file(
                             )
                         finally:
                             file_buffer.close()
+                    safe_filename = record.record_name.encode('latin-1', 'ignore').decode('latin-1') or f"record_{record_id}"
                     headers = {
-                        "Content-Disposition": f'attachment; filename="{record.record_name}"'
+                        "Content-Disposition": f'attachment; filename="{safe_filename}"'
                     }
 
                     return StreamingResponse(
@@ -790,8 +791,9 @@ async def download_file(
                         file_buffer.close()
 
                 # Return streaming response with proper headers
+                safe_filename = record.record_name.encode('latin-1', 'ignore').decode('latin-1') or f"record_{record_id}"
                 headers = {
-                    "Content-Disposition": f'attachment; filename="{record.record_name}"'
+                    "Content-Disposition": f'attachment; filename="{safe_filename}"'
                 }
 
                 return StreamingResponse(
@@ -1148,7 +1150,10 @@ async def stream_record(
                     }
 
                     response_media_type, file_ext = export_media_types.get(export_mime_type, (export_mime_type, ""))
-                    file_name_with_ext = file_name if file_name.endswith(file_ext) else f"{file_name}{file_ext}"
+                    
+                    safe_filename = file_name.encode('latin-1', 'ignore').decode('latin-1') or f"record_{record_id}"
+
+                    file_name_with_ext = safe_filename if safe_filename.endswith(file_ext) else f"{safe_filename}{file_ext}"
 
                     headers = {"Content-Disposition": f'attachment; filename="{file_name_with_ext}"'}
                     return StreamingResponse(
@@ -1283,7 +1288,8 @@ async def stream_record(
 
 
                 # Return streaming response with proper headers
-                headers = {"Content-Disposition": f'attachment; filename="{file_name}"'}
+                safe_filename = file_name.encode('latin-1', 'ignore').decode('latin-1') or f"record_{record_id}"
+                headers = {"Content-Disposition": f'attachment; filename="{safe_filename}"'}
                 return StreamingResponse(
                     file_stream(), media_type=mime_type, headers=headers
                 )
@@ -1626,8 +1632,9 @@ async def stream_record(
                                 )
 
 
+                        safe_filename = file_name.encode('latin-1', 'ignore').decode('latin-1') or f"record_{record_id}"
                         headers = {
-                            "Content-Disposition": f'attachment; filename="{file_name}"'
+                            "Content-Disposition": f'attachment; filename="{safe_filename}"'
                         }
 
                         # Use the same streaming logic as Drive downloads
@@ -1761,6 +1768,7 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
 
                     pdf_filename = file.filename.rsplit(".", 1)[0] + ".pdf"
                     pdf_path = os.path.join(tmpdir, pdf_filename)
+                    safe_filename = pdf_filename.encode('latin-1', 'ignore').decode('latin-1') or "converted_file.pdf"
 
                     if process.returncode != 0:
                         error_msg = f"LibreOffice conversion failed: {conversion_error.decode('utf-8', errors='replace')}"
@@ -1789,7 +1797,7 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
                         file_iterator(),
                         media_type="application/pdf",
                         headers={
-                            "Content-Disposition": f"attachment; filename={pdf_filename}"
+                            "Content-Disposition": f"attachment; filename={safe_filename}"
                         },
                     )
 

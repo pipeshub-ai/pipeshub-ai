@@ -315,11 +315,12 @@ class BookStackConnector(BaseConnector):
             )
         raw_markdown = markdown_response.data.get("markdown")
         # Stream the content from the URL
+        safe_filename = record.record_name.encode('latin-1', 'ignore').decode('latin-1') or f"record_{record.id}"
         return StreamingResponse(
             raw_markdown,
             media_type=record.mime_type if record.mime_type else "application/octet-stream",
             headers={
-                "Content-Disposition": f"attachment; filename={record.record_name}"
+                "Content-Disposition": f"attachment; filename={safe_filename}"
             }
         )
 

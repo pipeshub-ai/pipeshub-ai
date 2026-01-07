@@ -2499,11 +2499,12 @@ class ConfluenceConnector(BaseConnector):
             elif record.record_type == RecordType.FILE:
                 media_type = record.mime_type or 'application/octet-stream'
                 filename = record.record_name or f"{record.external_record_id}"
+                safe_filename = filename.encode('latin-1', 'ignore').decode('latin-1') or f"record_{record.id}"
 
                 return StreamingResponse(
                     self._fetch_attachment_content(record),
                     media_type=media_type,
-                    headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+                    headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'}
                 )
 
             else:

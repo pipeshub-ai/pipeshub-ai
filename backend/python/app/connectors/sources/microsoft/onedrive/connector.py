@@ -1353,11 +1353,12 @@ class OneDriveConnector(BaseConnector):
         if not signed_url:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
 
+        safe_filename = record.record_name.encode('latin-1', 'ignore').decode('latin-1') or f"record_{record.id}"
         return StreamingResponse(
             stream_content(signed_url),
             media_type=record.mime_type if record.mime_type else "application/octet-stream",
             headers={
-                "Content-Disposition": f"attachment; filename={record.record_name}"
+                "Content-Disposition": f"attachment; filename={safe_filename}"
             }
         )
 
