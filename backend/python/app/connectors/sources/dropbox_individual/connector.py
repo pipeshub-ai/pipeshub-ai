@@ -530,11 +530,11 @@ class DropboxIndividualConnector(BaseConnector):
             )
 
             # 8. Set indexing status based on filters
+            # For individual accounts: only folder and files filters apply (no sharing)
             folder_disabled = not file_record.is_file
             files_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
-            shared_disabled = file_record.is_shared and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True)
             
-            if folder_disabled or files_disabled or shared_disabled:
+            if folder_disabled or files_disabled:
                 file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             # 9. Handle Permissions
