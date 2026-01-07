@@ -94,6 +94,8 @@ CONTENT_EXPAND_PARAMS = (
     "childTypes.comment"
 )
 
+# Constant for pseudo-user group prefix
+PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 
 @ConnectorBuilder("Confluence")\
     .in_group("Atlassian")\
@@ -1252,7 +1254,7 @@ class ConfluenceConnector(BaseConnector):
                 continue
 
         if has_failures:
-            raise Exception("Failed to sync permissions for some content items")
+            raise ValueError("Failed to sync permissions for some content items")
 
         if total_skipped > 0:
             self.logger.info(f"🔍 Skipped {total_skipped} items not in database (filtered during sync)")
@@ -1817,7 +1819,7 @@ class ConfluenceConnector(BaseConnector):
                 app_name=Connectors.CONFLUENCE,
                 connector_id=self.connector_id,
                 source_user_group_id=account_id,
-                name=f"[Pseudo-User] {account_id}",
+                name=f"{PSEUDO_USER_GROUP_PREFIX} {account_id}",
                 org_id=self.data_entities_processor.org_id,
             )
 
@@ -3138,7 +3140,7 @@ class ConfluenceConnector(BaseConnector):
                 )
 
                 # Only process if it's a pseudo-group (not a real group)
-                if not pseudo_group or not pseudo_group.name.startswith("[Pseudo-User]"):
+                if not pseudo_group or not pseudo_group.name.startswith(PSEUDO_USER_GROUP_PREFIX):
                     return
 
                 self.logger.info(

@@ -36,7 +36,16 @@ from app.services.messaging.kafka.config.kafka_config import KafkaProducerConfig
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-ARANGO_NODE_ID_PARTS = 2
+ARANGO_NODE_ID_PARTS = 2 # ArangoDB node IDs are in format "collection/id"
+
+# Permission hierarchy for comparing and upgrading permissions
+# Higher number = higher permission level
+PERMISSION_HIERARCHY = {
+    "READER": 1,
+    "COMMENTER": 2,
+    "WRITER": 3,
+    "OWNER": 4,
+}
 
 @dataclass
 class RecordGroupWithPermissions:
@@ -1174,7 +1183,10 @@ class DataSourceEntitiesProcessor:
                     if existing_edge:
                         # User already has permission, check if we need to upgrade it
                         existing_role = existing_edge.get("role", "READER")
-                        if permission_type.value in ["WRITER", "OWNER"] and existing_role == "READER":
+                        existing_role_level = PERMISSION_HIERARCHY.get(existing_role, 0)
+                        new_role_level = PERMISSION_HIERARCHY.get(permission_type.value, 0)
+                        
+                        if new_role_level > existing_role_level:
                             # Delete old edge and create new one with upgraded permission
                             await tx_store.delete_edge(
                                 from_id=user.id,
