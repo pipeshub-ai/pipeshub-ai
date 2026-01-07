@@ -40,7 +40,6 @@ mime_to_extension = {
     # DOCX
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document+xml": "docx",
-    "application/x-msword": "docx",
     
     # DOC
     "application/msword": "doc",
@@ -54,7 +53,6 @@ mime_to_extension = {
     # XLSX
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet+xml": "xlsx",
-    "application/x-msexcel": "xlsx",
     
     # XLS
     "application/vnd.ms-excel": "xls",
@@ -73,7 +71,6 @@ mime_to_extension = {
     "text/comma-separated-values": "csv",
     "text/x-comma-separated-values": "csv",
     "text/x-csv": "csv",
-    "application/vnd.ms-excel": "csv",
     "application/csv; charset=utf-8": "csv",
     "text/csv; charset=utf-8": "csv",
     "text/csv; charset=us-ascii": "csv",
@@ -81,7 +78,6 @@ mime_to_extension = {
     # PPTX
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation+xml": "pptx",
-    "application/x-mspowerpoint": "pptx",
     
     # PPT
     "application/vnd.ms-powerpoint": "ppt",
@@ -98,7 +94,6 @@ mime_to_extension = {
     "application/mdx": "mdx",
     "application/x-mdx": "mdx",
     "text/mdx; charset=utf-8": "mdx",
-    "text/markdown; charset=utf-8": "mdx",
     
     "text/plain": "txt",
     "text/plain; charset=utf-8": "txt",
@@ -128,7 +123,6 @@ mime_to_extension = {
     "text/markdown; charset=utf-8": "md",
     "text/markdown; charset=us-ascii": "md",
     "text/gmail_content": "html",
-
 }
 
 

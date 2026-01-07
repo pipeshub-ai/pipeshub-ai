@@ -193,13 +193,10 @@ class RecordEventHandler(BaseEventService):
                 if derived_extension:
                     extension = derived_extension
 
-            if extension is None and mime_type != "text/gmail_content":
-                extension = payload.get("extension", None)
-                if extension is None:
-                    record_name = payload.get("recordName")
-                    if record_name and "." in record_name:
-                        extension = payload["recordName"].split(".")[-1]
-      
+            if extension is "unknown" and mime_type != "text/gmail_content":
+                record_name = payload.get("recordName")
+                if record_name and "." in record_name:
+                    extension = record_name.split(".")[-1]
 
             self.logger.info("🚀 Checking for mime_type")
             self.logger.info("🚀 mime_type: %s", mime_type)
