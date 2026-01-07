@@ -57,6 +57,7 @@ from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 
 # Model imports
 from app.models.entities import (
+    AppUser,
     FileRecord,
     IndexingStatus,
     Record,
@@ -304,6 +305,33 @@ class DropboxIndividualConnector(BaseConnector):
         self.current_user_email = response.data.email
 
         return self.current_user_id, self.current_user_email
+
+    def _get_current_user_as_app_user(self, account_data) -> AppUser:
+        """
+        Converts the current user's Dropbox account data to an AppUser.
+
+        Args:
+            account_data: The FullAccount object from Dropbox API
+
+        Returns:
+            AppUser object
+        """
+        # Extract display name from account data
+        # FullAccount has a 'name' attribute with display_name
+        full_name = getattr(account_data.name, 'display_name', None) if hasattr(account_data, 'name') else None
+        if not full_name:
+            # Fallback to email if name is not available
+            full_name = account_data.email.split('@')[0]
+
+        return AppUser(
+            app_name=self.connector_name,
+            connector_id=self.connector_id,
+            source_user_id=account_data.account_id,
+            full_name=full_name,
+            email=account_data.email,
+            is_active=True,  # Individual accounts are always active
+            title=None  # Individual accounts don't have roles
+        )
 
 
     async def _process_dropbox_entry(
@@ -924,11 +952,22 @@ class DropboxIndividualConnector(BaseConnector):
                 self.config_service, "dropboxpersonal", self.connector_id, self.logger
             )
 
-            # 1. Identify the User
+            # 1. Fetch and sync the current user as AppUser
+            self.logger.info("Syncing user...")
+            response = await self.data_source.users_get_current_account()
+
+            if not response or not response.success or not response.data:
+                raise ValueError("Failed to retrieve account information for user sync.")
+
+            app_user = self._get_current_user_as_app_user(response.data)
+            await self.data_entities_processor.on_new_app_users([app_user])
+            self.logger.info(f"Synced user: {app_user.email} ({app_user.source_user_id})")
+
+            # 2. Identify the User (for backward compatibility with existing code)
             user_id, user_email = await self._get_current_user_info()
             self.logger.info(f"Identified current user: {user_email} ({user_id})")
 
-            # 2. Create the 'Drive' (Record Group)
+            # 3. Create the 'Drive' (Record Group)
             display_name = f"Dropbox - {user_email}"
             await self._create_personal_record_group(
                 user_id,
@@ -937,7 +976,7 @@ class DropboxIndividualConnector(BaseConnector):
             )
             self.logger.info(f"Ensured Record Group exists for: {display_name}")
 
-            # 3. Start the Sync Engine
+            # 4. Start the Sync Engine
             self.logger.info("Starting file traversal...")
             await self._run_sync_with_cursor(user_id, user_email)
 
