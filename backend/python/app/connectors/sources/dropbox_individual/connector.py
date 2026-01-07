@@ -529,7 +529,15 @@ class DropboxIndividualConnector(BaseConnector):
                 sha256_hash=entry.content_hash if is_file and hasattr(entry, 'content_hash') else None,
             )
 
-            # 8. Handle Permissions
+            # 8. Set indexing status based on filters
+            folder_disabled = not file_record.is_file
+            files_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
+            shared_disabled = file_record.is_shared and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True)
+            
+            if folder_disabled or files_disabled or shared_disabled:
+                file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+            # 9. Handle Permissions
             new_permissions = []
 
             try:
@@ -554,7 +562,7 @@ class DropboxIndividualConnector(BaseConnector):
                     )
                 ]
 
-            # 9. Compare permissions
+            # 10. Compare permissions
             old_permissions = []
 
             return RecordUpdate(
@@ -612,13 +620,6 @@ class DropboxIndividualConnector(BaseConnector):
                     created_before=created_before
                 )
                 if record_update and record_update.record:
-                    folder_disabled = not record_update.record.is_file
-                    files_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
-                    shared_disabled = record_update.record.is_shared and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True)
-                    
-                    if folder_disabled or files_disabled or shared_disabled:
-                        record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
-
                     yield (record_update.record, record_update.new_permissions or [], record_update)
                 await asyncio.sleep(0)
             except Exception as e:
