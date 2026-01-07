@@ -703,7 +703,7 @@ class BaseArangoService:
             user_key = user.get('_key')
 
             # Get user's accessible app connector ids
-            user_apps = await self._get_user_app_ids(user_key)
+            user_apps_ids = await self._get_user_app_ids(user_key)
 
             # First check access and get permission paths
             access_query = f"""
@@ -717,7 +717,7 @@ class BaseArangoService:
             // App access filter - check if user can access this record based on connector
             LET hasAppAccess = (
                 recordDoc.origin == "UPLOAD" OR
-                (recordDoc.origin == "CONNECTOR" AND recordDoc.connectorId IN @user_apps)
+                (recordDoc.origin == "CONNECTOR" AND recordDoc.connectorId IN @user_apps_ids)
             )
 
             // If user doesn't have app access, return null immediately
@@ -929,7 +929,7 @@ class BaseArangoService:
                 "userId": user_id,
                 "orgId": org_id,
                 "recordId": record_id,
-                "user_apps": user_apps,
+                "user_apps_ids": user_apps_ids,
                 "@users": CollectionNames.USERS.value,
                 "records": CollectionNames.RECORDS.value,
                 "files": CollectionNames.FILES.value,
@@ -1142,7 +1142,7 @@ class BaseArangoService:
             include_connector_records = source in ['all', 'connector']
 
             # Get user's accessible apps and extract connector IDs (_key)
-            user_apps = await self._get_user_app_ids(user_id)
+            user_apps_ids = await self._get_user_app_ids(user_id)
 
             # Build filter conditions function
             def build_record_filters(include_filter_vars: bool = True) -> str:
@@ -1198,7 +1198,7 @@ class BaseArangoService:
             '''
 
             #filter records that match the user's app connector_ids
-            app_record_filter = 'FILTER record.connectorId IN @user_apps'
+            app_record_filter = 'FILTER record.connectorId IN @user_apps_ids'
 
             main_query = f"""
             LET user_from = @user_from
@@ -2269,7 +2269,7 @@ class BaseArangoService:
                 "skip": skip,
                 "limit": limit,
                 "kb_permissions": final_kb_roles,
-                "user_apps": user_apps,
+                "user_apps_ids": user_apps_ids,
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
@@ -2282,7 +2282,7 @@ class BaseArangoService:
                 "user_from": f"users/{user_id}",
                 "org_id": org_id,
                 "kb_permissions": final_kb_roles,
-                "user_apps": user_apps,
+                "user_apps_ids": user_apps_ids,
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
@@ -2294,7 +2294,7 @@ class BaseArangoService:
             filters_bind_vars = {
                 "user_from": f"users/{user_id}",
                 "org_id": org_id,
-                "user_apps": user_apps,
+                "user_apps_ids": user_apps_ids,
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
@@ -14433,7 +14433,7 @@ class BaseArangoService:
 
             user_key = user.get('_key')
             # Get user's accessible app connector ids
-            user_apps = await self._get_user_app_ids(user_key)
+            user_apps_ids = await self._get_user_app_ids(user_key)
 
             # Extract filters
             kb_ids = filters.get("kb") if filters else None
@@ -14452,7 +14452,7 @@ class BaseArangoService:
             app_filter_condition = '''
                 FILTER (
                     record.origin == "UPLOAD" OR
-                    (record.origin == "CONNECTOR" AND record.connectorId IN @user_apps)
+                    (record.origin == "CONNECTOR" AND record.connectorId IN @user_apps_ids)
                 )
             '''
 
@@ -14805,7 +14805,7 @@ class BaseArangoService:
             bind_vars = {
                 "userId": user_id,
                 "orgId": org_id,
-                "user_apps": user_apps,
+                "user_apps_ids": user_apps_ids,
                 "@users": CollectionNames.USERS.value,
                 "@records": CollectionNames.RECORDS.value,
                 "@anyone": CollectionNames.ANYONE.value,
