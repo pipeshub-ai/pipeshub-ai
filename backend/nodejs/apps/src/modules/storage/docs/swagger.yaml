@@ -30,11 +30,6 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: User authentication token
-    scopedToken:
-      type: apiKey
-      in: header
-      name: Authorization
-      description: Scoped token for internal service-to-service calls (STORAGE_TOKEN)
 
   parameters:
     DocumentId:
@@ -50,7 +45,7 @@ components:
       name: version
       in: query
       required: false
-      description: Document version number (0-indexed)
+      description: Document version number (0-indexed, where 0 is the first version)
       schema:
         type: integer
         minimum: 0
@@ -276,6 +271,11 @@ components:
           example: 'Annual Report 2024'
         permissions:
           type: string
+          enum:
+            - owner
+            - editor
+            - commentator
+            - readonly
           description: Access permission level
           example: 'editor'
         isVersionedFile:
@@ -308,6 +308,11 @@ components:
           example: 'org123/projects/specs'
         permissions:
           type: string
+          enum:
+            - owner
+            - editor
+            - commentator
+            - readonly
           description: Access permission level
           example: 'editor'
         metaData:
@@ -460,8 +465,16 @@ paths:
                 $ref: '#/components/schemas/Error'
         '401':
           description: Unauthorized - invalid or missing authentication token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /internal/upload:
     post:
@@ -473,7 +486,7 @@ paths:
         Maximum file size is 100MB.
       operationId: uploadDocumentInternal
       security:
-        - scopedToken: []
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -495,8 +508,16 @@ paths:
                 $ref: '#/components/schemas/Error'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   # ============================================
   # PLACEHOLDER ENDPOINTS
@@ -545,8 +566,16 @@ paths:
                 $ref: '#/components/schemas/Error'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /internal/placeholder:
     post:
@@ -556,7 +585,7 @@ paths:
       description: Internal endpoint for service-to-service placeholder creation.
       operationId: createPlaceholderInternal
       security:
-        - scopedToken: []
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -572,10 +601,22 @@ paths:
                 $ref: '#/components/schemas/Document'
         '400':
           description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   # ============================================
   # DOCUMENT MANAGEMENT ENDPOINTS
@@ -607,6 +648,10 @@ paths:
                 $ref: '#/components/schemas/Error'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '404':
           description: Document not found
           content:
@@ -615,6 +660,10 @@ paths:
                 $ref: '#/components/schemas/Error'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
     delete:
       tags:
@@ -637,6 +686,10 @@ paths:
           description: Invalid document ID
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '404':
           description: Document not found
           content:
@@ -645,6 +698,10 @@ paths:
                 $ref: '#/components/schemas/Error'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /internal/{documentId}:
     get:
@@ -654,7 +711,7 @@ paths:
       description: Internal endpoint for service-to-service document retrieval.
       operationId: getDocumentByIdInternal
       security:
-        - scopedToken: []
+        - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/DocumentId'
       responses:
@@ -666,10 +723,22 @@ paths:
                 $ref: '#/components/schemas/Document'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '404':
           description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
           
     delete:
       tags:
@@ -678,7 +747,7 @@ paths:
       description: Internal endpoint for service-to-service document deletion.
       operationId: deleteDocumentByIdInternal
       security:
-        - scopedToken: []
+        - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/DocumentId'
       responses:
@@ -690,10 +759,22 @@ paths:
                 $ref: '#/components/schemas/Document'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '404':
           description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   # ============================================
   # DOCUMENT DOWNLOAD ENDPOINTS
@@ -712,6 +793,7 @@ paths:
         - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/DocumentId'
+        - $ref: '#/components/parameters/Version'
         - $ref: '#/components/parameters/ExpirationTime'
       responses:
         '200':
@@ -733,10 +815,22 @@ paths:
                 $ref: '#/components/schemas/Error'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '404':
           description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /internal/{documentId}/download:
     get:
@@ -746,7 +840,7 @@ paths:
       description: Internal endpoint for service-to-service document download.
       operationId: downloadDocumentInternal
       security:
-        - scopedToken: []
+        - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/DocumentId'
         - $ref: '#/components/parameters/Version'
@@ -762,10 +856,22 @@ paths:
           description: Invalid request
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '404':
           description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   # ============================================
   # DOCUMENT BUFFER ENDPOINTS
@@ -798,10 +904,77 @@ paths:
                 $ref: '#/components/schemas/Error'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '404':
           description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    put:
+      tags:
+        - Document Buffer
+      summary: Update document buffer
+      description: Update the document content buffer by uploading a new file.
+      operationId: updateDocumentBuffer
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/DocumentId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The file to upload as buffer
+      responses:
+        '200':
+          description: Buffer updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /internal/{documentId}/buffer:
     get:
@@ -811,7 +984,7 @@ paths:
       description: Internal endpoint for service-to-service buffer retrieval.
       operationId: getDocumentBufferInternal
       security:
-        - scopedToken: []
+        - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/DocumentId'
         - $ref: '#/components/parameters/Version'
@@ -824,10 +997,22 @@ paths:
                 $ref: '#/components/schemas/BufferResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '404':
           description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
     put:
       tags:
@@ -836,7 +1021,7 @@ paths:
       description: Internal endpoint for service-to-service buffer update.
       operationId: updateDocumentBufferInternal
       security:
-        - scopedToken: []
+        - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/DocumentId'
       requestBody:
@@ -856,10 +1041,22 @@ paths:
           description: Buffer updated successfully
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '404':
           description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   # ============================================
   # VERSION CONTROL ENDPOINTS
@@ -904,6 +1101,10 @@ paths:
                 $ref: '#/components/schemas/Error'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '403':
           description: File format mismatch with original document
           content:
@@ -912,8 +1113,16 @@ paths:
                 $ref: '#/components/schemas/Error'
         '404':
           description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /internal/{documentId}/uploadNextVersion:
     post:
@@ -923,7 +1132,7 @@ paths:
       description: Internal endpoint for service-to-service version upload.
       operationId: uploadNextVersionInternal
       security:
-        - scopedToken: []
+        - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/DocumentId'
       requestBody:
@@ -943,89 +1152,29 @@ paths:
           description: Invalid request
         '401':
           description: Unauthorized
-        '403':
-          description: File format mismatch
-        '404':
-          description: Document not found
-        '500':
-          description: Internal server error
-
-  /{documentId}/rollBack:
-    post:
-      tags:
-        - Version Control
-      summary: Rollback to previous version
-      description: |
-        Rollback a versioned document to a specific previous version.
-        Creates a new version entry with the content from the specified version.
-        The rollback version must be less than the current version.
-      operationId: rollBackToPreviousVersion
-      security:
-        - bearerAuth: []
-      parameters:
-        - $ref: '#/components/parameters/DocumentId'
-        - $ref: '#/components/parameters/Version'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RollbackRequest'
-            example:
-              note: 'Rolling back to version 1 - version 2 had critical errors'
-      responses:
-        '200':
-          description: Rollback successful
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Document'
-        '400':
-          description: Invalid version or non-versioned document
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-        '401':
-          description: Unauthorized
-        '404':
-          description: Document not found
-        '500':
-          description: Internal server error
-
-  /internal/{documentId}/rollBack:
-    post:
-      tags:
-        - Internal
-      summary: Rollback to previous version (internal)
-      description: Internal endpoint for service-to-service rollback.
-      operationId: rollBackToPreviousVersionInternal
-      security:
-        - scopedToken: []
-      parameters:
-        - $ref: '#/components/parameters/DocumentId'
-        - $ref: '#/components/parameters/Version'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RollbackRequest'
-      responses:
-        '200':
-          description: Rollback successful
+        '403':
+          description: File format mismatch
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Document'
-        '400':
-          description: Invalid request
-        '401':
-          description: Unauthorized
+                $ref: '#/components/schemas/Error'
         '404':
           description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
 
   # ============================================
   # DIRECT UPLOAD ENDPOINTS
@@ -1071,6 +1220,10 @@ paths:
                 $ref: '#/components/schemas/Error'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /internal/{documentId}/directUpload:
     post:
@@ -1080,7 +1233,7 @@ paths:
       description: Internal endpoint for service-to-service direct upload URL generation.
       operationId: getDirectUploadUrlInternal
       security:
-        - scopedToken: []
+        - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/DocumentId'
       responses:
@@ -1094,10 +1247,22 @@ paths:
           description: Invalid request
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '404':
           description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   # ============================================
   # DOCUMENT DIFF ENDPOINTS
@@ -1134,6 +1299,10 @@ paths:
                 $ref: '#/components/schemas/Error'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /internal/{documentId}/isModified:
     get:
@@ -1143,7 +1312,7 @@ paths:
       description: Internal endpoint for service-to-service modification check.
       operationId: checkDocumentModifiedInternal
       security:
-        - scopedToken: []
+        - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/DocumentId'
       responses:
@@ -1155,10 +1324,22 @@ paths:
                 $ref: '#/components/schemas/IsModifiedResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '404':
           description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   # ============================================
   # CONFIGURATION ENDPOINTS
@@ -1174,7 +1355,7 @@ paths:
         Used when storage settings are updated and need to be reloaded.
       operationId: updateAppConfig
       security:
-        - scopedToken: []
+        - bearerAuth: []
       responses:
         '200':
           description: Configuration updated successfully
@@ -1191,7 +1372,15 @@ paths:
                     description: Updated configuration object
         '401':
           description: Unauthorized - requires FETCH_CONFIG scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
 
