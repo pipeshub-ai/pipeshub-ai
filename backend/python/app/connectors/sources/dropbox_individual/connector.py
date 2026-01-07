@@ -522,6 +522,7 @@ class DropboxIndividualConnector(BaseConnector):
                 parent_external_record_id=parent_external_record_id,
                 size_in_bytes=entry.size if is_file else 0,
                 is_file=is_file,
+                preview_renderable=is_file,  # Only files should be previewable, not folders
                 extension=get_file_extension(entry.name) if is_file else None,
                 path=entry.path_lower,
                 mime_type=get_mimetype_enum_for_dropbox(entry),
@@ -611,9 +612,11 @@ class DropboxIndividualConnector(BaseConnector):
                     created_before=created_before
                 )
                 if record_update and record_update.record:
-                    if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                        record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
-                    if record_update.record.is_shared and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True):
+                    folder_disabled = not record_update.record.is_file
+                    files_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
+                    shared_disabled = record_update.record.is_shared and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True)
+                    
+                    if folder_disabled or files_disabled or shared_disabled:
                         record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
                     yield (record_update.record, record_update.new_permissions or [], record_update)
