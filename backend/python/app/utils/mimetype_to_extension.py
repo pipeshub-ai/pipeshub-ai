@@ -35,7 +35,6 @@ mime_to_extension = {
     "application/vnd.pdf": "pdf",
     "text/pdf": "pdf",
     "text/x-pdf": "pdf",
-    "application/force-download": "pdf",
 
     # DOCX
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
