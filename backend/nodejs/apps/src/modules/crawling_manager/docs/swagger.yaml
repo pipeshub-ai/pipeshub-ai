@@ -286,6 +286,9 @@ components:
         connector:
           type: string
           description: Connector type/name
+        connectorId:
+          type: string
+          description: Connector instance ID
         scheduleConfig:
           $ref: '#/components/schemas/ScheduleConfig'
         orgId:
@@ -361,6 +364,9 @@ components:
             connector:
               type: string
               description: Connector type/name
+            connectorId:
+              type: string
+              description: Connector instance ID
             scheduleConfig:
               $ref: '#/components/schemas/ScheduleConfig'
             scheduledAt:
@@ -426,6 +432,12 @@ components:
         paused:
           type: integer
           description: Number of paused jobs
+        repeatable:
+          type: integer
+          description: Number of repeatable jobs
+        total:
+          type: integer
+          description: Total number of jobs
 
     QueueStatsResponse:
       type: object
@@ -502,13 +514,13 @@ security:
   - bearerAuth: []
 
 paths:
-  /{connector}/schedule:
+  /{connector}/{connectorId}/schedule:
     post:
       tags:
         - Crawling Jobs
       summary: Schedule a crawling job
       description: |
-        Schedule a new crawling job for a specific connector. The job will run according to the 
+        Schedule a new crawling job for a specific connector instance. The job will run according to the 
         specified schedule configuration. Supports multiple schedule types: hourly, daily, weekly, 
         monthly, custom cron, and one-time execution.
       operationId: scheduleCrawlingJob
@@ -522,6 +534,13 @@ paths:
           schema:
             type: string
           example: 'gmail'
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID
+          schema:
+            type: string
+          example: '507f1f77bcf86cd799439011'
       requestBody:
         content:
           application/json:
@@ -565,7 +584,7 @@ paths:
         - Crawling Jobs
       summary: Get crawling job status
       description: |
-        Retrieve the status of a scheduled crawling job for a specific connector. Returns detailed 
+        Retrieve the status of a scheduled crawling job for a specific connector instance. Returns detailed 
         information about the job including its current state, progress, and execution history.
       operationId: getCrawlingJobStatus
       security:
@@ -578,6 +597,13 @@ paths:
           schema:
             type: string
           example: 'gmail'
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID
+          schema:
+            type: string
+          example: '507f1f77bcf86cd799439011'
       responses:
         '200':
           description: Job status retrieved successfully
@@ -610,12 +636,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /{connector}/{connectorId}/remove:
     delete:
       tags:
         - Crawling Jobs
       summary: Remove crawling job
       description: |
-        Remove a scheduled crawling job for a specific connector. This will cancel the job and 
+        Remove a scheduled crawling job for a specific connector instance. This will cancel the job and 
         remove it from the queue.
       operationId: removeCrawlingJob
       security:
@@ -628,6 +655,13 @@ paths:
           schema:
             type: string
           example: 'gmail'
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID
+          schema:
+            type: string
+          example: '507f1f77bcf86cd799439011'
       responses:
         '200':
           description: Crawling job removed successfully
@@ -660,13 +694,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /{connector}/pause:
+  /{connector}/{connectorId}/pause:
     post:
       tags:
         - Crawling Jobs
       summary: Pause a crawling job
       description: |
-        Pause a running or scheduled crawling job for a specific connector. The job can be resumed 
+        Pause a running or scheduled crawling job for a specific connector instance. The job can be resumed 
         later using the resume endpoint.
       operationId: pauseCrawlingJob
       security:
@@ -679,6 +713,13 @@ paths:
           schema:
             type: string
           example: 'gmail'
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID
+          schema:
+            type: string
+          example: '507f1f77bcf86cd799439011'
       responses:
         '200':
           description: Crawling job paused successfully
@@ -711,13 +752,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /{connector}/resume:
+  /{connector}/{connectorId}/resume:
     post:
       tags:
         - Crawling Jobs
       summary: Resume a paused crawling job
       description: |
-        Resume a previously paused crawling job for a specific connector. The job will continue 
+        Resume a previously paused crawling job for a specific connector instance. The job will continue 
         from where it was paused.
       operationId: resumeCrawlingJob
       security:
@@ -730,6 +771,13 @@ paths:
           schema:
             type: string
           example: 'gmail'
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID
+          schema:
+            type: string
+          example: '507f1f77bcf86cd799439011'
       responses:
         '200':
           description: Crawling job resumed successfully

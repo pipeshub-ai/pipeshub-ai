@@ -37,6 +37,8 @@ tags:
     description: Metrics collection and monitoring configuration
   - name: Internal Endpoints
     description: Service-to-service internal endpoints
+  - name: Connector Configuration
+    description: Connector-specific configuration endpoints (Atlassian, OneDrive, SharePoint, Google Workspace)
 
 components:
   securitySchemes:
