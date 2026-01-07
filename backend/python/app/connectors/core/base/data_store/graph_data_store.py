@@ -130,6 +130,9 @@ class GraphTransactionStore(TransactionStore):
     async def get_user_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[AppUserGroup]:
         return await self.graph_provider.get_user_group_by_external_id(connector_id, external_id, transaction=self.txn)
 
+    async def delete_user_group_by_id(self, group_id: str) -> None:
+        return await self.graph_provider.delete_nodes_and_edges([group_id],CollectionNames.GROUPS.value,graph_name="knowledgeGraph",transaction=self.txn)
+
     async def get_app_role_by_external_id(self, connector_id: str, external_id: str) -> Optional[AppRole]:
         return await self.graph_provider.get_app_role_by_external_id(connector_id, external_id, transaction=self.txn)
 
@@ -511,6 +514,10 @@ class GraphTransactionStore(TransactionStore):
     async def get_edges_to_node(self, node_id: str, edge_collection: str) -> List[Dict]:
         """Get all edges pointing to a specific node"""
         return await self.graph_provider.get_edges_to_node(node_id, edge_collection, transaction=self.txn)
+
+    async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> List[Dict]:
+        """Get all edges originating from a specific node"""
+        return await self.graph_provider.get_edges_from_node(from_node_id, edge_collection, transaction=self.txn)
 
     async def get_related_node_field(
         self, node_id: str, edge_collection: str, target_collection: str,
