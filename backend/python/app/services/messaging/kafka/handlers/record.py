@@ -187,13 +187,13 @@ class RecordEventHandler(BaseEventService):
             # Fallback: Get mimeType from database record if payload has empty/unknown value
             if mime_type == "unknown" or not mime_type:
                 mime_type = record.get("mimeType") or "unknown"
-            
+
             if (extension is None or extension == "unknown") and mime_type is not None and mime_type != "unknown":
                 derived_extension = get_extension_from_mimetype(mime_type)
                 if derived_extension:
                     extension = derived_extension
 
-            if extension is "unknown" and mime_type != "text/gmail_content":
+            if extension == "unknown" and mime_type != "text/gmail_content":
                 record_name = payload.get("recordName")
                 if record_name and "." in record_name:
                     extension = record_name.split(".")[-1]
@@ -202,7 +202,7 @@ class RecordEventHandler(BaseEventService):
             self.logger.info("🚀 mime_type: %s", mime_type)
             self.logger.info("🚀 extension: %s", extension)
 
-            
+
 
             supported_mime_types = [
                 MimeTypes.GMAIL.value,

@@ -6,7 +6,7 @@ mime_to_extension = {
     "application/png": "png",
     "application/x-png": "png",
     "image/vnd.mozilla.apng": "png",
-    
+
     # JPEG/JPG
     "image/jpeg": "jpeg",
     "image/jpg": "jpg",
@@ -15,11 +15,11 @@ mime_to_extension = {
     "image/pjpeg": "jpeg",
     "image/jpeg; charset=binary": "jpeg",
     "image/jpg; charset=binary": "jpg",
-    
+
     # WEBP
     "image/webp": "webp",
     "image/x-webp": "webp",
-    
+
     # SVG
     "image/svg+xml": "svg",
     "image/svg": "svg",
@@ -27,7 +27,7 @@ mime_to_extension = {
     "application/svg+xml": "svg",
     "text/xml-svg": "svg",
     "application/xml-svg": "svg",
-    
+
     # PDF
     "application/pdf": "pdf",
     "application/x-pdf": "pdf",
@@ -36,11 +36,11 @@ mime_to_extension = {
     "text/pdf": "pdf",
     "text/x-pdf": "pdf",
     "application/force-download": "pdf",
-    
+
     # DOCX
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document+xml": "docx",
-    
+
     # DOC
     "application/msword": "doc",
     "application/x-msword": "doc",
@@ -49,11 +49,11 @@ mime_to_extension = {
     "application/doc": "doc",
     "application/x-doc": "doc",
     "zz-application/zz-winassoc-doc": "doc",
-    
+
     # XLSX
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet+xml": "xlsx",
-    
+
     # XLS
     "application/vnd.ms-excel": "xls",
     "application/vnd.ms-excel.sheet.macroEnabled.12": "xls",
@@ -64,7 +64,7 @@ mime_to_extension = {
     "application/x-xls": "xls",
     "application/vnd.ms-excel; charset=utf-8": "xls",
     "zz-application/zz-winassoc-xls": "xls",
-    
+
     # CSV
     "text/csv": "csv",
     "application/csv": "csv",
@@ -74,11 +74,11 @@ mime_to_extension = {
     "application/csv; charset=utf-8": "csv",
     "text/csv; charset=utf-8": "csv",
     "text/csv; charset=us-ascii": "csv",
-    
+
     # PPTX
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation+xml": "pptx",
-    
+
     # PPT
     "application/vnd.ms-powerpoint": "ppt",
     "application/vnd.ms-powerpoint.presentation.macroEnabled.12": "ppt",
@@ -87,14 +87,14 @@ mime_to_extension = {
     "application/x-ppt": "ppt",
     "application/vnd.ms-powerpoint; charset=utf-8": "ppt",
     "zz-application/zz-winassoc-ppt": "ppt",
-    
+
     # MDX
     "text/mdx": "mdx",
     "text/x-mdx": "mdx",
     "application/mdx": "mdx",
     "application/x-mdx": "mdx",
     "text/mdx; charset=utf-8": "mdx",
-    
+
     "text/plain": "txt",
     "text/plain; charset=utf-8": "txt",
     "text/plain; charset=us-ascii": "txt",
