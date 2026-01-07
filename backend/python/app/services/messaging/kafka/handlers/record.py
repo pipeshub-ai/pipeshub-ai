@@ -160,6 +160,12 @@ class RecordEventHandler(BaseEventService):
                 self.logger.error(f"❌ Record {record_id} not found in database")
                 return False
 
+            doc = dict(record)
+
+            if event_type == EventTypes.NEW_RECORD.value and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
+                self.logger.info(f"🔍 Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")
+                return True
+
             # Check if record is from a connector and if the connector is active
             if event_type == EventTypes.NEW_RECORD.value:
                 connector_id = record.get("connectorId")
@@ -181,6 +187,11 @@ class RecordEventHandler(BaseEventService):
             # Fallback: Get mimeType from database record if payload has empty/unknown value
             if mime_type == "unknown" or not mime_type:
                 mime_type = record.get("mimeType") or "unknown"
+            
+            if (extension is None or extension == "unknown") and mime_type is not None and mime_type != "unknown":
+                derived_extension = get_extension_from_mimetype(mime_type)
+                if derived_extension:
+                    extension = derived_extension
 
             if extension is None and mime_type != "text/gmail_content":
                 extension = payload.get("extension", None)
@@ -188,21 +199,13 @@ class RecordEventHandler(BaseEventService):
                     record_name = payload.get("recordName")
                     if record_name and "." in record_name:
                         extension = payload["recordName"].split(".")[-1]
-
-            if (extension is None or extension == "unknown") and mime_type is not None and mime_type != "unknown":
-                derived_extension = get_extension_from_mimetype(mime_type)
-                if derived_extension:
-                    extension = derived_extension
+      
 
             self.logger.info("🚀 Checking for mime_type")
             self.logger.info("🚀 mime_type: %s", mime_type)
             self.logger.info("🚀 extension: %s", extension)
 
-            doc = dict(record)
-
-            if event_type == EventTypes.NEW_RECORD.value and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
-                self.logger.info(f"🔍 Embeddings already exist for record {record_id} with virtual_record_id {virtual_record_id}")
-                return True
+            
 
             supported_mime_types = [
                 MimeTypes.GMAIL.value,
@@ -217,8 +220,15 @@ class RecordEventHandler(BaseEventService):
                 MimeTypes.JPEG.value,
                 MimeTypes.WEBP.value,
                 MimeTypes.SVG.value,
-                MimeTypes.HEIC.value,
-                MimeTypes.HEIF.value,
+                MimeTypes.PDF.value,
+                MimeTypes.DOCX.value,
+                MimeTypes.DOC.value,
+                MimeTypes.XLSX.value,
+                MimeTypes.XLS.value,
+                MimeTypes.CSV.value,
+                MimeTypes.PPTX.value,
+                MimeTypes.PPT.value,
+                MimeTypes.MDX.value,
             ]
 
             supported_extensions = [
