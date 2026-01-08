@@ -6,6 +6,7 @@ export const APP_TYPES = {
   BOOKSTACK: 'bookstack',
   CONFLUENCE: 'confluence',
   JIRA: 'jira',
+  LINEAR: 'linear',
   SLACK: 'slack',
   DROPBOX: 'dropbox',
   OUTLOOK: 'outlook',

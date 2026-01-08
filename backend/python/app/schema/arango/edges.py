@@ -11,6 +11,7 @@ record_relations_schema = {
                     "DUPLICATE",
                     "ATTACHMENT",
                     "SIBLING",
+                    "LINKED_TO",
                     "OTHERS",
                 ],
             },

@@ -263,6 +263,7 @@ class RecordRelations(Enum):
     PARENT_CHILD = "PARENT_CHILD"
     SIBLING = "SIBLING"
     ATTACHMENT = "ATTACHMENT"
+    LINKED_TO = "LINKED_TO"
 
 class EventTypes(Enum):
     NEW_RECORD = "newRecord"
