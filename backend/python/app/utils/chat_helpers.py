@@ -358,6 +358,10 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
                 else:
                     block_num = [block.get("index", 0) + 1]
 
+            preview_renderable = meta.get("previewRenderable")
+            if preview_renderable is None:
+                preview_renderable = record.get("preview_renderable", True)
+           
             enhanced_metadata = {
                         "orgId": meta.get("orgId") or record.get("org_id", ""),
                         "recordId": meta.get("recordId") or record.get("id", ""),
@@ -375,7 +379,7 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
                         "mimeType": mime_type,
                         "blockNum":block_num,
                         "webUrl": meta.get("webUrl") or record.get("weburl", ""),
-                        "previewRenderable": meta.get("previewRenderable") or record.get("preview_renderable", True),
+                        "previewRenderable": preview_renderable,
                     }
             if extension == "xlsx" or meta.get("sheetName"):
                 if isinstance(data, dict):
