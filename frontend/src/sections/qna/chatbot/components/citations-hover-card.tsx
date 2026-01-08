@@ -269,6 +269,15 @@ const CitationHoverCard = ({
     e.preventDefault();
     e.stopPropagation();
 
+    // Check if previewRenderable is false - if so, open webUrl instead of viewer
+    if (citation?.metadata?.previewRenderable === false) {
+      const webUrl = getWebUrl();
+      if (webUrl) {
+        window.open(webUrl, '_blank', 'noopener,noreferrer');
+      }
+      return;
+    }
+
     if (citation?.metadata?.recordId) {
       try {
         const extension = getExtension();

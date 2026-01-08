@@ -430,7 +430,9 @@ export default function RecordDetails() {
                 )}
 
                 {/* Delete button */}
-                <DeleteButton onClick={() => setIsDeleteDialogOpen(true)} variant="default" />
+                {!isRecordConnector && (
+                  <DeleteButton onClick={() => setIsDeleteDialogOpen(true)} variant="default" />
+                )}
               </Box>
               <Box
                 sx={{
@@ -467,7 +469,9 @@ export default function RecordDetails() {
                 )}
 
                 {/* Delete button */}
-                <DeleteButton onClick={() => setIsDeleteDialogOpen(true)} variant="default" />
+                {!isRecordConnector && (
+                  <DeleteButton onClick={() => setIsDeleteDialogOpen(true)} variant="default" />
+                )}
               </Box>
 
               {/* Tablet: Compact buttons with text */}
@@ -503,7 +507,9 @@ export default function RecordDetails() {
                 {webUrl && <OpenButton webUrl={webUrl} variant="compact" />}
 
                 {/* Delete button - Compact */}
-                <DeleteButton onClick={() => setIsDeleteDialogOpen(true)} variant="compact" />
+                {!isRecordConnector && (
+                  <DeleteButton onClick={() => setIsDeleteDialogOpen(true)} variant="compact" />
+                )}
               </Box>
 
               {/* Mobile: Priority action + Hamburger Menu */}
@@ -625,14 +631,18 @@ export default function RecordDetails() {
                     />
                   )}
 
-                  <Divider sx={{ my: 0.5 }} />
+                  {!isRecordConnector && (
+                    <>
+                      <Divider sx={{ my: 0.5 }} />
 
-                  {/* Delete - Dangerous action at bottom */}
-                  <DeleteButton
-                    onClick={() => setIsDeleteDialogOpen(true)}
-                    variant="menu"
-                    onMenuClose={handleActionMenuClose}
-                  />
+                      {/* Delete - Dangerous action at bottom */}
+                      <DeleteButton
+                        onClick={() => setIsDeleteDialogOpen(true)}
+                        variant="menu"
+                        onMenuClose={handleActionMenuClose}
+                      />
+                    </>
+                  )}
                 </Menu>
               </Box>
             </Box>

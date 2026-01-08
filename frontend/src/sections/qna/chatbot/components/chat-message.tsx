@@ -32,6 +32,10 @@ import {
   useTheme,
 } from '@mui/material';
 
+import {
+  getWebUrlWithFragment,
+} from 'src/sections/knowledgebase/utils/utils';
+
 import RecordDetails from './record-details';
 import MessageFeedback from './message-feedback';
 import CitationHoverCard from './citations-hover-card';
@@ -228,6 +232,7 @@ const StreamingContent = React.memo(
       if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
     }, []);
 
+
     const handleClick = useCallback(
       (event: React.MouseEvent, citationRef: string) => {
         event.stopPropagation();
@@ -235,8 +240,21 @@ const StreamingContent = React.memo(
         const citationNumber = parseInt(citationRef.replace(/[[\]]/g, ''), 10);
         const citation = citationMap[citationNumber];
 
+        // Check if previewRenderable is false - if so, open webUrl instead of viewer
+        if (citation?.metadata?.previewRenderable === false) {
+          const webUrl = getWebUrlWithFragment(citation);
+          if (webUrl) {
+            window.open(webUrl, '_blank', 'noopener,noreferrer');
+          }
+          handleCloseHoverCard();
+          return;
+        }
+
         if (!citation?.metadata?.extension) {
-          window.open(citation?.metadata?.webUrl, '_blank');
+          const webUrl = getWebUrlWithFragment(citation);
+          if (webUrl) {
+            window.open(webUrl, '_blank', 'noopener,noreferrer');
+          }
           return;
         }
 
