@@ -34,6 +34,12 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorScope,
     DocumentationLink,
 )
+from app.connectors.core.registry.filters import (
+    FilterCollection,
+    FilterOperator,
+    SyncFilterKey,
+    load_connector_filters,
+)
 
 # App-specific Box client imports
 from app.connectors.sources.box.common.apps import BoxApp
@@ -133,6 +139,7 @@ def get_mimetype_enum_for_box(entry_type: str, filename: str = None) -> MimeType
             placeholder="Enter Box Enterprise ID",
             description="The Enterprise ID from Box Developer Console"
         ))
+        .add_filter_field(CommonFields.file_extension_filter())
         .with_webhook_config(True, ["FILE.UPLOADED", "FILE.DELETED", "FILE.MOVED", "FOLDER.CREATED", "COLLABORATION.REMOVED"])
         .with_scheduled_config(True, 60)
         .with_agent_support(False)
@@ -191,6 +198,8 @@ class BoxConnector(BaseConnector):
         self.batch_size = 100
         self.max_concurrent_batches = 5
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
+        self.sync_filters: FilterCollection = FilterCollection()
+        self.indexing_filters: FilterCollection = FilterCollection()
 
         # Track the current access token to detect changes
         self._current_access_token: Optional[str] = None
@@ -391,6 +400,11 @@ class BoxConnector(BaseConnector):
                 self.logger.warning(f"Skipping entry without ID or name: {entry}")
                 return None
 
+            # Apply file extension filter for files
+            if entry_type == 'file' and not self._should_include_file(entry):
+                self.logger.debug(f"File {entry_name} filtered out by extension filter")
+                return None
+
             path_collection = entry.get('path_collection', {}).get('entries', [])
             path_parts = [p.get('name') for p in path_collection if p.get('name')]
             path_parts.append(entry_name)
@@ -455,6 +469,7 @@ class BoxConnector(BaseConnector):
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
                 is_file=is_file,
+                preview_renderable=is_file,
                 size_in_bytes=file_size,
                 extension=get_file_extension(entry_name) if is_file else None,
                 path=file_path,
@@ -1094,6 +1109,11 @@ class BoxConnector(BaseConnector):
         try:
             self.logger.info("🔍 [Smart Sync] Checking sync state...")
 
+            # Load filters
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "box", self.connector_id, self.logger
+            )
+
             # 1. Check if we have an existing cursor
             key = "event_stream_cursor"
 
@@ -1170,6 +1190,11 @@ class BoxConnector(BaseConnector):
         Runs an incremental sync using the Box Enterprise Event Stream.
         """
         self.logger.info("🔄 [Incremental] Starting Box Enterprise incremental sync.")
+
+        # Load filters
+        self.sync_filters, self.indexing_filters = await load_connector_filters(
+            self.config_service, "box", self.connector_id, self.logger
+        )
 
         try:
             self.logger.info("👥 [Incremental] Refreshing User list...")
@@ -1625,6 +1650,11 @@ class BoxConnector(BaseConnector):
 
             self.logger.info(f"Starting reindex for {len(records)} Box records")
 
+            # Load filters
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "box", self.connector_id, self.logger
+            )
+
             # 1. Group records by Owner
             records_by_owner: Dict[str, List[Record]] = {}
             for record in records:
@@ -1692,6 +1722,61 @@ class BoxConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error during Box reindex: {e}", exc_info=True)
             raise
+
+    def _should_include_file(self, entry: Dict) -> bool:
+        """
+        Determines if a file should be included based on the file extension filter.
+
+        Args:
+            entry: Box file entry dict
+
+        Returns:
+            True if the file should be included, False otherwise
+        """
+        # Only filter files
+        if entry.get('type') != 'file':
+            return True
+
+        # Get the extensions filter
+        extensions_filter = self.sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
+
+        # If no filter configured or filter is empty, allow all files
+        if extensions_filter is None or extensions_filter.is_empty():
+            return True
+
+        # Get the file extension from the entry name
+        entry_name = entry.get('name', '')
+        file_extension = None
+        if entry_name and "." in entry_name:
+            file_extension = entry_name.rsplit(".", 1)[-1].lower()
+
+        # Handle files without extensions
+        if file_extension is None:
+            operator = extensions_filter.get_operator()
+            operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+            return operator_str == FilterOperator.NOT_IN
+
+        # Get the list of extensions from the filter value
+        allowed_extensions = extensions_filter.value
+        if not isinstance(allowed_extensions, list):
+            return True  # Invalid filter value, allow the file
+
+        # Normalize extensions (lowercase, without dots)
+        normalized_extensions = [ext.lower().lstrip(".") for ext in allowed_extensions]
+
+        # Apply the filter based on operator
+        operator = extensions_filter.get_operator()
+        operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+
+        if operator_str == FilterOperator.IN:
+            # Only allow files with extensions in the list
+            return file_extension in normalized_extensions
+        elif operator_str == FilterOperator.NOT_IN:
+            # Allow files with extensions NOT in the list
+            return file_extension not in normalized_extensions
+
+        # Unknown operator, default to allowing the file
+        return True
 
     async def get_filter_options(
         self,
