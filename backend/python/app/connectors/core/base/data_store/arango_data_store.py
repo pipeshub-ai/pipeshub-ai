@@ -402,7 +402,13 @@ class ArangoTransactionStore(TransactionStore):
         """Rollback the ArangoDB transaction"""
         self.txn.abort_transaction()
 
-    async def create_record_relation(self, from_record_id: str, to_record_id: str, relation_type: str) -> None:
+    async def create_record_relation(
+        self,
+        from_record_id: str,
+        to_record_id: str,
+        relation_type: str,
+        custom_relationship_tag: Optional[str] = None
+    ) -> None:
         record_edge = {
                     "_from": f"{CollectionNames.RECORDS.value}/{from_record_id}",
                     "_to": f"{CollectionNames.RECORDS.value}/{to_record_id}",
@@ -410,6 +416,10 @@ class ArangoTransactionStore(TransactionStore):
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 }
+
+        # Add customRelationshipTag if provided
+        if custom_relationship_tag:
+            record_edge["customRelationshipTag"] = custom_relationship_tag
 
         await self.arango_service.batch_create_edges(
             [record_edge], collection=CollectionNames.RECORD_RELATIONS.value, transaction=self.txn

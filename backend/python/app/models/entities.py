@@ -9,6 +9,7 @@ from app.config.constants.arangodb import (
     MimeTypes,
     OriginTypes,
     ProgressStatus,
+    RecordRelations,
 )
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -129,6 +130,27 @@ class TicketDeliveryStatus(str, Enum):
     SOME_RISK = "SOME_RISK"  # Some risk - minor concerns (Jira Align)
     UNKNOWN = "UNKNOWN"  # Unknown or unmapped delivery status
 
+
+class RelatedExternalRecord(BaseModel):
+    """Structured model for related external records to create LINKED_TO relations.
+
+    This model ensures type safety and validation for related external records.
+    Only external_record_id and record_type are required; relation_type defaults to LINKED_TO.
+    custom_relationship_tag is optional and used to specify the relationship type from the source system
+    (e.g., "is blocked by", "blocks", "clones" for Jira).
+    """
+    external_record_id: str = Field(description="External ID of the related record")
+    record_type: RecordType = Field(description="Type of the related record")
+    relation_type: RecordRelations = Field(
+        default=RecordRelations.LINKED_TO,
+        description="Type of relation to create (defaults to LINKED_TO)"
+    )
+    custom_relationship_tag: Optional[str] = Field(
+        default=None,
+        description="Custom relationship tag from source system (e.g., 'is blocked by', 'blocks' for Jira)"
+    )
+
+
 class Record(BaseModel):
     # Core record properties
     id: str = Field(description="Unique identifier for the record", default_factory=lambda: str(uuid4()))
@@ -181,6 +203,9 @@ class Record(BaseModel):
     parent_record_id: Optional[str] = None
     child_record_ids: Optional[List[str]] = Field(default_factory=list)
     related_record_ids: Optional[List[str]] = Field(default_factory=list)
+
+    # Related external records (for connectors to specify relations by external IDs)
+    related_external_records: Optional[List[RelatedExternalRecord]] = Field(default_factory=list, description="List of related external records to create LINKED_TO relations (not persisted)")
     # Hierarchy fields
     is_dependent_node: bool = Field(default=False, description="True for dependent records, False for root records")
     parent_node_id: Optional[str] = Field(default=None, description="Internal record ID of the parent node")

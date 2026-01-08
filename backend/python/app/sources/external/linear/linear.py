@@ -219,7 +219,7 @@ class LinearDataSource:
 
         try:
             response = await self._linear_client.get_client().execute(
-                query=query, variables=variables, operation_name="project"
+                query=query, variables=variables, operation_name="Project"
             )
             return response
         except Exception as e:
@@ -498,6 +498,19 @@ class LinearDataSource:
             return response
         except Exception as e:
             return GraphQLResponse(success=False, message=f"Failed to execute query attachments: {str(e)}")
+
+    async def document(self, id: str) -> GraphQLResponse:
+        """Get document by ID"""
+        query = LinearGraphQLOperations.get_operation_with_fragments("query", "document")
+        variables = {"id": id}
+
+        try:
+            response = await self._linear_client.get_client().execute(
+                query=query, variables=variables, operation_name="document"
+            )
+            return response
+        except Exception as e:
+            return GraphQLResponse(success=False, message=f"Failed to execute query document: {str(e)}")
 
     async def documents(
         self,

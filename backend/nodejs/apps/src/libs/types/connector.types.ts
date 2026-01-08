@@ -15,6 +15,7 @@ export enum ConnectorId {
     SLACK = 'slack',
     DROPBOX = 'dropbox',
     BOX = 'box',
+    LINEAR = 'linear',
     UPLOAD = 'upload',
   }
   
@@ -35,6 +36,7 @@ export enum ConnectorId {
     SLACK = 'Slack',
     DROPBOX = 'Dropbox',
     BOX = 'Box',
+    LINEAR = 'Linear',
     UPLOAD = 'Uploaded Files',
   }
   
@@ -55,5 +57,6 @@ export enum ConnectorId {
     [ConnectorId.SLACK]: ConnectorNames.SLACK,
     [ConnectorId.DROPBOX]: ConnectorNames.DROPBOX,
     [ConnectorId.BOX]: ConnectorNames.BOX,
+    [ConnectorId.LINEAR]: ConnectorNames.LINEAR,
     [ConnectorId.UPLOAD]: ConnectorNames.UPLOAD,
   };

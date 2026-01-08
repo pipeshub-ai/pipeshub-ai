@@ -2188,12 +2188,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
         from_record_id: str,
         to_record_id: str,
         relation_type: str,
+        custom_relationship_tag: Optional[str] = None,
         transaction: Optional[str] = None
     ) -> None:
         """
         Create a relation edge between two records.
 
         Generic implementation that creates RECORD_RELATIONS edge.
+
+        Args:
+            from_record_id: Source record ID
+            to_record_id: Target record ID
+            relation_type: Type of relation (e.g., "LINKED_TO")
+            custom_relationship_tag: Optional custom relationship tag from source system (e.g., "is blocked by" for Jira)
+            transaction: Optional transaction ID
         """
         record_edge = {
             "_from": f"{CollectionNames.RECORDS.value}/{from_record_id}",
@@ -2202,6 +2210,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             "createdAtTimestamp": get_epoch_timestamp_in_ms(),
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
         }
+
+        # Add customRelationshipTag if provided
+        if custom_relationship_tag:
+            record_edge["customRelationshipTag"] = custom_relationship_tag
 
         await self.batch_create_edges(
             [record_edge],

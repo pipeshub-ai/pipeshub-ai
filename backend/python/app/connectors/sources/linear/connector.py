@@ -16,7 +16,7 @@ from uuid import uuid4
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import AppGroups, Connectors
+from app.config.constants.arangodb import AppGroups, Connectors, RecordRelations
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -46,6 +46,13 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.linear.common.apps import LinearApp
+from app.models.blocks import (
+    Block,
+    BlockComment,
+    BlocksContainer,
+    BlockType,
+    DataFormat,
+)
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -782,6 +789,7 @@ class LinearConnector(BaseConnector):
                 total_records_processed = 0
                 total_tickets = 0
                 total_comments = 0
+                total_files = 0
                 # Track max updatedAt ONLY from issues (TicketRecords)
                 # We query by issue.updatedAt, so sync point must be based on issue timestamps
                 max_issue_updated_at: Optional[int] = None
@@ -804,6 +812,8 @@ class LinearConnector(BaseConnector):
                                     max_issue_updated_at = record.source_updated_at
                         elif isinstance(record, CommentRecord):
                             total_comments += 1
+                        elif isinstance(record, FileRecord):
+                            total_files += 1
 
                     # Process batch
                     total_records_processed += len(batch_records)
@@ -816,7 +826,15 @@ class LinearConnector(BaseConnector):
 
                 # Log final status
                 if total_records_processed > 0:
-                    self.logger.info(f"✅ Team {team_key}: {total_tickets} tickets, {total_comments} comments ({total_records_processed} total)")
+                    parts = []
+                    if total_tickets > 0:
+                        parts.append(f"{total_tickets} tickets")
+                    if total_comments > 0:
+                        parts.append(f"{total_comments} comments")
+                    if total_files > 0:
+                        parts.append(f"{total_files} files")
+                    summary = ", ".join(parts) if parts else "0 records"
+                    self.logger.info(f"✅ Team {team_key}: {summary} ({total_records_processed} total)")
                 else:
                     self.logger.info(f"ℹ️ No new/updated issues for team {team_key}")
 
@@ -1299,7 +1317,6 @@ class LinearConnector(BaseConnector):
                 total_records_processed = 0
                 total_projects = 0
                 # Track max updatedAt ONLY from projects (TicketRecords)
-                # We query by project.updatedAt, so sync point must be based on project timestamps
                 max_project_updated_at: Optional[int] = None
 
                 async for batch_records in self._fetch_projects_for_team_batch(
@@ -1344,7 +1361,7 @@ class LinearConnector(BaseConnector):
         team_id: str,
         team_key: str,
         last_sync_time: Optional[int] = None,
-        batch_size: int = 50
+        batch_size: int = 10
     ) -> AsyncGenerator[List[Tuple[Record, List[Permission]]], None]:
         """
         Fetch projects for a team with pagination and incremental sync, yielding batches.
@@ -1405,20 +1422,80 @@ class LinearConnector(BaseConnector):
                     try:
                         project_id = project_data.get("id", "")
 
+                        # Fetch full project details with nested data for blocks
+                        datasource = await self._get_fresh_datasource()
+                        full_project_response = await datasource.project(project_id)
+
+                        if not full_project_response.success:
+                            self.logger.warning(f"⚠️ Failed to fetch full project details for {project_id}: {full_project_response.message}")
+                            full_project_data = project_data
+                        else:
+                            full_project_data = full_project_response.data.get("project", {}) if full_project_response.data else project_data
+
                         # Look up existing record to handle versioning
                         existing_record = await tx_store.get_record_by_external_id(
                             connector_id=self.connector_id,
                             external_id=project_id
                         )
 
-                        # Transform project to TicketRecord with existing record info
+                        # Parse project data into blocks
+                        blocks_container = await self._parse_project_to_blocks(full_project_data)
+
+                        # Transform project to TicketRecord with blocks
                         project_record = self._transform_project_to_ticket_record(
-                            project_data, team_id, existing_record
+                            full_project_data, team_id, existing_record, blocks_container
                         )
 
                         # Set indexing status based on filters
                         if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.PROJECTS):
                             project_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+                        # Add linked issues to related_external_records on TicketRecord
+                        issues_data = project_data.get("issues", {}).get("nodes", [])
+                        if issues_data:
+                            from app.models.entities import RelatedExternalRecord
+                            project_record.related_external_records = [
+                                RelatedExternalRecord(
+                                    external_record_id=issue.get("id"),
+                                    record_type=RecordType.TICKET,
+                                    relation_type=RecordRelations.LINKED_TO
+                                )
+                                for issue in issues_data
+                                if issue.get("id")
+                            ]
+
+                        # Extract files (not images) from project description and create FileRecords
+                        project_content = full_project_data.get("content", "")
+                        if project_content:
+                            # Extract files from project content (excluding images)
+                            # Use PROJECTS filter key for project file extraction
+                            file_records = await self._extract_files_from_markdown(
+                                markdown_text=project_content,
+                                parent_external_id=project_id,
+                                parent_node_id=project_record.id,
+                                parent_record_type=RecordType.TICKET,
+                                team_id=team_id,
+                                tx_store=tx_store,
+                                parent_created_at=project_record.source_created_at,
+                                parent_updated_at=project_record.source_updated_at,
+                                parent_weburl=project_record.weburl,
+                                exclude_images=True,  # Only extract files, not images
+                                indexing_filter_key=IndexingFilterKey.PROJECTS  # Use PROJECTS filter for project files
+                            )
+                            # Add file records to batch
+                            batch_records.extend(file_records)
+
+                        # Process project external links (attachments) and create LinkRecords
+                        external_links_data = full_project_data.get("externalLinks", {}).get("nodes", [])
+                        if external_links_data:
+                            link_records = await self._process_project_external_links(
+                                external_links_data=external_links_data,
+                                project_id=project_id,
+                                project_node_id=project_record.id,
+                                team_id=team_id,
+                                tx_store=tx_store
+                            )
+                            batch_records.extend(link_records)
 
                         # Records inherit permissions from RecordGroup (team), so pass empty list
                         batch_records.append((project_record, []))
@@ -1523,6 +1600,76 @@ class LinearConnector(BaseConnector):
 
         return comment_records
 
+    async def _process_project_external_links(
+        self,
+        external_links_data: List[Dict[str, Any]],
+        project_id: str,
+        project_node_id: str,
+        team_id: str,
+        tx_store
+    ) -> List[Tuple[Record, List[Permission]]]:
+        """
+        Process project external links and create LinkRecords.
+
+        Args:
+            external_links_data: List of external link data from Linear API
+            project_id: Project external ID
+            project_node_id: Internal record ID of project
+            team_id: Team ID for external_record_group_id
+            tx_store: Transaction store for looking up existing records
+
+        Returns:
+            List of (LinkRecord, permissions) tuples
+        """
+        link_records: List[Tuple[Record, List[Permission]]] = []
+
+        for link_data in external_links_data:
+            try:
+                link_id = link_data.get("id", "")
+                if not link_id:
+                    continue
+
+                # Check if link already exists
+                existing_link = await tx_store.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=link_id
+                )
+
+                # Transform external link to LinkRecord (reuse attachment transform function)
+                link_record = self._transform_attachment_to_link_record(
+                    attachment_data=link_data,
+                    issue_id=project_id,  # Use project_id as parent
+                    parent_node_id=project_node_id,
+                    team_id=team_id,
+                    existing_record=existing_link
+                )
+
+                # Set indexing status based on FILES filter (external links are treated as files)
+                if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.PROJECTS):
+                    link_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+                # Look up related record by weburl
+                if link_record.weburl:
+                    try:
+                        related_record = await tx_store.get_record_by_weburl(
+                            link_record.weburl,
+                            org_id=self.data_entities_processor.org_id
+                        )
+                        if related_record:
+                            link_record.linked_record_id = related_record.id
+                            self.logger.debug(f"🔗 Found related record {related_record.id} for project link URL: {link_record.weburl}")
+                    except Exception as e:
+                        self.logger.debug(f"⚠️ Could not fetch related record for URL {link_record.weburl}: {e}")
+
+                link_records.append((link_record, []))
+
+            except Exception as e:
+                link_id = link_data.get("id", "unknown")
+                self.logger.error(f"❌ Error processing project external link {link_id}: {e}", exc_info=True)
+                continue
+
+        return link_records
+
     async def _extract_files_from_markdown(
         self,
         markdown_text: str,
@@ -1533,7 +1680,9 @@ class LinearConnector(BaseConnector):
         tx_store,
         parent_created_at: Optional[int] = None,
         parent_updated_at: Optional[int] = None,
-        parent_weburl: Optional[str] = None
+        parent_weburl: Optional[str] = None,
+        exclude_images: bool = False,
+        indexing_filter_key: Optional[IndexingFilterKey] = IndexingFilterKey.FILES
     ) -> List[Tuple[Record, List[Permission]]]:
         """
         Extract files from markdown text and create FileRecords.
@@ -1548,6 +1697,8 @@ class LinearConnector(BaseConnector):
             parent_created_at: Source created timestamp of parent (in ms)
             parent_updated_at: Source updated timestamp of parent (in ms)
             parent_weburl: Web URL of parent record (used for file weburl)
+            exclude_images: If True, exclude image patterns and only extract file links
+            indexing_filter_key: Indexing filter key to use (defaults to FILES)
 
         Returns:
             List of (FileRecord, permissions) tuples
@@ -1557,8 +1708,8 @@ class LinearConnector(BaseConnector):
         if not markdown_text:
             return file_records
 
-        # Extract file URLs from markdown
-        file_urls = self._extract_file_urls_from_markdown(markdown_text)
+        # Extract file URLs from markdown (excluding images if requested)
+        file_urls = self._extract_file_urls_from_markdown(markdown_text, exclude_images=exclude_images)
 
         if not file_urls:
             return file_records
@@ -1568,13 +1719,11 @@ class LinearConnector(BaseConnector):
                 file_url = file_info["url"]
                 filename = file_info["filename"]
 
-                # Extract file UUID from URL to use as external_record_id
-                external_id = file_url.rstrip('/').split('/')[-1] if file_url else file_url
-
-                # Look up existing file record
+                # Use full file URL as external_record_id (for streaming)
+                # Look up existing file record by full URL
                 existing_file = await tx_store.get_record_by_external_id(
                     connector_id=self.connector_id,
-                    external_id=external_id
+                    external_id=file_url
                 )
 
                 # Transform to FileRecord
@@ -1591,8 +1740,9 @@ class LinearConnector(BaseConnector):
                     parent_weburl=parent_weburl
                 )
 
-                # Set indexing status based on filters
-                if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.FILES):
+                # Set indexing status based on filters (use provided filter key or default to FILES)
+                filter_key = indexing_filter_key or IndexingFilterKey.FILES
+                if self.indexing_filters and not self.indexing_filters.is_enabled(filter_key):
                     file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
                 # Files inherit permissions from parent, so pass empty list
@@ -1604,13 +1754,14 @@ class LinearConnector(BaseConnector):
 
         return file_records
 
-    def _extract_file_urls_from_markdown(self, markdown_text: str) -> List[Dict[str, str]]:
+    def _extract_file_urls_from_markdown(self, markdown_text: str, exclude_images: bool = False) -> List[Dict[str, str]]:
         """
         Extract file URLs from markdown text (images and file links).
         Only extracts URLs from Linear uploads (uploads.linear.app).
 
         Args:
             markdown_text: Markdown content to extract from
+            exclude_images: If True, only extract file links (skip URLs that appear in image patterns)
 
         Returns:
             List of dicts with 'url', 'filename', 'alt_text' keys
@@ -1621,42 +1772,39 @@ class LinearConnector(BaseConnector):
         file_urls: List[Dict[str, str]] = []
         seen_urls: Set[str] = set()
 
-        # Pattern for markdown images: ![alt text](url)
-        image_pattern = r'!\[([^\]]*)\]\(([^)]+)\)'
+        # If excluding images, collect image URLs first to skip them in links
+        image_urls = set()
+        if exclude_images:
+            image_pattern = r'!\[([^\]]*)\]\(([^)]+)\)'  # ![alt](url)
+            for match in re.finditer(image_pattern, markdown_text):
+                url = match.group(2).strip()
+                if "uploads.linear.app" in url:
+                    image_urls.add(url)
 
-        # Pattern for markdown links: [text](url) - only if URL looks like a file
-        link_pattern = r'\[([^\]]+)\]\(([^)]+)\)'
+        # Extract images (only if not excluding)
+        if not exclude_images:
+            image_pattern = r'!\[([^\]]*)\]\(([^)]+)\)'  # ![alt](url)
+            for match in re.finditer(image_pattern, markdown_text):
+                url = match.group(2).strip()
+                if "uploads.linear.app" in url and url not in seen_urls:
+                    seen_urls.add(url)
+                    alt_text = match.group(1) or ""
+                    filename = alt_text or url.split("/")[-1].split("?")[0]
+                    file_urls.append({"url": url, "filename": filename, "alt_text": alt_text})
 
-        # Extract images
-        for match in re.finditer(image_pattern, markdown_text):
-            alt_text = match.group(1) or ""
-            url = match.group(2).strip()
-
-            # Only process Linear upload URLs
-            if "uploads.linear.app" in url and url not in seen_urls:
-                seen_urls.add(url)
-                filename = alt_text if alt_text else url.split("/")[-1].split("?")[0]
-                file_urls.append({
-                    "url": url,
-                    "filename": filename,
-                    "alt_text": alt_text
-                })
-
-        # Extract file links (all Linear upload URLs, not just those with extensions)
+        # Extract file links (skip image URLs if excluding images)
+        link_pattern = r'\[([^\]]+)\]\(([^)]+)\)'  # [text](url)
         for match in re.finditer(link_pattern, markdown_text):
-            link_text = match.group(1) or ""
             url = match.group(2).strip()
-
-            # Process all Linear upload URLs (images are already extracted above, so this catches file links)
             if "uploads.linear.app" in url and url not in seen_urls:
+                # Skip if excluding images and this URL appears in an image pattern
+                if exclude_images and url in image_urls:
+                    continue
+
                 seen_urls.add(url)
-                url_path = url.split("?")[0]  # Remove query params
-                filename = link_text if link_text else url_path.split("/")[-1]
-                file_urls.append({
-                    "url": url,
-                    "filename": filename,
-                    "alt_text": link_text
-                })
+                link_text = match.group(1) or ""
+                filename = link_text or url.split("?")[0].split("/")[-1]
+                file_urls.append({"url": url, "filename": filename, "alt_text": link_text})
 
         return file_urls
 
@@ -1833,7 +1981,8 @@ class LinearConnector(BaseConnector):
         self,
         project_data: Dict[str, Any],
         team_id: str,
-        existing_record: Optional[Record] = None
+        existing_record: Optional[Record] = None,
+        blocks_container: Optional[BlocksContainer] = None
     ) -> TicketRecord:
         """
         Transform Linear project to TicketRecord.
@@ -1902,6 +2051,10 @@ class LinearConnector(BaseConnector):
         # Override type to ensure it's "project" if status_type was None
         if not ticket.type:
             ticket.type = "project"
+
+        # Add blocks container if provided
+        if blocks_container:
+            ticket.block_containers = blocks_container
 
         return ticket
 
@@ -2005,13 +2158,13 @@ class LinearConnector(BaseConnector):
         existing_record: Optional[Record] = None
     ) -> LinkRecord:
         """
-        Transform Linear attachment data to LinkRecord.
-        This method handles versioning similar to TicketRecord.
+        Transform Linear attachment or external link data to LinkRecord.
+        Can be used for both issue attachments and project external links.
 
         Args:
-            attachment_data: Raw attachment data from Linear API
-            issue_id: Parent issue external ID
-            parent_node_id: Internal record ID of parent ticket
+            attachment_data: Raw attachment/external link data from Linear API (supports title/subtitle/label)
+            issue_id: Parent record external ID (issue or project)
+            parent_node_id: Internal record ID of parent (ticket or project)
             team_id: Team ID for external_record_group_id
             existing_record: Existing record from DB (if any) for version handling
 
@@ -2026,7 +2179,8 @@ class LinearConnector(BaseConnector):
         if not url:
             raise ValueError(f"Attachment {attachment_id} missing required 'url' field")
 
-        title = attachment_data.get("title") or attachment_data.get("subtitle")
+        # Handle both attachments (title/subtitle) and external links (label)
+        title = attachment_data.get("title") or attachment_data.get("subtitle") or attachment_data.get("label")
 
         # Timestamps
         created_at = self._parse_linear_datetime(attachment_data.get("createdAt", "")) or 0
@@ -2193,14 +2347,12 @@ class LinearConnector(BaseConnector):
             existing_record: Existing record from DB (if any) for version handling
             parent_created_at: Source created timestamp of parent (in ms)
             parent_updated_at: Source updated timestamp of parent (in ms)
-            parent_weburl: Web URL of parent record (used for file weburl instead of file_url)
+            parent_weburl: Web URL of parent record (used for file weburl)
 
         Returns:
             FileRecord: Transformed file record
         """
-        # Extract file UUID from URL to use as external_record_id
-        file_id = file_url.rstrip('/').split('/')[-1] if file_url else file_url
-
+        # Use full file URL as external_record_id (for streaming)
         # Extract extension and determine mime type
         extension = None
         if "." in filename:
@@ -2223,7 +2375,7 @@ class LinearConnector(BaseConnector):
             org_id=self.data_entities_processor.org_id,
             record_name=filename,
             record_type=RecordType.FILE,
-            external_record_id=file_id,
+            external_record_id=file_url,  # Use full file URL as external_record_id for streaming
             external_revision_id=None,
             external_record_group_id=team_id,
             parent_external_record_id=parent_external_id,
@@ -2435,6 +2587,156 @@ class LinearConnector(BaseConnector):
             self.logger.debug(f"Failed to parse Linear datetime '{datetime_str}': {e}")
             return None
 
+    # ==================== PROJECT BLOCKS PARSER ====================
+
+    async def _parse_project_to_blocks(self, project_data: Dict[str, Any]) -> BlocksContainer:
+        """
+        Parse project data into blocks structure.
+
+        This creates blocks from:
+        - Project content (markdown) -> Text blocks
+        - Project comments -> BlockComments on main content block
+        - Project milestones -> Text blocks with metadata
+        - Project updates -> Text blocks
+        - Inline images from content -> Image blocks
+
+        Separate FileRecords are only created for actual downloadable files (PDFs, docs, etc.).
+
+        Args:
+            project_data: Full project data from Linear API (with nested data)
+
+        Returns:
+            BlocksContainer with all project blocks
+        """
+        blocks: List[Block] = []
+        block_index = 0
+
+        project_id = project_data.get("id", "")
+        project_name = project_data.get("name", "")
+
+        # 1. Project Content as main text block
+        content = project_data.get("content", "")
+        content_created_at = self._parse_linear_datetime(project_data.get("createdAt", ""))
+        content_updated_at = self._parse_linear_datetime(project_data.get("updatedAt", ""))
+
+        if content:
+            # Create main content block
+            content_block = Block(
+                index=block_index,
+                type=BlockType.TEXT,
+                name="Project Description",
+                format=DataFormat.MARKDOWN,
+                data=content,
+                comments=[],
+                source_creation_date=datetime.fromtimestamp(content_created_at / 1000, tz=timezone.utc) if content_created_at else None,
+                source_update_date=datetime.fromtimestamp(content_updated_at / 1000, tz=timezone.utc) if content_updated_at else None,
+                source_id=project_id,
+                source_name=project_name,
+                source_type="project_content"
+            )
+            blocks.append(content_block)
+            block_index += 1
+
+        # 2. Project Comments as BlockComments on the main content block
+        comments = project_data.get("comments", {}).get("nodes", [])
+        if comments and blocks:  # Add comments to the main content block
+            main_block = blocks[0]
+            for comment_data in comments:
+                comment_body = comment_data.get("body", "")
+                if comment_body:
+                    author = comment_data.get("user", {})
+                    author_name = author.get("displayName") or author.get("name", "Unknown")
+                    comment_created_at = comment_data.get("createdAt", "")
+
+                    # Format comment with author and timestamp
+                    comment_text = f"**{author_name}** ({comment_created_at}):\n{comment_body}"
+
+                    block_comment = BlockComment(
+                        text=comment_text,
+                        format=DataFormat.MARKDOWN,
+                        thread_id=comment_data.get("id")
+                    )
+                    main_block.comments.append(block_comment)
+
+        # 3. Project Milestones as separate text blocks
+        milestones = project_data.get("projectMilestones", {}).get("nodes", [])
+        for milestone_data in milestones:
+            milestone_name = milestone_data.get("name", "")
+            milestone_description = milestone_data.get("description", "")
+            milestone_created_at = self._parse_linear_datetime(milestone_data.get("createdAt", ""))
+            milestone_updated_at = self._parse_linear_datetime(milestone_data.get("updatedAt", ""))
+
+            if milestone_name or milestone_description:
+                milestone_text = f"# Milestone: {milestone_name}\n\n{milestone_description}" if milestone_description else f"# Milestone: {milestone_name}"
+
+                milestone_block = Block(
+                    index=block_index,
+                    type=BlockType.TEXT,
+                    name=f"Milestone: {milestone_name}",
+                    format=DataFormat.MARKDOWN,
+                    data=milestone_text,
+                    comments=[],
+                    source_creation_date=datetime.fromtimestamp(milestone_created_at / 1000, tz=timezone.utc) if milestone_created_at else None,
+                    source_update_date=datetime.fromtimestamp(milestone_updated_at / 1000, tz=timezone.utc) if milestone_updated_at else None,
+                    source_id=milestone_data.get("id", ""),
+                    source_name=milestone_name,
+                    source_type="project_milestone"
+                )
+                blocks.append(milestone_block)
+                block_index += 1
+
+        # 4. Project Updates as separate text blocks
+        project_updates = project_data.get("projectUpdates", {}).get("nodes", [])
+        for update_data in project_updates:
+            update_body = update_data.get("body", "")
+            update_created_at = self._parse_linear_datetime(update_data.get("createdAt", ""))
+            update_updated_at = self._parse_linear_datetime(update_data.get("updatedAt", ""))
+
+            if update_body:
+                author = update_data.get("user", {})
+                author_name = author.get("displayName") or author.get("name", "Unknown")
+
+                update_text = f"# Project Update by {author_name}\n\n{update_body}"
+
+                update_block = Block(
+                    index=block_index,
+                    type=BlockType.TEXT,
+                    name=f"Update by {author_name}",
+                    format=DataFormat.MARKDOWN,
+                    data=update_text,
+                    comments=[],
+                    source_creation_date=datetime.fromtimestamp(update_created_at / 1000, tz=timezone.utc) if update_created_at else None,
+                    source_update_date=datetime.fromtimestamp(update_updated_at / 1000, tz=timezone.utc) if update_updated_at else None,
+                    source_id=update_data.get("id", ""),
+                    source_name=f"Update by {author_name}",
+                    source_type="project_update"
+                )
+                blocks.append(update_block)
+                block_index += 1
+
+        # 5. Extract inline images from content as image blocks
+        if content:
+            image_pattern = r'!\[([^\]]*)\]\(([^\)]+)\)'
+            images = re.findall(image_pattern, content)
+
+            for alt_text, image_url in images:
+                image_block = Block(
+                    index=block_index,
+                    type=BlockType.IMAGE,
+                    name=alt_text or "Image",
+                    format=DataFormat.UTF8,
+                    data=image_url,
+                    weburl=image_url,
+                    comments=[],
+                    source_id=project_id,
+                    source_name=f"Image: {alt_text}",
+                    source_type="inline_image"
+                )
+                blocks.append(image_block)
+                block_index += 1
+
+        return BlocksContainer(blocks=blocks, block_groups=[])
+
     # ==================== CONTENT STREAMING HELPERS ====================
 
     async def _fetch_issue_content(self, issue_id: str) -> str:
@@ -2527,14 +2829,13 @@ class LinearConnector(BaseConnector):
         content = document_data.get("content", "")
         return content if content else ""
 
-
     # ==================== ABSTRACT METHODS ====================
     async def stream_record(self, record: Record) -> StreamingResponse:
         """
-        Stream record content (issue, comment, attachment, document, or file).
+        Stream record content (issue, project, comment, attachment, document, or file).
 
         Handles:
-        - TICKET: Stream issue description (markdown)
+        - TICKET: Stream issue or project description/content (markdown)
         - COMMENT: Stream comment body (markdown)
         - LINK: Stream attachment/link from weburl
         - WEBPAGE: Stream document content (markdown)
@@ -2545,9 +2846,48 @@ class LinearConnector(BaseConnector):
                 await self.init()
 
             if record.record_type == RecordType.TICKET:
-                # Stream issue content (markdown format)
-                issue_id = record.external_record_id
-                content = await self._fetch_issue_content(issue_id)
+                # Simple identification: Check weburl pattern
+
+                weburl = (record.weburl or "").strip().lower()
+                is_project = bool(weburl and "/project/" in weburl)
+
+                if is_project:
+                    # Project: Fetch and stream from blocks
+                    record_id = record.external_record_id
+                    datasource = await self._get_fresh_datasource()
+                    project_response = await datasource.project(id=record_id)
+
+                    if not project_response.success:
+                        raise Exception(f"Failed to fetch project content: {project_response.message}")
+
+                    project_data = project_response.data.get("project", {}) if project_response.data else {}
+                    if not project_data:
+                        raise Exception(f"No project data found for ID: {record_id}")
+
+                    # Parse to blocks and stream
+                    blocks_container = await self._parse_project_to_blocks(project_data)
+                    content_parts = []
+
+                    for block in blocks_container.blocks:
+                        if block.type == BlockType.TEXT:
+                            if block.name:
+                                content_parts.append(f"## {block.name}\n\n")
+                            content_parts.append(block.data or "")
+                            content_parts.append("\n\n")
+                            if block.comments:
+                                content_parts.append("### Comments:\n\n")
+                                for comment in block.comments:
+                                    content_parts.append(f"{comment.text}\n\n")
+                        elif block.type == BlockType.IMAGE:
+                            image_url = block.data if isinstance(block.data, str) else block.weburl
+                            if image_url:
+                                content_parts.append(f"![{block.name or 'Image'}]({image_url})\n\n")
+
+                    content = "".join(content_parts)
+                else:
+                    # Issue: Stream from API
+                    issue_id = record.external_record_id
+                    content = await self._fetch_issue_content(issue_id)
 
                 return StreamingResponse(
                     iter([content.encode('utf-8')]),
@@ -2601,9 +2941,9 @@ class LinearConnector(BaseConnector):
                 )
 
             elif record.record_type == RecordType.FILE:
-                # Stream file content from weburl
-                if not record.weburl:
-                    raise ValueError(f"FileRecord {record.external_record_id} missing weburl")
+                # Stream file content from external_record_id (file URL)
+                if not record.external_record_id:
+                    raise ValueError(f"FileRecord {record.id} missing external_record_id (file URL)")
 
                 # Download file content and stream it with authentication
                 async def file_stream() -> AsyncGenerator[bytes, None]:
@@ -2612,10 +2952,10 @@ class LinearConnector(BaseConnector):
 
                     datasource = await self._get_fresh_datasource()
                     try:
-                        async for chunk in datasource.download_file(record.weburl):
+                        async for chunk in datasource.download_file(record.external_record_id):
                             yield chunk
                     except Exception as e:
-                        self.logger.error(f"❌ Error downloading file from {record.weburl}: {e}")
+                        self.logger.error(f"❌ Error downloading file from {record.external_record_id}: {e}")
                         raise
 
                 # Determine filename from record_name or weburl
@@ -2702,6 +3042,8 @@ class LinearConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"⚠️ Error during Linear connector cleanup: {e}")
 
+    # ==================== REINDEXING METHODS ====================
+
     async def reindex_records(self, record_results: List[Record]) -> None:
         """Reindex a list of Linear records.
 
@@ -2722,13 +3064,607 @@ class LinearConnector(BaseConnector):
 
             await self._get_fresh_datasource()
 
-            # TODO: Implement reindex logic for Linear records
-            # For now, just log that reindex was called
-            self.logger.info(f"Reindex called for {len(record_results)} records (not yet implemented)")
+            # Check records at source for updates
+            updated_records = []
+            non_updated_records = []
+
+            for record in record_results:
+                try:
+                    updated_record_data = await self._check_and_fetch_updated_record(record)
+                    if updated_record_data:
+                        updated_record, permissions = updated_record_data
+                        updated_records.append((updated_record, permissions))
+                    else:
+                        non_updated_records.append(record)
+                except Exception as e:
+                    self.logger.error(f"Error checking record {record.id} at source: {e}")
+                    continue
+
+            # Update DB only for records that changed at source
+            if updated_records:
+                await self.data_entities_processor.on_new_records(updated_records)
+                self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
+
+            # Publish reindex events for non updated records
+            if non_updated_records:
+                reindexable_records = []
+                skipped_count = 0
+
+                for record in non_updated_records:
+                    # Only reindex properly typed records (TicketRecord, CommentRecord, etc.)
+                    record_class_name = type(record).__name__
+                    if record_class_name != 'Record':
+                        reindexable_records.append(record)
+                    else:
+                        self.logger.warning(
+                            f"Record {record.id} ({record.record_type}) is base Record class "
+                            f"(not properly typed), skipping reindex"
+                        )
+                        skipped_count += 1
+
+                if reindexable_records:
+                    try:
+                        await self.data_entities_processor.reindex_existing_records(reindexable_records)
+                        self.logger.info(f"Published reindex events for {len(reindexable_records)} records")
+                    except NotImplementedError as e:
+                        self.logger.warning(
+                            f"Cannot reindex records - to_kafka_record not implemented: {e}"
+                        )
+
+                if skipped_count > 0:
+                    self.logger.warning(f"Skipped reindex for {skipped_count} records that are not properly typed")
 
         except Exception as e:
             self.logger.error(f"❌ Failed to reindex Linear records: {e}")
             raise
+
+    async def _check_and_fetch_updated_record(
+        self, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch record from source and return data for reindexing.
+
+        Args:
+            record: Record to check
+
+        Returns:
+            Tuple of (Record, List[Permission]) if updated, None if not updated or error
+        """
+        try:
+            # Handle TicketRecord: can be either Issue or Project
+            if record.record_type == RecordType.TICKET:
+                # Identify if it's a project or issue by weburl
+                weburl = (record.weburl or "").strip().lower()
+                is_project = bool(weburl and "/project/" in weburl)
+
+                if is_project:
+                    return await self._check_and_fetch_updated_project(record)
+                else:
+                    return await self._check_and_fetch_updated_issue(record)
+
+            # Handle CommentRecord: only one type
+            elif record.record_type == RecordType.COMMENT:
+                return await self._check_and_fetch_updated_comment(record)
+
+            # Handle WebpageRecord: only one type (documents)
+            elif record.record_type == RecordType.WEBPAGE:
+                return await self._check_and_fetch_updated_document(record)
+
+            # Handle LinkRecord: can be from issue attachments or project external links
+            elif record.record_type == RecordType.LINK:
+                # Check parent to determine source
+                parent_external_id = record.parent_external_record_id
+                if not parent_external_id:
+                    self.logger.warning(f"LinkRecord {record.external_record_id} has no parent, cannot determine source")
+                    return None
+
+                # Check if parent is a project by looking up parent record's weburl
+                try:
+                    async with self.data_store_provider.transaction() as tx_store:
+                        parent_record = await tx_store.get_record_by_external_id(
+                            connector_id=self.connector_id,
+                            external_id=parent_external_id
+                        )
+                        if parent_record:
+                            parent_weburl = (parent_record.weburl or "").strip().lower()
+                            is_parent_project = bool(parent_weburl and "/project/" in parent_weburl)
+
+                            if is_parent_project:
+                                # Project external link - check parent project
+                                return await self._check_and_fetch_updated_project_link(record, parent_record)
+                            else:
+                                # Issue attachment - check parent issue
+                                return await self._check_and_fetch_updated_issue_link(record, parent_record)
+                        else:
+                            self.logger.warning(f"LinkRecord {record.external_record_id} parent {parent_external_id} not found")
+                            return None
+                except Exception as e:
+                    self.logger.debug(f"Could not determine LinkRecord source: {e}")
+                    return None
+
+            # Handle FileRecord: can be from issue descriptions, comment bodies, or project descriptions
+            elif record.record_type == RecordType.FILE:
+                # They don't change independently, so return None (no update needed)
+                self.logger.debug(f"FileRecord {record.external_record_id} reindex: no update needed (handled by parent reindex)")
+                return None
+
+            else:
+                self.logger.warning(f"Unsupported record type for reindex: {record.record_type}")
+                return None
+
+        except Exception as e:
+            self.logger.error(f"Error checking record {record.id} at source: {e}")
+            return None
+
+    async def _check_and_fetch_updated_issue(
+        self, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch issue from source for reindexing."""
+        try:
+            issue_id = record.external_record_id
+
+            # Fetch issue from source
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.issue(id=issue_id)
+
+            if not response.success:
+                self.logger.warning(f"Issue {issue_id} not found at source: {response.message}")
+                return None
+
+            issue_data = response.data.get("issue", {}) if response.data else {}
+            if not issue_data:
+                self.logger.warning(f"No issue data found for {issue_id}")
+                return None
+
+            # Check if updated timestamp changed
+            current_updated_at = None
+            updated_at_str = issue_data.get("updatedAt")
+            if updated_at_str:
+                current_updated_at = self._parse_linear_datetime(updated_at_str)
+
+            # Compare with stored timestamp
+            if hasattr(record, 'source_updated_at') and record.source_updated_at and current_updated_at:
+                if record.source_updated_at == current_updated_at:
+                    self.logger.debug(f"Issue {issue_id} has not changed at source")
+                    return None
+
+            self.logger.info(f"Issue {issue_id} has changed at source")
+
+            # Get team_id from external_record_group_id
+            team_id = record.external_record_group_id or ""
+            if not team_id:
+                self.logger.warning(f"Issue {issue_id} has no team_id, cannot reindex")
+                return None
+
+            # Transform issue to ticket record
+            ticket_record = self._transform_issue_to_ticket_record(issue_data, team_id, record)
+
+            # Set indexing status based on filters
+            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES):
+                ticket_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+            # Extract permissions (empty list for now, Linear doesn't have explicit permissions)
+            permissions = []
+
+            return (ticket_record, permissions)
+
+        except Exception as e:
+            self.logger.error(f"Error checking issue {record.id} at source: {e}")
+            return None
+
+    async def _check_and_fetch_updated_project(
+        self, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch project from source for reindexing."""
+        try:
+            project_id = record.external_record_id
+
+            # Fetch project from source
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.project(id=project_id)
+
+            if not response.success:
+                self.logger.warning(f"Project {project_id} not found at source: {response.message}")
+                return None
+
+            project_data = response.data.get("project", {}) if response.data else {}
+            if not project_data:
+                self.logger.warning(f"No project data found for {project_id}")
+                return None
+
+            # Check if updated timestamp changed
+            current_updated_at = None
+            updated_at_str = project_data.get("updatedAt")
+            if updated_at_str:
+                current_updated_at = self._parse_linear_datetime(updated_at_str)
+
+            # Compare with stored timestamp
+            if hasattr(record, 'source_updated_at') and record.source_updated_at and current_updated_at:
+                if record.source_updated_at == current_updated_at:
+                    self.logger.debug(f"Project {project_id} has not changed at source")
+                    return None
+
+            self.logger.info(f"Project {project_id} has changed at source")
+
+            # Get team_id from external_record_group_id
+            team_id = record.external_record_group_id or ""
+            if not team_id:
+                self.logger.warning(f"Project {project_id} has no team_id, cannot reindex")
+                return None
+
+            # Parse project data into blocks
+            blocks_container = await self._parse_project_to_blocks(project_data)
+
+            # Transform project to ticket record
+            project_record = self._transform_project_to_ticket_record(
+                project_data, team_id, record, blocks_container
+            )
+
+            # Set indexing status based on filters
+            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.PROJECTS):
+                project_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+            # Extract permissions (empty list for now)
+            permissions = []
+
+            # Add linked issues to related_external_records on TicketRecord
+            issues_data = project_data.get("issues", {}).get("nodes", [])
+            if issues_data:
+                from app.models.entities import RelatedExternalRecord
+                project_record.related_external_records = [
+                    RelatedExternalRecord(
+                        external_record_id=issue.get("id"),
+                        record_type=RecordType.TICKET,
+                        relation_type=RecordRelations.LINKED_TO
+                    )
+                    for issue in issues_data
+                    if issue.get("id")
+                ]
+
+            return (project_record, permissions)
+
+        except Exception as e:
+            self.logger.error(f"Error checking project {record.id} at source: {e}")
+            return None
+
+    async def _check_and_fetch_updated_comment(
+        self, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch comment from source for reindexing."""
+        try:
+            comment_id = record.external_record_id
+
+            # Fetch comment from source
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.comment(id=comment_id)
+
+            if not response.success:
+                self.logger.warning(f"Comment {comment_id} not found at source: {response.message}")
+                return None
+
+            comment_data = response.data.get("comment", {}) if response.data else {}
+            if not comment_data:
+                self.logger.warning(f"No comment data found for {comment_id}")
+                return None
+
+            # Check if updated timestamp changed
+            current_updated_at = None
+            updated_at_str = comment_data.get("updatedAt")
+            if updated_at_str:
+                current_updated_at = self._parse_linear_datetime(updated_at_str)
+
+            # Compare with stored timestamp
+            if hasattr(record, 'source_updated_at') and record.source_updated_at and current_updated_at:
+                if record.source_updated_at == current_updated_at:
+                    self.logger.debug(f"Comment {comment_id} has not changed at source")
+                    return None
+
+            self.logger.info(f"Comment {comment_id} has changed at source")
+
+            # Use data from record object directly
+            team_id = record.external_record_group_id or ""
+            parent_node_id = record.parent_node_id
+
+            # Get issue info from comment_data (already fetched from API)
+            issue_data = comment_data.get("issue", {})
+            issue_id = issue_data.get("id", record.parent_external_record_id or "")
+            issue_identifier = issue_data.get("identifier", "")
+
+            # Extract issue_identifier from record_name if not in comment_data (format: "Comment by {author} on {issue_identifier}")
+            if not issue_identifier and record.record_name and " on " in record.record_name:
+                parts = record.record_name.split(" on ")
+                if len(parts) > 1:
+                    issue_identifier = parts[-1].strip()
+
+            # Fallback to issue_id if still no identifier
+            if not issue_identifier:
+                issue_identifier = issue_id
+
+            if not issue_id:
+                self.logger.warning(f"Comment {comment_id} has no issue_id, cannot transform properly")
+                return None
+
+            if not parent_node_id:
+                self.logger.warning(f"Comment {comment_id} has no parent_node_id, cannot transform properly")
+                return None
+
+            # Transform comment to comment record
+            comment_record = self._transform_comment_to_comment_record(
+                comment_data, issue_id, issue_identifier, parent_node_id, team_id, record
+            )
+
+            # Set indexing status based on filters
+            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_COMMENTS):
+                comment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+            # Extract permissions (empty list for now)
+            permissions = []
+
+            return (comment_record, permissions)
+
+        except Exception as e:
+            self.logger.error(f"Error checking comment {record.id} at source: {e}")
+            return None
+
+    async def _check_and_fetch_updated_document(
+        self, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch document from source for reindexing."""
+        try:
+            document_id = record.external_record_id
+            if not document_id:
+                self.logger.warning(f"Document record {record.id} has no external_record_id")
+                return None
+
+            # Fetch document from Linear API
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.document(id=document_id)
+
+            if not response.success:
+                self.logger.warning(f"Document {document_id} not found at source: {response.message}")
+                return None
+
+            document_data = response.data.get("document", {}) if response.data else {}
+            if not document_data:
+                return None
+
+            # Check if document has been updated
+            updated_at = self._parse_linear_datetime(document_data.get("updatedAt", ""))
+            if not updated_at:
+                return None
+
+            # Compare with existing record's source_updated_at
+            if hasattr(record, 'source_updated_at') and record.source_updated_at and updated_at:
+                if record.source_updated_at == updated_at:
+                    # Document hasn't changed
+                    return None
+
+            # Document has changed, transform and return
+            # Get issue_id from document_data first, fallback to record
+            issue_data = document_data.get("issue", {})
+            issue_id = issue_data.get("id", record.parent_external_record_id or "")
+            team_id = record.external_record_group_id or ""
+            parent_node_id = record.parent_node_id
+
+            if not issue_id:
+                self.logger.warning(f"Document {document_id} has no issue_id, cannot transform properly")
+                return None
+
+            if not parent_node_id:
+                self.logger.warning(f"Document {document_id} has no parent_node_id, cannot transform properly")
+                return None
+
+            # Transform document to WebpageRecord
+            webpage_record = self._transform_document_to_webpage_record(
+                document_data=document_data,
+                issue_id=issue_id,
+                parent_node_id=parent_node_id,
+                team_id=team_id,
+                existing_record=record
+            )
+
+            # Set indexing status based on filters
+            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.DOCUMENTS):
+                webpage_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+            permissions = []
+            return (webpage_record, permissions)
+
+        except Exception as e:
+            self.logger.error(f"Error checking document {record.id} at source: {e}")
+            return None
+
+    async def _check_and_fetch_updated_issue_link(
+        self, record: Record, parent_record: Optional[Record] = None
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch issue attachment/link from source for reindexing."""
+        try:
+            attachment_id = record.external_record_id
+            if not attachment_id:
+                self.logger.warning(f"LinkRecord {record.id} has no external_record_id")
+                return None
+
+            # Fetch attachment from Linear API
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.attachment(id=attachment_id)
+
+            if not response.success:
+                self.logger.warning(f"Attachment {attachment_id} not found at source: {response.message}")
+                return None
+
+            attachment_data = response.data.get("attachment", {}) if response.data else {}
+            if not attachment_data:
+                return None
+
+            # Check if attachment has been updated
+            updated_at = self._parse_linear_datetime(attachment_data.get("updatedAt", ""))
+            if not updated_at:
+                return None
+
+            # Compare with existing record's source_updated_at
+            if hasattr(record, 'source_updated_at') and record.source_updated_at and updated_at:
+                if record.source_updated_at == updated_at:
+                    # Attachment hasn't changed
+                    return None
+
+            # Attachment has changed, transform and return
+            # Get issue_id from attachment_data first, fallback to record
+            issue_data = attachment_data.get("issue", {})
+            issue_id = issue_data.get("id", record.parent_external_record_id or "")
+            team_id = record.external_record_group_id or ""
+
+            # Get parent node ID - prefer from parent_record if provided, otherwise use record's parent_node_id
+            parent_node_id = None
+            if parent_record:
+                parent_node_id = parent_record.id
+            elif record.parent_node_id:
+                parent_node_id = record.parent_node_id
+
+            if not issue_id:
+                self.logger.warning(f"Attachment {attachment_id} has no issue_id, cannot transform properly")
+                return None
+
+            if not parent_node_id:
+                self.logger.warning(f"Attachment {attachment_id} has no parent_node_id, cannot transform properly")
+                return None
+
+            # Transform attachment to LinkRecord
+            link_record = self._transform_attachment_to_link_record(
+                attachment_data=attachment_data,
+                issue_id=issue_id,
+                parent_node_id=parent_node_id,
+                team_id=team_id,
+                existing_record=record
+            )
+
+            # Set indexing status based on filters
+            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_ATTACHMENTS):
+                link_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+            # Look up related record by weburl
+            if link_record.weburl:
+                try:
+                    async with self.data_store_provider.transaction() as tx_store:
+                        related_record = await tx_store.get_record_by_weburl(
+                            link_record.weburl,
+                            org_id=self.data_entities_processor.org_id
+                        )
+                        if related_record:
+                            link_record.linked_record_id = related_record.id
+                            self.logger.debug(f"🔗 Found related record {related_record.id} for attachment URL: {link_record.weburl}")
+                except Exception as e:
+                    self.logger.debug(f"⚠️ Could not fetch related record for URL {link_record.weburl}: {e}")
+
+            permissions = []
+            return (link_record, permissions)
+
+        except Exception as e:
+            self.logger.error(f"Error checking attachment {record.id} at source: {e}")
+            return None
+
+    async def _check_and_fetch_updated_project_link(
+        self, record: Record, parent_record: Optional[Record] = None
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch project external link from source for reindexing."""
+        try:
+            link_id = record.external_record_id
+            if not link_id:
+                self.logger.warning(f"LinkRecord {record.id} has no external_record_id")
+                return None
+
+            # Get project_id from parent_record if available, otherwise from record
+            project_id = None
+            if parent_record:
+                project_id = parent_record.external_record_id
+            else:
+                project_id = record.parent_external_record_id or ""
+
+            if not project_id:
+                self.logger.warning(f"External link {link_id} has no project_id")
+                return None
+
+            # Fetch project with external links from Linear API
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.project(id=project_id)
+
+            if not response.success:
+                self.logger.warning(f"Project {project_id} not found at source: {response.message}")
+                return None
+
+            project_data = response.data.get("project", {}) if response.data else {}
+            if not project_data:
+                return None
+
+            # Find the specific external link by ID in project's externalLinks
+            external_links = project_data.get("externalLinks", {}).get("nodes", [])
+            link_data = None
+            for link in external_links:
+                if link.get("id") == link_id:
+                    link_data = link
+                    break
+
+            if not link_data:
+                self.logger.warning(f"External link {link_id} not found in project {project_id}")
+                return None
+
+            # Check if link has been updated
+            updated_at = self._parse_linear_datetime(link_data.get("updatedAt", ""))
+            if not updated_at:
+                return None
+
+            # Compare with existing record's source_updated_at
+            if hasattr(record, 'source_updated_at') and record.source_updated_at and updated_at:
+                if record.source_updated_at == updated_at:
+                    # Link hasn't changed
+                    return None
+
+            # Link has changed, transform and return
+            # project_id already set above
+            team_id = record.external_record_group_id or ""
+
+            # Get parent node ID - prefer from parent_record if provided, otherwise use record's parent_node_id
+            parent_node_id = None
+            if parent_record:
+                parent_node_id = parent_record.id
+            elif record.parent_node_id:
+                parent_node_id = record.parent_node_id
+
+            if not parent_node_id:
+                self.logger.warning(f"External link {link_id} has no parent_node_id, cannot transform properly")
+                return None
+
+            # Transform external link to LinkRecord
+            link_record = self._transform_attachment_to_link_record(
+                attachment_data=link_data,
+                issue_id=project_id,  # Use project_id as parent
+                parent_node_id=parent_node_id,
+                team_id=team_id,
+                existing_record=record
+            )
+
+            # Set indexing status based on FILES filter (external links are treated as files)
+            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.PROJECTS):
+                link_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+            # Look up related record by weburl
+            if link_record.weburl:
+                try:
+                    async with self.data_store_provider.transaction() as tx_store:
+                        related_record = await tx_store.get_record_by_weburl(
+                            link_record.weburl,
+                            org_id=self.data_entities_processor.org_id
+                        )
+                        if related_record:
+                            link_record.linked_record_id = related_record.id
+                            self.logger.debug(f"🔗 Found related record {related_record.id} for external link URL: {link_record.weburl}")
+                except Exception as e:
+                    self.logger.debug(f"⚠️ Could not fetch related record for URL {link_record.weburl}: {e}")
+
+            permissions = []
+            return (link_record, permissions)
+
+        except Exception as e:
+            self.logger.error(f"Error checking external link {record.id} at source: {e}")
+            return None
 
     @classmethod
     async def create_connector(

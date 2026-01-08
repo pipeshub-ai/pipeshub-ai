@@ -200,7 +200,13 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def create_record_relation(self, from_record_id: str, to_record_id: str, relation_type: str) -> None:
+    async def create_record_relation(
+        self,
+        from_record_id: str,
+        to_record_id: str,
+        relation_type: str,
+        custom_relationship_tag: Optional[str] = None
+    ) -> None:
         pass
 
     @abstractmethod

@@ -27,6 +27,7 @@ from app.models.entities import (
     Record,
     RecordGroup,
     RecordType,
+    RelatedExternalRecord,
     TicketRecord,
     User,
     WebpageRecord,
@@ -191,6 +192,70 @@ class DataSourceEntitiesProcessor:
                 else:
                     relation_type = RecordRelations.PARENT_CHILD.value
                 await tx_store.create_record_relation(parent_record.id, record.id, relation_type)
+
+    async def _handle_related_external_records(
+        self,
+        record: Record,
+        related_external_records: List,
+        tx_store: TransactionStore
+    ) -> None:
+        """
+        Handle related external records by creating LINKED_TO relations.
+        Creates placeholder records if not found, then creates LINKED_TO edges.
+
+        Args:
+            record: The record to create relations for
+            related_external_records: List of RelatedExternalRecord objects (strict type checking)
+            tx_store: Transaction store
+        """
+        if not related_external_records:
+            return
+
+        for related_ext_record in related_external_records:
+            # Strict type check - only accept RelatedExternalRecord objects
+            if not isinstance(related_ext_record, RelatedExternalRecord):
+                self.logger.warning(
+                    f"Skipping invalid related_external_record: expected RelatedExternalRecord, "
+                    f"got {type(related_ext_record).__name__}"
+                )
+                continue
+
+            external_record_id = related_ext_record.external_record_id
+            record_type = related_ext_record.record_type
+            relation_type_enum = related_ext_record.relation_type
+
+            if not external_record_id:
+                continue
+
+            # Look up the related record by external ID and connector
+            related_record = await tx_store.get_record_by_external_id(
+                connector_id=record.connector_id,
+                external_id=external_record_id
+            )
+
+            # Create placeholder related record if not found (similar to _handle_parent_record)
+            if related_record is None and record_type:
+                # record_type is already a RecordType enum from RelatedExternalRecord
+                related_record = self._create_placeholder_parent_record(
+                    parent_external_id=external_record_id,
+                    parent_record_type=record_type,
+                    record=record,
+                )
+                await tx_store.batch_upsert_records([related_record])
+
+            # Create LINKED_TO relation
+            if related_record and isinstance(related_record, Record):
+                # relation_type_enum is already a RecordRelations enum, get its value
+                relation_type = relation_type_enum.value
+                # Get custom_relationship_tag from RelatedExternalRecord (e.g., "is blocked by, blocks, clones" for Jira)
+                custom_relationship_tag = related_ext_record.custom_relationship_tag
+
+                await tx_store.create_record_relation(
+                    from_record_id=record.id,
+                    to_record_id=related_record.id,
+                    relation_type=relation_type,
+                    custom_relationship_tag=custom_relationship_tag
+                )
 
     async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> None:
         if record.external_record_group_id is None:
@@ -406,6 +471,14 @@ class DataSourceEntitiesProcessor:
 
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
         await self._handle_parent_record(record, tx_store)
+
+        # Create a edge between the record and the record group if it doesn't exist and if record_group_id is provided
+        await self._handle_record_group(record, tx_store)
+
+        # Create LINKED_TO edges for related external records if record has related_external_records field
+        # (This field is in base Record class, but it's not persisted to DB - only used during processing)
+        if hasattr(record, 'related_external_records') and record.related_external_records:
+            await self._handle_related_external_records(record, record.related_external_records, tx_store)
 
         # Create a edge between the base record and the specific record if it doesn't exist - isOfType - File, Mail, Message
 

@@ -148,6 +148,11 @@ class LinearGraphQLOperations:
                         private
                     }
                 }
+                issues {
+                    nodes {
+                        id
+                    }
+                }
             }
         """,
 
@@ -473,11 +478,42 @@ class LinearGraphQLOperations:
                         url
                         createdAt
                         updatedAt
+                        issue {
+                            id
+                            identifier
+                        }
                     }
                 }
             """,
             "fragments": [],
             "description": "Get single attachment by ID"
+        },
+
+        "document": {
+            "query": """
+                query document($id: String!) {
+                    document(id: $id) {
+                        id
+                        title
+                        url
+                        slugId
+                        content
+                        createdAt
+                        updatedAt
+                        creator {
+                            id
+                            name
+                            email
+                        }
+                        issue {
+                            id
+                            identifier
+                        }
+                    }
+                }
+            """,
+            "fragments": [],
+            "description": "Get single document by ID"
         },
 
         "attachments": {
