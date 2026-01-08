@@ -74,6 +74,7 @@ from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsPa
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
 from app.services.featureflag.config.config import CONFIG
 from app.utils.api_call import make_api_call
+from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import get_oauth_config
@@ -743,7 +744,10 @@ async def download_file(
                             )
                         finally:
                             file_buffer.close()
-                    safe_filename = record.record_name.encode('latin-1', 'ignore').decode('latin-1') or f"record_{record_id}"
+                    safe_filename = sanitize_filename_for_content_disposition(
+                        record.record_name, 
+                        fallback=f"record_{record_id}"
+                    )
                     headers = {
                         "Content-Disposition": f'attachment; filename="{safe_filename}"'
                     }
@@ -791,7 +795,10 @@ async def download_file(
                         file_buffer.close()
 
                 # Return streaming response with proper headers
-                safe_filename = record.record_name.encode('latin-1', 'ignore').decode('latin-1') or f"record_{record_id}"
+                safe_filename = sanitize_filename_for_content_disposition(
+                    record.record_name, 
+                    fallback=f"record_{record_id}"
+                )
                 headers = {
                     "Content-Disposition": f'attachment; filename="{safe_filename}"'
                 }
@@ -1151,7 +1158,10 @@ async def stream_record(
 
                     response_media_type, file_ext = export_media_types.get(export_mime_type, (export_mime_type, ""))
                     
-                    safe_filename = file_name.encode('latin-1', 'ignore').decode('latin-1') or f"record_{record_id}"
+                    safe_filename = sanitize_filename_for_content_disposition(
+                        file_name, 
+                        fallback=f"record_{record_id}"
+                    )
 
                     file_name_with_ext = safe_filename if safe_filename.endswith(file_ext) else f"{safe_filename}{file_ext}"
 
@@ -1288,7 +1298,10 @@ async def stream_record(
 
 
                 # Return streaming response with proper headers
-                safe_filename = file_name.encode('latin-1', 'ignore').decode('latin-1') or f"record_{record_id}"
+                safe_filename = sanitize_filename_for_content_disposition(
+                    file_name, 
+                    fallback=f"record_{record_id}"
+                )
                 headers = {"Content-Disposition": f'attachment; filename="{safe_filename}"'}
                 return StreamingResponse(
                     file_stream(), media_type=mime_type, headers=headers
@@ -1632,7 +1645,10 @@ async def stream_record(
                                 )
 
 
-                        safe_filename = file_name.encode('latin-1', 'ignore').decode('latin-1') or f"record_{record_id}"
+                        safe_filename = sanitize_filename_for_content_disposition(
+                            file_name, 
+                            fallback=f"record_{record_id}"
+                        )
                         headers = {
                             "Content-Disposition": f'attachment; filename="{safe_filename}"'
                         }
@@ -1768,7 +1784,10 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
 
                     pdf_filename = file.filename.rsplit(".", 1)[0] + ".pdf"
                     pdf_path = os.path.join(tmpdir, pdf_filename)
-                    safe_filename = pdf_filename.encode('latin-1', 'ignore').decode('latin-1') or "converted_file.pdf"
+                    safe_filename = sanitize_filename_for_content_disposition(
+                        pdf_filename, 
+                        fallback="converted_file.pdf"
+                    )
 
                     if process.returncode != 0:
                         error_msg = f"LibreOffice conversion failed: {conversion_error.decode('utf-8', errors='replace')}"
@@ -1797,7 +1816,7 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
                         file_iterator(),
                         media_type="application/pdf",
                         headers={
-                            "Content-Disposition": f"attachment; filename={safe_filename}"
+                            "Content-Disposition": f'attachment; filename="{safe_filename}"'
                         },
                     )
 

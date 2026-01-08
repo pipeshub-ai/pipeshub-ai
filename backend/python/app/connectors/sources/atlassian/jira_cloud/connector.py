@@ -1,4 +1,4 @@
-﻿"""Jira Cloud Connector Implementation"""
+"""Jira Cloud Connector Implementation"""
 import base64
 import re
 from datetime import datetime, timezone
@@ -66,6 +66,7 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.jira.jira import JiraClient
 from app.sources.external.jira.jira import JiraDataSource
+from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # API URLs
@@ -4206,7 +4207,10 @@ class JiraConnector(BaseConnector):
 
                 # Replace non-ASCII characters to avoid latin-1 encoding errors
                 from urllib.parse import quote
-                safe_filename = filename.encode('latin-1', 'ignore').decode('latin-1') or f"attachment_{attachment_id}"
+                safe_filename = sanitize_filename_for_content_disposition(
+                    filename, 
+                    fallback=f"attachment_{attachment_id}"
+                )
                 encoded_filename = quote(filename)
 
                 return StreamingResponse(

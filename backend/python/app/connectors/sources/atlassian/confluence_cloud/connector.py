@@ -69,6 +69,7 @@ from app.sources.client.confluence.confluence import (
     ConfluenceClient as ExternalConfluenceClient,
 )
 from app.sources.external.confluence.confluence import ConfluenceDataSource
+from app.utils.filename_utils import sanitize_filename_for_content_disposition
 
 # Confluence Cloud OAuth URLs
 AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
@@ -2499,7 +2500,10 @@ class ConfluenceConnector(BaseConnector):
             elif record.record_type == RecordType.FILE:
                 media_type = record.mime_type or 'application/octet-stream'
                 filename = record.record_name or f"{record.external_record_id}"
-                safe_filename = filename.encode('latin-1', 'ignore').decode('latin-1') or f"record_{record.id}"
+                safe_filename = sanitize_filename_for_content_disposition(
+                    filename, 
+                    fallback=f"record_{record.id}"
+                )
 
                 return StreamingResponse(
                     self._fetch_attachment_content(record),

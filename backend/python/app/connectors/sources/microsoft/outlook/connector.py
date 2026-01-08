@@ -71,6 +71,7 @@ from app.sources.external.microsoft.users_groups.users_groups import (
     UsersGroupsDataSource,
     UsersGroupsResponse,
 )
+from app.utils.filename_utils import sanitize_filename_for_content_disposition
 
 # Thread detection constants
 THREAD_ROOT_EMAIL_CONVERSATION_INDEX_LENGTH = 22  # Length (in bytes) of conversation_index for root email in a thread
@@ -1375,7 +1376,10 @@ class OutlookConnector(BaseConnector):
 
                 # Set proper filename and content type
                 filename = record.record_name or "attachment"
-                safe_filename = filename.encode('latin-1', 'ignore').decode('latin-1') or f"record_{record.id}"
+                safe_filename = sanitize_filename_for_content_disposition(
+                    filename, 
+                    fallback=f"record_{record.id}"
+                )
                 headers = {"Content-Disposition": f'attachment; filename="{safe_filename}"'}
                 media_type = record.mime_type or 'application/octet-stream'
 

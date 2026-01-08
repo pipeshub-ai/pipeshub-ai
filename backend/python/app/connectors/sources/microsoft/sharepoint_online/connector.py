@@ -89,6 +89,7 @@ from app.models.entities import (
     SharePointPageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.streaming import stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -3116,7 +3117,10 @@ class SharePointConnector(BaseConnector):
                 if not signed_url:
                     raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
 
-                safe_filename = record.record_name.encode('latin-1', 'ignore').decode('latin-1') or f"record_{record.id}"
+                safe_filename = sanitize_filename_for_content_disposition(
+                    record.record_name, 
+                    fallback=f"record_{record.id}"
+                )
                 return StreamingResponse(
                     stream_content(signed_url),
                     media_type=record.mime_type if record.mime_type else "application/octet-stream",

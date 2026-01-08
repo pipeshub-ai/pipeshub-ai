@@ -83,6 +83,7 @@ from app.sources.client.dropbox.dropbox_ import (
     DropboxTokenConfig,
 )
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
+from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.streaming import stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -2862,13 +2863,16 @@ class DropboxConnector(BaseConnector):
         if not signed_url:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
         
-        safe_filename = record.record_name.encode('latin-1', 'ignore').decode('latin-1') or f"record_{record.id}"
+        safe_filename = sanitize_filename_for_content_disposition(
+            record.record_name, 
+            fallback=f"record_{record.id}"
+        )
 
         return StreamingResponse(
             stream_content(signed_url),
             media_type=record.mime_type if record.mime_type else "application/octet-stream",
             headers={
-                "Content-Disposition": f"attachment; filename={safe_filename}"
+                "Content-Disposition": f'attachment; filename="{safe_filename}"'
             }
         )
 

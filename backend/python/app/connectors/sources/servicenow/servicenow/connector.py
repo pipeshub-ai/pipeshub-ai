@@ -57,6 +57,7 @@ from app.sources.client.servicenow.servicenow import (
     ServiceNowRESTClientViaOAuthAuthorizationCode,
 )
 from app.sources.external.servicenow.servicenow import ServiceNowDataSource
+from app.utils.filename_utils import sanitize_filename_for_content_disposition
 
 # Organizational entity configuration
 ORGANIZATIONAL_ENTITIES = {
@@ -489,7 +490,10 @@ class ServiceNowConnector(BaseConnector):
                 # Use stored mime type or default
                 media_type = record.mime_type or 'application/octet-stream'
                 filename = record.record_name or f"{record.external_record_id}"
-                safe_filename = filename.encode('latin-1', 'ignore').decode('latin-1') or f"record_{record.id}"
+                safe_filename = sanitize_filename_for_content_disposition(
+                    filename, 
+                    fallback=f"record_{record.id}"
+                )
 
                 return StreamingResponse(
                     generate_attachment(),
