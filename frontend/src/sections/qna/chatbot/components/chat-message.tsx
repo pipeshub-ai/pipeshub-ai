@@ -33,8 +33,7 @@ import {
 } from '@mui/material';
 
 import {
-  extractCleanTextFragment,
-  addTextFragmentToUrl,
+  getWebUrlWithFragment,
 } from 'src/sections/knowledgebase/utils/utils';
 
 import RecordDetails from './record-details';
@@ -233,35 +232,6 @@ const StreamingContent = React.memo(
       if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
     }, []);
 
-    // Helper function to get webUrl with text fragment (similar to getWebUrl in citations-hover-card.tsx)
-    const getWebUrlWithFragment = useCallback((citation: CustomCitation | undefined): string | null => {
-      if (!citation?.metadata?.webUrl) {
-        return null;
-      }
-
-      try {
-        let webUrl = citation.metadata.webUrl;
-
-        if (citation.metadata.origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
-          const baseUrl = `${window.location.protocol}//${window.location.host}`;
-          webUrl = baseUrl + webUrl;
-        }
-
-        // Check if blockText exists and is not empty before adding text fragment
-        const blockText = citation.metadata.blockText;
-        if (blockText && typeof blockText === 'string' && blockText.trim().length > 0) {
-          const textFragment = extractCleanTextFragment(blockText, 5);
-          if (textFragment) {
-            return addTextFragmentToUrl(webUrl, textFragment);
-          }
-        }
-
-        return webUrl;
-      } catch (error) {
-        console.warn('Error accessing webUrl:', error);
-        return null;
-      }
-    }, []);
 
     const handleClick = useCallback(
       (event: React.MouseEvent, citationRef: string) => {
@@ -299,7 +269,7 @@ const StreamingContent = React.memo(
         }
         handleCloseHoverCard();
       },
-      [citationMap, handleCloseHoverCard, aggregatedCitations, onViewPdf, getWebUrlWithFragment]
+      [citationMap, handleCloseHoverCard, aggregatedCitations, onViewPdf]
     );
 
     // Helper function to truncate filename

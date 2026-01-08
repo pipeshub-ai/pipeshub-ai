@@ -1071,10 +1071,6 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
         // Get file extension for dynamic tooltips
         const fileExt = params.row.fileRecord?.extension || '';
         const recordPermission = params.row.permission;
-        const canReindex =
-          recordPermission?.role === 'OWNER' ||
-          recordPermission?.role === 'WRITER' ||
-          recordPermission?.role === 'READER';
         const canModify = recordPermission?.role === 'OWNER' || recordPermission?.role === 'WRITER';
         const canDownload =
           params.row.recordType === 'FILE';
@@ -1118,9 +1114,8 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
                   },
                 ]
               : []),
-            // Only show reindex options for OWNER and WRITER of this specific record
-            ...(canReindex &&
-            (params.row.indexingStatus === 'FAILED' || params.row.indexingStatus === 'NOT_STARTED')
+            // Show reindex options to everyone (no permission check)
+            ...((params.row.indexingStatus === 'FAILED' || params.row.indexingStatus === 'NOT_STARTED')
               ? [
                   {
                     label: 'Retry Indexing',
@@ -1130,8 +1125,8 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
                   },
                 ]
               : []),
-            // Only show manual indexing for OWNER and WRITER of this specific record
-            ...(canReindex && params.row.indexingStatus === 'AUTO_INDEX_OFF'
+            // Show manual indexing to everyone (no permission check)
+            ...(params.row.indexingStatus === 'AUTO_INDEX_OFF'
               ? [
                   {
                     label: 'Start Manual Indexing',
@@ -1141,8 +1136,8 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
                   },
                 ]
               : []),
-            // Only show delete option for OWNER and WRITER of this specific record
-            ...(canModify
+            // Only show delete option for OWNER and WRITER, and hide if origin is CONNECTOR
+            ...(canModify && params.row.origin !== ORIGIN.CONNECTOR
               ? [
                   {
                     label: 'Delete Record',

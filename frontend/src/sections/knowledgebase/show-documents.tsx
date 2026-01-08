@@ -520,6 +520,20 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
     }
   }, [record]);
 
+  // Shared handler for opening web URL (extracted from duplicated onClick logic)
+  const handleOpenWebUrl = useCallback(() => {
+    const webUrl = getWebUrl();
+    if (webUrl) {
+      window.open(webUrl, '_blank', 'noopener,noreferrer');
+    } else {
+      setSnackbar({
+        open: true,
+        message: 'Unable to open document. URL not available.',
+        severity: 'warning',
+      });
+    }
+  }, [getWebUrl]);
+
   const handleDownload = async () => {
     try {
       setIsDownloading(true);
@@ -540,16 +554,7 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
   const viewDocument = async (): Promise<void> => {
     // Check if previewRenderable is false - if so, open webUrl instead of viewer
     if (record.previewRenderable === false) {
-      const webUrl = getWebUrl();
-      if (webUrl) {
-        window.open(webUrl, '_blank', 'noopener,noreferrer');
-      } else {
-        setSnackbar({
-          open: true,
-          message: 'Unable to open document. URL not available.',
-          severity: 'warning',
-        });
-      }
+      handleOpenWebUrl();
       return;
     }
 
@@ -864,34 +869,36 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
             )}
           </Box>
 
-          {/* Download Button */}
-          <Tooltip title="Download document" arrow placement="top">
-            {isDownloading ? (
-              <Box sx={{ p: 1 }}>
-                <CircularProgress size={24} />
-              </Box>
-            ) : (
-              <>
-                {recordTypeForDisplay !== 'MAIL' && (
-                  <>
-                    <IconButton
-                      onClick={handleDownload}
-                      sx={{
-                        color: 'primary.main',
-                        '&:hover': {
-                          backgroundColor: 'primary.light',
-                          color: 'white',
-                        },
-                      }}
-                      disabled={viewerState.phase === 'loading'}
-                    >
-                      <Icon icon={downloadIcon} width={24} />
-                    </IconButton>
-                  </>
-                )}
-              </>
-            )}
-          </Tooltip>
+          {/* Download Button - Only show if previewRenderable is not false */}
+          {record.previewRenderable !== false && (
+            <Tooltip title="Download document" arrow placement="top">
+              {isDownloading ? (
+                <Box sx={{ p: 1 }}>
+                  <CircularProgress size={24} />
+                </Box>
+              ) : (
+                <>
+                  {recordTypeForDisplay !== 'MAIL' && (
+                    <>
+                      <IconButton
+                        onClick={handleDownload}
+                        sx={{
+                          color: 'primary.main',
+                          '&:hover': {
+                            backgroundColor: 'primary.light',
+                            color: 'white',
+                          },
+                        }}
+                        disabled={viewerState.phase === 'loading'}
+                      >
+                        <Icon icon={downloadIcon} width={24} />
+                      </IconButton>
+                    </>
+                  )}
+                </>
+              )}
+            </Tooltip>
+          )}
 
           {/* View Document Button - Only show if previewRenderable is not false */}
           {extension && record.previewRenderable !== false && (
@@ -919,18 +926,7 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
           {extension && record.previewRenderable === false && (
             <Tooltip title="Open in new tab" arrow placement="top">
               <IconButton
-                onClick={() => {
-                  const webUrl = getWebUrl();
-                  if (webUrl) {
-                    window.open(webUrl, '_blank', 'noopener,noreferrer');
-                  } else {
-                    setSnackbar({
-                      open: true,
-                      message: 'Unable to open document. URL not available.',
-                      severity: 'warning',
-                    });
-                  }
-                }}
+                onClick={handleOpenWebUrl}
                 sx={{
                   color: 'primary.main',
                   '&:hover': {

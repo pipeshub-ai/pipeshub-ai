@@ -37,8 +37,7 @@ import {
 import type { CustomCitation } from 'src/types/chat-bot';
 import type { Record } from 'src/types/chat-message';
 import {
-  extractCleanTextFragment,
-  addTextFragmentToUrl,
+  getWebUrlWithFragment,
 } from 'src/sections/knowledgebase/utils/utils';
 
 import { useConnectors } from '../../../accountdetails/connectors/context';
@@ -506,34 +505,6 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
     });
   }, []);
 
-  // Helper function to get webUrl with text fragment (similar to getWebUrl in citations-hover-card.tsx)
-  const getWebUrlWithFragment = useCallback((citation: CustomCitation): string | null => {
-    try {
-      let webUrl = citation?.metadata?.webUrl;
-      if (!webUrl) {
-        return null;
-      }
-
-      if (citation?.metadata?.origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
-        const baseUrl = `${window.location.protocol}//${window.location.host}`;
-        webUrl = baseUrl + webUrl;
-      }
-
-      // Check if blockText exists and is not empty before adding text fragment
-      const blockText = citation?.metadata?.blockText;
-      if (blockText && typeof blockText === 'string' && blockText.trim().length > 0) {
-        const textFragment = extractCleanTextFragment(blockText, 5);
-        if (textFragment) {
-          return addTextFragmentToUrl(webUrl, textFragment);
-        }
-      }
-
-      return webUrl;
-    } catch (error) {
-      console.warn('Error accessing webUrl:', error);
-      return null;
-    }
-  }, []);
 
   const handleViewDocument = useCallback((file: FileInfo) => {
     // Check if previewRenderable is false - if so, open webUrl instead of viewer
@@ -547,7 +518,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
     if (file.webUrl) {
       window.open(file.webUrl, '_blank', 'noopener,noreferrer');
     }
-  }, [getWebUrlWithFragment]);
+  }, []);
 
   const handleViewCitations = useCallback(
     (file: FileInfo) => {
@@ -562,7 +533,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
       const recordCitations = aggregatedCitations[file.recordId] || [file.citation];
       onViewPdf('', file.citation, recordCitations, false);
     },
-    [aggregatedCitations, onViewPdf, getWebUrlWithFragment]
+    [aggregatedCitations, onViewPdf]
   );
 
   const handleViewRecord = useCallback(
@@ -596,7 +567,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
           resolve();
         }
       }),
-    [aggregatedCitations, onViewPdf, getWebUrlWithFragment]
+    [aggregatedCitations, onViewPdf]
   );
 
   // Don't render if no citations

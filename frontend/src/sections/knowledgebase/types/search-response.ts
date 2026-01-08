@@ -84,6 +84,7 @@ export namespace PipesHub {
     sizeInBytes: number;
     webUrl: string;
     path: string;
+    previewRenderable?: boolean;
     [key: string]: any;
   }
 }
