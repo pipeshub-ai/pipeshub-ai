@@ -361,7 +361,7 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
             preview_renderable = meta.get("previewRenderable")
             if preview_renderable is None:
                 preview_renderable = record.get("preview_renderable", True)
-           
+
             enhanced_metadata = {
                         "orgId": meta.get("orgId") or record.get("org_id", ""),
                         "recordId": meta.get("recordId") or record.get("id", ""),
