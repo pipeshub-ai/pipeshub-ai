@@ -1562,7 +1562,7 @@ class BoxConnector(BaseConnector):
             )
 
         safe_filename = sanitize_filename_for_content_disposition(
-            record.record_name, 
+            record.record_name,
             fallback=f"record_{record.id}"
         )
         return StreamingResponse(

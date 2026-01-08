@@ -1355,7 +1355,7 @@ class OneDriveConnector(BaseConnector):
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
 
         safe_filename = sanitize_filename_for_content_disposition(
-            record.record_name, 
+            record.record_name,
             fallback=f"record_{record.id}"
         )
         return StreamingResponse(

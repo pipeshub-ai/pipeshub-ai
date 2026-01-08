@@ -1377,7 +1377,7 @@ class OutlookConnector(BaseConnector):
                 # Set proper filename and content type
                 filename = record.record_name or "attachment"
                 safe_filename = sanitize_filename_for_content_disposition(
-                    filename, 
+                    filename,
                     fallback=f"record_{record.id}"
                 )
                 headers = {"Content-Disposition": f'attachment; filename="{safe_filename}"'}

@@ -491,7 +491,7 @@ class ServiceNowConnector(BaseConnector):
                 media_type = record.mime_type or 'application/octet-stream'
                 filename = record.record_name or f"{record.external_record_id}"
                 safe_filename = sanitize_filename_for_content_disposition(
-                    filename, 
+                    filename,
                     fallback=f"record_{record.id}"
                 )
 

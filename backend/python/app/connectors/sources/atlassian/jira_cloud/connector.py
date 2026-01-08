@@ -4208,7 +4208,7 @@ class JiraConnector(BaseConnector):
                 # Replace non-ASCII characters to avoid latin-1 encoding errors
                 from urllib.parse import quote
                 safe_filename = sanitize_filename_for_content_disposition(
-                    filename, 
+                    filename,
                     fallback=f"attachment_{attachment_id}"
                 )
                 encoded_filename = quote(filename)

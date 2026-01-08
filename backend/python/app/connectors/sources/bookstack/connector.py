@@ -317,7 +317,7 @@ class BookStackConnector(BaseConnector):
         raw_markdown = markdown_response.data.get("markdown")
         # Stream the content from the URL
         safe_filename = sanitize_filename_for_content_disposition(
-            record.record_name, 
+            record.record_name,
             fallback=f"record_{record.id}"
         )
         return StreamingResponse(

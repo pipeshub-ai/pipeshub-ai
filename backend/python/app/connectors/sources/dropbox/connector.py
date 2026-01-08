@@ -2862,9 +2862,9 @@ class DropboxConnector(BaseConnector):
         signed_url = await self.get_signed_url(record)
         if not signed_url:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
-        
+
         safe_filename = sanitize_filename_for_content_disposition(
-            record.record_name, 
+            record.record_name,
             fallback=f"record_{record.id}"
         )
 

@@ -745,7 +745,7 @@ async def download_file(
                         finally:
                             file_buffer.close()
                     safe_filename = sanitize_filename_for_content_disposition(
-                        record.record_name, 
+                        record.record_name,
                         fallback=f"record_{record_id}"
                     )
                     headers = {
@@ -796,7 +796,7 @@ async def download_file(
 
                 # Return streaming response with proper headers
                 safe_filename = sanitize_filename_for_content_disposition(
-                    record.record_name, 
+                    record.record_name,
                     fallback=f"record_{record_id}"
                 )
                 headers = {
@@ -1157,9 +1157,9 @@ async def stream_record(
                     }
 
                     response_media_type, file_ext = export_media_types.get(export_mime_type, (export_mime_type, ""))
-                    
+
                     safe_filename = sanitize_filename_for_content_disposition(
-                        file_name, 
+                        file_name,
                         fallback=f"record_{record_id}"
                     )
 
@@ -1299,7 +1299,7 @@ async def stream_record(
 
                 # Return streaming response with proper headers
                 safe_filename = sanitize_filename_for_content_disposition(
-                    file_name, 
+                    file_name,
                     fallback=f"record_{record_id}"
                 )
                 headers = {"Content-Disposition": f'attachment; filename="{safe_filename}"'}
@@ -1646,7 +1646,7 @@ async def stream_record(
 
 
                         safe_filename = sanitize_filename_for_content_disposition(
-                            file_name, 
+                            file_name,
                             fallback=f"record_{record_id}"
                         )
                         headers = {
@@ -1785,7 +1785,7 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
                     pdf_filename = file.filename.rsplit(".", 1)[0] + ".pdf"
                     pdf_path = os.path.join(tmpdir, pdf_filename)
                     safe_filename = sanitize_filename_for_content_disposition(
-                        pdf_filename, 
+                        pdf_filename,
                         fallback="converted_file.pdf"
                     )
 
