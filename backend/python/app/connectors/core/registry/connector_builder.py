@@ -3,7 +3,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Type, Union
 
-from app.connectors.core.registry.filters import FilterCategory, FilterField, FilterType
+from app.config.constants.arangodb import ExtensionTypes
+from app.connectors.core.registry.filters import (
+    FilterCategory,
+    FilterField,
+    FilterOption,
+    FilterType,
+    OptionSourceType,
+)
 
 
 class ConnectorScope(str, Enum):
@@ -460,15 +467,20 @@ class CommonFields:
         )
 
     @staticmethod
-    def file_types_filter(options_endpoint: Optional[str] = None) -> FilterField:
-        """Standard file types filter"""
+    def file_extension_filter(options_endpoint: Optional[str] = None) -> FilterField:
+        """Standard file extension filter"""
         return FilterField(
-            name="fileTypes",
-            display_name="File Types",
-            filter_type=FilterType.LIST,
+            name="file_extensions",
+            display_name="Sync Files with Extensions",
+            filter_type=FilterType.MULTISELECT,
             category=FilterCategory.SYNC,
-            description="Select the types of files to sync",
-            options=["document", "spreadsheet", "presentation", "pdf", "image", "video"],
+            description="Sync files with specific extensions",
+            default_value=True,
+            option_source_type=OptionSourceType.STATIC,
+            options=[
+                FilterOption(id=ext.value, label=f".{ext.value}")
+                for ext in ExtensionTypes
+            ]
         )
 
     @staticmethod
@@ -480,7 +492,6 @@ class CommonFields:
             filter_type=FilterType.LIST,
             category=FilterCategory.SYNC,
             description="Select folders to sync from",
-            options_endpoint=options_endpoint
         )
 
     @staticmethod
@@ -492,7 +503,6 @@ class CommonFields:
             filter_type=FilterType.LIST,
             category=FilterCategory.SYNC,
             description="Select channels to sync messages from",
-            options_endpoint=options_endpoint
         )
 
     @staticmethod

@@ -532,7 +532,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
         {/* Success Snackbar */}
         <Snackbar
           open={success}
-          autoHideDuration={4000}
+          autoHideDuration={10000}
           onClose={() => setSuccess(false)}
           anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
           sx={{ mt: 8 }}

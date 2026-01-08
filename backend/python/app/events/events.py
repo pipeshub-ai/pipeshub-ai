@@ -595,12 +595,14 @@ class EventProcessor:
                     ExtensionTypes.JPG.value,
                     ExtensionTypes.JPEG.value,
                     ExtensionTypes.WEBP.value,
+                    ExtensionTypes.SVG.value,
                 }
                 or mime_type in {
                     MimeTypes.PNG.value,
                     MimeTypes.JPG.value,
                     MimeTypes.JPEG.value,
                     MimeTypes.WEBP.value,
+                    MimeTypes.SVG.value,
                 }
             ):
                 # Route image files to the image processor

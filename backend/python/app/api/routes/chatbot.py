@@ -561,6 +561,7 @@ async def askAIStream(
 
                 # Process search results
                 search_results = result.get("searchResults", [])
+                virtual_to_record_map = result.get("virtual_to_record_map", {})
                 status_code = result.get("status_code", 500)
 
                 if status_code in [202, 500, 503,404]:
@@ -572,7 +573,7 @@ async def askAIStream(
 
                 virtual_record_id_to_result = {}
                 flattened_results = await get_flattened_results(
-                    search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result
+                    search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result, virtual_to_record_map
                 )
 
                 # Re-rank results

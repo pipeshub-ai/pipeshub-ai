@@ -11,7 +11,6 @@ from app.api.middlewares.auth import authMiddleware
 from app.api.routes.entity import router as entity_router
 from app.config.constants.arangodb import AccountType, Connectors, ConnectorScopes
 from app.connectors.api.router import router
-from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.connector import (
@@ -123,7 +122,8 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
             gmail_sync_service = None
             config_service = app_container.config_service()
             arango_service = await app_container.arango_service()
-            data_store_provider = ArangoDataStore(logger, arango_service)
+            # Use data_store directly from container (already resolved properly)
+            data_store_provider = await app_container.data_store()
 
             # Initialize connectors_map if not already initialized
             if not hasattr(app_container, 'connectors_map'):

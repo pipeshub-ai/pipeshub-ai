@@ -105,24 +105,53 @@ const DocumentContainer = styled(Box)(({ theme }) => ({
     borderCollapse: 'collapse',
     marginBottom: '1em',
     width: 'auto',
-    borderColor:
-      theme.palette.mode === 'dark' ? alpha(theme.palette.divider, 0.1) : theme.palette.divider,
+    border:
+      theme.palette.mode === 'dark'
+        ? `1px solid ${alpha(theme.palette.common.white, 0.12)}`
+        : `1px solid ${theme.palette.divider}`,
+    backgroundColor:
+      theme.palette.mode === 'dark'
+        ? alpha(theme.palette.background.paper, 0.3)
+        : theme.palette.background.paper,
   },
 
   '& th, & td': {
     border:
       theme.palette.mode === 'dark'
-        ? `1px solid ${alpha(theme.palette.divider, 0.1)}`
+        ? `1px solid ${alpha(theme.palette.common.white, 0.12)}`
         : '1px solid #ddd',
     padding: '0.5em',
     textAlign: 'left',
+    color:
+      theme.palette.mode === 'dark'
+        ? alpha(theme.palette.common.white, 0.9)
+        : theme.palette.text.primary,
   },
 
   '& th': {
     backgroundColor:
-      theme.palette.mode === 'dark' ? alpha(theme.palette.background.default, 0.4) : '#f2f2f2',
+      theme.palette.mode === 'dark'
+        ? alpha(theme.palette.common.white, 0.08)
+        : '#f2f2f2',
     color:
-      theme.palette.mode === 'dark' ? theme.palette.primary.lighter : theme.palette.text.primary,
+      theme.palette.mode === 'dark'
+        ? alpha(theme.palette.common.white, 0.95)
+        : theme.palette.text.primary,
+    fontWeight: 600,
+  },
+
+  '& tbody tr:nth-of-type(even)': {
+    backgroundColor:
+      theme.palette.mode === 'dark'
+        ? alpha(theme.palette.common.white, 0.03)
+        : 'rgba(0, 0, 0, 0.02)',
+  },
+
+  '& tbody tr:hover': {
+    backgroundColor:
+      theme.palette.mode === 'dark'
+        ? alpha(theme.palette.common.white, 0.05)
+        : 'rgba(0, 0, 0, 0.04)',
   },
 
   // Text formatting
@@ -206,9 +235,157 @@ const DocumentContainer = styled(Box)(({ theme }) => ({
         theme.palette.mode === 'dark' ? theme.palette.primary.light : theme.palette.primary.dark,
     },
   },
+
+  // Images
+  '& img': {
+    maxWidth: '100%',
+    width: 'auto',
+    height: 'auto',
+    display: 'block',
+    margin: '1em auto',
+    borderRadius: theme.shape.borderRadius,
+    boxShadow: theme.palette.mode === 'dark' 
+      ? `0 2px 8px ${alpha(theme.palette.common.black, 0.3)}`
+      : `0 2px 8px ${alpha(theme.palette.common.black, 0.1)}`,
+    objectFit: 'contain',
+    visibility: 'visible',
+    opacity: 1,
+  },
+
+  // Lists
+  '& ul, & ol': {
+    marginTop: '1em',
+    marginBottom: '1em',
+    paddingLeft: '2em',
+    '& li': {
+      marginTop: '0.5em',
+      marginBottom: '0.5em',
+      lineHeight: 1.6,
+      '& p': {
+        margin: 0,
+        display: 'inline',
+      },
+      '& ul, & ol': {
+        marginTop: '0.5em',
+        marginBottom: '0.5em',
+      },
+    },
+  },
+  '& ul': {
+    listStyleType: 'disc',
+    '& ul': {
+      listStyleType: 'circle',
+      '& ul': {
+        listStyleType: 'square',
+      },
+    },
+  },
+  '& ol': {
+    listStyleType: 'decimal',
+  },
 }));
 
-const customRenderers = {} as Components;
+// Create a function to extract image URL from markdown content
+const extractImageUrlFromMarkdown = (markdown: string, altText: string): string => {
+  if (!markdown || !altText) return '';
+  
+  // Try to find the image markdown syntax: ![alt](url)
+  // Escape special regex characters in alt text
+  const escapedAlt = altText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  
+  // Pattern to match: ![alt](url) where url can be very long (data URIs)
+  // Use [\s\S] instead of . to match newlines, and make it non-greedy but match until )
+  const pattern = new RegExp(`!\\[${escapedAlt}\\]\\(([^)]+)\\)`, 's');
+  const match = markdown.match(pattern);
+  
+  if (match && match[1]) {
+    return match[1].trim();
+  }
+  
+  // Fallback: try to find any image with similar alt text (partial match)
+  const partialPattern = new RegExp(`!\\[([^\\]]*${escapedAlt}[^\\]]*)\\]\\(([^)]+)\\)`, 's');
+  const partialMatch = markdown.match(partialPattern);
+  
+  if (partialMatch && partialMatch[2]) {
+    return partialMatch[2].trim();
+  }
+  
+  // Last resort: find any image markdown and extract URL (if only one image with this alt)
+  // This handles cases where the alt text might have been modified
+  const anyImagePattern = /!\[([^\]]*)\]\(([^)]+)\)/gs;
+  const allMatches = Array.from(markdown.matchAll(anyImagePattern));
+  
+  // If we have alt text, try to find a match
+  const foundMatch = allMatches.find((imgMatch) => imgMatch[1] && imgMatch[1].includes(altText));
+  if (foundMatch && foundMatch[2]) {
+    return foundMatch[2].trim();
+  }
+  
+  return '';
+};
+
+const createImageRenderer = (markdownContent: string): Components['img'] => (props) => {
+    // Extract src, alt, and title from props - react-markdown may pass them in different places
+    const { src, alt, title, node, ...restProps } = props as any;
+    
+    // Check node.properties for src if not in props directly (react-markdown structure)
+    const nodeSrc = node?.properties?.src;
+    const nodeAlt = node?.properties?.alt;
+    const nodeTitle = node?.properties?.title;
+    
+    // Get alt text from any available source
+    const imageAlt = alt || nodeAlt || title || nodeTitle || '';
+    
+    // Handle both regular URLs and data URIs (base64 images)
+    // Priority: props.src > node.properties.src > extract from markdown
+    let imageSrc = (src || nodeSrc) ? String(src || nodeSrc) : '';
+    
+    // If src is still empty, try to extract from markdown content
+    if (!imageSrc && imageAlt && markdownContent) {
+      imageSrc = extractImageUrlFromMarkdown(markdownContent, imageAlt);
+    }
+    
+    const imageTitle = title || nodeTitle || alt || nodeAlt || '';
+    
+    // If no src, show alt text as fallback
+    if (!imageSrc) {
+      if (imageAlt) {
+        return (
+          <Box
+            sx={{
+              padding: 2,
+              margin: '1em auto',
+              textAlign: 'center',
+              color: 'text.secondary',
+              border: '1px dashed',
+              borderColor: 'divider',
+              borderRadius: 1,
+            }}
+          >
+            <Icon icon="mdi:image-off" style={{ fontSize: 32, marginBottom: 8 }} />
+            <Typography variant="body2">{imageAlt}</Typography>
+          </Box>
+        );
+      }
+      return null;
+    }
+    
+    return (
+      <img
+        {...restProps}
+        src={imageSrc}
+        alt={imageAlt}
+        title={imageTitle}
+        loading="lazy"
+        style={{
+          maxWidth: '100%',
+          height: 'auto',
+          display: 'block',
+          margin: '1em auto',
+        }}
+      />
+    );
+};
 
 // --- Helper functions ---
 const getNextId = (): string => `md-hl-${Math.random().toString(36).substring(2, 10)}`;
@@ -285,6 +462,14 @@ const MarkdownViewer: React.FC<MarkdownViewerProps> = ({
   const scrollableStyles = createScrollableContainerStyle(theme);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const fullScreenContainerRef = useRef<HTMLDivElement>(null);
+
+  // Create custom renderers with access to markdownContent
+  const customRenderers = React.useMemo<Components>(() => ({
+    img: createImageRenderer(markdownContent),
+    ul: ({ children, ...props }) => <ul {...props}>{children}</ul>,
+    ol: ({ children, ...props }) => <ol {...props}>{children}</ol>,
+    li: ({ children, ...props }) => <li {...props}>{children}</li>,
+  }), [markdownContent]);
 
   const createHighlightStyles = useCallback((): (() => void) | undefined => {
     const styleId = 'markdown-highlight-styles';

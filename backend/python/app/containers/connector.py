@@ -9,6 +9,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AppGroups
 from app.config.constants.service import config_node_constants
 from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.sources.google.admin.admin_webhook_handler import (
@@ -58,6 +59,7 @@ from app.core.celery_app import CeleryApp
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
 from app.health.health import Health
 from app.migrations.connector_migration_service import ConnectorMigrationService
+from app.migrations.folder_hierarchy_migration import run_folder_hierarchy_migration
 from app.migrations.permission_edge_migration import (
     run_permissions_edge_migration,
     run_permissions_to_kb_migration,
@@ -66,6 +68,8 @@ from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
 from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
 from app.modules.parsers.google_files.parser_user_service import ParserUserService
+from app.services.graph_db.graph_db_provider_factory import GraphDBProviderFactory
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.logger import create_logger
 
 
@@ -773,6 +777,33 @@ class ConnectorAppContainer(BaseAppContainer):
         config_service=config_service,
     )
 
+    # Graph Database Provider via Factory (HTTP mode - fully async)
+    @staticmethod
+    async def _create_graphDB_provider(logger, config_service) -> IGraphDBProvider:
+        """Async factory to create graph database provider"""
+        return await GraphDBProviderFactory.create_provider(
+            logger=logger,
+            config_service=config_service,
+        )
+
+    graph_provider = providers.Resource(
+        _create_graphDB_provider,
+        logger=logger,
+        config_service=config_service,
+    )
+
+    # Graph Data Store - Transaction-based data access layer
+    @staticmethod
+    async def _create_data_store(logger, graph_provider) -> GraphDataStore:
+        """Async factory to create GraphDataStore with resolved graph_provider"""
+        return GraphDataStore(logger, graph_provider)
+
+    data_store = providers.Resource(
+        _create_data_store,
+        logger=logger,
+        graph_provider=graph_provider,
+    )
+
     kb_service = providers.Singleton(
         KnowledgeBaseService,
         logger= logger,
@@ -995,6 +1026,32 @@ async def initialize_container(container) -> bool:
                 await mark_migration_completed("permissionsToKb", result_permissions_to_kb_migration)
             else:
                 logger.error(f"Failed: {result_permissions_to_kb_migration.get('message')}")
+
+        migration_state = await get_migration_state()
+
+        if migration_completed(migration_state, "folderHierarchy"):
+            logger.info("⏭️ Folder Hierarchy migration already completed, skipping.")
+        else:
+            logger.info("🔄 Running Folder Hierarchy migration...")
+            result_folder_hierarchy_migration = await run_folder_hierarchy_migration(
+                arango_service, config_service, logger, dry_run=False
+            )
+            if result_folder_hierarchy_migration.get("success"):
+                folders_migrated = result_folder_hierarchy_migration.get('folders_migrated', 0)
+                edges_created = result_folder_hierarchy_migration.get('edges_created', 0)
+                edges_updated = result_folder_hierarchy_migration.get('edges_updated', 0)
+
+                if result_folder_hierarchy_migration.get('skipped'):
+                    logger.info("⏭️ Folder Hierarchy migration already completed (checked by service)")
+                else:
+                    logger.info(f"✅ Migrated: {folders_migrated} folders")
+                    logger.info(f"✅ Edges created: {edges_created}")
+                    logger.info(f"✅ Edges updated: {edges_updated}")
+
+                await mark_migration_completed("folderHierarchy", result_folder_hierarchy_migration)
+            else:
+                error_msg = result_folder_hierarchy_migration.get('error') or result_folder_hierarchy_migration.get('message', 'Unknown error')
+                logger.error(f"❌ Folder Hierarchy migration failed: {error_msg}")
 
         return True
 

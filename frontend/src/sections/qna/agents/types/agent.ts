@@ -55,7 +55,7 @@ export interface AgentBuilderCanvasWrapperProps {
   nodeTemplates: NodeTemplate[];
   loading: boolean;
   activeAgentConnectors: Connector[];
-  activeConnectors: Connector[];
+  configuredConnectors: Connector[];
   connectorRegistry: any[];
   isBusiness: boolean;
   nodes: any[];
@@ -70,11 +70,18 @@ export interface AgentBuilderCanvasWrapperProps {
   setNodes: React.Dispatch<React.SetStateAction<any[]>>;
   onNodeEdit?: (nodeId: string, data: any) => void;
   onNodeDelete?: (nodeId: string) => void;
-  onError?: (error: string) => void;
+  onError?: (error: string | AgentBuilderError) => void;
+}
+
+export interface AgentBuilderError {
+  message: string;
+  connectorId?: string;
+  connectorName?: string;
+  actionLink?: string;
 }
 
 export interface AgentBuilderNotificationPanelProps {
-  error: string | null;
+  error: string | AgentBuilderError | null;
   success: string | null;
   onErrorClose: () => void;
   onSuccessClose: () => void;
@@ -104,12 +111,12 @@ export interface UseAgentBuilderDataReturn {
   availableModels: any[];
   availableKnowledgeBases: any[];
   activeAgentConnectors: Connector[];
-  activeConnectors: Connector[];
+  configuredConnectors: Connector[];
   connectorRegistry: any[];
   loading: boolean;
   loadedAgent: Agent | null;
-  error: string | null;
-  setError: (error: string | null) => void;
+  error: string | AgentBuilderError | null;
+  setError: (error: string | AgentBuilderError | null) => void;
 }
 
 export interface UseAgentBuilderStateReturn {

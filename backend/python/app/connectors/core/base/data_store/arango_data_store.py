@@ -59,6 +59,21 @@ class ArangoTransactionStore(TransactionStore):
     async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
         return await self.arango_service.get_record_by_external_id(connector_id, external_id, transaction=self.txn)
 
+    async def get_record_by_issue_key(self, connector_id: str, issue_key: str) -> Optional[Record]:
+        return await self.arango_service.get_record_by_issue_key(connector_id, issue_key, transaction=self.txn)
+
+    async def get_records_by_parent(
+        self,
+        connector_id: str,
+        parent_external_record_id: str,
+        record_type: Optional[str] = None
+    ) -> List[Record]:
+        return await self.arango_service.get_records_by_parent(
+            connector_id,
+            parent_external_record_id,
+            record_type,
+            transaction=self.txn
+        )
 
     async def get_records_by_status(self, org_id: str, connector_id: str, status_filters: List[str], limit: Optional[int] = None, offset: int = 0) -> List[Record]:
         """Get records by status. Returns properly typed Record instances."""
@@ -108,7 +123,10 @@ class ArangoTransactionStore(TransactionStore):
     async def delete_record_group_by_external_id(self, connector_id: str, external_id: str) -> None:
         return await self.arango_service.delete_record_group_by_external_id(connector_id, external_id, transaction=self.txn)
 
-    async def delete_edge(self, from_key: str, to_key: str, collection: str) -> None:
+    async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str
+    ) -> None:
+        from_key = f"{from_collection}/{from_id}"
+        to_key = f"{to_collection}/{to_id}"
         return await self.arango_service.delete_edge(from_key, to_key, collection, transaction=self.txn)
 
     async def delete_nodes(self, keys: List[str], collection: str) -> None:
@@ -135,14 +153,19 @@ class ArangoTransactionStore(TransactionStore):
     async def get_user_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[AppUserGroup]:
         return await self.arango_service.get_user_group_by_external_id(connector_id, external_id, transaction=self.txn)
 
+    async def delete_user_group_by_id(self, group_id: str) -> None:
+        return await self.arango_service.delete_nodes_and_edges([group_id],CollectionNames.GROUPS.value,graph_name="knowledgeGraph",transaction=self.txn)
+
     async def get_app_role_by_external_id(self, connector_id: str, external_id: str) -> Optional[AppRole]:
         return await self.arango_service.get_app_role_by_external_id(connector_id, external_id, transaction=self.txn)
 
     async def get_users(self, org_id: str, active: bool = True) -> List[User]:
-        return await self.arango_service.get_users(org_id, active)
+        users_dict = await self.arango_service.get_users(org_id, active)
+        return [User.from_arango_user(user_dict) for user_dict in users_dict if user_dict is not None]
 
     async def get_app_users(self, org_id: str, connector_id: str) -> List[AppUser]:
-        return await self.arango_service.get_app_users(org_id, connector_id)
+        app_users_dict = await self.arango_service.get_app_users(org_id, connector_id)
+        return [AppUser.from_arango_user(user_dict) for user_dict in app_users_dict if user_dict is not None]
 
     async def get_user_groups(self, connector_id: str, org_id: str) -> List[AppUserGroup]:
         return await self.arango_service.get_user_groups(connector_id, org_id, transaction=self.txn)
@@ -201,8 +224,14 @@ class ArangoTransactionStore(TransactionStore):
     async def get_users_with_permission_to_node(self, node_key: str) -> List[str]:
         return await self.arango_service.get_users_with_permission_to_node(node_key, transaction=self.txn)
 
-    async def get_edge(self, from_key: str, to_key: str, collection: str) -> Optional[Dict]:
+    async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> Optional[Dict]:
+        from_key = f"{from_collection}/{from_id}"
+        to_key = f"{to_collection}/{to_id}"
         return await self.arango_service.get_edge(from_key, to_key, collection, transaction=self.txn)
+
+    async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> List[Dict]:
+        """Get all edges originating from a specific node"""
+        return await self.arango_service.get_edges_from_node(from_node_id, edge_collection, transaction=self.txn)
 
     async def get_record_by_conversation_index(self, connector_id: str, conversation_index: str, thread_id: str, org_id: str, user_id: str) -> Optional[Record]:
         return await self.arango_service.get_record_by_conversation_index(connector_id, conversation_index, thread_id, org_id, user_id, transaction=self.txn)

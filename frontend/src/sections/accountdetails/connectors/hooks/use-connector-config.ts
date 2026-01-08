@@ -793,7 +793,7 @@ export const useConnectorConfig = ({
           const errorMessage = error?.response?.data?.detail || error?.message || 'Beta connectors are not enabled. This connector is a beta connector and cannot be accessed. Please enable beta connectors in platform settings to use this connector.';
           setSaveError(errorMessage);
         } else {
-          setSaveError('Failed to load connector configuration');
+          setSaveError(error?.response?.data?.detail || error?.message || 'Failed to load connector configuration');
         }
       } finally {
         if (isMounted) {
@@ -1051,17 +1051,224 @@ export const useConnectorConfig = ({
     }
   }, [activeStep]);
 
+  // Helper function to process filter fields for saving
+  const processFilterFields = useCallback((
+    filterSchema: { fields: FilterSchemaField[] }
+  ): Record<string, FilterValueData> => {
+    const filtersToSave: Record<string, FilterValueData> = {};
+    if (!filterSchema?.fields) return filtersToSave;
+    
+    filterSchema.fields.forEach((field) => {
+      const filterValue = formData.filters[field.name];
+      if (!filterValue?.operator) {
+        return; // Skip filters without operator
+      }
+      
+      // Convert relative date operators to absolute dates
+      if (filterValue.operator.startsWith('last_')) {
+        const converted = convertRelativeDateToAbsolute(filterValue.operator);
+        if (converted) {
+          try {
+            const normalizedValue = normalizeDatetimeValueForSave(
+              converted.value, 
+              converted.operator
+            );
+            if (normalizedValue.start !== null || normalizedValue.end !== null) {
+              filtersToSave[field.name] = { 
+                operator: converted.operator, 
+                value: normalizedValue, 
+                type: field.filterType 
+              };
+            }
+          } catch (error) {
+            console.warn(`Failed to convert relative date operator for ${field.name}:`, error);
+          }
+        }
+        return;
+      }
+      
+      // Handle filters with values
+      if (filterValue.value === undefined || filterValue.value === null || filterValue.value === '') {
+        if (field.filterType === 'boolean') {
+          filtersToSave[field.name] = { 
+            operator: filterValue.operator, 
+            value: filterValue.value, 
+            type: field.filterType 
+          };
+        }
+        return;
+      }
+      
+      // Process datetime fields
+      if (field.filterType === 'datetime') {
+        try {
+          const normalizedValue = normalizeDatetimeValueForSave(
+            filterValue.value, 
+            filterValue.operator
+          );
+          if (normalizedValue.start !== null || normalizedValue.end !== null) {
+            filtersToSave[field.name] = { 
+              operator: filterValue.operator, 
+              value: normalizedValue, 
+              type: field.filterType 
+            };
+          }
+        } catch (error) {
+          console.warn(`Failed to normalize datetime value for ${field.name}:`, error);
+        }
+        return;
+      }
+      
+      // Process list values
+      if (Array.isArray(filterValue.value) && filterValue.value.length > 0) {
+        let processedValue: FilterValue = filterValue.value;
+        if (isDurationField(field)) {
+          processedValue = filterValue.value.map((item: unknown) => 
+            typeof item === 'string' ? convertDurationToMilliseconds(item) : item
+          );
+        }
+        filtersToSave[field.name] = { 
+          operator: filterValue.operator, 
+          value: processedValue, 
+          type: field.filterType 
+        };
+        return;
+      }
+      
+      // Process non-array values
+      if (!Array.isArray(filterValue.value) && filterValue.value !== '') {
+        let processedValue: FilterValue = filterValue.value;
+        if (isDurationField(field) && typeof filterValue.value === 'string') {
+          processedValue = convertDurationToMilliseconds(filterValue.value);
+        }
+        filtersToSave[field.name] = { 
+          operator: filterValue.operator, 
+          value: processedValue, 
+          type: field.filterType 
+        };
+      }
+    });
+    
+    return filtersToSave;
+  }, [formData.filters]);
+
+  // Helper function to prepare sync config for saving
+  const prepareSyncConfig = useCallback((): any => {
+    const syncToSave: any = {
+      selectedStrategy: formData.sync.selectedStrategy,
+      ...formData.sync,
+    };
+    
+    // Process sync custom fields to convert duration values
+    if (connectorConfig?.config?.sync?.customFields) {
+      connectorConfig.config.sync.customFields.forEach((field: any) => {
+        if (syncToSave[field.name] !== undefined && isDurationField(field)) {
+          const value = syncToSave[field.name];
+          if (typeof value === 'string') {
+            syncToSave[field.name] = convertDurationToMilliseconds(value);
+          }
+        }
+      });
+    }
+    
+    const normalizedStrategy = String(formData.sync.selectedStrategy || '').toUpperCase();
+    if (normalizedStrategy === 'SCHEDULED') {
+      syncToSave.scheduledConfig = formData.sync.scheduledConfig || {};
+    } else if (syncToSave.scheduledConfig !== undefined) {
+      delete syncToSave.scheduledConfig;
+    }
+
+    return syncToSave;
+  }, [formData.sync, connectorConfig]);
+
+  // Helper function to prepare filters payload
+  const prepareFiltersPayload = useCallback((): any => {
+    const syncFiltersToSave = connectorConfig?.config?.filters?.sync?.schema
+      ? processFilterFields(connectorConfig.config.filters.sync.schema)
+      : {};
+    
+    const indexingFiltersToSave = connectorConfig?.config?.filters?.indexing?.schema
+      ? processFilterFields(connectorConfig.config.filters.indexing.schema)
+      : {};
+
+    const filtersPayload: any = {
+      sync: {
+        values: syncFiltersToSave,
+      },
+    };
+    if (Object.keys(indexingFiltersToSave).length > 0) {
+      filtersPayload.indexing = {
+        values: indexingFiltersToSave,
+      };
+    }
+
+    return filtersPayload;
+  }, [connectorConfig, processFilterFields]);
+
+  // Helper function to update scheduling based on sync strategy changes
+  const updateScheduling = useCallback(async (isConnectorActiveAfterSave: boolean = false) => {
+    if (!connectorConfig || !connector) return;
+
+    // Determine if connector is/will be active
+    const isActive = isConnectorActiveAfterSave || !!connector.isActive;
+    
+    // Only update scheduling if connector is or will be active
+    if (!isActive) {
+      return; // Connector is not active, no need to update scheduling
+    }
+
+    const prevStrategy = String(
+      connectorConfig?.config?.sync?.selectedStrategy || ''
+    ).toUpperCase();
+    const newStrategy = String(formData.sync.selectedStrategy || '').toUpperCase();
+
+    const prevScheduled = (connectorConfig?.config?.sync?.scheduledConfig || {}) as any;
+    const newScheduled = (formData.sync.scheduledConfig || {}) as any;
+
+    const strategyChanged = prevStrategy !== newStrategy;
+    const scheduleChanged =
+      JSON.stringify({
+        startTime: prevScheduled.startTime,
+        intervalMinutes: prevScheduled.intervalMinutes,
+        timezone: (prevScheduled.timezone || '').toUpperCase(),
+      }) !==
+      JSON.stringify({
+        startTime: newScheduled.startTime,
+        intervalMinutes: newScheduled.intervalMinutes,
+        timezone: (newScheduled.timezone || '').toUpperCase(),
+      });
+
+    try {
+      if (newStrategy === 'SCHEDULED') {
+        // Strategy is SCHEDULED - ensure schedule is applied
+        const cron = buildCronFromSchedule({
+          startTime: newScheduled.startTime,
+          intervalMinutes: newScheduled.intervalMinutes,
+          timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
+        });
+        await CrawlingManagerApi.schedule(connector.type, connector._key, {
+          scheduleConfig: {
+            scheduleType: 'custom',
+            isEnabled: true,
+            timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
+            cronExpression: cron,
+          },
+          priority: 5,
+          maxRetries: 3,
+          timeout: 300000,
+        });
+      } else if (strategyChanged && prevStrategy === 'SCHEDULED' && newStrategy !== 'SCHEDULED') {
+        // Strategy changed from SCHEDULED to something else - remove schedule
+        await CrawlingManagerApi.remove(connector.type, connector._key);
+      }
+    } catch (scheduleError) {
+      console.error('Scheduling update failed:', scheduleError);
+      // Do not block saving on scheduling issues
+    }
+  }, [connectorConfig, connector, formData.sync]);
+
   const handleSave = useCallback(async () => {
     if (!connectorConfig) return;
-
-    // Prevent saving auth or sync config when connector is active (requires re-authentication/re-initialization)
-    // Allow saving filters when connector is active (filters don't require re-authentication)
-    // enableMode is for enabling disabled connector (allows filters + sync, then toggles)
-    // syncSettingsMode is for Sync Settings button (only filters, never toggles)
-    if (connector.isActive) {
-        setSaveError('Cannot save configuration while sync is active. Please disable sync first.');
-        return;
-    }
 
     try {
       setSaving(true);
@@ -1069,16 +1276,81 @@ export const useConnectorConfig = ({
 
       const isNoAuthType = isNoneAuthType(connector.authType);
 
-      // Sync Settings mode: view-only mode (no saving allowed)
-      // This mode is only for viewing the current filters and sync configuration
-      if (syncSettingsMode) {
-        // In view-only mode, handleSave should not be called, but if it is, just close
+      // For auth-only mode, check if connector is active (auth changes require disabled connector)
+      if (authOnly && connector.isActive) {
+        setSaveError('Cannot update authentication while connector is active. Please disable the connector first.');
+        setSaving(false);
+        return;
+      }
+
+      // Auth only mode: save auth config only
+      if (authOnly) {
+        // Validate auth section
+        let authErrors: Record<string, string> = {};
+        if (!isNoAuthType) {
+          if (isCustomGoogleBusinessOAuth) {
+            if (!isBusinessGoogleOAuthValid()) {
+              authErrors = { adminEmail: adminEmailError || 'Invalid business credentials' };
+            }
+          } else if (isSharePointCertificateAuth) {
+            if (!isSharePointCertificateAuthValid()) {
+              authErrors = { certificate: 'Invalid SharePoint certificate authentication' };
+            }
+          } else {
+            authErrors = validateSection(
+              'auth',
+              connectorConfig.config.auth.schema.fields,
+              formData.auth
+            );
+          }
+        }
+
+        if (Object.keys(authErrors).length > 0) {
+          setFormErrors((prev) => ({ ...prev, auth: authErrors }));
+          setSaving(false);
+          return;
+        }
+
+        // Prepare auth config
+        let authToSave = { ...formData.auth };
+
+        // For business OAuth, merge JSON data and admin email
+        if (isCustomGoogleBusinessOAuth && jsonData) {
+          authToSave = {
+            ...authToSave,
+            ...jsonData,
+            adminEmail,
+          };
+        }
+
+        // For SharePoint certificate auth, ensure certificate and private key are included
+        if (isSharePointCertificateAuth) {
+          const certContent = certificateContent || formData.auth.certificate;
+          const keyContent = privateKeyData || formData.auth.privateKey;
+          
+          if (!certContent || !keyContent) {
+            setSaveError('Certificate and private key are required for SharePoint authentication');
+            setSaving(false);
+            return;
+          }
+
+          authToSave = {
+            ...authToSave,
+            certificate: certContent,
+            privateKey: keyContent,
+          };
+        }
+
+        // Save auth config using new endpoint
+        await ConnectorApiService.updateConnectorInstanceAuthConfig(connector._key, authToSave);
+
+        onSuccess?.();
         onClose();
         return;
       }
 
-      // Sync only mode: save filters and sync only (no toggle, connector is already active)
-      if (syncOnly) {
+      // Sync Settings mode, enable mode, or sync only mode: save filters and sync config
+      if (syncSettingsMode || enableMode || syncOnly) {
         // Validate sync section only (filters are optional)
         const syncErrors = validateSection(
           'sync',
@@ -1092,158 +1364,26 @@ export const useConnectorConfig = ({
           return;
         }
 
-        // Process filters for saving (same logic as enableMode)
-        const processFilterFields = (
-          filterSchema: { fields: FilterSchemaField[] }
-        ): Record<string, FilterValueData> => {
-          const filtersToSave: Record<string, FilterValueData> = {};
-          if (!filterSchema?.fields) return filtersToSave;
-          
-          filterSchema.fields.forEach((field) => {
-            const filterValue = formData.filters[field.name];
-            if (!filterValue?.operator) {
-              return; // Skip filters without operator
-            }
-            
-            // Convert relative date operators to absolute dates
-            if (filterValue.operator.startsWith('last_')) {
-              const converted = convertRelativeDateToAbsolute(filterValue.operator);
-              if (converted) {
-                try {
-                  const normalizedValue = normalizeDatetimeValueForSave(
-                    converted.value, 
-                    converted.operator
-                  );
-                  if (normalizedValue.start !== null || normalizedValue.end !== null) {
-                    filtersToSave[field.name] = { 
-                      operator: converted.operator, 
-                      value: normalizedValue, 
-                      type: field.filterType 
-                    };
-                  }
-                } catch (error) {
-                  console.warn(`Failed to convert relative date operator for ${field.name}:`, error);
-                }
-              }
-              return;
-            }
-            
-            // Handle filters with values
-            if (filterValue.value === undefined || filterValue.value === null || filterValue.value === '') {
-              if (field.filterType === 'boolean') {
-                filtersToSave[field.name] = { 
-                  operator: filterValue.operator, 
-                  value: filterValue.value, 
-                  type: field.filterType 
-                };
-              }
-              return;
-            }
-            
-            // Process datetime fields
-            if (field.filterType === 'datetime') {
-              try {
-                const normalizedValue = normalizeDatetimeValueForSave(
-                  filterValue.value, 
-                  filterValue.operator
-                );
-                if (normalizedValue.start !== null || normalizedValue.end !== null) {
-                  filtersToSave[field.name] = { 
-                    operator: filterValue.operator, 
-                    value: normalizedValue, 
-                    type: field.filterType 
-                  };
-                }
-              } catch (error) {
-                console.warn(`Failed to normalize datetime value for ${field.name}:`, error);
-              }
-              return;
-            }
-            
-            // Process list values
-            if (Array.isArray(filterValue.value) && filterValue.value.length > 0) {
-              let processedValue: FilterValue = filterValue.value;
-              if (isDurationField(field)) {
-                processedValue = filterValue.value.map((item: unknown) => 
-                  typeof item === 'string' ? convertDurationToMilliseconds(item) : item
-                );
-              }
-              filtersToSave[field.name] = { 
-                operator: filterValue.operator, 
-                value: processedValue, 
-                type: field.filterType 
-              };
-              return;
-            }
-            
-            // Process non-array values
-            if (!Array.isArray(filterValue.value) && filterValue.value !== '') {
-              let processedValue: FilterValue = filterValue.value;
-              if (isDurationField(field) && typeof filterValue.value === 'string') {
-                processedValue = convertDurationToMilliseconds(filterValue.value);
-              }
-              filtersToSave[field.name] = { 
-                operator: filterValue.operator, 
-                value: processedValue, 
-                type: field.filterType 
-              };
-            }
-          });
-          
-          return filtersToSave;
-        };
+        // Prepare filters and sync config using helper functions
+        const filtersPayload = prepareFiltersPayload();
+        const syncToSave = prepareSyncConfig();
 
-        const syncFiltersToSave = connectorConfig.config.filters?.sync?.schema
-          ? processFilterFields(connectorConfig.config.filters.sync.schema)
-          : {};
-        
-        const indexingFiltersToSave = connectorConfig.config.filters?.indexing?.schema
-          ? processFilterFields(connectorConfig.config.filters.indexing.schema)
-          : {};
-
-        // Prepare filters payload
-        const filtersPayload: any = {
-          sync: {
-            values: syncFiltersToSave,
-          },
-        };
-        if (Object.keys(indexingFiltersToSave).length > 0) {
-          filtersPayload.indexing = {
-            values: indexingFiltersToSave,
-          };
-        }
-
-        // Prepare sync config for update
-        const syncToSave: any = {
-          selectedStrategy: formData.sync.selectedStrategy,
-          ...formData.sync,
-        };
-        
-        // Process sync custom fields to convert duration values
-        if (connectorConfig?.config?.sync?.customFields) {
-          connectorConfig.config.sync.customFields.forEach((field: any) => {
-            if (syncToSave[field.name] !== undefined && isDurationField(field)) {
-              const value = syncToSave[field.name];
-              if (typeof value === 'string') {
-                syncToSave[field.name] = convertDurationToMilliseconds(value);
-              }
-            }
-          });
-        }
-        
-        const normalizedStrategy = String(formData.sync.selectedStrategy || '').toUpperCase();
-        if (normalizedStrategy === 'SCHEDULED') {
-          syncToSave.scheduledConfig = formData.sync.scheduledConfig || {};
-        } else if (syncToSave.scheduledConfig !== undefined) {
-          delete syncToSave.scheduledConfig;
-        }
-
-        // Save both filters and sync in a single API call (no toggle)
-        const configToSave: any = {
+        // Save filters and sync using new endpoint
+        await ConnectorApiService.updateConnectorInstanceFiltersSyncConfig(connector._key, {
           filters: filtersPayload,
           sync: syncToSave,
-        };
-        await ConnectorApiService.updateConnectorInstanceConfig(connector._key, configToSave);
+        });
+
+        // If enableMode, toggle connector to enable it
+        let connectorWillBeActive = connector.isActive;
+        if (enableMode) {
+          await ConnectorApiService.toggleConnectorInstance(connector._key, 'sync');
+          connectorWillBeActive = true; // After toggling, connector will be active
+        }
+
+        // Update scheduling after saving sync config
+        // Pass true if connector is/will be active (for enableMode or already active connectors)
+        await updateScheduling(connectorWillBeActive);
 
         // Call onSuccess to refresh connector data and update UI
         onSuccess?.();
@@ -1251,217 +1391,24 @@ export const useConnectorConfig = ({
         return;
       }
 
-      // Enable mode: save filters only, then toggle connector
-      if (enableMode) {
-        // Validate sync section only (filters are optional)
-        const syncErrors = validateSection(
-          'sync',
-          connectorConfig.config.sync.customFields,
-          formData.sync
-        );
-
-        if (Object.keys(syncErrors).length > 0) {
-          setFormErrors((prev) => ({ ...prev, sync: syncErrors }));
-          setSaving(false);
-          return;
-        }
-
-        // Process filters for saving
-        const processFilterFields = (
-          filterSchema: { fields: FilterSchemaField[] }
-        ): Record<string, FilterValueData> => {
-          const filtersToSave: Record<string, FilterValueData> = {};
-          if (!filterSchema?.fields) return filtersToSave;
-          
-          filterSchema.fields.forEach((field) => {
-            const filterValue = formData.filters[field.name];
-            if (!filterValue?.operator) {
-              return; // Skip filters without operator
-            }
-            
-            // Convert relative date operators to absolute dates
-            if (filterValue.operator.startsWith('last_')) {
-              const converted = convertRelativeDateToAbsolute(filterValue.operator);
-              if (converted) {
-                try {
-                  const normalizedValue = normalizeDatetimeValueForSave(
-                    converted.value, 
-                    converted.operator
-                  );
-                  if (normalizedValue.start !== null || normalizedValue.end !== null) {
-                    filtersToSave[field.name] = { 
-                      operator: converted.operator, 
-                      value: normalizedValue, 
-                      type: field.filterType 
-                    };
-                  }
-                } catch (error) {
-                  console.warn(`Failed to convert relative date operator for ${field.name}:`, error);
-                }
-              }
-              return;
-            }
-            
-            // Handle filters with values
-            if (filterValue.value === undefined || filterValue.value === null || filterValue.value === '') {
-              if (field.filterType === 'boolean') {
-                filtersToSave[field.name] = { 
-                  operator: filterValue.operator, 
-                  value: filterValue.value, 
-                  type: field.filterType 
-                };
-              }
-              return;
-            }
-            
-            // Process datetime fields
-            if (field.filterType === 'datetime') {
-              try {
-                const normalizedValue = normalizeDatetimeValueForSave(
-                  filterValue.value, 
-                  filterValue.operator
-                );
-                if (normalizedValue.start !== null || normalizedValue.end !== null) {
-                  filtersToSave[field.name] = { 
-                    operator: filterValue.operator, 
-                    value: normalizedValue, 
-                    type: field.filterType 
-                  };
-                }
-              } catch (error) {
-                console.warn(`Failed to normalize datetime value for ${field.name}:`, error);
-              }
-              return;
-            }
-            
-            // Process list values
-            if (Array.isArray(filterValue.value) && filterValue.value.length > 0) {
-              let processedValue: FilterValue = filterValue.value;
-              if (isDurationField(field)) {
-                processedValue = filterValue.value.map((item: unknown) => 
-                  typeof item === 'string' ? convertDurationToMilliseconds(item) : item
-                );
-              }
-              filtersToSave[field.name] = { 
-                operator: filterValue.operator, 
-                value: processedValue, 
-                type: field.filterType 
-              };
-              return;
-            }
-            
-            // Process non-array values
-            if (!Array.isArray(filterValue.value) && filterValue.value !== '') {
-              let processedValue: FilterValue = filterValue.value;
-              if (isDurationField(field) && typeof filterValue.value === 'string') {
-                processedValue = convertDurationToMilliseconds(filterValue.value);
-              }
-              filtersToSave[field.name] = { 
-                operator: filterValue.operator, 
-                value: processedValue, 
-                type: field.filterType 
-              };
-            }
-          });
-          
-          return filtersToSave;
-        };
-
-        const syncFiltersToSave = connectorConfig.config.filters?.sync?.schema
-          ? processFilterFields(connectorConfig.config.filters.sync.schema)
-          : {};
-        
-        const indexingFiltersToSave = connectorConfig.config.filters?.indexing?.schema
-          ? processFilterFields(connectorConfig.config.filters.indexing.schema)
-          : {};
-
-        // Prepare filters payload
-        const filtersPayload: any = {
-          sync: {
-            values: syncFiltersToSave,
-          },
-        };
-        if (Object.keys(indexingFiltersToSave).length > 0) {
-          filtersPayload.indexing = {
-            values: indexingFiltersToSave,
-          };
-        }
-
-        // Prepare sync config for update
-        const syncToSave: any = {
-          selectedStrategy: formData.sync.selectedStrategy,
-          ...formData.sync,
-        };
-        
-        // Process sync custom fields to convert duration values
-        if (connectorConfig?.config?.sync?.customFields) {
-          connectorConfig.config.sync.customFields.forEach((field: any) => {
-            if (syncToSave[field.name] !== undefined && isDurationField(field)) {
-              const value = syncToSave[field.name];
-              if (typeof value === 'string') {
-                syncToSave[field.name] = convertDurationToMilliseconds(value);
-              }
-            }
-          });
-        }
-        
-        const normalizedStrategy = String(formData.sync.selectedStrategy || '').toUpperCase();
-        if (normalizedStrategy === 'SCHEDULED') {
-          syncToSave.scheduledConfig = formData.sync.scheduledConfig || {};
-        } else if (syncToSave.scheduledConfig !== undefined) {
-          delete syncToSave.scheduledConfig;
-        }
-
-        // Save both filters and sync in a single API call
-        const configToSave: any = {
-          filters: filtersPayload,
-          sync: syncToSave,
-        };
-        await ConnectorApiService.updateConnectorInstanceConfig(connector._key, configToSave);
-
-        // Toggle connector to enable it (should be disabled at this point)
-        await ConnectorApiService.toggleConnectorInstance(connector._key, 'sync');
-
-        // Call onSuccess to refresh connector data and update UI
-        onSuccess?.();
-        onClose();
-        return;
-      }
-
-      // Validate instance name in create mode
+      // Create mode: only validate and save auth (skip filters and sync)
       if (isCreateMode) {
+        // Validate instance name
         const trimmedName = instanceName.trim();
         if (!trimmedName) {
           setInstanceNameError('Instance name is required');
+          setSaving(false);
           return;
         }
         if (trimmedName.length < MIN_INSTANCE_NAME_LENGTH) {
           setInstanceNameError(
             `Instance name must be at least ${MIN_INSTANCE_NAME_LENGTH} characters`
           );
+          setSaving(false);
           return;
         }
         setInstanceNameError(null);
-      }
 
-      // For business OAuth, validate admin email and JSON file
-      if (isCustomGoogleBusinessOAuth) {
-        if (!isBusinessGoogleOAuthValid()) {
-          setSaveError('Please provide valid admin email and JSON credentials file');
-          return;
-        }
-      }
-
-      // For SharePoint certificate auth, validate certificate and key
-      if (isSharePointCertificateAuth) {
-        if (!isSharePointCertificateAuthValid()) {
-          setSaveError('Please provide valid certificate and private key files for SharePoint authentication');
-          return;
-        }
-      }
-
-      // Create mode: only validate and save auth (skip filters and sync)
-      if (isCreateMode) {
         // Validate auth only
         let authErrors: Record<string, string> = {};
         if (!isNoAuthType) {
@@ -1488,15 +1435,13 @@ export const useConnectorConfig = ({
           return;
         }
 
-        // Prepare config for API - only auth in create mode
-        const configToSave: any = {
-          auth: formData.auth,
-        };
+        // Prepare auth config
+        let authToSave = { ...formData.auth };
 
-        // For business OAuth, merge JSON data and admin email into auth config
+        // For business OAuth, merge JSON data and admin email
         if (isCustomGoogleBusinessOAuth && jsonData) {
-          configToSave.auth = {
-            ...configToSave.auth,
+          authToSave = {
+            ...authToSave,
             ...jsonData,
             adminEmail,
           };
@@ -1508,23 +1453,25 @@ export const useConnectorConfig = ({
           const keyContent = privateKeyData || formData.auth.privateKey;
           
           if (!certContent || !keyContent) {
-            throw new Error('Certificate and private key are required for SharePoint authentication');
+            setSaveError('Certificate and private key are required for SharePoint authentication');
+            setSaving(false);
+            return;
           }
 
-          configToSave.auth = {
-            ...configToSave.auth,
+          authToSave = {
+            ...authToSave,
             certificate: certContent,
             privateKey: keyContent,
           };
         }
 
-        // Create new instance
+        // Create new instance with auth config
         const scope = connector.scope || 'personal';
         const created = await ConnectorApiService.createConnectorInstance(
           connector.type,
-          instanceName.trim(),
+          trimmedName,
           scope,
-          configToSave
+          { auth: authToSave }
         );
 
         onSuccess?.();
@@ -1538,7 +1485,7 @@ export const useConnectorConfig = ({
         return;
       }
 
-      // Edit mode: validate all sections (skip auth validation for 'NONE' authType)
+      // Edit mode: validate all sections and save separately
       let authErrors: Record<string, string> = {};
       if (!isNoAuthType) {
         if (isCustomGoogleBusinessOAuth) {
@@ -1567,272 +1514,62 @@ export const useConnectorConfig = ({
       setFormErrors(allErrors);
 
       if (Object.values(allErrors).some((section) => Object.keys(section).length > 0)) {
+        setSaving(false);
         return;
       }
 
+      // Save auth config if not NONE auth type
+      if (!isNoAuthType) {
+        let authToSave = { ...formData.auth };
 
-      // Prepare config for API
-      const syncToSave: any = {
-        selectedStrategy: formData.sync.selectedStrategy,
-        ...formData.sync,
-      };
-      
-      // Process sync custom fields to convert duration values
-      if (connectorConfig?.config?.sync?.customFields) {
-        connectorConfig.config.sync.customFields.forEach((field: any) => {
-          if (syncToSave[field.name] !== undefined && isDurationField(field)) {
-            const value = syncToSave[field.name];
-            if (typeof value === 'string') {
-              syncToSave[field.name] = convertDurationToMilliseconds(value);
-            }
+        // For business OAuth, merge JSON data and admin email
+        if (isCustomGoogleBusinessOAuth && jsonData) {
+          authToSave = {
+            ...authToSave,
+            ...jsonData,
+            adminEmail,
+          };
+        }
+
+        // For SharePoint certificate auth, ensure certificate and private key are included
+        if (isSharePointCertificateAuth) {
+          const certContent = certificateContent || formData.auth.certificate;
+          const keyContent = privateKeyData || formData.auth.privateKey;
+          
+          if (!certContent || !keyContent) {
+            setSaveError('Certificate and private key are required for SharePoint authentication');
+            setSaving(false);
+            return;
           }
-        });
+
+          authToSave = {
+            ...authToSave,
+            certificate: certContent,
+            privateKey: keyContent,
+          };
+        }
+
+        await ConnectorApiService.updateConnectorInstanceAuthConfig(connector._key, authToSave);
       }
-      
-      const normalizedStrategy = String(formData.sync.selectedStrategy || '').toUpperCase();
-      if (normalizedStrategy === 'SCHEDULED') {
-        syncToSave.scheduledConfig = formData.sync.scheduledConfig || {};
-      } else if (syncToSave.scheduledConfig !== undefined) {
-        delete syncToSave.scheduledConfig;
-      }
 
+      // Save filters and sync config using helper functions
+      const filtersPayload = prepareFiltersPayload();
+      const syncToSave = prepareSyncConfig();
 
-      /**
-       * Process filter fields for saving - converts values to proper format
-       */
-      const processFilterFields = (
-        filterSchema: { fields: FilterSchemaField[] }
-      ): Record<string, FilterValueData> => {
-        const filtersToSave: Record<string, FilterValueData> = {};
-        if (!filterSchema?.fields) return filtersToSave;
-        
-        filterSchema.fields.forEach((field) => {
-          const filterValue = formData.filters[field.name];
-          if (!filterValue?.operator) {
-            return; // Skip filters without operator
-          }
-          
-          // Convert relative date operators to absolute dates
-          if (filterValue.operator.startsWith('last_')) {
-            const converted = convertRelativeDateToAbsolute(filterValue.operator);
-            if (converted) {
-              try {
-                const normalizedValue = normalizeDatetimeValueForSave(
-                  converted.value, 
-                  converted.operator
-                );
-                // Only include if at least one of start or end has a value
-                if (normalizedValue.start !== null || normalizedValue.end !== null) {
-                  filtersToSave[field.name] = { 
-                    operator: converted.operator, 
-                    value: normalizedValue, 
-                    type: field.filterType 
-                  };
-                }
-              } catch (error) {
-                console.warn(`Failed to convert relative date operator for ${field.name}:`, error);
-              }
-            }
-            return;
-          }
-          
-          // Handle filters with values
-          if (filterValue.value === undefined || filterValue.value === null || filterValue.value === '') {
-            // For boolean filters, include even if value is false
-            if (field.filterType === 'boolean') {
-              filtersToSave[field.name] = { 
-                operator: filterValue.operator, 
-                value: filterValue.value, 
-                type: field.filterType 
-              };
-            }
-            return;
-          }
-          
-          // Process datetime fields
-          if (field.filterType === 'datetime') {
-            try {
-              const normalizedValue = normalizeDatetimeValueForSave(
-                filterValue.value, 
-                filterValue.operator
-              );
-              if (normalizedValue.start !== null || normalizedValue.end !== null) {
-                filtersToSave[field.name] = { 
-                  operator: filterValue.operator, 
-                  value: normalizedValue, 
-                  type: field.filterType 
-                };
-              }
-            } catch (error) {
-              console.warn(`Failed to normalize datetime value for ${field.name}:`, error);
-            }
-            return;
-          }
-          
-          // Process list values
-          if (Array.isArray(filterValue.value) && filterValue.value.length > 0) {
-            let processedValue: FilterValue = filterValue.value;
-            if (isDurationField(field)) {
-              processedValue = filterValue.value.map((item: unknown) => 
-                typeof item === 'string' ? convertDurationToMilliseconds(item) : item
-              );
-            }
-            filtersToSave[field.name] = { 
-              operator: filterValue.operator, 
-              value: processedValue, 
-              type: field.filterType 
-            };
-            return;
-          }
-          
-          // Process non-array values
-          if (!Array.isArray(filterValue.value) && filterValue.value !== '') {
-            let processedValue: FilterValue = filterValue.value;
-            if (isDurationField(field) && typeof filterValue.value === 'string') {
-              processedValue = convertDurationToMilliseconds(filterValue.value);
-            }
-            filtersToSave[field.name] = { 
-              operator: filterValue.operator, 
-              value: processedValue, 
-              type: field.filterType 
-            };
-          }
-        });
-        
-        return filtersToSave;
-      };
-
-      // Prepare filters for API - convert to the format expected by backend
-      const syncFiltersToSave = connectorConfig.config.filters?.sync?.schema
-        ? processFilterFields(connectorConfig.config.filters.sync.schema)
-        : {};
-      
-      const indexingFiltersToSave = connectorConfig.config.filters?.indexing?.schema
-        ? processFilterFields(connectorConfig.config.filters.indexing.schema)
-        : {};
-
-      const configToSave: any = {
-        auth: formData.auth,
+      await ConnectorApiService.updateConnectorInstanceFiltersSyncConfig(connector._key, {
+        filters: filtersPayload,
         sync: syncToSave,
-        filters: {
-          sync: {
-            values: syncFiltersToSave,
-          },
-          ...(Object.keys(indexingFiltersToSave).length > 0 && {
-            indexing: {
-              values: indexingFiltersToSave,
-            },
-          }),
-        },
-      };
+      });
 
-      // For business OAuth, merge JSON data and admin email into auth config
-      if (isCustomGoogleBusinessOAuth && jsonData) {
-        configToSave.auth = {
-          ...configToSave.auth,
-          ...jsonData,
-          adminEmail,
-        };
-      }
-
-      // For SharePoint certificate auth, ensure certificate and private key are included
-      if (isSharePointCertificateAuth) {
-        const certContent = certificateContent || formData.auth.certificate;
-        const keyContent = privateKeyData || formData.auth.privateKey;
-        
-        if (!certContent || !keyContent) {
-          throw new Error('Certificate and private key are required for SharePoint authentication');
-        }
-
-        configToSave.auth = {
-          ...configToSave.auth,
-          certificate: certContent,
-          privateKey: keyContent,
-        };
-      }
-
-      // Update existing instance (create mode is handled earlier)
-      await ConnectorApiService.updateConnectorInstanceConfig(connector._key, configToSave);
-
-
-      // Update scheduling if connector is already active
-      const wasActive = !!connector.isActive;
-      if (wasActive) {
-        const prevStrategy = String(
-          connectorConfig?.config?.sync?.selectedStrategy || ''
-        ).toUpperCase();
-        const newStrategy = String(formData.sync.selectedStrategy || '').toUpperCase();
-
-        const prevScheduled = (connectorConfig?.config?.sync?.scheduledConfig || {}) as any;
-        const newScheduled = (formData.sync.scheduledConfig || {}) as any;
-
-        const strategyChanged = prevStrategy !== newStrategy;
-        const scheduleChanged =
-          JSON.stringify({
-            startTime: prevScheduled.startTime,
-            intervalMinutes: prevScheduled.intervalMinutes,
-            timezone: (prevScheduled.timezone || '').toUpperCase(),
-          }) !==
-          JSON.stringify({
-            startTime: newScheduled.startTime,
-            intervalMinutes: newScheduled.intervalMinutes,
-            timezone: (newScheduled.timezone || '').toUpperCase(),
-          });
-
-        try {
-          if (strategyChanged) {
-            if (prevStrategy === 'SCHEDULED' && newStrategy !== 'SCHEDULED') {
-              // Turn off existing schedule
-              await CrawlingManagerApi.remove(connector.type, connector._key);
-            } else if (newStrategy === 'SCHEDULED') {
-              // Apply schedule with new settings
-              const cron = buildCronFromSchedule({
-                startTime: newScheduled.startTime,
-                intervalMinutes: newScheduled.intervalMinutes,
-                timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
-              });
-              await CrawlingManagerApi.schedule(connector.type, connector._key, {
-                scheduleConfig: {
-                  scheduleType: 'custom',
-                  isEnabled: true,
-                  timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
-                  cronExpression: cron,
-                },
-                priority: 5,
-                maxRetries: 3,
-                timeout: 300000,
-              });
-            }
-          } else if (newStrategy === 'SCHEDULED' && scheduleChanged) {
-            // Re-apply schedule when only the schedule parameters changed
-            const cron = buildCronFromSchedule({
-              startTime: newScheduled.startTime,
-              intervalMinutes: newScheduled.intervalMinutes,
-              timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
-            });
-            await CrawlingManagerApi.schedule(connector.type, connector._key, {
-              scheduleConfig: {
-                scheduleType: 'custom',
-                isEnabled: true,
-                timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
-                cronExpression: cron,
-              },
-              priority: 5,
-              maxRetries: 3,
-              timeout: 300000,
-            });
-          }
-        } catch (scheduleError) {
-          console.error('Scheduling update failed:', scheduleError);
-          // Do not block saving on scheduling issues
-        }
-      }
+      // Update scheduling after saving sync config
+      // Pass connector.isActive to indicate if connector is currently active
+      await updateScheduling(connector.isActive);
 
       onSuccess?.();
       onClose();
     } catch (error) {
       console.error('Error saving connector config:', error);
-      setSaveError('Failed to save configuration. Please try again.');
+      setSaveError(error?.response?.data?.detail || error?.message ||'Failed to save configuration. Please try again.');
     } finally {
       setSaving(false);
     }
@@ -1859,6 +1596,10 @@ export const useConnectorConfig = ({
     enableMode,
     syncOnly,
     syncSettingsMode,
+    authOnly,
+    prepareFiltersPayload,
+    prepareSyncConfig,
+    updateScheduling,
   ]);
 
   // Admin email change handler

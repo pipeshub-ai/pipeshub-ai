@@ -59,12 +59,10 @@ class FilterOption:
     Used for MULTISELECT and LIST filters with static or dynamic options.
 
     Args:
-        id: Unique identifier (e.g., space ID, channel ID)
-        key: Value to store in filter (e.g., space key, channel name)
+        id: Unique identifier (e.g., space ID, channel ID) - value stored in filter
         label: Display text shown in UI (e.g., space name, channel display name)
     """
     id: str
-    key: str
     label: str
 
     def to_dict(self) -> Dict[str, str]:
@@ -222,15 +220,20 @@ class SyncFilterKey(str, Enum):
     SPACE_KEYS = "space_keys"
     FOLDER_IDS = "folder_ids"
     FOLDERS = "folders"
+    CUSTOM_FOLDERS = "custom_folders"
     PROJECT_IDS = "project_ids"
+    PROJECT_KEYS = "project_keys"
     SITE_IDS = "site_ids"
+    SITE_NAMES = "site_names"
     CHANNEL_IDS = "channel_ids"
+    BOOK_IDS = "book_ids"
 
     # Content filters
     CONTENT_STATUS = "content_status"
     FILE_EXTENSIONS = "file_extensions"
     MAX_FILE_SIZE = "max_file_size"
     PAGE_IDS = "page_ids"
+    PAGE_NAMES = "page_names"
     BLOGPOST_IDS = "blogpost_ids"
 
     # User filters
@@ -252,6 +255,7 @@ class IndexingFilterKey(str, Enum):
     PROJECTS = "projects"
     SITES = "sites"
     CHANNELS = "channels"
+    LISTS = "lists"
 
     # Content types
     PAGES = "pages"
@@ -273,6 +277,10 @@ class IndexingFilterKey(str, Enum):
     PAGE_ATTACHMENTS = "page_attachments"
     BLOGPOST_COMMENTS = "blogpost_comments"
     BLOGPOST_ATTACHMENTS = "blogpost_attachments"
+    ISSUE_COMMENTS = "issue_comments"
+    ISSUE_ATTACHMENTS = "issue_attachments"
+
+    SHARED = "shared"
 
 
 # Type to operators mapping (for validation and UI)

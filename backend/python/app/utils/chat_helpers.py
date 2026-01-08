@@ -25,7 +25,7 @@ group_types = [GroupType.LIST.value,GroupType.ORDERED_LIST.value,GroupType.FORM_
 # Create a logger for this module
 logger = create_logger("chat_helpers")
 
-async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],from_tool: bool = False,from_retrieval_service: bool = False) -> List[Dict[str, Any]]:
+async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False) -> List[Dict[str, Any]]:
     flattened_results = []
     image_index = 0
     seen_chunks = set()
@@ -50,7 +50,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         meta = result.get("metadata")
 
         if virtual_record_id not in virtual_record_id_to_result:
-            await get_record(meta,virtual_record_id,virtual_record_id_to_result,blob_store,org_id)
+            await get_record(meta,virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map)
 
 
 
@@ -410,10 +410,21 @@ def extract_bounding_boxes(citation_metadata) -> List[Dict[str, float]]:
         except Exception as e:
             raise e
 
-async def get_record(meta: Dict[str, Any],virtual_record_id: str,virtual_record_id_to_result: Dict[str, Dict[str, Any]],blob_store: BlobStorage,org_id: str) -> None:
+async def get_record(meta: Dict[str, Any],virtual_record_id: str,virtual_record_id_to_result: Dict[str, Dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: Dict[str, Dict[str, Any]]=None) -> None:
     try:
         record = await blob_store.get_record_from_storage(virtual_record_id=virtual_record_id, org_id=org_id)
         if record:
+            arango_record = (virtual_to_record_map or {}).get(virtual_record_id)
+            if arango_record:
+                record["id"] = arango_record.get("_key")
+                record["org_id"] = org_id
+                record["record_name"] = arango_record.get("recordName")
+                record["record_type"] = arango_record.get("recordType")
+                record["version"] = arango_record.get("version")
+                record["origin"] = arango_record.get("origin")
+                record["connector_name"] = arango_record.get("connectorName")
+                record["weburl"] = arango_record.get("webUrl")
+
             virtual_record_id_to_result[virtual_record_id] = record
         else:
             virtual_record_id_to_result[virtual_record_id] = None

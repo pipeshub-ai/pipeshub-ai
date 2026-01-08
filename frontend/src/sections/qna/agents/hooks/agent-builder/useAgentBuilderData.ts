@@ -3,7 +3,7 @@ import { useState, useCallback, useEffect } from 'react';
 import type { Agent } from 'src/types/agent';
 import type { Connector } from 'src/sections/accountdetails/connectors/types/types';
 import { ConnectorApiService } from 'src/sections/accountdetails/connectors/services/api';
-import type { UseAgentBuilderDataReturn } from '../../types/agent';
+import type { UseAgentBuilderDataReturn, AgentBuilderError } from '../../types/agent';
 import AgentApiService from '../../services/api';
 
 export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | null): UseAgentBuilderDataReturn => {
@@ -11,11 +11,11 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
   const [availableModels, setAvailableModels] = useState<any[]>([]);
   const [availableKnowledgeBases, setAvailableKnowledgeBases] = useState<any[]>([]);
   const [activeAgentConnectors, setActiveAgentConnectors] = useState<Connector[]>([]);
-  const [activeConnectors, setActiveConnectors] = useState<Connector[]>([]);
+  const [configuredConnectors, setConfiguredConnectors] = useState<Connector[]>([]);
   const [connectorRegistry, setConnectorRegistry] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadedAgent, setLoadedAgent] = useState<Agent | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | AgentBuilderError | null>(null);
 
   // Load agent details when editing
   const loadAgentDetails = useCallback(async (agentKey: string) => {
@@ -43,14 +43,14 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
         modelsResponse, 
         kbResponse, 
         activeAgentConnectorsResponse,
-        activeConnectorsResponse,
+        configuredConnectorsResponse,
         connectorRegistryResponse
       ] = await Promise.all([
         AgentApiService.getAvailableTools(),
         AgentApiService.getAvailableModels(),
         AgentApiService.getKnowledgeBases(),
         ConnectorApiService.getActiveAgentConnectorInstances(1, 100, ''),
-        ConnectorApiService.getActiveConnectorInstances(),
+        ConnectorApiService.getConfiguredConnectorInstances(undefined, 1, 100, ''),
         ConnectorApiService.getConnectorRegistry(undefined, 1, 100, ''),
       ]);
 
@@ -59,7 +59,8 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
       setAvailableModels(models);
       setAvailableKnowledgeBases(kbResponse?.knowledgeBases || []);
       setActiveAgentConnectors(activeAgentConnectorsResponse?.connectors || []);
-      setActiveConnectors(activeConnectorsResponse || []);
+      const connectorsArray = configuredConnectorsResponse?.connectors;
+      setConfiguredConnectors(Array.isArray(connectorsArray) ? connectorsArray : []);
       setConnectorRegistry(connectorRegistryResponse?.connectors || []);
       
       // If editing an agent, load the agent details after basic resources
@@ -91,7 +92,7 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
     availableModels,
     availableKnowledgeBases,
     activeAgentConnectors,
-    activeConnectors,
+    configuredConnectors,
     connectorRegistry,
     loading,
     loadedAgent,

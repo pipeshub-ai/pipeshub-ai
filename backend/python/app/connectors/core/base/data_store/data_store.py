@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from logging import Logger
-from typing import TYPE_CHECKING, AsyncContextManager, List, Optional
+from typing import TYPE_CHECKING, AsyncContextManager, Dict, List, Optional
 
 from app.models.entities import (
     Anyone,
@@ -65,6 +65,21 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_record_by_issue_key(self, connector_id: str, issue_key: str) -> Optional[Record]:
+        """Get record by Jira issue key (e.g., PROJ-123) by searching weburl pattern."""
+        pass
+
+    @abstractmethod
+    async def get_records_by_parent(
+        self,
+        connector_id: str,
+        parent_external_record_id: str,
+        record_type: Optional[str] = None
+    ) -> List[Record]:
+        """Get all child records for a parent record by parent_external_record_id. Optionally filter by record_type."""
+        pass
+
+    @abstractmethod
     async def get_records_by_status(self, org_id: str, connector_id: str, status_filters: List[str], limit: Optional[int] = None, offset: int = 0) -> List[Record]:
         """Get records by their indexing status with pagination support. Returns typed Record instances."""
         pass
@@ -120,6 +135,10 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def delete_record_group_by_external_id(self, connector_id: str, external_id: str) -> None:
+        pass
+
+    @abstractmethod
+    async def delete_user_group_by_id(self, group_id: str) -> None:
         pass
 
     @abstractmethod
@@ -192,6 +211,18 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def update_sync_point(self, sync_point: "SyncPoint") -> None:
+        pass
+
+    @abstractmethod
+    async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> List[Dict]:
+        pass
+
+    @abstractmethod
+    async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> Optional[Dict]:
+        pass
+
+    @abstractmethod
+    async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> None:
         pass
 
 

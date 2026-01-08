@@ -40,6 +40,8 @@ import {
   getConnectorInstance,
   getConnectorInstanceConfig,
   updateConnectorInstanceConfig,
+  updateConnectorInstanceAuthConfig,
+  updateConnectorInstanceFiltersSyncConfig,
   deleteConnectorInstance,
   updateConnectorInstanceName,
   getOAuthAuthorizationUrl,
@@ -131,6 +133,32 @@ const updateConnectorInstanceConfigSchema = z.object({
     sync: z.any().optional(),
     filters: z.any().optional(),
     baseUrl: z.string().optional(),
+  }),
+  params: z.object({
+    connectorId: z.string().min(1, 'Connector ID is required'),
+  }),
+});
+
+/**
+ * Schema for updating connector instance auth configuration
+ */
+const updateConnectorInstanceAuthConfigSchema = z.object({
+  body: z.object({
+    auth: z.any(),
+    baseUrl: z.string().optional(),
+  }),
+  params: z.object({
+    connectorId: z.string().min(1, 'Connector ID is required'),
+  }),
+});
+
+/**
+ * Schema for updating connector instance filters and sync configuration
+ */
+const updateConnectorInstanceFiltersSyncConfigSchema = z.object({
+  body: z.object({
+    sync: z.any().optional(),
+    filters: z.any().optional(),
   }),
   params: z.object({
     connectorId: z.string().min(1, 'Connector ID is required'),
@@ -400,6 +428,30 @@ export function createConnectorRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateConnectorInstanceConfigSchema),
     updateConnectorInstanceConfig(config)
+  );
+
+  /**
+   * PUT /instances/:connectorId/config/auth
+   * Update authentication configuration for a connector instance
+   */
+  router.put(
+    '/:connectorId/config/auth',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(updateConnectorInstanceAuthConfigSchema),
+    updateConnectorInstanceAuthConfig(config)
+  );
+
+  /**
+   * PUT /instances/:connectorId/config/filters-sync
+   * Update filters and sync configuration for a connector instance
+   */
+  router.put(
+    '/:connectorId/config/filters-sync',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(updateConnectorInstanceFiltersSyncConfigSchema),
+    updateConnectorInstanceFiltersSyncConfig(config)
   );
 
   /**

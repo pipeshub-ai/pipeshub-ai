@@ -32,12 +32,14 @@ class DoclingProcessor():
             InputFormat.MD: MarkdownFormatOption(),
         })
 
-    async def parse_document(self, doc_name: str, content: bytes) -> DoclingDocument:
+    async def parse_document(self, doc_name: str, content: bytes | BytesIO) -> DoclingDocument:
         """Parse document and return raw Docling result (no block conversion).
 
         This is the first phase of document processing - pure parsing without LLM calls.
         """
-        stream = BytesIO(content)
+        # Handle both bytes and BytesIO objects
+        stream = content if isinstance(content, BytesIO) else BytesIO(content)
+
         source = DocumentStream(name=doc_name, stream=stream)
         conv_res: ConversionResult = await asyncio.to_thread(self.converter.convert, source)
         if conv_res.status.value != SUCCESS_STATUS:
