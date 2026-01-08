@@ -71,6 +71,7 @@ export interface Metadata {
   sheetName?:string;
   _collection_name: string;
   webUrl?:string;
+  previewRenderable?: boolean;
 }
 
 // The Citation interface as specified

@@ -36,6 +36,11 @@ import {
 
 import type { CustomCitation } from 'src/types/chat-bot';
 import type { Record } from 'src/types/chat-message';
+import {
+  extractCleanTextFragment,
+  addTextFragmentToUrl,
+} from 'src/sections/knowledgebase/utils/utils';
+
 import { useConnectors } from '../../../accountdetails/connectors/context';
 
 // File type configuration with modern icons
@@ -350,7 +355,7 @@ const FileCard = React.memo(
               justifyContent: 'flex-end',
             }}
           >
-            {file.extension && isDocViewable(file.extension) && (
+            {file.extension && isDocViewable(file.extension) && file.citation?.metadata?.previewRenderable !== false && (
               <Button
                 size="small"
                 variant="text"
@@ -501,18 +506,63 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
     });
   }, []);
 
-  const handleViewDocument = useCallback((file: FileInfo) => {
-    if (file.webUrl) {
-      window.open(file.webUrl, '_blank', 'noopener,noreferrer');
+  // Helper function to get webUrl with text fragment (similar to getWebUrl in citations-hover-card.tsx)
+  const getWebUrlWithFragment = useCallback((citation: CustomCitation): string | null => {
+    try {
+      let webUrl = citation?.metadata?.webUrl;
+      if (!webUrl) {
+        return null;
+      }
+
+      if (citation?.metadata?.origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
+        const baseUrl = `${window.location.protocol}//${window.location.host}`;
+        webUrl = baseUrl + webUrl;
+      }
+
+      // Check if blockText exists and is not empty before adding text fragment
+      const blockText = citation?.metadata?.blockText;
+      if (blockText && typeof blockText === 'string' && blockText.trim().length > 0) {
+        const textFragment = extractCleanTextFragment(blockText, 5);
+        if (textFragment) {
+          return addTextFragmentToUrl(webUrl, textFragment);
+        }
+      }
+
+      return webUrl;
+    } catch (error) {
+      console.warn('Error accessing webUrl:', error);
+      return null;
     }
   }, []);
 
+  const handleViewDocument = useCallback((file: FileInfo) => {
+    // Check if previewRenderable is false - if so, open webUrl instead of viewer
+    if (file.citation?.metadata?.previewRenderable === false) {
+      const webUrl = getWebUrlWithFragment(file.citation);
+      if (webUrl) {
+        window.open(webUrl, '_blank', 'noopener,noreferrer');
+      }
+      return;
+    }
+    if (file.webUrl) {
+      window.open(file.webUrl, '_blank', 'noopener,noreferrer');
+    }
+  }, [getWebUrlWithFragment]);
+
   const handleViewCitations = useCallback(
     (file: FileInfo) => {
+      // Check if previewRenderable is false - if so, open webUrl instead of viewer
+      if (file.citation?.metadata?.previewRenderable === false) {
+        const webUrl = getWebUrlWithFragment(file.citation);
+        if (webUrl) {
+          window.open(webUrl, '_blank', 'noopener,noreferrer');
+        }
+        return;
+      }
       const recordCitations = aggregatedCitations[file.recordId] || [file.citation];
       onViewPdf('', file.citation, recordCitations, false);
     },
-    [aggregatedCitations, onViewPdf]
+    [aggregatedCitations, onViewPdf, getWebUrlWithFragment]
   );
 
   const handleViewRecord = useCallback(
@@ -533,11 +583,20 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
         const recordCitations = aggregatedCitations[recordId] || [];
         if (recordCitations.length > 0) {
           const citation = recordCitations[0];
+          // Check if previewRenderable is false - if so, open webUrl instead of viewer
+          if (citation?.metadata?.previewRenderable === false) {
+            const webUrl = getWebUrlWithFragment(citation);
+            if (webUrl) {
+              window.open(webUrl, '_blank', 'noopener,noreferrer');
+            }
+            resolve();
+            return;
+          }
           onViewPdf('', citation, recordCitations, false);
           resolve();
         }
       }),
-    [aggregatedCitations, onViewPdf]
+    [aggregatedCitations, onViewPdf, getWebUrlWithFragment]
   );
 
   // Don't render if no citations
@@ -871,6 +930,14 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                           onClick={(e) => {
                             e.stopPropagation();
                             const firstCitation = recordCitations[0];
+                            // Check if previewRenderable is false - if so, open webUrl instead of viewer
+                            if (firstCitation?.metadata?.previewRenderable === false) {
+                              const webUrl = getWebUrlWithFragment(firstCitation);
+                              if (webUrl) {
+                                window.open(webUrl, '_blank', 'noopener,noreferrer');
+                              }
+                              return;
+                            }
                             if (firstCitation?.metadata?.webUrl) {
                               window.open(
                                 firstCitation.metadata.webUrl,
@@ -1002,8 +1069,19 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                         key={citation._id}
                         onClick={(e) => {
                           e.stopPropagation();
+                          // Check if previewRenderable is false - if so, open webUrl instead of viewer
+                          if (citation.metadata?.previewRenderable === false) {
+                            const webUrl = getWebUrlWithFragment(citation);
+                            if (webUrl) {
+                              window.open(webUrl, '_blank', 'noopener,noreferrer');
+                            }
+                            return;
+                          }
                           if (!citation.metadata?.extension && citation.metadata?.webUrl) {
-                            window.open(citation.metadata.webUrl, '_blank', 'noopener,noreferrer');
+                            const webUrl = getWebUrlWithFragment(citation);
+                            if (webUrl) {
+                              window.open(webUrl, '_blank', 'noopener,noreferrer');
+                            }
                             return;
                           }
                           if (citation.metadata?.recordId) {

@@ -41,6 +41,8 @@ export interface DocumentMetadata {
   sheetName?: string;
   _id: string;
   _collection_name: string;
+  webUrl?: string;
+  previewRenderable?: boolean;
 }
 
 export interface DocumentContent {

@@ -19,6 +19,7 @@ import MarkdownViewer from '../qna/chatbot/components/markdown-highlighter';
 import { createScrollableContainerStyle } from '../qna/chatbot/utils/styles/scrollbar';
 import { getConnectorPublicUrl } from '../accountdetails/account-settings/services/utils/services-configuration-service';
 import { useConnectors } from '../accountdetails/connectors/context';
+import { extractCleanTextFragment, addTextFragmentToUrl } from './utils/utils';
 
 import type { Filters } from './types/knowledge-base';
 import type { PipesHub, SearchResult, AggregatedDocument } from './types/search-response';
@@ -244,11 +245,69 @@ export default function KnowledgeBaseSearch() {
     }
   };
 
+  // Helper function to get webUrl with text fragment (similar to handleRecordClick in knowledge-search.tsx)
+  const getWebUrlWithFragment = (
+    record: PipesHub.Record | undefined,
+    recordCitation: SearchResult | undefined
+  ): string | null => {
+    let webUrl: string | undefined;
+
+    // Prefer webUrl from record, fallback to citation metadata
+    if (record?.webUrl) {
+      webUrl = record.webUrl;
+    } else if (recordCitation?.metadata?.webUrl) {
+      webUrl = recordCitation.metadata.webUrl;
+    }
+
+    if (!webUrl) return null;
+
+    // Handle relative URLs for UPLOAD origin
+    if (record?.origin === 'UPLOAD' && !webUrl.startsWith('http')) {
+      const baseUrl = `${window.location.protocol}//${window.location.host}`;
+      webUrl = baseUrl + webUrl;
+    }
+
+    // Add text fragment if blockText is available (preferred) or content as fallback
+    // Similar to how citations-hover-card.tsx handles it
+    const blockText = recordCitation?.metadata?.blockText;
+    const content = recordCitation?.content;
+    
+    let textForFragment: string | undefined;
+    if (blockText && typeof blockText === 'string' && blockText.trim().length > 0) {
+      textForFragment = blockText;
+    } else if (content && typeof content === 'string' && content.trim().length > 0) {
+      textForFragment = content;
+    }
+
+    if (textForFragment) {
+      const textFragment = extractCleanTextFragment(textForFragment, 5);
+      if (textFragment) {
+        webUrl = addTextFragmentToUrl(webUrl, textFragment);
+      }
+    }
+
+    return webUrl;
+  };
+
   const viewCitations = async (
     recordId: string,
     extension: string,
     recordCitation?: SearchResult
   ): Promise<void> => {
+    // Check if previewRenderable is false - if so, open webUrl instead of viewer
+    const previewRenderable = recordCitation?.metadata?.previewRenderable ?? 
+                               (recordsMap[recordId] as any)?.previewRenderable;
+    
+    if (previewRenderable === false) {
+      const record = recordsMap[recordId];
+      const webUrl = getWebUrlWithFragment(record, recordCitation);
+      
+      if (webUrl) {
+        window.open(webUrl, '_blank', 'noopener,noreferrer');
+      }
+      return;
+    }
+
     // Reset all document type states
     setIsPdf(false);
     setIsExcel(false);

@@ -22,6 +22,7 @@ import pptIcon from '@iconify-icons/vscode-icons/file-type-powerpoint';
 import txtIcon from '@iconify-icons/vscode-icons/file-type-text';
 import websiteIcon from '@iconify-icons/mdi/web';
 import ticketIcon from '@iconify-icons/mdi/ticket-outline';
+import linkIcon from '@iconify-icons/mdi/open-in-new';
 
 import {
   Box,
@@ -49,7 +50,7 @@ import TextViewer from '../qna/chatbot/components/text-highlighter';
 import MarkdownViewer from '../qna/chatbot/components/markdown-highlighter';
 import { KnowledgeBaseAPI } from './services/api';
 import ImageHighlighter from '../qna/chatbot/components/image-highlighter';
-import { getExtensionFromMimeType } from './utils/utils';
+import { getExtensionFromMimeType} from './utils/utils';
 
 const MAX_FILE_SIZE_MB = 10; // 10MB
 
@@ -499,6 +500,26 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
     : getExtensionFromMimeType(mimeType || '');
   const recordTypeForDisplay = recordType || 'FILE';
 
+  // Helper function to get webUrl with text fragment (similar to other components)
+  const getWebUrl = useCallback((): string | null => {
+    try {
+      let webUrl = record.webUrl;
+      if (!webUrl) {
+        return null;
+      }
+
+      if (record.origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
+        const baseUrl = `${window.location.protocol}//${window.location.host}`;
+        webUrl = baseUrl + webUrl;
+      }
+
+      return webUrl;
+    } catch (error) {
+      console.warn('Error accessing webUrl:', error);
+      return null;
+    }
+  }, [record]);
+
   const handleDownload = async () => {
     try {
       setIsDownloading(true);
@@ -517,6 +538,21 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
   };
 
   const viewDocument = async (): Promise<void> => {
+    // Check if previewRenderable is false - if so, open webUrl instead of viewer
+    if (record.previewRenderable === false) {
+      const webUrl = getWebUrl();
+      if (webUrl) {
+        window.open(webUrl, '_blank', 'noopener,noreferrer');
+      } else {
+        setSnackbar({
+          open: true,
+          message: 'Unable to open document. URL not available.',
+          severity: 'warning',
+        });
+      }
+      return;
+    }
+
     // Start with loading phase
     setViewerState((prev) => ({
       ...prev,
@@ -857,8 +893,8 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
             )}
           </Tooltip>
 
-          {/* View Document Button */}
-          {extension && (
+          {/* View Document Button - Only show if previewRenderable is not false */}
+          {extension && record.previewRenderable !== false && (
             <Tooltip
               title={recordTypeForDisplay === 'MAIL' ? 'Preview email' : 'Preview document'}
               arrow
@@ -876,6 +912,34 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
                 disabled={viewerState.phase === 'loading'}
               >
                 <Icon icon={eyeIcon} width={24} />
+              </IconButton>
+            </Tooltip>
+          )}
+          {/* Open in New Tab Button - Show if previewRenderable is false */}
+          {extension && record.previewRenderable === false && (
+            <Tooltip title="Open in new tab" arrow placement="top">
+              <IconButton
+                onClick={() => {
+                  const webUrl = getWebUrl();
+                  if (webUrl) {
+                    window.open(webUrl, '_blank', 'noopener,noreferrer');
+                  } else {
+                    setSnackbar({
+                      open: true,
+                      message: 'Unable to open document. URL not available.',
+                      severity: 'warning',
+                    });
+                  }
+                }}
+                sx={{
+                  color: 'primary.main',
+                  '&:hover': {
+                    backgroundColor: 'primary.light',
+                    color: 'white',
+                  },
+                }}
+              >
+                <Icon icon={linkIcon} width={24} />
               </IconButton>
             </Tooltip>
           )}
