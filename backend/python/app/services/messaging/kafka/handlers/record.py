@@ -12,6 +12,7 @@ from app.config.constants.arangodb import (
     EventTypes,
     ExtensionTypes,
     MimeTypes,
+    OriginTypes,
     ProgressStatus,
     RecordTypes,
 )
@@ -153,13 +154,32 @@ class RecordEventHandler(BaseEventService):
                 return True
 
             if event_type == EventTypes.UPDATE_RECORD.value:
-                # await self.scheduler.schedule_event({"eventType": event_type, "payload": payload})
-                # self.logger.info(f"Scheduled update for record {record_id}")
                 await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
 
             if record is None:
                 self.logger.error(f"❌ Record {record_id} not found in database")
                 return False
+
+            doc = dict(record)
+
+            if event_type == EventTypes.NEW_RECORD.value and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
+                self.logger.info(f"🔍 Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")
+                return True
+
+            # Check if record is from a connector and if the connector is active
+            if event_type == EventTypes.NEW_RECORD.value:
+                connector_id = record.get("connectorId")
+                origin = record.get("origin")
+                if connector_id and origin == OriginTypes.CONNECTOR.value:
+                    connector_instance = await self.event_processor.arango_service.get_document(
+                        connector_id, CollectionNames.APPS.value
+                    )
+                    if connector_instance and not connector_instance.get("isActive", True):
+                        self.logger.info(
+                            f"⏭️ Skipping indexing for record {record_id}: "
+                            f"connector instance {connector_id} is inactive"
+                        )
+                        return True
 
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
@@ -168,27 +188,21 @@ class RecordEventHandler(BaseEventService):
             if mime_type == "unknown" or not mime_type:
                 mime_type = record.get("mimeType") or "unknown"
 
-            if extension is None and mime_type != "text/gmail_content":
-                extension = payload.get("extension", None)
-                if extension is None:
-                    record_name = payload.get("recordName")
-                    if record_name and "." in record_name:
-                        extension = payload["recordName"].split(".")[-1]
-
             if (extension is None or extension == "unknown") and mime_type is not None and mime_type != "unknown":
                 derived_extension = get_extension_from_mimetype(mime_type)
                 if derived_extension:
                     extension = derived_extension
 
+            if extension == "unknown" and mime_type != "text/gmail_content":
+                record_name = payload.get("recordName")
+                if record_name and "." in record_name:
+                    extension = record_name.split(".")[-1]
+
             self.logger.info("🚀 Checking for mime_type")
             self.logger.info("🚀 mime_type: %s", mime_type)
             self.logger.info("🚀 extension: %s", extension)
 
-            doc = dict(record)
 
-            if event_type == EventTypes.NEW_RECORD.value and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
-                self.logger.info(f"🔍 Embeddings already exist for record {record_id} with virtual_record_id {virtual_record_id}")
-                return True
 
             supported_mime_types = [
                 MimeTypes.GMAIL.value,
@@ -203,8 +217,15 @@ class RecordEventHandler(BaseEventService):
                 MimeTypes.JPEG.value,
                 MimeTypes.WEBP.value,
                 MimeTypes.SVG.value,
-                MimeTypes.HEIC.value,
-                MimeTypes.HEIF.value,
+                MimeTypes.PDF.value,
+                MimeTypes.DOCX.value,
+                MimeTypes.DOC.value,
+                MimeTypes.XLSX.value,
+                MimeTypes.XLS.value,
+                MimeTypes.CSV.value,
+                MimeTypes.PPTX.value,
+                MimeTypes.PPT.value,
+                MimeTypes.MDX.value,
             ]
 
             supported_extensions = [

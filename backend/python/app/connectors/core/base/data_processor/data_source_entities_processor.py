@@ -36,6 +36,16 @@ from app.services.messaging.kafka.config.kafka_config import KafkaProducerConfig
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+ARANGO_NODE_ID_PARTS = 2 # ArangoDB node IDs are in format "collection/id"
+
+# Permission hierarchy for comparing and upgrading permissions
+# Higher number = higher permission level
+PERMISSION_HIERARCHY = {
+    "READER": 1,
+    "COMMENTER": 2,
+    "WRITER": 3,
+    "OWNER": 4,
+}
 
 @dataclass
 class RecordGroupWithPermissions:
@@ -89,7 +99,8 @@ class DataSourceEntitiesProcessor:
             orgs = await tx_store.get_all_orgs()
             if not orgs:
                 raise Exception("No organizations found in the database. Cannot initialize DataSourceEntitiesProcessor.")
-            self.org_id = orgs[0]["_key"]
+            # Use backward-compatible field access
+            self.org_id = orgs[0].get("id", orgs[0].get("_key"))
 
     def _create_placeholder_parent_record(
         self,
@@ -123,8 +134,9 @@ class DataSourceEntitiesProcessor:
 
         # Map RecordType to appropriate Record class
         if parent_record_type == RecordType.FILE:
+            file_params = {k: v for k, v in base_params.items() if k != "mime_type"}
             return FileRecord(
-                **base_params,
+                **file_params,
                 is_file=False,
                 extension=None,
                 mime_type=MimeTypes.FOLDER.value,
@@ -213,7 +225,9 @@ class DataSourceEntitiesProcessor:
         try:
             for permission in permissions:
                 # Permission edges: Entity (User/Group) → Record
-                to_collection = f"{CollectionNames.RECORDS.value}/{record.id}"
+                to_id = record.id
+                to_collection = CollectionNames.RECORDS.value
+                from_id = None
                 from_collection = None
 
                 if permission.entity_type == EntityType.USER.value:
@@ -226,7 +240,8 @@ class DataSourceEntitiesProcessor:
                             user = await self._create_external_user(permission.email, record.connector_id, record.connector_name, tx_store)
 
                     if user:
-                        from_collection = f"{CollectionNames.USERS.value}/{user.id}"
+                        from_id = user.id
+                        from_collection = CollectionNames.USERS.value
 
                 elif permission.entity_type == EntityType.GROUP.value:
                     user_group = None
@@ -238,7 +253,8 @@ class DataSourceEntitiesProcessor:
                         )
 
                     if user_group:
-                        from_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
+                        from_id = user_group.id
+                        from_collection = CollectionNames.GROUPS.value
                     else:
                         self.logger.warning(f"User group with external ID {permission.external_id} not found in database")
                         continue
@@ -247,26 +263,31 @@ class DataSourceEntitiesProcessor:
                     if permission.external_id:
                         user_role = await tx_store.get_app_role_by_external_id(external_id=permission.external_id, connector_id=record.connector_id)
                     if user_role:
-                        from_collection = f"{CollectionNames.ROLES.value}/{user_role.id}"
+                        from_id = user_role.id
+                        from_collection = CollectionNames.ROLES.value
                     else:
                         self.logger.warning(f"User role with external ID {permission.external_id} for {record.connector_name} and connector_id {record.connector_id} not found in database")
                         continue
                 elif permission.entity_type == EntityType.ORG.value:
-                    from_collection = f"{CollectionNames.ORGS.value}/{self.org_id}"
+                    from_id = self.org_id
+                    from_collection = CollectionNames.ORGS.value
 
                 # elif permission.entity_type == EntityType.DOMAIN.value:
                 #     domain = await tx_store.get_domain_by_external_id(permission.external_id)
                 #     if domain:
-                #         from_collection = f"{CollectionNames.DOMAINS.value}/{domain.id}"
+                #         from_id = domain.id
+                #         from_collection = CollectionNames.DOMAINS.value
 
                 # elif permission.entity_type == EntityType.ANYONE.value:
-                #     from_collection = f"{CollectionNames.ANYONE.value}"
+                #     from_id = None  # Anyone doesn't have an ID
+                #     from_collection = CollectionNames.ANYONE.value
 
                 # elif permission.entity_type == EntityType.ANYONE_WITH_LINK.value:
-                #     from_collection = f"{CollectionNames.ANYONE_WITH_LINK.value}"
+                #     from_id = None  # Anyone with link doesn't have an ID
+                #     from_collection = CollectionNames.ANYONE_WITH_LINK.value
 
-                if from_collection:
-                    record_permissions.append(permission.to_arango_permission(from_collection, to_collection))
+                if from_id and from_collection:
+                    record_permissions.append(permission.to_arango_permission(from_id, from_collection, to_id, to_collection))
 
             if record_permissions:
                 await tx_store.batch_create_edges(
@@ -302,13 +323,13 @@ class DataSourceEntitiesProcessor:
         self.logger.info(f"Starting permission update for record: {record.record_name} ({record.id})")
 
 
-        record_node_id = f"{CollectionNames.RECORDS.value}/{record.id}"
 
         try:
             async with self.data_store_provider.transaction() as tx_store:
                 # Step 1: Delete all existing permission edges that point TO this record.
                 deleted_count = await tx_store.delete_edges_to(
-                    to_key=record_node_id,
+                    to_id=record.id,
+                    to_collection=CollectionNames.RECORDS.value,
                     collection=CollectionNames.PERMISSION.value
                 )
                 self.logger.info(f"Deleted {deleted_count} old permission edge(s) for record: {record.id}")
@@ -329,9 +350,14 @@ class DataSourceEntitiesProcessor:
                     record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id,
                                                                       external_id=record.external_record_group_id)
                     if record_group:
-                        to_key = f"{CollectionNames.RECORD_GROUPS.value}/{record_group.id}"
-                        from_key = f"{CollectionNames.RECORDS.value}/{record.id}"
-                        await tx_store.delete_edge(from_key=from_key, to_key=to_key, collection=CollectionNames.INHERIT_PERMISSIONS.value)
+                        # Delete the INHERIT_PERMISSIONS edge
+                        await tx_store.delete_edge(
+                            from_id=record.id,
+                            from_collection=CollectionNames.RECORDS.value,
+                            to_id=record_group.id,
+                            to_collection=CollectionNames.RECORD_GROUPS.value,
+                            collection=CollectionNames.INHERIT_PERMISSIONS.value
+                        )
                 else:
                     self.logger.info(f"No new permissions to add for record: {record.id}")
 
@@ -496,15 +522,21 @@ class DataSourceEntitiesProcessor:
                         record_group.updated_at = get_epoch_timestamp_in_ms()
 
                         # To Delete the previously existing edges to record group and create new permissions
-                        await tx_store.delete_edges_to(to_key=f"{CollectionNames.RECORD_GROUPS.value}/{record_group.id}", collection=CollectionNames.PERMISSION.value)
+                        await tx_store.delete_edges_to(
+                            to_id=record_group.id,
+                            to_collection=CollectionNames.RECORD_GROUPS.value,
+                            collection=CollectionNames.PERMISSION.value
+                        )
 
                     # 1. Upsert the record group document
                     await tx_store.batch_upsert_record_groups([record_group])
 
                     # 2. Create the BELONGS_TO edge for the organization
                     org_relation = {
-                        "_from": f"{CollectionNames.RECORD_GROUPS.value}/{record_group.id}",
-                        "_to": f"{CollectionNames.ORGS.value}/{self.org_id}",
+                        "from_id": record_group.id,
+                        "from_collection": CollectionNames.RECORD_GROUPS.value,
+                        "to_id": self.org_id,
+                        "to_collection": CollectionNames.ORGS.value,
                         "createdAtTimestamp": record_group.created_at,
                         "updatedAtTimestamp": record_group.updated_at,
                         "entityType": "ORGANIZATION",
@@ -526,8 +558,10 @@ class DataSourceEntitiesProcessor:
 
                             # Define the edge document from child to parent RecordGroup
                             parent_relation = {
-                                "_from": f"{CollectionNames.RECORD_GROUPS.value}/{record_group.id}",
-                                "_to": f"{CollectionNames.RECORD_GROUPS.value}/{parent_record_group.id}",
+                                "from_id": record_group.id,
+                                "from_collection": CollectionNames.RECORD_GROUPS.value,
+                                "to_id": parent_record_group.id,
+                                "to_collection": CollectionNames.RECORD_GROUPS.value,
                                 "createdAtTimestamp": record_group.created_at,
                                 "updatedAtTimestamp": record_group.updated_at,
                                 "entityType": "KB",
@@ -557,9 +591,11 @@ class DataSourceEntitiesProcessor:
                         continue
 
                     record_group_permissions = []
-                    to_collection = f"{CollectionNames.RECORD_GROUPS.value}/{record_group.id}"
+                    to_id = record_group.id
+                    to_collection = CollectionNames.RECORD_GROUPS.value
 
                     for permission in permissions:
+                        from_id = None
                         from_collection = None
 
                         if permission.entity_type == EntityType.USER:
@@ -568,7 +604,8 @@ class DataSourceEntitiesProcessor:
                                 user = await tx_store.get_user_by_email(permission.email)
 
                             if user:
-                                from_collection = f"{CollectionNames.USERS.value}/{user.id}"
+                                from_id = user.id
+                                from_collection = CollectionNames.USERS.value
                             else:
                                 self.logger.warning(f"Could not find user with email {permission.email} for RecordGroup permission.")
 
@@ -581,7 +618,8 @@ class DataSourceEntitiesProcessor:
                                 )
 
                             if user_group:
-                                from_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
+                                from_id = user_group.id
+                                from_collection = CollectionNames.GROUPS.value
                             else:
                                 self.logger.warning(f"Could not find group with external_id {permission.external_id} for RecordGroup permission.")
 
@@ -594,17 +632,19 @@ class DataSourceEntitiesProcessor:
                                 )
 
                             if user_role:
-                                from_collection = f"{CollectionNames.ROLES.value}/{user_role.id}"
+                                from_id = user_role.id
+                                from_collection = CollectionNames.ROLES.value
                             else:
                                 self.logger.warning(f"Could not find role with external_id {permission.external_id} for RecordGroup permission.")
                         # (The ORG case is no longer needed here as it's handled by BELONGS_TO)
                         # Update adding ORG permission to allow fetching of records via record groups
                         elif permission.entity_type == EntityType.ORG:
-                            from_collection = f"{CollectionNames.ORGS.value}/{self.org_id}"
+                            from_id = self.org_id
+                            from_collection = CollectionNames.ORGS.value
 
-                        if from_collection:
+                        if from_id and from_collection:
                             record_group_permissions.append(
-                                permission.to_arango_permission(from_collection, to_collection)
+                                permission.to_arango_permission(from_id, from_collection, to_id, to_collection)
                             )
 
                     # Batch create (upsert) all permission edges for this record group
@@ -697,7 +737,11 @@ class DataSourceEntitiesProcessor:
                         user_group.updated_at = get_epoch_timestamp_in_ms()
 
                         # To Delete the previously existing edges to user group and create new permissions
-                        await tx_store.delete_edges_to(to_key=f"{CollectionNames.GROUPS.value}/{user_group.id}", collection=CollectionNames.PERMISSION.value)
+                        await tx_store.delete_edges_to(
+                            to_id=user_group.id,
+                            to_collection=CollectionNames.GROUPS.value,
+                            collection=CollectionNames.PERMISSION.value
+                        )
 
                     # 1. Upsert the user group document
                     # (This uses batch_upsert_user_groups and the to_arango... method)
@@ -706,10 +750,10 @@ class DataSourceEntitiesProcessor:
 
                     user_group_permissions = []
                     # Set the 'to' side of the edge to be this user group
-                    to_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
+                    to_id = user_group.id
+                    to_collection = CollectionNames.GROUPS.value
 
                     for member in members:
-                        from_collection = None
                         user = None
                         if member.email:
                             # Find the user's internal DB ID
@@ -725,10 +769,11 @@ class DataSourceEntitiesProcessor:
                             type=PermissionType.READ,
                             entity_type=EntityType.USER
                         )
-                        from_collection = f"{CollectionNames.USERS.value}/{user.id}"
+                        from_id = user.id
+                        from_collection = CollectionNames.USERS.value
 
                         user_group_permissions.append(
-                            permission.to_arango_permission(from_collection, to_collection)
+                            permission.to_arango_permission(from_id, from_collection, to_id, to_collection)
                         )
 
                     # Batch create (upsert) all permission edges for this user group
@@ -776,7 +821,11 @@ class DataSourceEntitiesProcessor:
                         role.updated_at = get_epoch_timestamp_in_ms()
 
                         # To Delete the previously existing edges to app role and create new permissions
-                        await tx_store.delete_edges_to(to_key=f"{CollectionNames.ROLES.value}/{role.id}", collection=CollectionNames.PERMISSION.value)
+                        await tx_store.delete_edges_to(
+                            to_id=role.id,
+                            to_collection=CollectionNames.ROLES.value,
+                            collection=CollectionNames.PERMISSION.value
+                        )
 
                     # 1. Upsert the app role document
                     await tx_store.batch_upsert_app_roles([role])
@@ -784,10 +833,10 @@ class DataSourceEntitiesProcessor:
 
                     role_permissions = []
                     # Set the 'to' side of the edge to be this role
-                    to_collection = f"{CollectionNames.ROLES.value}/{role.id}"
+                    to_id = role.id
+                    to_collection = CollectionNames.ROLES.value
 
                     for member in members:
-                        from_collection = None
                         user = None
                         if member.email:
                             # Find the user's internal DB ID
@@ -803,10 +852,11 @@ class DataSourceEntitiesProcessor:
                             type=PermissionType.READ,
                             entity_type=EntityType.USER
                         )
-                        from_collection = f"{CollectionNames.USERS.value}/{user.id}"
+                        from_id = user.id
+                        from_collection = CollectionNames.USERS.value
 
                         role_permissions.append(
-                            permission.to_arango_permission(from_collection, to_collection)
+                            permission.to_arango_permission(from_id, from_collection, to_id, to_collection)
                         )
 
                     # Batch create (upsert) all permission edges for this role
@@ -829,15 +879,16 @@ class DataSourceEntitiesProcessor:
 
     async def get_all_active_users(self) -> List[User]:
         async with self.data_store_provider.transaction() as tx_store:
-            users = await tx_store.get_users(self.org_id, active=True)
-
-            return [User.from_arango_user(user) for user in users if user is not None]
+            return await tx_store.get_users(self.org_id, active=True)
 
     async def get_all_app_users(self, connector_id: str) -> List[AppUser]:
         async with self.data_store_provider.transaction() as tx_store:
-            app_users = await tx_store.get_app_users(self.org_id, connector_id)
+            return await tx_store.get_app_users(self.org_id, connector_id)
 
-            return [AppUser.from_arango_user(app_user) for app_user in app_users if app_user is not None]
+    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
+        async with self.data_store_provider.transaction() as tx_store:
+            record = await tx_store.get_record_by_external_id(connector_id=connector_id, external_id=external_record_id)
+            return record
 
     async def on_user_group_member_removed(
         self,
@@ -869,14 +920,12 @@ class DataSourceEntitiesProcessor:
                     )
                     return False
 
-                # 3. Construct the edge keys
-                from_key = f"{CollectionNames.USERS.value}/{user.id}"
-                to_key = f"{CollectionNames.GROUPS.value}/{user_group.id}"
-
-                # 4. Delete the permission edge
+                # 3. Delete the permission edge
                 edge_deleted = await tx_store.delete_edge(
-                    from_key=from_key,
-                    to_key=to_key,
+                    from_id=user.id,
+                    from_collection=CollectionNames.USERS.value,
+                    to_id=user_group.id,
+                    to_collection=CollectionNames.GROUPS.value,
                     collection=CollectionNames.PERMISSION.value
                 )
 
@@ -931,11 +980,13 @@ class DataSourceEntitiesProcessor:
                     return False
 
                 # 3. Check if permission edge already exists
-                from_key = f"{CollectionNames.USERS.value}/{user.id}"
-                to_key = f"{CollectionNames.GROUPS.value}/{user_group.id}"
-
-                # TODO: Implement a method to check if edge exists
-                existing_edge = await tx_store.get_edge(from_key, to_key, CollectionNames.PERMISSION.value)
+                existing_edge = await tx_store.get_edge(
+                    from_id=user.id,
+                    from_collection=CollectionNames.USERS.value,
+                    to_id=user_group.id,
+                    to_collection=CollectionNames.GROUPS.value,
+                    collection=CollectionNames.PERMISSION.value
+                )
                 if existing_edge:
                     self.logger.info(f"Permission edge already exists between {user_email} and group {user_group.name}")
                     return False
@@ -949,7 +1000,12 @@ class DataSourceEntitiesProcessor:
                 )
 
                 # 5. Create new permission edge since it doesn't exist
-                permission_edge = permission.to_arango_permission(from_key, to_key)
+                permission_edge = permission.to_arango_permission(
+                    from_id=user.id,
+                    from_collection=CollectionNames.USERS.value,
+                    to_id=user_group.id,
+                    to_collection=CollectionNames.GROUPS.value
+                )
 
                 await tx_store.batch_create_edges(
                     [permission_edge],
@@ -1019,6 +1075,188 @@ class DataSourceEntitiesProcessor:
                 exc_info=True
             )
             return False
+
+    async def delete_user_group_by_id(self, group_id: str) -> None:
+        """
+        Delete a user group by its internal ID, including all associated edges.
+
+        Args:
+            group_id: The internal ID of the user group to delete
+        """
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                await tx_store.delete_user_group_by_id(group_id)
+                self.logger.info(f"Successfully deleted user group with ID: {group_id}")
+        except Exception as e:
+            self.logger.error(f"Failed to delete user group {group_id}: {str(e)}",exc_info=True)
+            raise
+
+    async def migrate_group_permissions_to_user(
+        self,
+        group_id: str,
+        user_email: str,
+        connector_id: str,
+        target_collections: Optional[List[str]] = None
+    ) -> Tuple[int, int]:
+        """
+        Migrate all permissions from a group to a user.
+
+        This is a generic method that can be used by any connector to transfer
+        permissions from a group to a user. It handles:
+        - Getting all permission edges from the group
+        - Checking for existing user permissions (duplicates)
+        - Upgrading permissions when needed (e.g., READER → WRITER)
+        - Batch creating new permission edges
+
+        Args:
+            group_id: The internal ID of the group to migrate permissions from
+            user_email: Email of the user to migrate permissions to
+            connector_id: Connector ID for logging
+            target_collections: Optional list of target collections to filter
+                          (defaults to RECORDS and RECORD_GROUPS)
+
+        Returns:
+            Tuple[int, int]: (migrated_count, skipped_count)
+        """
+        if target_collections is None:
+            target_collections = [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value]
+
+        async with self.data_store_provider.transaction() as tx_store:
+            # Get the user object
+            user = await tx_store.get_user_by_email(user_email)
+            if not user:
+                self.logger.warning(
+                    f"User {user_email} not found in users collection, "
+                    f"cannot migrate permissions. Skipping."
+                )
+                return (0, 0)
+
+            # Get all permission edges FROM the group
+            group_node_id = f"{CollectionNames.GROUPS.value}/{group_id}"
+            permission_edges = await tx_store.get_edges_from_node(
+                from_node_id=group_node_id,
+                edge_collection=CollectionNames.PERMISSION.value
+            )
+
+            if not permission_edges:
+                self.logger.debug(f"No permissions found for group {group_id}")
+                return (0, 0)
+
+            migrated_count = 0
+            skipped_count = 0
+            new_permission_edges = []
+
+            # Process each permission edge
+            for edge in permission_edges:
+                try:
+                    target_node_id = edge.get("_to")
+                    if not target_node_id:
+                        continue
+
+                    # Extract target ID and collection from _to
+                    target_parts = target_node_id.split("/", 1)
+                    if len(target_parts) != ARANGO_NODE_ID_PARTS:
+                        continue
+
+                    target_collection, target_id = target_parts
+
+                    # Filter by target collections if specified
+                    if target_collection not in target_collections:
+                        continue
+
+                    # Get permission type from edge
+                    role_str = edge.get("role", "READER")
+                    try:
+                        permission_type = PermissionType(role_str)
+                    except ValueError:
+                        permission_type = PermissionType.READ  # Default fallback
+
+                    # Check if user already has permission to this target
+                    existing_edge = await tx_store.get_edge(
+                        from_id=user.id,
+                        from_collection=CollectionNames.USERS.value,
+                        to_id=target_id,
+                        to_collection=target_collection,
+                        collection=CollectionNames.PERMISSION.value
+                    )
+
+                    if existing_edge:
+                        # User already has permission, check if we need to upgrade it
+                        existing_role = existing_edge.get("role", "READER")
+                        existing_role_level = PERMISSION_HIERARCHY.get(existing_role, 0)
+                        new_role_level = PERMISSION_HIERARCHY.get(permission_type.value, 0)
+                        
+                        if new_role_level > existing_role_level:
+                            # Delete old edge and create new one with upgraded permission
+                            await tx_store.delete_edge(
+                                from_id=user.id,
+                                from_collection=CollectionNames.USERS.value,
+                                to_id=target_id,
+                                to_collection=target_collection,
+                                collection=CollectionNames.PERMISSION.value
+                            )
+
+                            # Create new edge with upgraded permission
+                            permission = Permission(
+                                email=user_email,
+                                type=permission_type,
+                                entity_type=EntityType.USER
+                            )
+                            edge_data = permission.to_arango_permission(
+                                from_id=user.id,
+                                from_collection=CollectionNames.USERS.value,
+                                to_id=target_id,
+                                to_collection=target_collection
+                            )
+                            new_permission_edges.append(edge_data)
+                            migrated_count += 1
+                            self.logger.debug(
+                                f"Upgraded permission for user {user_email} to {target_node_id} "
+                                f"(from {existing_role} to {permission_type.value})"
+                            )
+                        else:
+                            skipped_count += 1
+                            self.logger.debug(
+                                f"User {user_email} already has permission to {target_node_id} "
+                                f"(existing: {existing_role}, group: {permission_type.value}), skipping"
+                            )
+                    else:
+                        # Create new permission edge for user (batch create later)
+                        permission = Permission(
+                            email=user_email,
+                            type=permission_type,
+                            entity_type=EntityType.USER
+                        )
+
+                        edge_data = permission.to_arango_permission(
+                            from_id=user.id,
+                            from_collection=CollectionNames.USERS.value,
+                            to_id=target_id,
+                            to_collection=target_collection
+                        )
+
+                        new_permission_edges.append(edge_data)
+                        migrated_count += 1
+
+                except Exception as e:
+                    self.logger.warning(
+                        f"Failed to process permission edge {edge.get('_key', 'unknown')} "
+                        f"for user {user_email}: {e}",
+                        exc_info=True
+                    )
+                    continue
+
+            # Batch create all new permission edges
+            if new_permission_edges:
+                await tx_store.batch_create_edges(
+                    new_permission_edges,
+                    collection=CollectionNames.PERMISSION.value
+                )
+                self.logger.debug(
+                    f"Created {len(new_permission_edges)} new permission edges for user {user_email}"
+                )
+
+            return (migrated_count, skipped_count)
 
     async def on_app_role_deleted(
         self,
@@ -1129,13 +1367,12 @@ class DataSourceEntitiesProcessor:
     async def _delete_group_organization_edges(self, tx_store, group_internal_id: str) -> None:
         """Delete BELONGS_TO edges between group and organization."""
         try:
-            group_collection_id = f"{CollectionNames.GROUPS.value}/{group_internal_id}"
-            org_collection_id = f"{CollectionNames.ORGS.value}/{self.org_id}"
-
             # Delete the BELONGS_TO edge from group to organization
             edge_deleted = await tx_store.delete_edge(
-                from_key=group_collection_id,
-                to_key=org_collection_id,
+                from_id=group_internal_id,
+                from_collection=CollectionNames.GROUPS.value,
+                to_id=self.org_id,
+                to_collection=CollectionNames.ORGS.value,
                 collection=CollectionNames.BELONGS_TO.value
             )
 

@@ -1376,8 +1376,6 @@ class ServiceNowConnector(BaseConnector):
                     connector_id=self.connector_id
                 )
 
-                self.logger.info(f"Loaded {len(existing_app_users)} existing users from DB for lookup: {existing_app_users}")
-
                 # Create lookup map: source_user_id -> AppUser
                 user_lookup = {user.source_user_id: user for user in existing_app_users}
                 self.logger.info(f"Loaded lookup users: {list(user_lookup.keys())}")

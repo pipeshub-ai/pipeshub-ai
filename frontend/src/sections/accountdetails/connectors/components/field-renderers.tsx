@@ -434,8 +434,20 @@ export const MultiSelectFieldRenderer: React.FC<BaseFieldProps> = ({
   const theme = useTheme();
   const selectedValues = Array.isArray(value) ? value : [];
 
-  const handleChange = (event: any, newValue: string[]) => {
+  const handleChange = (event: any, newValue: (string | { id: string; label: string })[]) => {
     onChange(newValue);
+  };
+
+  // Helper to get label from option (handles both string and {id, label} formats)
+  const getOptionLabel = (option: string | { id: string; label: string }): string => {
+    if (typeof option === 'string') return option;
+    return option?.label || option?.id || '';
+  };
+
+  // Helper to get key from option
+  const getOptionKey = (option: string | { id: string; label: string }): string => {
+    if (typeof option === 'string') return option;
+    return option?.id || '';
   };
 
   return (
@@ -447,14 +459,16 @@ export const MultiSelectFieldRenderer: React.FC<BaseFieldProps> = ({
         onChange={handleChange}
         disabled={disabled}
         size="small"
+        getOptionLabel={getOptionLabel}
+        isOptionEqualToValue={(option, val) => getOptionKey(option) === getOptionKey(val)}
         renderTags={(val, getTagProps) =>
           val.map((option, index) => (
             <Chip
               variant="outlined"
-              label={option}
+              label={getOptionLabel(option)}
               size="small"
               {...getTagProps({ index })}
-              key={option}
+              key={getOptionKey(option)}
               sx={{
                 fontSize: '0.8125rem',
                 height: 24,

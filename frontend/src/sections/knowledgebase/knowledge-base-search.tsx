@@ -19,6 +19,7 @@ import MarkdownViewer from '../qna/chatbot/components/markdown-highlighter';
 import { createScrollableContainerStyle } from '../qna/chatbot/utils/styles/scrollbar';
 import { getConnectorPublicUrl } from '../accountdetails/account-settings/services/utils/services-configuration-service';
 import { useConnectors } from '../accountdetails/connectors/context';
+import { getWebUrlWithFragment } from './utils/utils';
 
 import type { Filters } from './types/knowledge-base';
 import type { PipesHub, SearchResult, AggregatedDocument } from './types/search-response';
@@ -244,11 +245,26 @@ export default function KnowledgeBaseSearch() {
     }
   };
 
+
   const viewCitations = async (
     recordId: string,
     extension: string,
     recordCitation?: SearchResult
   ): Promise<void> => {
+    // Check if previewRenderable is false - if so, open webUrl instead of viewer
+    const previewRenderable = recordCitation?.metadata?.previewRenderable ?? 
+                               recordsMap[recordId]?.previewRenderable;
+    
+    if (previewRenderable === false) {
+      const record = recordsMap[recordId];
+      const webUrl = getWebUrlWithFragment(record, recordCitation);
+      
+      if (webUrl) {
+        window.open(webUrl, '_blank', 'noopener,noreferrer');
+      }
+      return;
+    }
+
     // Reset all document type states
     setIsPdf(false);
     setIsExcel(false);

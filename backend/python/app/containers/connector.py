@@ -9,6 +9,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AppGroups
 from app.config.constants.service import config_node_constants
 from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.sources.google.admin.admin_webhook_handler import (
@@ -67,6 +68,8 @@ from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
 from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
 from app.modules.parsers.google_files.parser_user_service import ParserUserService
+from app.services.graph_db.graph_db_provider_factory import GraphDBProviderFactory
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.logger import create_logger
 
 
@@ -772,6 +775,33 @@ class ConnectorAppContainer(BaseAppContainer):
         arango_client=arango_client,
         kafka_service=kafka_service,
         config_service=config_service,
+    )
+
+    # Graph Database Provider via Factory (HTTP mode - fully async)
+    @staticmethod
+    async def _create_graphDB_provider(logger, config_service) -> IGraphDBProvider:
+        """Async factory to create graph database provider"""
+        return await GraphDBProviderFactory.create_provider(
+            logger=logger,
+            config_service=config_service,
+        )
+
+    graph_provider = providers.Resource(
+        _create_graphDB_provider,
+        logger=logger,
+        config_service=config_service,
+    )
+
+    # Graph Data Store - Transaction-based data access layer
+    @staticmethod
+    async def _create_data_store(logger, graph_provider) -> GraphDataStore:
+        """Async factory to create GraphDataStore with resolved graph_provider"""
+        return GraphDataStore(logger, graph_provider)
+
+    data_store = providers.Resource(
+        _create_data_store,
+        logger=logger,
+        graph_provider=graph_provider,
     )
 
     kb_service = providers.Singleton(

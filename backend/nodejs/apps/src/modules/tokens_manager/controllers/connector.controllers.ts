@@ -22,6 +22,81 @@ const logger = Logger.getInstance({
   service: 'Connector Controller',
 });
 
+/**
+ * Higher-order function to create connector config update handlers.
+ * Reduces code duplication by centralizing common validation, header preparation,
+ * API call execution, and error handling logic.
+ *
+ * @param appConfig - Application configuration
+ * @param endpointPath - API endpoint path segment (e.g., 'auth', 'filters-sync')
+ * @param validatePayload - Function to validate the request payload
+ * @param createPayload - Function to create the payload from request body
+ * @param operationName - Human-readable operation name for logging
+ * @returns Express route handler function
+ */
+const createConnectorConfigUpdateHandler = (
+  appConfig: AppConfig,
+  endpointPath: string,
+  validatePayload: (body: any) => void,
+  createPayload: (body: any) => any,
+  operationName: string,
+) => {
+  return async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorId } = req.params;
+
+      if (!connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+
+      // Validate payload
+      validatePayload(req.body);
+
+      // Create payload
+      const config = createPayload(req.body);
+
+      logger.info(`${operationName} for ${connectorId}`);
+
+      // Prepare headers with admin flag
+      const isAdmin = await isUserAdmin(req);
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+        'X-Is-Admin': isAdmin ? 'true' : 'false',
+      };
+
+      // Execute API call
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/config/${endpointPath}`,
+        HttpMethod.PUT,
+        headers,
+        config,
+      );
+
+      // Handle response
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        operationName,
+        'Connector instance not found',
+      );
+    } catch (error: any) {
+      logger.error(`Error ${operationName.toLowerCase()}`, {
+        error: error.message,
+        connectorId: req.params.connectorId,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handledError = handleBackendError(error, operationName.toLowerCase());
+      next(handledError);
+    }
+  };
+};
+
 export const isUserAdmin = async (req: AuthenticatedUserRequest): Promise<boolean> => {
   const { userId, orgId } = req.user || {};
   if (!userId) {
@@ -564,6 +639,46 @@ export const updateConnectorInstanceConfig =
       next(handledError);
     }
   };
+
+/**
+ * Update authentication configuration for a connector instance.
+ * Clears credentials and OAuth state, marks connector as not authenticated.
+ */
+export const updateConnectorInstanceAuthConfig = (appConfig: AppConfig) =>
+  createConnectorConfigUpdateHandler(
+    appConfig,
+    'auth',
+    (body) => {
+      if (!body.auth) {
+        throw new BadRequestError('Auth configuration is required');
+      }
+    },
+    (body) => ({
+      auth: body.auth,
+      baseUrl: body.baseUrl,
+    }),
+    'Updating connector instance auth config',
+  );
+
+/**
+ * Update filters and sync configuration for a connector instance.
+ * Validates that connector is not active and authentication is valid.
+ */
+export const updateConnectorInstanceFiltersSyncConfig = (appConfig: AppConfig) =>
+  createConnectorConfigUpdateHandler(
+    appConfig,
+    'filters-sync',
+    (body) => {
+      if (!body.sync && !body.filters) {
+        throw new BadRequestError('Sync or filters configuration is required');
+      }
+    },
+    (body) => ({
+      sync: body.sync,
+      filters: body.filters,
+    }),
+    'Updating connector instance filters-sync config',
+  );
 
 /**
  * Delete a connector instance.

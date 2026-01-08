@@ -239,7 +239,7 @@ class FileRecord(Node):
 @dataclass
 class MailRecord(Node):
     """Specific record type for emails"""
-    _key: str
+    _key: str = ""
     thread_id: str = ""
     is_parent: bool = False
     subject: Optional[str] = None
@@ -266,7 +266,7 @@ class MailRecord(Node):
 
     def __post_init__(self) -> None:
         if not self._key:
-            raise ValueError("_key must be set")
+            raise ValueError("id must be set")
         if not self.thread_id:
             raise ValueError("thread_id must be set")
         if not self.is_parent:

@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from http import HTTPStatus
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
+from typing import AsyncGenerator, Dict, List, Optional, Tuple
 from urllib.parse import quote, unquote, urlparse
 
 import aiohttp
@@ -56,8 +56,15 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
 )
 from app.connectors.core.registry.filters import (
+    FilterCategory,
     FilterCollection,
+    FilterField,
+    FilterOperator,
+    FilterOption,
+    FilterOptionsResponse,
+    FilterType,
     IndexingFilterKey,
+    OptionSourceType,
     SyncFilterKey,
     load_connector_filters,
 )
@@ -181,25 +188,52 @@ class SiteMetadata:
             field_type="URL",
             max_length=2000
         ))
-        # .add_filter_field(FilterField(
-        #     name="site_urls",
-        #     display_name="Site URLs",
-        #     description="Filter specific sites by URL.",
-        #     filter_type=FilterType.LIST,
-        #     category=FilterCategory.SYNC,
-        #     default_value=[]
-        # ))
-        # .add_filter_field(FilterField(
-        #     name="page_urls",
-        #     display_name="Page URLs",
-        #     description="Filter specific pages by URL.",
-        #     filter_type=FilterType.LIST,
-        #     category=FilterCategory.SYNC,
-        #     default_value=[]
-        # ))
+        .add_filter_field(FilterField(
+            name="site_ids",
+            display_name="Site Names",
+            description="Filter specific sites by name.",
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            default_value=[],
+            option_source_type=OptionSourceType.DYNAMIC
+        ))
+        .add_filter_field(FilterField(
+            name="page_ids",
+            display_name="Page name",
+            description="Filter specific pages by name.",
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            default_value=[],
+            option_source_type=OptionSourceType.DYNAMIC
+        ))
+        .add_filter_field(CommonFields.file_extension_filter())
         .add_filter_field(CommonFields.modified_date_filter("Filter pages and blogposts by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter pages and blogposts by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
+        .add_filter_field(FilterField(
+            name="pages",
+            display_name="Index Pages",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of pages",
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name="documents",
+            display_name="Index Documents",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of documents",
+            default_value=True
+        ))
+        # .add_filter_field(FilterField(
+        #     name="lists",
+        #     display_name="Index Lists",
+        #     filter_type=FilterType.BOOLEAN,
+        #     category=FilterCategory.INDEXING,
+        #     description="Enable indexing of lists",
+        #     default_value=True
+        # ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
@@ -248,6 +282,9 @@ class SharePointConnector(BaseConnector):
         # Cache for site metadata
         self.site_cache: Dict[str, SiteMetadata] = {}
 
+        self.sync_filters: FilterCollection = FilterCollection()
+        self.indexing_filters: FilterCollection = FilterCollection()
+
         # Configuration flags
         self.enable_subsite_discovery = True
         # Statistics tracking
@@ -263,8 +300,6 @@ class SharePointConnector(BaseConnector):
 
     async def init(self) -> bool:
         config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
-        self.sync_filters: FilterCollection = FilterCollection()
-        self.indexing_filters: FilterCollection = FilterCollection()
 
         if not config:
             self.logger.error("❌ SharePoint Online credentials not found")
@@ -290,10 +325,6 @@ class SharePointConnector(BaseConnector):
         self.logger.debug(f"🔍 Certificate data present: {bool(certificate_data)}")
         self.logger.debug(f"🔍 Private key data present: {bool(private_key_data)}")
         self.logger.debug(f"🔍 Client secret present: {bool(client_secret)}")
-
-        self.sync_filters, self.indexing_filters = await load_connector_filters(
-            self.config_service, "sharepointonline", self.connector_id, self.logger
-        )
 
         # Normalize SharePoint domain to scheme+host (no path)
         try:
@@ -708,8 +739,8 @@ class SharePointConnector(BaseConnector):
         try:
             site_id = site_record_group.external_group_id
             site_name = site_record_group.name
-            self.logger.info(f"Starting sync for site: '{site_name}' (ID: {site_id})")
 
+            self.logger.info(f"Starting sync for site: '{site_name}' (ID: {site_id})")
             # Process all content types
             batch_records = []
             total_processed = 0
@@ -893,8 +924,7 @@ class SharePointConnector(BaseConnector):
                             if record_update.is_deleted:
                                 yield (None, [], record_update)
                             elif record_update.record:
-
-                                if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                                if not self.indexing_filters.is_enabled(IndexingFilterKey.DOCUMENTS, default=True):
                                     record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
                                 yield (record_update.record, record_update.new_permissions or [], record_update)
@@ -962,6 +992,9 @@ class SharePointConnector(BaseConnector):
 
 
             if not self._pass_drive_date_filters(item):
+                return None
+
+            if not self._pass_extension_filter(item):
                 return None
 
             existing_record = None
@@ -1164,6 +1197,65 @@ class SharePointConnector(BaseConnector):
                 if end_ts and item_ts > end_ts:
                     return False
 
+        return True
+
+    def _pass_extension_filter(self, item: DriveItem) -> bool:
+        """
+        Checks if the DriveItem passes the configured file extensions filter.
+
+        For MULTISELECT filters:
+        - Operator IN: Only allow files with extensions in the selected list
+        - Operator NOT_IN: Allow files with extensions NOT in the selected list
+
+        Folders always pass this filter to maintain directory structure.
+        """
+        # 1. ALWAYS Allow Folders
+        if item.folder is not None:
+            return True
+
+        # 2. Get the extensions filter
+        extensions_filter = self.sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
+
+        # If no filter configured or filter is empty, allow all files
+        if extensions_filter is None or extensions_filter.is_empty():
+            return True
+
+        # 3. Get the file extension from the item
+        # The extension is stored without the dot (e.g., "pdf", "docx")
+        file_extension = None
+        if item.name and "." in item.name:
+            file_extension = item.name.rsplit(".", 1)[-1].lower()
+
+        # Files without extensions: behavior depends on operator
+        # If using IN operator and file has no extension, it won't match any allowed extensions
+        # If using NOT_IN operator and file has no extension, it passes (not in excluded list)
+        if file_extension is None:
+            operator = extensions_filter.get_operator()
+            operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+            if operator_str == FilterOperator.NOT_IN:
+                return True
+            return False
+
+        # 4. Get the list of extensions from the filter value
+        allowed_extensions = extensions_filter.value
+        if not isinstance(allowed_extensions, list):
+            return True  # Invalid filter value, allow the file
+
+        # Normalize extensions (lowercase, without dots)
+        normalized_extensions = [ext.lower().lstrip(".") for ext in allowed_extensions]
+
+        # 5. Apply the filter based on operator
+        operator = extensions_filter.get_operator()
+        operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+
+        if operator_str == FilterOperator.IN:
+            # Only allow files with extensions in the list
+            return file_extension in normalized_extensions
+        elif operator_str == FilterOperator.NOT_IN:
+            # Allow files with extensions NOT in the list
+            return file_extension not in normalized_extensions
+
+        # Unknown operator, default to allowing the file
         return True
 
     async def _process_site_lists(self, site_id: str) -> AsyncGenerator[Tuple[Record, List[Permission], RecordUpdate], None]:
@@ -1545,6 +1637,11 @@ class SharePointConnector(BaseConnector):
 
                     # Apply date filters
                     if not self._pass_page_date_filters(page):
+                        self.logger.debug(f"⏭️ Skipping page (date filter) '{page_id}' {page_name}")
+                        continue
+
+                    if not self._pass_page_ids_filters(page_id):
+                        self.logger.debug(f"⏭️ Skipping page (ID filter) '{page_id}' {page_name}")
                         continue
 
                     # Check the 'created_by' field to skip System Account created pages
@@ -1626,7 +1723,6 @@ class SharePointConnector(BaseConnector):
             page_id = getattr(page, 'id', None)
             if not page_id:
                 return None
-
             page_name = getattr(page, 'title', None) or getattr(page, 'name', f'Page {page_id}')
 
             if page_name:
@@ -1716,6 +1812,102 @@ class SharePointConnector(BaseConnector):
                 if end_ts and item_ts > end_ts:
                     return False
 
+        return True
+
+    def _pass_site_ids_filters(self, site_id: str) -> bool:
+        """
+        Checks if the site passes the configured site IDs filter.
+
+        For MULTISELECT filters:
+        - Operator IN: Only allow sites with IDs in the selected list (inclusion list)
+        - Operator NOT_IN: Allow sites with IDs NOT in the selected list (exclusion list)
+
+        Args:
+            site_id: The SharePoint site ID to check
+
+        Returns:
+            True if the site should be synced, False if it should be skipped
+        """
+        # Get the site IDs filter
+        site_ids_filter = self.sync_filters.get(SyncFilterKey.SITE_IDS)
+
+        # If no filter configured or filter is empty, allow all sites
+        if site_ids_filter is None or site_ids_filter.is_empty():
+            return True
+
+        # Get the list of site IDs from the filter value
+        filter_site_ids = site_ids_filter.value
+        if not isinstance(filter_site_ids, list):
+            return True  # Invalid filter value, allow the site
+
+        # Handle empty or None site_id
+        if not site_id:
+            self.logger.warning("Site ID is empty or None, skipping")
+            return False
+
+        # Apply the filter based on operator
+        operator = site_ids_filter.get_operator()
+        operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+
+        if operator_str == FilterOperator.IN:
+            # Only allow sites with IDs in the inclusion list
+            return site_id in filter_site_ids
+        elif operator_str == FilterOperator.NOT_IN:
+            # Allow sites with IDs NOT in the exclusion list
+            return site_id not in filter_site_ids
+
+        # Unknown operator, default to allowing the site
+        self.logger.warning(f"Unknown filter operator '{operator_str}' for SITE_IDS filter, allowing site")
+        return True
+
+    def _pass_page_ids_filters(self, page_id: str) -> bool:
+        """
+        Checks if the page passes the configured page IDs filter.
+
+        For MULTISELECT filters:
+        - Operator IN: Only allow pages with IDs in the selected list (inclusion list)
+        - Operator NOT_IN: Allow pages with IDs NOT in the selected list (exclusion list)
+
+        Args:
+            page_id: The SharePoint page ID to check
+
+        Returns:
+            True if the page should be synced, False if it should be skipped
+        """
+        # Get the page IDs filter
+        page_ids_filter = self.sync_filters.get(SyncFilterKey.PAGE_IDS)
+
+        # If no filter configured or filter is empty, allow all pages
+        if page_ids_filter is None or page_ids_filter.is_empty():
+            return True
+
+        # Get the list of page IDs from the filter value
+        filter_page_ids = page_ids_filter.value
+        if not isinstance(filter_page_ids, list):
+            return True  # Invalid filter value, allow the page
+
+        # Handle empty or None page_id
+        if not page_id:
+            self.logger.warning("Page ID is empty or None, skipping")
+            return False
+
+        # Create set for O(1) lookup (case-sensitive for GUIDs)
+        filter_page_ids_set = {pid.strip() for pid in filter_page_ids if pid}
+        page_id_normalized = page_id.strip()
+
+        # Apply the filter based on operator
+        operator = page_ids_filter.get_operator()
+        operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+
+        if operator_str == FilterOperator.IN:
+            # Only allow pages with IDs in the inclusion list
+            return page_id_normalized in filter_page_ids_set
+        elif operator_str == FilterOperator.NOT_IN:
+            # Allow pages with IDs NOT in the exclusion list
+            return page_id_normalized not in filter_page_ids_set
+
+        # Unknown operator, default to allowing the page
+        self.logger.warning(f"Unknown filter operator '{operator_str}' for PAGE_IDS filter, allowing page")
         return True
 
     def _create_document_library_record_group(self, drive: dict, site_id: str, internal_site_record_group_id: str) -> Optional[RecordGroup]:
@@ -1932,7 +2124,7 @@ class SharePointConnector(BaseConnector):
                         permissions_dict['ORGANIZATION_ACCESS'] = Permission(
                             type=PermissionType.READ, # Default to READ for public access
                             entity_type=EntityType.ORG,
-                            external_id=self.data_entities_processor.org_id # Placeholder
+                            external_id=self.data_entities_processor.org_id
                         )
 
                     # CASE C: It's an AD Security Group (PrincipalType == 4)
@@ -2770,6 +2962,10 @@ class SharePointConnector(BaseConnector):
             # scheduled runs that are days apart, causing the HTTP session to timeout
             await self._reinitialize_credential_if_needed()
 
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "sharepointonline", self.connector_id, self.logger
+            )
+
             # Step 1: Sync users
             self.logger.info("Syncing users...")
             try:
@@ -2780,12 +2976,12 @@ class SharePointConnector(BaseConnector):
                 self.logger.error(f"❌ Error syncing users: {user_error}")
 
             # # Step 2: Sync user groups
-            self.logger.info("Syncing SharePoint groups...")
-            try:
-                await self._sync_user_groups()
-                self.logger.info("✅ Successfully synced SharePoint groups")
-            except Exception as group_error:
-                self.logger.error(f"❌ Error syncing groups: {group_error}")
+            # self.logger.info("Syncing SharePoint groups...")
+            # try:
+            #     await self._sync_user_groups()
+            #     self.logger.info("✅ Successfully synced SharePoint groups")
+            # except Exception as group_error:
+            #     self.logger.error(f"❌ Error syncing groups: {group_error}")
 
             # Step 3: Discover and sync sites
             sites = await self._get_all_sites()
@@ -2794,10 +2990,25 @@ class SharePointConnector(BaseConnector):
                 self.logger.warning("⚠️ No SharePoint sites found - check permissions")
                 return
 
-            self.logger.info(f"📁 Found {len(sites)} SharePoint sites to sync")
-            # Create site record groups
-            site_record_groups_with_permissions = []
+            self.logger.info(f"📁 Found {len(sites)} SharePoint sites")
+
+            # Filter sites based on sync filters BEFORE processing
+            filtered_sites = []
             for site in sites:
+                if not self._pass_site_ids_filters(site.id):
+                    self.logger.info(f"⏭️ Skipping excluded site: '{site.display_name or site.name}' (ID: {site.id})")
+                    continue
+                filtered_sites.append(site)
+
+            self.logger.info(f"📁 {len(filtered_sites)} sites to sync after applying filters (excluded {len(sites) - len(filtered_sites)})")
+
+            if not filtered_sites:
+                self.logger.warning("⚠️ No SharePoint sites to sync after applying filters")
+                return
+
+            # Create site record groups (only for filtered sites)
+            site_record_groups_with_permissions = []
+            for site in filtered_sites:  # Use filtered_sites instead of sites
                 if not self._validate_site_id(site.id):
                     self.logger.warning(f"Invalid site ID format: '{site.id}'")
                     continue
@@ -2810,7 +3021,6 @@ class SharePointConnector(BaseConnector):
                 source_created_at = int(site.created_date_time.timestamp() * 1000) if site.created_date_time else None
                 source_updated_at = int(site.last_modified_date_time.timestamp() * 1000) if site.last_modified_date_time else source_created_at
 
-                # TODO: So we can fetch permissiosn and create edges between members and sites
                 # Create site record group
                 site_record_group = RecordGroup(
                     name=site_name,
@@ -2827,10 +3037,10 @@ class SharePointConnector(BaseConnector):
 
                 # Get site permissions
                 site_permissions = await self._get_site_permissions(site_id)
-                # Process site record group
                 site_record_groups_with_permissions.append((site_record_group, site_permissions))
 
             await self.data_entities_processor.on_new_record_groups(site_record_groups_with_permissions)
+
             # Step 4: Process sites in batches
             for i in range(0, len(site_record_groups_with_permissions), self.max_concurrent_batches):
                 batch = site_record_groups_with_permissions[i:i + self.max_concurrent_batches]
@@ -2838,6 +3048,7 @@ class SharePointConnector(BaseConnector):
                 batch_end = min(i + len(batch), len(site_record_groups_with_permissions))
 
                 self.logger.info(f"📊 Processing site batch {batch_start}-{batch_end} of {len(site_record_groups_with_permissions)}")
+
 
                 # Process batch
                 tasks = [self._sync_site_content(site_record_group) for site_record_group, _permissions in batch]
@@ -3444,9 +3655,168 @@ class SharePointConnector(BaseConnector):
         limit: int = 20,
         search: Optional[str] = None,
         cursor: Optional[str] = None
-    ) -> NoReturn:
-        """SharePoint connector does not support dynamic filter options."""
-        raise NotImplementedError("SharePoint connector does not support dynamic filter options")
+    ) -> FilterOptionsResponse:
+        """Get dynamic filter options for SharePoint sites and pages."""
+
+        if filter_key == SyncFilterKey.SITE_IDS:
+            return await self._get_site_options(page, limit, search)
+        elif filter_key == SyncFilterKey.PAGE_IDS:
+            return await self._get_page_options(page, limit, search)
+        else:
+            raise ValueError(f"Unsupported filter key: {filter_key}")
+
+    async def _get_site_options(
+        self,
+        page: int,
+        limit: int,
+        search: Optional[str]
+    ) -> FilterOptionsResponse:
+        """Get dynamic filter options for SharePoint sites."""
+
+        search_query = search.strip() if search else ""
+        search_query = f"{search_query}*"
+
+        # 1. Get Raw Result
+        raw_result = await self.msgraph_client.search_query(
+            entity_types=["site"],
+            query=search_query,
+            page=page,
+            limit=limit
+        )
+
+        options = []
+        total = 0
+
+        # 2. Process Raw Result locally
+        if raw_result:
+            additional_data = getattr(raw_result, 'additional_data', {}) or {}
+            value_list = additional_data.get('value', [])
+
+            for search_resp in value_list:
+                hits_containers = search_resp.get('hitsContainers', [])
+
+                for container in hits_containers:
+                    # Update total from the container
+                    total = container.get('total', 0)
+
+                    for hit in container.get('hits', []):
+                        resource = hit.get('resource', {})
+
+                        # A. Extract ID and WebUrl
+                        site_id = resource.get('id')
+                        web_url = resource.get('webUrl')
+
+                        if not site_id and not web_url:
+                            continue
+
+                        # B. Determine Label (Display Name > Name > WebUrl)
+                        label = (
+                            resource.get('displayName') or
+                            resource.get('name') or
+                            web_url or
+                            "Unknown Site"
+                        )
+
+                        options.append(FilterOption(
+                            id=site_id or web_url,
+                            label=label
+                        ))
+
+        has_more = (page * limit) < total
+
+        return FilterOptionsResponse(
+            success=True,
+            options=options,
+            page=page,
+            limit=limit,
+            has_more=has_more,
+            cursor=None
+        )
+
+    async def _get_page_options(
+        self,
+        page: int,
+        limit: int,
+        search: Optional[str]
+    ) -> FilterOptionsResponse:
+        """Get dynamic filter options for SharePoint pages."""
+
+        search_query = search.strip() if search else ""
+        full_query = f"{search_query}* filetype:aspx"
+
+        # 1. Get Raw Result
+        raw_result = await self.msgraph_client.search_query(
+            entity_types=["listItem"],
+            query=full_query,
+            page=page,
+            limit=limit
+        )
+
+        options = []
+        total = 0
+
+        if raw_result:
+            additional_data = getattr(raw_result, 'additional_data', {}) or {}
+            value_list = additional_data.get('value', [])
+
+            for search_resp in value_list:
+                hits_containers = search_resp.get('hitsContainers', [])
+
+                for container in hits_containers:
+                    total = container.get('total', 0)
+
+                    for hit in container.get('hits', []):
+                        resource = hit.get('resource', {})
+
+                        item_id = resource.get('id')
+                        web_url = resource.get('webUrl')
+
+                        if not item_id and not web_url:
+                            continue
+
+                        # --- 1. Extract Page Name ---
+                        name = resource.get('name')
+                        if not name and web_url:
+                            try:
+                                # Get filename: .../SitePages/Home.aspx -> Home.aspx
+                                name = unquote(web_url.split('/')[-1])
+                            except Exception:
+                                name = "Unknown Page"
+
+                        page_label = name or resource.get('displayName') or "Unknown Page"
+
+                        # --- 2. Extract Site Name from URL ---
+                        # Structure is usually: https://tenant.sharepoint.com/sites/SiteName/...
+                        site_name = "Unknown Site"
+                        if web_url and "/sites/" in web_url:
+                            try:
+                                # Split at /sites/ and take the chunk immediately after
+                                after_sites = web_url.split("/sites/")[1]
+                                raw_site_name = after_sites.split("/")[0]
+                                site_name = unquote(raw_site_name)
+                            except Exception:
+                                pass
+                        elif web_url:
+                            site_name = "Root Site"
+
+                        # --- 3. Format Final Label ---
+                        final_label = f"{page_label} ({site_name})"
+
+                        options.append(FilterOption(
+                            id=item_id or web_url,
+                            label=final_label
+                        ))
+
+        has_more = (page * limit) < total
+
+        return FilterOptionsResponse(
+            success=True,
+            options=options,
+            page=page,
+            limit=limit,
+            has_more=has_more,
+            cursor=None
+        )
 
     @classmethod
     async def create_connector(cls, logger: Logger,

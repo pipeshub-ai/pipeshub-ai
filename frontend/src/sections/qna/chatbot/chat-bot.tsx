@@ -693,7 +693,7 @@ const ChatInterface = () => {
   useEffect(() => {
     const connectors = [...(activeConnectors || [])];
     const apps = connectors.map((c: any) => ({
-      id: (c.name || '').toLowerCase(),
+      id: c._key,
       name: c.name || '',
       iconPath: c.iconPath || '/assets/icons/connectors/default.svg',
     }));
