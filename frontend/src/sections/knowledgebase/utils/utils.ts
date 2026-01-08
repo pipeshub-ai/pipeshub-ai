@@ -326,3 +326,87 @@ const mimeTypeToExtensionMap: Record<string, string> = {
 
 export const getExtensionFromMimeType = (mimeType: string): string =>
   mimeTypeToExtensionMap[mimeType] || '';
+
+/**
+ * Gets a web URL with text fragment for highlighting.
+ * 
+ * This function handles different input types:
+ * - CustomCitation: citation with metadata.webUrl, metadata.origin, metadata.blockText
+ * - Record + Citation: record with webUrl/origin, and citation with metadata.blockText
+ * 
+ * @param citationOrRecord - Either a CustomCitation or a PipesHub.Record
+ * @param recordCitation - Optional SearchResult when first param is a Record
+ * @returns URL with text fragment, or null if URL not available
+ */
+export const getWebUrlWithFragment = (
+  citationOrRecord?: { metadata?: { webUrl?: string; origin?: string; blockText?: string } } | { webUrl?: string; origin?: string },
+  recordCitation?: { metadata?: { blockText?: string; webUrl?: string }; content?: string } | { content?: string }
+): string | null => {
+  let webUrl: string | undefined;
+  let origin: string | undefined;
+  let blockText: string | undefined;
+  let content: string | undefined;
+
+  // Handle CustomCitation type (has metadata property)
+  if (citationOrRecord && 'metadata' in citationOrRecord) {
+    const citation = citationOrRecord as { metadata?: { webUrl?: string; origin?: string; blockText?: string } };
+    webUrl = citation.metadata?.webUrl;
+    origin = citation.metadata?.origin;
+    blockText = citation.metadata?.blockText;
+  } 
+  // Handle PipesHub.Record type (has webUrl directly)
+  else if (citationOrRecord && 'webUrl' in citationOrRecord) {
+    const record = citationOrRecord as { webUrl?: string; origin?: string };
+    webUrl = record.webUrl;
+    origin = record.origin;
+    
+    // Get blockText from recordCitation if provided
+    if (recordCitation) {
+      if ('metadata' in recordCitation) {
+        blockText = recordCitation.metadata?.blockText;
+        // SearchResult has both metadata and content
+        if ('content' in recordCitation) {
+          content = recordCitation.content;
+        }
+        // Fallback to recordCitation metadata webUrl if record doesn't have one
+        if (!webUrl) {
+          webUrl = recordCitation.metadata?.webUrl;
+        }
+      } else if ('content' in recordCitation) {
+        content = recordCitation.content;
+      }
+    }
+  }
+
+  if (!webUrl) {
+    return null;
+  }
+
+  try {
+    // Handle relative URLs for UPLOAD origin
+    if (origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
+      const baseUrl = `${window.location.protocol}//${window.location.host}`;
+      webUrl = baseUrl + webUrl;
+    }
+
+    // Check if blockText exists and is not empty before adding text fragment
+    let textForFragment: string | undefined;
+    if (blockText && typeof blockText === 'string' && blockText.trim().length > 0) {
+      textForFragment = blockText;
+    } else if (content && typeof content === 'string' && content.trim().length > 0) {
+      textForFragment = content;
+    }
+
+    if (textForFragment) {
+      const textFragment = extractCleanTextFragment(textForFragment, 5);
+      if (textFragment) {
+        return addTextFragmentToUrl(webUrl, textFragment);
+      }
+    }
+
+    return webUrl;
+  } catch (error) {
+    console.warn('Error accessing webUrl:', error);
+    return null;
+  }
+};

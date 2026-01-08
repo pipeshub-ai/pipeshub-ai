@@ -368,6 +368,7 @@ class RetrievalService:
                                 weburl = weburl.replace("{user.email}", user_email)
                         result["metadata"]["webUrl"] = weburl
                         result["metadata"]["recordName"] = record.get("recordName")
+                        result["metadata"]["previewRenderable"] = record.get("previewRenderable", True)
 
                         mime_type = record.get("mimeType")
                         if not mime_type:

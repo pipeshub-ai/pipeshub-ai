@@ -469,6 +469,28 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_edges_from_node(
+        self,
+        node_id: str,
+        edge_collection: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Get all edges originating from a specific node.
+
+        Generic method that works with any edge collection.
+
+        Args:
+            node_id (str): Source node ID (e.g., "groups/123")
+            edge_collection (str): Edge collection name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of edge documents
+        """
+        pass
+
+    @abstractmethod
     async def get_related_nodes(
         self,
         node_id: str,

@@ -882,6 +882,40 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get edges to node failed: {str(e)}")
             return []
 
+    async def get_edges_from_node(
+        self,
+        node_id: str,
+        edge_collection: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Get all edges originating from a node.
+
+        Args:
+            node_id: Source node ID (e.g., "groups/123")
+            edge_collection: Edge collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            List[Dict]: List of edges
+        """
+        query = f"""
+        FOR edge IN {edge_collection}
+            FILTER edge._from == @node_id
+            RETURN edge
+        """
+
+        try:
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={"node_id": node_id},
+                txn_id=transaction
+            )
+            return results or []
+        except Exception as e:
+            self.logger.error(f"❌ Get edges from node failed: {str(e)}")
+            return []
+
     async def get_related_nodes(
         self,
         node_id: str,

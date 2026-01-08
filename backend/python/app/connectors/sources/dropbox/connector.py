@@ -2108,12 +2108,14 @@ class DropboxConnector(BaseConnector):
                     )
                     return False
 
-                # 3. Construct edge keys
-                from_key = f"{CollectionNames.USERS.value}/{user.id}"
-                to_key = f"{CollectionNames.GROUPS.value}/{user_group.id}"
-
-                # 4. Check if permission edge exists
-                existing_edge = await tx_store.get_edge(from_key, to_key, CollectionNames.PERMISSION.value)
+                # 3. Check if permission edge exists
+                existing_edge = await tx_store.get_edge(
+                    from_id=user.id,
+                    from_collection=CollectionNames.USERS.value,
+                    to_id=user_group.id,
+                    to_collection=CollectionNames.GROUPS.value,
+                    collection=CollectionNames.PERMISSION.value
+                )
                 if not existing_edge:
                     self.logger.warning(
                         f"No existing permission found between user {user_email} and group {user_group.name}. "
@@ -2126,11 +2128,16 @@ class DropboxConnector(BaseConnector):
                         type=new_permission_type,
                         entity_type=EntityType.GROUP
                     )
-                    permission_edge = permission.to_arango_permission(from_key, to_key)
+                    permission_edge = permission.to_arango_permission(
+                        from_id=user.id,
+                        from_collection=CollectionNames.USERS.value,
+                        to_id=user_group.id,
+                        to_collection=CollectionNames.GROUPS.value
+                    )
                     await tx_store.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value)
                     return True
 
-                # 5. Check if permission type has changed
+                # 4. Check if permission type has changed
                 current_permission_type = existing_edge.get('permissionType')
                 if current_permission_type == new_permission_type.value:
                     self.logger.info(
@@ -2138,14 +2145,20 @@ class DropboxConnector(BaseConnector):
                     )
                     return True
 
-                # 6. Update the permission by deleting old edge and creating new one
+                # 5. Update the permission by deleting old edge and creating new one
                 self.logger.info(
                     f"Updating permission for {user_email} in group {user_group.name} "
                     f"from {current_permission_type} to {new_permission_type}"
                 )
 
                 # Delete old edge
-                await tx_store.delete_edge(from_key, to_key, CollectionNames.PERMISSION.value)
+                await tx_store.delete_edge(
+                    from_id=user.id,
+                    from_collection=CollectionNames.USERS.value,
+                    to_id=user_group.id,
+                    to_collection=CollectionNames.GROUPS.value,
+                    collection=CollectionNames.PERMISSION.value
+                )
 
                 # Create new edge with updated permission
                 permission = Permission(
@@ -2154,7 +2167,12 @@ class DropboxConnector(BaseConnector):
                     type=new_permission_type,
                     entity_type=EntityType.GROUP
                 )
-                permission_edge = permission.to_arango_permission(from_key, to_key)
+                permission_edge = permission.to_arango_permission(
+                    from_id=user.id,
+                    from_collection=CollectionNames.USERS.value,
+                    to_id=user_group.id,
+                    to_collection=CollectionNames.GROUPS.value
+                )
                 await tx_store.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value)
 
                 return True
