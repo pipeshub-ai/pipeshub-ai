@@ -118,6 +118,9 @@ class Processor:
             )
             if record is None:
                 self.logger.error(f"❌ Record {record_id} not found in database")
+                # Must yield both events to release semaphores properly
+                yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+                yield {"event": "indexing_complete", "data": {"record_id": record_id}}
                 return
 
             _ , config = await get_llm(self.config_service)
@@ -226,8 +229,9 @@ class Processor:
             parse_result = await self.docling_client.parse_pdf(record_name, pdf_binary)
             if parse_result is None:
                 self.logger.error(f"❌ External Docling service failed to parse {recordName}")
-                # Signal failure so caller can try OCR fallback
-                yield {"event": "docling_failed", "data": {"record_id": recordId}}
+                # Must yield both events to release semaphores properly
+                yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
                 return
 
             # Signal parsing complete after Docling parsing
@@ -237,8 +241,8 @@ class Processor:
             block_containers = await self.docling_client.create_blocks(parse_result)
             if block_containers is None:
                 self.logger.error(f"❌ External Docling service failed to create blocks for {recordName}")
-                # Signal failure so caller can try OCR fallback
-                yield {"event": "docling_failed", "data": {"record_id": recordId}}
+                # Must yield indexing_complete to release indexing semaphore properly
+                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
                 return
 
             record = await self.arango_service.get_document(
@@ -247,6 +251,8 @@ class Processor:
 
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
+                yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
                 return
 
             record = convert_record_dict_to_record(record)
@@ -285,7 +291,8 @@ class Processor:
             # Configure OCR handler
             self.logger.debug("🛠️ Configuring OCR handler")
             handler = None
-
+            
+            provider = None
             for config in ocr_configs:
                 provider = config["provider"]
                 self.logger.info(f"🔧 Checking OCR provider: {provider}")
@@ -354,6 +361,8 @@ class Processor:
                     raise
 
             self.logger.debug("✅ OCR processing completed")
+
+            
 
             if provider == OCRProvider.VLM_OCR.value:
                 pages = ocr_result.get("pages", [])
@@ -430,7 +439,9 @@ class Processor:
                 record = await self.arango_service.get_document(recordId, CollectionNames.RECORDS.value)
                 if record is None:
                     self.logger.error(f"❌ Record {recordId} not found in database")
+                    yield {"event": "indexing_complete", "data": {"record_id": recordId}}
                     return
+
                 record = convert_record_dict_to_record(record)
                 record.block_containers = combined_block_containers
                 record.virtual_record_id = virtual_record_id
@@ -448,8 +459,9 @@ class Processor:
 
                 self.logger.info("✅ PDF processing completed successfully using VLM OCR")
                 return
-            # Extract domain metadata from paragraphs
-            self.logger.info("🎯 Extracting domain metadata")
+            else:
+                yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+            
             blocks_from_ocr = ocr_result.get("blocks", [])
             blocks = []
             index = 0
@@ -500,13 +512,11 @@ class Processor:
             )
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
+                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
                 return
             record = convert_record_dict_to_record(record)
             record.block_containers = BlocksContainer(blocks=blocks, block_groups=block_groups)
             record.virtual_record_id = virtual_record_id
-
-            # Signal parsing complete
-            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
 
             ctx = TransformContext(record=record)
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
@@ -570,8 +580,6 @@ class Processor:
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(conv_res)
 
-            if block_containers is False:
-                raise Exception("Failed to process DOCX document. It might contain scanned pages.")
 
             record = await self.arango_service.get_document(
                 recordId, CollectionNames.RECORDS.value
@@ -579,7 +587,9 @@ class Processor:
 
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
-                raise Exception(f"Record {recordId} not found in graph db")
+                # Must yield indexing_complete to release indexing semaphore properly
+                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                return
             record = convert_record_dict_to_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
@@ -630,7 +640,9 @@ class Processor:
             )
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
-                raise Exception(f"Record {recordId} not found in graph db")
+                # Must yield indexing_complete to release indexing semaphore properly
+                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                return
             record = convert_record_dict_to_record(record)
             record.block_containers = blocks_containers
             record.virtual_record_id = virtual_record_id
@@ -724,11 +736,13 @@ class Processor:
                     continue
 
 
-            if csv_result is None:
-                self.logger.info(f"Unable to decode CSV file with any supported encoding for record: {recordName}. Setting indexing status to EMPTY.")
-                await self._mark_record(recordId, ProgressStatus.EMPTY)
+            if csv_result is None or not csv_result:
+                self.logger.info(f"Unable to decode CSV file with any supported encoding or it is empty for record: {recordName}. Setting indexing status to EMPTY.")
+                
                 yield {"event": "parsing_complete", "data": {"record_id": recordId}}
                 yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                await self._mark_record(recordId, ProgressStatus.EMPTY)
+                
                 return
 
             self.logger.debug("📑 CSV result processed")
@@ -742,6 +756,8 @@ class Processor:
                     )
                 if record is None:
                     self.logger.error(f"❌ Record {recordId} not found in database")
+                    yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+                    yield {"event": "indexing_complete", "data": {"record_id": recordId}}
                     return
                 record = convert_record_dict_to_record(record)
                 record.virtual_record_id = virtual_record_id
@@ -759,7 +775,6 @@ class Processor:
 
                 # Signal indexing complete
                 yield {"event": "indexing_complete", "data": {"record_id": recordId}}
-
 
             self.logger.info("✅ CSV processing completed successfully")
 
@@ -949,7 +964,9 @@ class Processor:
             )
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
-                raise Exception(f"Record {recordId} not found in graph db")
+                # Must yield indexing_complete to release indexing semaphore properly
+                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                return
             record = convert_record_dict_to_record(record)
 
             blocks = block_containers.blocks
@@ -1060,14 +1077,13 @@ class Processor:
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(conv_res)
 
-            if block_containers is False:
-                raise Exception(("Failed to process PPTX document. It might contain scanned pages."))
             record = await self.arango_service.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
-                raise Exception(f"Record {recordId} not found in graph db")
+                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                return
             record = convert_record_dict_to_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
