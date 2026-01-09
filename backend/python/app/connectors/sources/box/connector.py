@@ -1192,11 +1192,6 @@ class BoxConnector(BaseConnector):
         """
         self.logger.info("🔄 [Incremental] Starting Box Enterprise incremental sync.")
 
-        # Load filters
-        self.sync_filters, self.indexing_filters = await load_connector_filters(
-            self.config_service, "box", self.connector_id, self.logger
-        )
-
         try:
             self.logger.info("👥 [Incremental] Refreshing User list...")
             users = await self._sync_users()
@@ -1303,7 +1298,7 @@ class BoxConnector(BaseConnector):
         for event in events:
             event_type = get_val(event, 'event_type')
             source = get_val(event, 'source')
-            
+
             # Debug: Log every event type for troubleshooting
             self.logger.debug(f"🔍 Processing event: type={event_type}, source_type={get_val(source, 'type')}, source_id={get_val(source, 'id')}")
 
@@ -1431,7 +1426,7 @@ class BoxConnector(BaseConnector):
             for item_id, (owner_id, item_type) in items_to_sync.items():
                 if owner_id not in owner_groups:
                     owner_groups[owner_id] = {'files': [], 'folders': []}
-                
+
                 if item_type and item_type.lower() == 'folder':
                     owner_groups[owner_id]['folders'].append(item_id)
                 else:
@@ -1586,7 +1581,7 @@ class BoxConnector(BaseConnector):
                 try:
                     # 2. Fetch folder metadata from Box
                     folder_response = await self.data_source.folders_get_folder_by_id(folder_id)
-                    
+
                     if not folder_response.success:
                         self.logger.warning(f"Failed to fetch folder {folder_id}: {folder_response.error}")
                         continue
@@ -1875,11 +1870,6 @@ class BoxConnector(BaseConnector):
                 return
 
             self.logger.info(f"Starting reindex for {len(records)} Box records")
-
-            # Load filters
-            self.sync_filters, self.indexing_filters = await load_connector_filters(
-                self.config_service, "box", self.connector_id, self.logger
-            )
 
             # 1. Group records by Owner
             records_by_owner: Dict[str, List[Record]] = {}
