@@ -550,6 +550,7 @@ class DropboxIndividualConnector(BaseConnector):
                 parent_external_record_id=parent_external_record_id,
                 size_in_bytes=entry.size if is_file else 0,
                 is_file=is_file,
+                preview_renderable=is_file,
                 extension=get_file_extension(entry.name) if is_file else None,
                 path=entry.path_lower,
                 mime_type=get_mimetype_enum_for_dropbox(entry),
