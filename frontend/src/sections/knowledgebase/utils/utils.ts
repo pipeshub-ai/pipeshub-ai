@@ -131,8 +131,9 @@ export const getFileIconColor = (extension: string): string => {
  * 3. Remove leading punctuation (bullets, dashes, etc.)
  * 4. Stop at problematic characters that break Text Fragment API matching (@, #, $, %, &, *, +, =, <, >, |, \, /, ^, ~)
  * 5. Keep safe punctuation (commas, periods, colons, semicolons, hyphens, apostrophes, parentheses, exclamation, question marks)
+ * 6. Limit to 1000 characters to prevent excessively long URLs (truncates at last space to avoid cutting words)
  * @param text - The content text to process
- * @returns A clean plain text fragment suitable for URL text highlighting
+ * @returns A clean plain text fragment suitable for URL text highlighting (max 300 characters)
  */
 export const extractCleanTextFragment = (text: string): string => {
   if (!text || typeof text !== 'string') return '';
@@ -156,12 +157,22 @@ export const extractCleanTextFragment = (text: string): string => {
   // Step 4: Find the position of the first problematic character that breaks Text Fragment API
   // Problematic chars: @, #, $, %, &, *, +, =, <, >, |, \, /, ^, ~, [, ], {, }
   // Safe chars: letters, numbers, spaces, commas, periods, colons, semicolons, hyphens, apostrophes, parentheses, !, ?
-  const problematicCharPattern = /[@#$%&*+=<>|\\//^~[\]{}]/;
+  const problematicCharPattern = /[@#$%&*+=<>|\\/^~[\]{}]/;
   const match = cleaned.match(problematicCharPattern);
   
   if (match && match.index !== undefined) {
     // Found a problematic character - truncate at that position
     cleaned = cleaned.substring(0, match.index).trim();
+  }
+
+  // Step 5: Limit length to prevent excessively long URLs (browser limits ~2000 chars, but be conservative)
+  // Truncate at last space within limit to avoid cutting words in half
+  const MAX_FRAGMENT_LENGTH = 1000;
+  if (cleaned.length > MAX_FRAGMENT_LENGTH) {
+    const truncated = cleaned.substring(0, MAX_FRAGMENT_LENGTH);
+    const lastSpaceIndex = truncated.lastIndexOf(' ');
+    // If we found a space, truncate there; otherwise use the hard limit
+    cleaned = lastSpaceIndex > 0 ? truncated.substring(0, lastSpaceIndex).trim() : truncated.trim();
   }
 
   return cleaned;
