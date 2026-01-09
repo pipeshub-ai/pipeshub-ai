@@ -45,14 +45,15 @@ from app.connectors.core.registry.filters import (
     FilterField,
     FilterType,
     FilterCategory,
-    FilterOptionsResponse,
-    FilterOption,
     OptionSourceType,
+    MultiselectOperator,
+    ListOperator,
+    SyncFilterKey,
     IndexingFilterKey,
     FilterCollection,
     load_connector_filters,
-    MultiselectOperator,
-    ListOperator,
+    FilterOptionsResponse,
+    FilterOption,
 )
 from app.connectors.sources.s3.common.apps import S3App
 from app.models.entities import FileRecord, IndexingStatus, Record
@@ -283,8 +284,13 @@ class S3Connector(BaseConnector):
             if not self.data_source:
                 raise ConnectionError("S3 connector is not initialized.")
 
+            # Reload sync and indexing filters to pick up configuration changes
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "s3", self.connector_id, self.logger
+            )
+
             # Get sync filters
-            sync_filters = self.sync_filters if hasattr(self, 'sync_filters') else {}
+            sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
             
             # Get bucket filter if specified
             bucket_filter = sync_filters.get("buckets")
@@ -409,6 +415,110 @@ class S3Connector(BaseConnector):
             await self.data_entities_processor.on_new_record_groups(record_groups)
             self.logger.info(f"Created {len(record_groups)} record group(s) for buckets")
 
+    def _get_date_filters(self) -> Tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
+        """
+        Extract date filter values from sync_filters.
+        
+        Returns date ranges as epoch milliseconds for comparison with S3 LastModified timestamps.
+        Returns tuple of (modified_after_ms, modified_before_ms, created_after_ms, created_before_ms)
+        """
+        modified_after_ms: Optional[int] = None
+        modified_before_ms: Optional[int] = None
+        created_after_ms: Optional[int] = None
+        created_before_ms: Optional[int] = None
+
+        # Get modified date filter
+        modified_date_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
+        if modified_date_filter and not modified_date_filter.is_empty():
+            after_iso, before_iso = modified_date_filter.get_datetime_iso()
+            if after_iso:
+                after_dt = datetime.fromisoformat(after_iso).replace(tzinfo=timezone.utc)
+                modified_after_ms = int(after_dt.timestamp() * 1000)
+                self.logger.info(f"Applying modified date filter: after {after_dt}")
+            if before_iso:
+                before_dt = datetime.fromisoformat(before_iso).replace(tzinfo=timezone.utc)
+                modified_before_ms = int(before_dt.timestamp() * 1000)
+                self.logger.info(f"Applying modified date filter: before {before_dt}")
+
+        # Get created date filter
+        created_date_filter = self.sync_filters.get(SyncFilterKey.CREATED)
+        if created_date_filter and not created_date_filter.is_empty():
+            after_iso, before_iso = created_date_filter.get_datetime_iso()
+            if after_iso:
+                after_dt = datetime.fromisoformat(after_iso).replace(tzinfo=timezone.utc)
+                created_after_ms = int(after_dt.timestamp() * 1000)
+                self.logger.info(f"Applying created date filter: after {after_dt}")
+            if before_iso:
+                before_dt = datetime.fromisoformat(before_iso).replace(tzinfo=timezone.utc)
+                created_before_ms = int(before_dt.timestamp() * 1000)
+                self.logger.info(f"Applying created date filter: before {before_dt}")
+
+        return modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
+
+    def _pass_date_filters(
+        self,
+        obj: Dict,
+        modified_after_ms: Optional[int] = None,
+        modified_before_ms: Optional[int] = None,
+        created_after_ms: Optional[int] = None,
+        created_before_ms: Optional[int] = None
+    ) -> bool:
+        """
+        Returns True if S3 object PASSES date filters (should be kept).
+        
+        Note: S3 uses LastModified for both created and modified dates.
+        For "created" filter, we use LastModified as proxy (S3 doesn't track separate creation time).
+        Folders always pass through date filters to ensure directory structure exists.
+        
+        Args:
+            obj: S3 object metadata dictionary
+            modified_after_ms: Skip files modified before this timestamp (epoch ms)
+            modified_before_ms: Skip files modified after this timestamp (epoch ms)
+            created_after_ms: Skip files created before this timestamp (epoch ms)
+            created_before_ms: Skip files created after this timestamp (epoch ms)
+        
+        Returns:
+            False if the object should be filtered out, True otherwise
+        """
+        # Folders always pass through date filters
+        key = obj.get("Key", "")
+        is_folder = key.endswith("/")
+        if is_folder:
+            return True
+
+        # No filters applied
+        if not any([modified_after_ms, modified_before_ms, created_after_ms, created_before_ms]):
+            return True
+
+        # Get LastModified timestamp from S3 object
+        last_modified = obj.get("LastModified")
+        if not last_modified:
+            return True  # If no timestamp, allow through
+        
+        # Convert to epoch milliseconds
+        if isinstance(last_modified, datetime):
+            obj_timestamp_ms = int(last_modified.timestamp() * 1000)
+        else:
+            return True  # If invalid format, allow through
+
+        # Apply modified date filters (using LastModified)
+        if modified_after_ms and obj_timestamp_ms < modified_after_ms:
+            self.logger.debug(f"Skipping {key}: modified {obj_timestamp_ms} before cutoff {modified_after_ms}")
+            return False
+        if modified_before_ms and obj_timestamp_ms > modified_before_ms:
+            self.logger.debug(f"Skipping {key}: modified {obj_timestamp_ms} after cutoff {modified_before_ms}")
+            return False
+
+        # Apply created date filters (using LastModified as proxy for creation time)
+        if created_after_ms and obj_timestamp_ms < created_after_ms:
+            self.logger.debug(f"Skipping {key}: created {obj_timestamp_ms} before cutoff {created_after_ms}")
+            return False
+        if created_before_ms and obj_timestamp_ms > created_before_ms:
+            self.logger.debug(f"Skipping {key}: created {obj_timestamp_ms} after cutoff {created_before_ms}")
+            return False
+
+        return True
+
     async def _get_bucket_region(self, bucket_name: str) -> str:
         """Get the region for a bucket, using cache if available.
         
@@ -461,31 +571,36 @@ class S3Connector(BaseConnector):
             raise ConnectionError("S3 connector is not initialized.")
 
         # Get sync filters
-        sync_filters = self.sync_filters if hasattr(self, 'sync_filters') else {}
+        sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
         
-        # Get date filters
-        modified_filter = sync_filters.get("modified")
-        created_filter = sync_filters.get("created")
+        # Get file extensions filter (use string key for consistency with buckets filter)
         file_extensions_filter = sync_filters.get("file_extensions")
-        
-        modified_after = None
-        modified_before = None
-        if modified_filter and modified_filter.value:
-            date_range = modified_filter.value
-            if isinstance(date_range, tuple) and len(date_range) == 2:
-                modified_after, modified_before = date_range
-        
-        created_after = None
-        created_before = None
-        if created_filter and created_filter.value:
-            date_range = created_filter.value
-            if isinstance(date_range, tuple) and len(date_range) == 2:
-                created_after, created_before = date_range
-
-        # Get file extensions filter
         allowed_extensions = []
-        if file_extensions_filter and file_extensions_filter.value:
-            allowed_extensions = [ext.lower().lstrip('.') for ext in file_extensions_filter.value]
+        if file_extensions_filter and not file_extensions_filter.is_empty():
+            filter_value = file_extensions_filter.value
+            # Handle both list and string values (for backward compatibility)
+            if isinstance(filter_value, list):
+                allowed_extensions = [ext.lower().lstrip('.') for ext in filter_value if ext]
+            elif isinstance(filter_value, str):
+                # If it's a string, convert to list
+                allowed_extensions = [filter_value.lower().lstrip('.')]
+            else:
+                self.logger.warning(
+                    f"Unexpected file_extensions filter value type: {type(filter_value)}. "
+                    f"Expected list or string, got {filter_value}"
+                )
+        
+        if allowed_extensions:
+            self.logger.info(
+                f"File extensions filter active for bucket {bucket_name}: {allowed_extensions} (only files with these extensions will be synced)"
+            )
+        else:
+            self.logger.debug(
+                f"No file extensions filter for bucket {bucket_name} - syncing all file types"
+            )
+
+        # Get date filters
+        modified_after_ms, modified_before_ms, created_after_ms, created_before_ms = self._get_date_filters()
 
         sync_point_key = generate_record_sync_point_key(
             RecordType.FILE.value, "bucket", bucket_name
@@ -493,11 +608,6 @@ class S3Connector(BaseConnector):
         sync_point = await self.record_sync_point.read_sync_point(sync_point_key)
         continuation_token = sync_point.get("continuation_token") if sync_point else None
         last_sync_time = sync_point.get("last_sync_time") if sync_point else None
-
-        # Use last_sync_time for incremental sync if available
-        if last_sync_time and not modified_after:
-            # Convert last_sync_time (epoch ms) to datetime for comparison
-            modified_after = last_sync_time
 
         batch_records = []
         has_more = True
@@ -543,44 +653,47 @@ class S3Connector(BaseConnector):
                     # Process each object
                     for obj in objects:
                         try:
-                            # Apply filters
                             key = obj.get("Key", "")
                             
                             # Determine if it's a folder (S3 uses keys ending with / for folders)
                             is_folder = key.endswith("/")
                             
-                            # Filter by extension (only for files, not folders)
+                            # Apply file extensions filter (only for files, not folders)
                             if not is_folder and allowed_extensions:
                                 ext = get_file_extension(key)
-                                if not ext or ext not in allowed_extensions:
+                                if not ext:
+                                    self.logger.debug(
+                                        f"Skipping {key}: no file extension found (allowed extensions: {allowed_extensions})"
+                                    )
                                     continue
+                                if ext not in allowed_extensions:
+                                    self.logger.debug(
+                                        f"Skipping {key}: extension '{ext}' not in allowed extensions {allowed_extensions}"
+                                    )
+                                    continue
+                                # File passed extension filter
+                                self.logger.debug(
+                                    f"File {key} passed extension filter (extension: '{ext}' matches allowed extensions: {allowed_extensions})"
+                                )
                             
-                            # Filter by date (only for files, not folders)
-                            # For S3, LastModified is used for both created and modified time
-                            # since S3 doesn't track separate creation time
+                            # Apply date filters
+                            if not self._pass_date_filters(
+                                obj, modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
+                            ):
+                                continue
+                            
+                            # Update max_timestamp for incremental sync tracking
                             if not is_folder:
                                 last_modified = obj.get("LastModified")
                                 if last_modified:
                                     if isinstance(last_modified, datetime):
                                         obj_timestamp_ms = int(last_modified.timestamp() * 1000)
+                                        max_timestamp = max(max_timestamp, obj_timestamp_ms)
                                     else:
                                         obj_timestamp_ms = get_epoch_timestamp_in_ms()
-                                    
-                                    # Check modified date filter
-                                    if modified_after and obj_timestamp_ms < modified_after:
-                                        continue
-                                    if modified_before and obj_timestamp_ms > modified_before:
-                                        continue
-                                    
-                                    # Check created date filter (using LastModified as creation time)
-                                    if created_after and obj_timestamp_ms < created_after:
-                                        continue
-                                    if created_before and obj_timestamp_ms > created_before:
-                                        continue
-                                    
-                                    max_timestamp = max(max_timestamp, obj_timestamp_ms)
+                                        max_timestamp = max(max_timestamp, obj_timestamp_ms)
                             else:
-                                # For folders, update max_timestamp if available but don't filter
+                                # For folders, update max_timestamp if available
                                 last_modified = obj.get("LastModified")
                                 if last_modified:
                                     if isinstance(last_modified, datetime):
@@ -638,7 +751,12 @@ class S3Connector(BaseConnector):
     async def _process_s3_object(
         self, obj: Dict, bucket_name: str
     ) -> Tuple[Optional[FileRecord], List[Permission]]:
-        """Process a single S3 object and convert it to a FileRecord."""
+        """Process a single S3 object and convert it to a FileRecord.
+        
+        When run_sync runs again, this method fetches updated documents by checking
+        if the external_revision_id (ETag) has changed. If changed, the document
+        is updated; if unchanged, processing is skipped for efficiency.
+        """
         try:
             key = obj.get("Key", "")
             if not key:
@@ -673,6 +791,44 @@ class S3Connector(BaseConnector):
                     connector_id=self.connector_id, external_id=external_record_id
                 )
 
+            # Get current ETag (external_revision_id) from S3 object
+            current_etag = obj.get("ETag", "").strip('"')
+            
+            # Check if document has been updated (ETag/external_revision_id changed)
+            # When run_sync runs again, fetch updated documents if external_revision_id has changed
+            etag_changed = False
+            if existing_record:
+                stored_etag = existing_record.external_revision_id or ""
+                
+                # Compare ETags - both must be non-empty strings for reliable comparison
+                if current_etag and stored_etag:
+                    if current_etag == stored_etag:
+                        # External revision ID unchanged - document not updated, skip processing
+                        self.logger.debug(
+                            f"Skipping {normalized_key}: external_revision_id unchanged ({current_etag})"
+                        )
+                        return None, []
+                    else:
+                        # External revision ID changed - document updated, fetch and update
+                        etag_changed = True
+                        self.logger.info(
+                            f"Document updated: {normalized_key} - external_revision_id changed from {stored_etag} to {current_etag}"
+                        )
+                elif not current_etag or not stored_etag:
+                    # One or both ETags are missing - process defensively (treat as potentially changed)
+                    if not current_etag:
+                        self.logger.warning(
+                            f"Current ETag missing for {normalized_key}, processing record"
+                        )
+                    if not stored_etag:
+                        self.logger.debug(
+                            f"Stored ETag missing for {normalized_key}, processing record"
+                        )
+                    etag_changed = True
+            else:
+                # New record - no existing record, so ETag comparison not applicable
+                self.logger.debug(f"New document: {normalized_key}")
+
             # Determine record type
             record_type = RecordType.FOLDER if is_folder else RecordType.FILE
 
@@ -703,6 +859,14 @@ class S3Connector(BaseConnector):
             # Extract record name (remove trailing slash for folders)
             record_name = normalized_key.rstrip("/").split("/")[-1] or normalized_key.rstrip("/")
             
+            # Determine version - only increment for new records or when ETag changed
+            # (Note: If we reached here with existing_record, ETag must have changed or one was missing)
+            if not existing_record:
+                version = 0
+            else:
+                # Existing record with ETag change - increment version
+                version = existing_record.version + 1
+            
             # Create FileRecord
             file_record = FileRecord(
                 id=record_id,
@@ -711,8 +875,8 @@ class S3Connector(BaseConnector):
                 record_group_type=RecordGroupType.DRIVE.value,
                 external_record_group_id=bucket_name,
                 external_record_id=external_record_id,  # bucket_name/path format: my-bucket/a/b/c/file.txt
-                external_revision_id=obj.get("ETag", "").strip('"'),
-                version=0 if not existing_record else existing_record.version + 1,
+                external_revision_id=current_etag,  # Use current ETag from S3
+                version=version,
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
@@ -728,12 +892,14 @@ class S3Connector(BaseConnector):
                 extension=extension,
                 path=normalized_key,
                 mime_type=mime_type,
-                etag=obj.get("ETag", "").strip('"'),
+                etag=current_etag,  # Use current ETag from S3
             )
 
-            # Apply indexing filter - set AUTO_INDEX_OFF if manual sync is enabled or FILES filter is disabled
-            if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+            # Set indexing status based on enable_manual_sync filter
+            # The is_enabled method automatically handles enable_manual_sync - if it's enabled, indexing is disabled
+            if hasattr(self, 'indexing_filters') and self.indexing_filters:
+                if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                    file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             # Create permissions (default: owner permission)
             permissions = await self._create_s3_permissions(bucket_name, key)
@@ -1011,21 +1177,28 @@ class S3Connector(BaseConnector):
                 page=page,
                 limit=limit,
                 has_more=False,
-                message=f"Error getting bucket options: {str(e)}"
+                message=f"Error: {str(e)}"
             )
+
 
     def handle_webhook_notification(self, notification: Dict) -> None:
         """Handle webhook notifications from the source."""
         raise NotImplementedError("This method is not supported")
 
     async def reindex_records(self, record_results: List[Record]) -> None:
-        """Reindex records by checking for updates at source and publishing reindex events."""
+        """Reindex records by checking for updates at source and publishing reindex events.
+        
+        For manual sync reindex:
+        1. Fetch from S3 to check if external_revision_id (ETag) has changed
+        2. If changed: fetch updated data and reindex it
+        3. If not changed: reindex only (without updating DB)
+        """
         try:
             if not record_results:
                 self.logger.info("No records to reindex")
                 return
 
-            self.logger.info(f"Starting reindex for {len(record_results)} S3 records")
+            self.logger.info(f"Starting reindex for {len(record_results)} S3 records - checking S3 for external_revision_id changes")
 
             if not self.data_source:
                 self.logger.error("S3 connector is not initialized.")
@@ -1037,27 +1210,30 @@ class S3Connector(BaseConnector):
 
             for record in record_results:
                 try:
+                    # Fetch from S3 and check if external_revision_id has changed
                     updated_record_data = await self._check_and_fetch_updated_record(
                         org_id, record
                     )
                     if updated_record_data:
+                        # External revision ID changed - fetch updated data and reindex
                         updated_record, permissions = updated_record_data
                         updated_records.append((updated_record, permissions))
                     else:
+                        # External revision ID unchanged - reindex only (without updating DB)
                         non_updated_records.append(record)
                 except Exception as e:
                     self.logger.error(f"Error checking record {record.id} at source: {e}")
                     continue
 
-            # Update DB only for records that changed at source
+            # Update DB only for records that changed at source (external_revision_id changed)
             if updated_records:
                 await self.data_entities_processor.on_new_records(updated_records)
-                self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
+                self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source (external_revision_id changed)")
 
-            # Publish reindex events for non-updated records
+            # Publish reindex events for non-updated records (external_revision_id unchanged)
             if non_updated_records:
                 await self.data_entities_processor.reindex_existing_records(non_updated_records)
-                self.logger.info(f"Published reindex events for {len(non_updated_records)} non-updated records")
+                self.logger.info(f"Published reindex events for {len(non_updated_records)} records with unchanged external_revision_id (reindex only)")
 
         except Exception as e:
             self.logger.error(f"Error during S3 reindex: {e}", exc_info=True)
@@ -1066,7 +1242,11 @@ class S3Connector(BaseConnector):
     async def _check_and_fetch_updated_record(
         self, org_id: str, record: Record
     ) -> Optional[Tuple[Record, List[Permission]]]:
-        """Check if record has been updated at source and fetch updated data."""
+        """Check if record has been updated at source and fetch updated data.
+        
+        Fetches from S3 to check if external_revision_id (ETag) has changed.
+        Returns updated record data if changed, None if unchanged.
+        """
         try:
             bucket_name = record.external_record_group_id
             external_record_id = record.external_record_id
@@ -1087,7 +1267,7 @@ class S3Connector(BaseConnector):
                 self.logger.warning(f"Invalid key for record {record.id}")
                 return None
 
-            # Get object metadata from S3
+            # Fetch from S3 to get object metadata (including ETag/external_revision_id)
             response = await self.data_source.head_object(
                 Bucket=bucket_name,
                 Key=normalized_key
@@ -1102,13 +1282,18 @@ class S3Connector(BaseConnector):
             if not obj_metadata:
                 return None
 
-            # Get ETag (revision ID)
+            # Get current ETag (external_revision_id) from S3
             current_etag = obj_metadata.get("ETag", "").strip('"')
+            stored_etag = record.external_revision_id
             
-            # Check if ETag has changed (content or metadata changed)
-            if current_etag == record.external_revision_id:
-                # No changes detected
+            # Check if external_revision_id (ETag) has changed
+            if current_etag == stored_etag:
+                # External revision ID unchanged - return None to trigger reindex only
+                self.logger.debug(f"Record {record.id}: external_revision_id unchanged ({current_etag}), will reindex only")
                 return None
+            
+            # External revision ID changed - fetch updated data
+            self.logger.debug(f"Record {record.id}: external_revision_id changed from {stored_etag} to {current_etag}, fetching updated data")
 
             # Get LastModified timestamp
             last_modified = obj_metadata.get("LastModified")
@@ -1178,9 +1363,11 @@ class S3Connector(BaseConnector):
                 etag=current_etag,
             )
 
-            # Apply indexing filter - set AUTO_INDEX_OFF if manual sync is enabled or FILES filter is disabled
-            if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                updated_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+            # Set indexing status based on enable_manual_sync filter
+            # The is_enabled method automatically handles enable_manual_sync - if it's enabled, indexing is disabled
+            if hasattr(self, 'indexing_filters') and self.indexing_filters:
+                if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                    updated_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             # Get permissions
             permissions = await self._create_s3_permissions(bucket_name, normalized_key)
@@ -1199,8 +1386,13 @@ class S3Connector(BaseConnector):
             if not self.data_source:
                 raise ConnectionError("S3 connector is not initialized.")
 
+            # Reload sync and indexing filters to pick up configuration changes
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "s3", self.connector_id, self.logger
+            )
+
             # Get sync filters
-            sync_filters = self.sync_filters if hasattr(self, 'sync_filters') else {}
+            sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
             
             # Get bucket filter if specified
             bucket_filter = sync_filters.get("buckets")
@@ -1210,8 +1402,11 @@ class S3Connector(BaseConnector):
             buckets_to_sync = []
             if self.bucket_name:
                 buckets_to_sync = [self.bucket_name]
+                self.logger.info(f"Using configured bucket: {self.bucket_name}")
             elif selected_buckets:
+                # Use buckets from filter
                 buckets_to_sync = selected_buckets
+                self.logger.info(f"Using filtered buckets: {buckets_to_sync}")
             else:
                 # List all buckets
                 buckets_response = await self.data_source.list_buckets()
