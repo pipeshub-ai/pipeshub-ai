@@ -40,6 +40,118 @@ const logger = Logger.getInstance({
   service: 'Knowledge Base Controller',
 });
 
+/**
+ * Get Knowledge Hub nodes (unified browse API)
+ * Supports browsing KBs, apps, folders, record groups, and records
+ */
+export const getKnowledgeHubNodes =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { userId, orgId } = req.user || {};
+      if (!userId || !orgId) {
+        throw new UnauthorizedError('User not authenticated');
+      }
+
+      logger.info('Getting knowledge hub nodes', {
+        userId,
+        orgId,
+        query: req.query,
+      });
+
+      // Build query string from request query params
+      const queryParams = new URLSearchParams();
+
+      // Map query params (camelCase to snake_case for Python backend)
+      if (req.query.parentId) {
+        queryParams.append('parent_id', req.query.parentId as string);
+      }
+      if (req.query.view) {
+        queryParams.append('view', req.query.view as string);
+      }
+      if (req.query.onlyContainers !== undefined) {
+        queryParams.append(
+          'only_containers',
+          String(req.query.onlyContainers),
+        );
+      }
+      if (req.query.page) {
+        queryParams.append('page', req.query.page as string);
+      }
+      if (req.query.limit) {
+        queryParams.append('limit', req.query.limit as string);
+      }
+      if (req.query.sortBy) {
+        queryParams.append('sort_by', req.query.sortBy as string);
+      }
+      if (req.query.sortOrder) {
+        queryParams.append('sort_order', req.query.sortOrder as string);
+      }
+      if (req.query.q) {
+        queryParams.append('q', req.query.q as string);
+      }
+      if (req.query.nodeTypes) {
+        queryParams.append('node_types', req.query.nodeTypes as string);
+      }
+      if (req.query.recordTypes) {
+        queryParams.append('record_types', req.query.recordTypes as string);
+      }
+      if (req.query.sources) {
+        queryParams.append('sources', req.query.sources as string);
+      }
+      if (req.query.connectors) {
+        queryParams.append('connectors', req.query.connectors as string);
+      }
+      if (req.query.indexingStatus) {
+        queryParams.append(
+          'indexing_status',
+          req.query.indexingStatus as string,
+        );
+      }
+      if (req.query.createdAt) {
+        queryParams.append('created_at', req.query.createdAt as string);
+      }
+      if (req.query.updatedAt) {
+        queryParams.append('updated_at', req.query.updatedAt as string);
+      }
+      if (req.query.size) {
+        queryParams.append('size', req.query.size as string);
+      }
+      if (req.query.include) {
+        queryParams.append('include', req.query.include as string);
+      }
+
+      const url = `${appConfig.connectorBackend}/api/v2/knowledge-hub/nodes?${queryParams.toString()}`;
+
+      const response = await executeConnectorCommand(
+        url,
+        HttpMethod.GET,
+        req.headers as Record<string, string>, // Forwards auth headers
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Getting knowledge hub nodes',
+        'Failed to get nodes',
+      );
+    } catch (error: any) {
+      logger.error('Error getting knowledge hub nodes', {
+        error: error.message,
+        stack: error.stack,
+      });
+      const handleError = handleBackendError(
+        error,
+        'get knowledge hub nodes',
+      );
+      next(handleError);
+    }
+  };
+
 // Types and helpers for active connector validation
 interface ConnectorInfo {
   _key: string;

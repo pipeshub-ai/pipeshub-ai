@@ -811,6 +811,10 @@ class ConnectorAppContainer(BaseAppContainer):
         kafka_service= kafka_service
     )
 
+    # Note: KnowledgeHubService is created manually in the router's get_knowledge_hub_service()
+    # helper function because it depends on async graph_provider which doesn't work well
+    # with dependency_injector's Factory/Resource providers.
+
     google_token_handler = providers.Singleton(
         GoogleTokenHandler,
         logger=logger,
@@ -874,6 +878,7 @@ class ConnectorAppContainer(BaseAppContainer):
             "app.core.celery_app",
             "app.connectors.api.router",
             "app.connectors.sources.localKB.api.kb_router",
+            "app.connectors.sources.localKB.api.knowledge_hub_router",
             "app.connectors.api.middleware",
             "app.core.signed_url",
         ]
