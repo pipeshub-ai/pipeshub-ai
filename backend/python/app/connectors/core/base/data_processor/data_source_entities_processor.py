@@ -196,7 +196,7 @@ class DataSourceEntitiesProcessor:
     async def _handle_related_external_records(
         self,
         record: Record,
-        related_external_records: List,
+        related_external_records: List[RelatedExternalRecord],
         tx_store: TransactionStore
     ) -> None:
         """
@@ -475,9 +475,9 @@ class DataSourceEntitiesProcessor:
         # Create a edge between the record and the record group if it doesn't exist and if record_group_id is provided
         await self._handle_record_group(record, tx_store)
 
-        # Create LINKED_TO edges for related external records if record has related_external_records field
-        # (This field is in base Record class, but it's not persisted to DB - only used during processing)
-        if hasattr(record, 'related_external_records') and record.related_external_records:
+        # Create LINKED_TO edges for related external records if record has related_external_records
+        # (This field is in base Record class with default_factory=list, so it always exists)
+        if record.related_external_records:
             await self._handle_related_external_records(record, record.related_external_records, tx_store)
 
         # Create a edge between the base record and the specific record if it doesn't exist - isOfType - File, Mail, Message
