@@ -1185,7 +1185,7 @@ class DataSourceEntitiesProcessor:
                         existing_role = existing_edge.get("role", "READER")
                         existing_role_level = PERMISSION_HIERARCHY.get(existing_role, 0)
                         new_role_level = PERMISSION_HIERARCHY.get(permission_type.value, 0)
-                        
+
                         if new_role_level > existing_role_level:
                             # Delete old edge and create new one with upgraded permission
                             await tx_store.delete_edge(
