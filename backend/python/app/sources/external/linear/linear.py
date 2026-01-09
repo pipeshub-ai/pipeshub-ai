@@ -230,7 +230,8 @@ class LinearDataSource:
         first: Optional[int] = None,
         after: Optional[str] = None,
         filter: Optional[Dict[str, Any]] = None,
-        orderBy: Optional[Dict[str, Any]] = None
+        orderBy: Optional[Dict[str, Any]] = None,
+        includeArchived: Optional[bool] = None
     ) -> GraphQLResponse:
         """Get projects with all nested data for sync"""
         query = LinearGraphQLOperations.get_operation_with_fragments("query", "projects")
@@ -243,6 +244,8 @@ class LinearDataSource:
             variables["filter"] = filter
         if orderBy is not None:
             variables["orderBy"] = orderBy
+        if includeArchived is not None:
+            variables["includeArchived"] = includeArchived
 
         try:
             response = await self._linear_client.get_client().execute(
@@ -251,6 +254,54 @@ class LinearDataSource:
             return response
         except Exception as e:
             return GraphQLResponse(success=False, message=f"Failed to execute query projects: {str(e)}")
+
+    async def trashed_issues(
+        self,
+        first: Optional[int] = None,
+        after: Optional[str] = None,
+        filter: Optional[Dict[str, Any]] = None
+    ) -> GraphQLResponse:
+        """Get trashed issues for deletion sync."""
+        query = LinearGraphQLOperations.get_operation_with_fragments("query", "trashedIssues")
+        variables = {}
+        if first is not None:
+            variables["first"] = first
+        if after is not None:
+            variables["after"] = after
+        if filter is not None:
+            variables["filter"] = filter
+
+        try:
+            response = await self._linear_client.get_client().execute(
+                query=query, variables=variables, operation_name="TrashedIssues"
+            )
+            return response
+        except Exception as e:
+            return GraphQLResponse(success=False, message=f"Failed to fetch trashed issues: {str(e)}")
+
+    async def trashed_projects(
+        self,
+        first: Optional[int] = None,
+        after: Optional[str] = None,
+        filter: Optional[Dict[str, Any]] = None
+    ) -> GraphQLResponse:
+        """Get trashed projects for deletion sync."""
+        query = LinearGraphQLOperations.get_operation_with_fragments("query", "trashedProjects")
+        variables = {}
+        if first is not None:
+            variables["first"] = first
+        if after is not None:
+            variables["after"] = after
+        if filter is not None:
+            variables["filter"] = filter
+
+        try:
+            response = await self._linear_client.get_client().execute(
+                query=query, variables=variables, operation_name="TrashedProjects"
+            )
+            return response
+        except Exception as e:
+            return GraphQLResponse(success=False, message=f"Failed to fetch trashed projects: {str(e)}")
 
     # COMMENT QUERIES
     async def comment(self, id: str) -> GraphQLResponse:

@@ -246,6 +246,13 @@ class LinearConnector(BaseConnector):
             data_store_provider=data_store_provider
         )
 
+        self.deletion_sync_point = SyncPoint(
+            connector_id=self.connector_id,
+            org_id=org_id,
+            sync_data_point_type=SyncDataPointType.RECORDS,
+            data_store_provider=data_store_provider
+        )
+
         self.sync_filters = None
         self.indexing_filters = None
 
@@ -289,12 +296,51 @@ class LinearConnector(BaseConnector):
 
     async def _get_fresh_datasource(self) -> LinearDataSource:
         """
-        Get LinearDataSource with fresh API token.
-        For API token auth, token doesn't expire, so just return existing datasource.
+        Get LinearDataSource with ALWAYS-FRESH access token.
+
+        This method:
+        1. Fetches current token from config (supports both API_TOKEN and OAUTH)
+        2. Compares with existing client's token
+        3. Updates client ONLY if token changed (mutation)
+        4. Returns datasource with current token
+
+        Returns:
+            LinearDataSource with current valid token
         """
-        if self.data_source is None:
-            await self.init()
-        return self.data_source  # type: ignore
+        if not self.external_client:
+            raise Exception("Linear client not initialized. Call init() first.")
+
+        # Fetch current config from etcd (async I/O)
+        config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
+
+        if not config:
+            raise Exception("Linear configuration not found")
+
+        # Extract fresh token (supports both API_TOKEN and OAUTH)
+        auth_config = config.get("auth", {})
+        auth_type = auth_config.get("authType", "API_TOKEN")
+
+        if auth_type == "OAUTH":
+            credentials_config = config.get("credentials", {}) or {}
+            fresh_token = credentials_config.get("access_token", "")
+        else:
+            # API_TOKEN
+            fresh_token = auth_config.get("apiToken", "")
+
+        if not fresh_token:
+            raise Exception("No access token available")
+
+        # Get current token from client
+        internal_client = self.external_client.get_client()
+        current_token = internal_client.get_token()
+
+        # Update client's token if it changed (mutation)
+        if current_token != fresh_token:
+            self.logger.debug("🔄 Updating client with refreshed access token")
+            internal_client.set_token(fresh_token)
+
+        # Return datasource with updated client
+        return LinearDataSource(self.external_client)
 
     async def get_filter_options(
         self,
@@ -488,6 +534,12 @@ class LinearConnector(BaseConnector):
 
             # Step 10: Sync projects
             await self._sync_projects_for_teams(team_record_groups)
+
+            # Step 11: Sync deleted issues
+            await self._sync_deleted_issues(team_record_groups)
+
+            # Step 12: Sync deleted projects
+            await self._sync_deleted_projects(team_record_groups)
 
             self.logger.info("✅ Linear sync completed")
 
@@ -1497,6 +1549,18 @@ class LinearConnector(BaseConnector):
                             )
                             batch_records.extend(link_records)
 
+                        # Process project documents and create WebpageRecords
+                        documents_data = full_project_data.get("documents", {}).get("nodes", [])
+                        if documents_data:
+                            document_records = await self._process_project_documents(
+                                documents_data=documents_data,
+                                project_id=project_id,
+                                project_node_id=project_record.id,
+                                team_id=team_id,
+                                tx_store=tx_store
+                            )
+                            batch_records.extend(document_records)
+
                         # Records inherit permissions from RecordGroup (team), so pass empty list
                         batch_records.append((project_record, []))
 
@@ -1669,6 +1733,63 @@ class LinearConnector(BaseConnector):
                 continue
 
         return link_records
+
+    async def _process_project_documents(
+        self,
+        documents_data: List[Dict[str, Any]],
+        project_id: str,
+        project_node_id: str,
+        team_id: str,
+        tx_store
+    ) -> List[Tuple[Record, List[Permission]]]:
+        """
+        Process project documents and create WebpageRecords.
+
+        Args:
+            documents_data: List of document data from Linear API
+            project_id: Project external ID
+            project_node_id: Internal record ID of project
+            team_id: Team ID for external_record_group_id
+            tx_store: Transaction store for looking up existing records
+
+        Returns:
+            List of (WebpageRecord, permissions) tuples
+        """
+        document_records: List[Tuple[Record, List[Permission]]] = []
+
+        for document_data in documents_data:
+            try:
+                document_id = document_data.get("id", "")
+                if not document_id:
+                    continue
+
+                # Check if document already exists
+                existing_document = await tx_store.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=document_id
+                )
+
+                # Transform document to WebpageRecord (reuse existing transform function)
+                webpage_record = self._transform_document_to_webpage_record(
+                    document_data=document_data,
+                    issue_id=project_id,  # Use project_id as parent (even though it's a project, not an issue)
+                    parent_node_id=project_node_id,
+                    team_id=team_id,
+                    existing_record=existing_document
+                )
+
+                # Set indexing status based on PROJECTS filter (documents are part of project content)
+                if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.PROJECTS):
+                    webpage_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+                document_records.append((webpage_record, []))
+
+            except Exception as e:
+                document_id = document_data.get("id", "unknown")
+                self.logger.error(f"❌ Error processing project document {document_id}: {e}", exc_info=True)
+                continue
+
+        return document_records
 
     async def _extract_files_from_markdown(
         self,
@@ -2313,7 +2434,7 @@ class LinearConnector(BaseConnector):
             updated_at=get_epoch_timestamp_in_ms(),
             source_created_at=created_at,
             source_updated_at=updated_at,
-            preview_renderable=True,
+            preview_renderable=False,
             is_dependent_node=True,
             parent_node_id=parent_node_id,
             inherit_permissions=True,
@@ -2470,6 +2591,339 @@ class LinearConnector(BaseConnector):
                 else:
                     linear_filter["createdAt"] = {"lte": linear_datetime}
 
+    # ==================== DELETION SYNC ====================
+
+    async def _sync_deleted_issues(
+        self,
+        team_record_groups: List[Tuple[RecordGroup, List[Permission]]]
+    ) -> None:
+        """
+        Sync deleted/trashed issues to mark records as deleted.
+        Also marks related records (comments, attachments, files) as deleted.
+        Uses incremental sync based on archivedAt timestamp.
+
+        Note: Only runs if this is not the initial sync (i.e., we have previous sync checkpoints).
+        During initial sync, there are no previously synced records to mark as deleted.
+        """
+        if not team_record_groups:
+            return
+
+        # Build team IDs list
+        team_ids = [
+            team_rg.external_group_id
+            for team_rg, _ in team_record_groups
+            if team_rg.external_group_id
+        ]
+
+        if not team_ids:
+            return
+
+        # Get last deletion sync checkpoint - if None, this is initial sync, skip deletion sync
+        last_sync_time = await self._get_deletion_sync_checkpoint("issues")
+
+        if last_sync_time is None:
+            self.logger.info("ℹ️ Skipping deletion sync - this is the initial sync (no deletion checkpoint)")
+            # Create initial checkpoint so next sync knows it's not initial anymore
+            current_time = get_epoch_timestamp_in_ms()
+            await self._update_deletion_sync_checkpoint("issues", current_time)
+            return
+
+        try:
+            self.logger.info("🗑️ Starting deleted issues sync")
+
+            datasource = await self._get_fresh_datasource()
+            after_cursor: Optional[str] = None
+            total_deleted = 0
+            max_archived_at: Optional[int] = None
+
+            # Build filter for issues (can't filter by trashed in GraphQL, so we filter in code)
+            issue_filter: Dict[str, Any] = {
+                "team": {"id": {"in": team_ids}}
+            }
+
+            # Add incremental filter if we have a checkpoint
+            if last_sync_time:
+                archived_after = self._linear_datetime_from_timestamp(last_sync_time)
+                if archived_after:
+                    issue_filter["archivedAt"] = {"gte": archived_after}
+                    self.logger.info(f"🔄 Incremental deletion sync from {archived_after}")
+
+            while True:
+                # Use regular issues query with includeArchived=true, then filter for trashed in code
+                response = await datasource.issues(
+                    first=50,
+                    after=after_cursor,
+                    filter=issue_filter,
+                    includeArchived=True
+                )
+
+                if not response.success:
+                    self.logger.error(f"❌ Failed to fetch issues for deletion sync: {response.message}")
+                    break
+
+                issues_data = response.data.get("issues", {}) if response.data else {}
+                issues_list = issues_data.get("nodes", [])
+                page_info = issues_data.get("pageInfo", {})
+
+                if not issues_list:
+                    break
+
+                # Filter for trashed issues in application code
+                trashed_issues = [issue for issue in issues_list if issue.get("trashed")]
+
+                for issue in trashed_issues:
+                    issue_id = issue.get("id")
+                    identifier = issue.get("identifier", "")
+                    archived_at = issue.get("archivedAt")
+
+                    self.logger.info(f"🗑️ Marking issue {identifier} ({issue_id}) as deleted")
+
+                    # Mark the issue record as deleted
+                    await self._mark_record_and_children_deleted(
+                        external_record_id=issue_id,
+                        record_type="issue"
+                    )
+                    total_deleted += 1
+
+                    # Track max archivedAt for checkpoint
+                    if archived_at:
+                        archived_timestamp = self._parse_linear_datetime(archived_at)
+                        if archived_timestamp:
+                            if max_archived_at is None or archived_timestamp > max_archived_at:
+                                max_archived_at = archived_timestamp
+
+                # Check for more pages
+                if not page_info.get("hasNextPage", False):
+                    break
+
+                after_cursor = page_info.get("endCursor")
+                if not after_cursor:
+                    break
+
+            # Update checkpoint
+            if max_archived_at:
+                await self._update_deletion_sync_checkpoint("issues", max_archived_at)
+
+            if total_deleted > 0:
+                self.logger.info(f"✅ Marked {total_deleted} issues as deleted")
+            else:
+                self.logger.info("ℹ️ No deleted issues found")
+
+        except Exception as e:
+            self.logger.error(f"❌ Error syncing deleted issues: {e}", exc_info=True)
+
+    async def _sync_deleted_projects(
+        self,
+        team_record_groups: List[Tuple[RecordGroup, List[Permission]]]
+    ) -> None:
+        """
+        Sync deleted/trashed projects to mark records as deleted.
+        Also marks related records (documents, milestones, updates, comments, files) as deleted.
+        Uses incremental sync based on archivedAt timestamp.
+
+        Note: Only runs if this is not the initial sync (i.e., we have previous sync checkpoints).
+        During initial sync, there are no previously synced records to mark as deleted.
+        """
+        if not team_record_groups:
+            return
+
+        # Build team IDs list
+        team_ids = [
+            team_rg.external_group_id
+            for team_rg, _ in team_record_groups
+            if team_rg.external_group_id
+        ]
+
+        if not team_ids:
+            return
+
+        # Get last deletion sync checkpoint - if None, this is initial sync, skip deletion sync
+        last_sync_time = await self._get_deletion_sync_checkpoint("projects")
+
+        if last_sync_time is None:
+            self.logger.info("ℹ️ Skipping deletion sync - this is the initial sync (no deletion checkpoint)")
+            # Create initial checkpoint so next sync knows it's not initial anymore
+            current_time = get_epoch_timestamp_in_ms()
+            await self._update_deletion_sync_checkpoint("projects", current_time)
+            return
+
+        try:
+            self.logger.info("🗑️ Starting deleted projects sync")
+
+            datasource = await self._get_fresh_datasource()
+            after_cursor: Optional[str] = None
+            total_deleted = 0
+            max_archived_at: Optional[int] = None
+
+            # Build filter for projects (can't filter by trashed or archivedAt in GraphQL, so we filter in code)
+            project_filter: Dict[str, Any] = {
+                "accessibleTeams": {
+                    "some": {
+                        "id": {"in": team_ids}
+                    }
+                }
+            }
+
+            # Log incremental sync info
+            if last_sync_time:
+                archived_after = self._linear_datetime_from_timestamp(last_sync_time)
+                if archived_after:
+                    self.logger.info(f"🔄 Incremental deletion sync from {archived_after}")
+
+            while True:
+                # Use regular projects query with includeArchived=true, then filter for trashed in code
+                response = await datasource.projects(
+                    first=50,
+                    after=after_cursor,
+                    filter=project_filter,
+                    includeArchived=True
+                )
+
+                if not response.success:
+                    self.logger.error(f"❌ Failed to fetch projects for deletion sync: {response.message}")
+                    break
+
+                projects_data = response.data.get("projects", {}) if response.data else {}
+                projects_list = projects_data.get("nodes", [])
+                page_info = projects_data.get("pageInfo", {})
+
+                if not projects_list:
+                    break
+
+                # Filter for trashed projects in application code
+                trashed_projects = []
+                for project in projects_list:
+                    if not project.get("trashed"):
+                        continue
+
+                    # If we have a checkpoint, also filter by archivedAt in code (since GraphQL doesn't support it)
+                    if last_sync_time:
+                        archived_at = project.get("archivedAt")
+                        if not archived_at:
+                            continue
+                        archived_timestamp = self._parse_linear_datetime(archived_at)
+                        if not archived_timestamp or archived_timestamp < last_sync_time:
+                            continue
+
+                    trashed_projects.append(project)
+
+                for project in trashed_projects:
+                    project_id = project.get("id")
+                    project_name = project.get("name", "")
+                    archived_at = project.get("archivedAt")
+
+                    self.logger.info(f"🗑️ Marking project '{project_name}' ({project_id}) as deleted")
+
+                    # Mark the project record and all children as deleted
+                    await self._mark_record_and_children_deleted(
+                        external_record_id=project_id,
+                        record_type="project"
+                    )
+                    total_deleted += 1
+
+                    # Track max archivedAt for checkpoint
+                    if archived_at:
+                        archived_timestamp = self._parse_linear_datetime(archived_at)
+                        if archived_timestamp:
+                            if max_archived_at is None or archived_timestamp > max_archived_at:
+                                max_archived_at = archived_timestamp
+
+                # Check for more pages
+                if not page_info.get("hasNextPage", False):
+                    break
+
+                after_cursor = page_info.get("endCursor")
+                if not after_cursor:
+                    break
+
+            # Update checkpoint
+            if max_archived_at:
+                await self._update_deletion_sync_checkpoint("projects", max_archived_at)
+
+            if total_deleted > 0:
+                self.logger.info(f"✅ Marked {total_deleted} projects as deleted")
+            else:
+                self.logger.info("ℹ️ No deleted projects found")
+
+        except Exception as e:
+            self.logger.error(f"❌ Error syncing deleted projects: {e}", exc_info=True)
+
+    async def _mark_record_and_children_deleted(
+        self,
+        external_record_id: str,
+        record_type: str
+    ) -> None:
+        """
+        Mark a record and all its child records as deleted.
+
+        For Issues:
+            - Issue (TicketRecord)
+            - Comments (CommentRecord) - separate records
+            - Attachments (LinkRecord) - separate records
+            - Documents (WebPageRecord) - separate records
+            - Files (FileRecord) - extracted from issue descriptions and comments
+
+        For Projects:
+            - Project (TicketRecord) - contains milestones, updates, and comments as blocks (not separate records)
+            - Documents (WebPageRecord) - separate records
+            - External Links (LinkRecord) - separate records
+            - Files (FileRecord) - extracted from project content markdown
+
+        Note: Project milestones, updates, and comments are stored as blocks within the project
+        record itself, not as separate records, so they are automatically deleted when the
+        project record is deleted.
+        """
+        try:
+            # Use transaction to delete parent and all children
+            async with self.data_store_provider.transaction() as tx_store:
+                # Get the parent record within transaction
+                parent_record = await tx_store.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=external_record_id
+                )
+
+                if not parent_record:
+                    self.logger.debug(f"Record {external_record_id} not found in DB, skipping deletion")
+                    return
+
+                # Get and delete all child records first (recursively)
+                child_records = await tx_store.get_records_by_parent(
+                    connector_id=self.connector_id,
+                    parent_external_record_id=external_record_id
+                )
+
+                for child_record in child_records:
+                    # Recursively delete grandchildren (e.g., files attached to comments)
+                    grandchild_records = await tx_store.get_records_by_parent(
+                        connector_id=self.connector_id,
+                        parent_external_record_id=child_record.external_record_id
+                    )
+                    for grandchild in grandchild_records:
+                        # Delete grandchild record and all its relations
+                        await tx_store.delete_records_and_relations(
+                            record_key=grandchild.id,
+                            hard_delete=True
+                        )
+
+                    # Delete child record and all its relations
+                    await tx_store.delete_records_and_relations(
+                        record_key=child_record.id,
+                        hard_delete=True
+                    )
+
+                # Finally, delete the parent record and all its relations
+                await tx_store.delete_records_and_relations(
+                    record_key=parent_record.id,
+                    hard_delete=True
+                )
+
+            self.logger.debug(
+                f"Marked {external_record_id} and {len(child_records)} children as deleted"
+            )
+
+        except Exception as e:
+            self.logger.error(f"❌ Error marking record {external_record_id} as deleted: {e}")
+
     # ==================== SYNC CHECKPOINTS ====================
 
     async def _get_team_sync_checkpoint(self, team_key: str) -> Optional[int]:
@@ -2547,6 +3001,21 @@ class LinearConnector(BaseConnector):
             {"last_sync_time": timestamp}
         )
         self.logger.debug(f"💾 Updated documents sync point: {timestamp}")
+
+    async def _get_deletion_sync_checkpoint(self, entity_type: str) -> Optional[int]:
+        """Get deletion sync checkpoint for issues or projects."""
+        sync_point_key = f"{entity_type}_deletion_sync"
+        data = await self.deletion_sync_point.read_sync_point(sync_point_key)
+        return data.get("last_sync_time") if data else None
+
+    async def _update_deletion_sync_checkpoint(self, entity_type: str, timestamp: int) -> None:
+        """Update deletion sync checkpoint."""
+        sync_point_key = f"{entity_type}_deletion_sync"
+        await self.deletion_sync_point.update_sync_point(
+            sync_point_key,
+            {"last_sync_time": timestamp}
+        )
+        self.logger.debug(f"💾 Updated deletion sync checkpoint for {entity_type}: {timestamp}")
 
     def _linear_datetime_from_timestamp(self, timestamp_ms: int) -> str:
         """
@@ -2795,35 +3264,24 @@ class LinearConnector(BaseConnector):
 
     async def _fetch_document_content(self, document_id: str) -> str:
         """Fetch document content for streaming.
-
         Args:
             document_id: Linear document ID
-
         Returns:
             Document content (markdown format)
         """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
 
-        # Use DataSource to get document details
+        # Use DataSource to get document by ID directly
         datasource = await self._get_fresh_datasource()
-
-        # Query document by ID using filter
-        response = await datasource.documents(
-            first=1,
-            filter={"id": {"eq": document_id}}
-        )
+        response = await datasource.document(id=document_id)
 
         if not response.success:
             raise Exception(f"Failed to fetch document content: {response.message}")
 
-        documents_data = response.data.get("documents", {}) if response.data else {}
-        documents_list = documents_data.get("nodes", [])
-
-        if not documents_list:
+        document_data = response.data.get("document", {}) if response.data else {}
+        if not document_data:
             raise Exception(f"No document data found for ID: {document_id}")
-
-        document_data = documents_list[0]
 
         # Return the content field (markdown)
         content = document_data.get("content", "")
@@ -3238,10 +3696,6 @@ class LinearConnector(BaseConnector):
             # Transform issue to ticket record
             ticket_record = self._transform_issue_to_ticket_record(issue_data, team_id, record)
 
-            # Set indexing status based on filters
-            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES):
-                ticket_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
-
             # Extract permissions (empty list for now, Linear doesn't have explicit permissions)
             permissions = []
 
@@ -3298,10 +3752,6 @@ class LinearConnector(BaseConnector):
             project_record = self._transform_project_to_ticket_record(
                 project_data, team_id, record, blocks_container
             )
-
-            # Set indexing status based on filters
-            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.PROJECTS):
-                project_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             # Extract permissions (empty list for now)
             permissions = []
@@ -3392,10 +3842,6 @@ class LinearConnector(BaseConnector):
                 comment_data, issue_id, issue_identifier, parent_node_id, team_id, record
             )
 
-            # Set indexing status based on filters
-            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_COMMENTS):
-                comment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
-
             # Extract permissions (empty list for now)
             permissions = []
 
@@ -3438,16 +3884,30 @@ class LinearConnector(BaseConnector):
                     # Document hasn't changed
                     return None
 
-            # Document has changed, transform and return
-            # Get issue_id from document_data first, fallback to record
+            # Check if document is associated with an issue or a project
             issue_data = document_data.get("issue", {})
-            issue_id = issue_data.get("id", record.parent_external_record_id or "")
+            project_data = document_data.get("project", {})
+
+            # Determine parent type and ID (one of them must be present)
+            parent_external_id = None
+
+            if project_data:
+                # Document is associated with a project
+                parent_external_id = project_data.get("id")
+            elif issue_data:
+                # Document is associated with an issue
+                parent_external_id = issue_data.get("id")
+            else:
+                # Neither issue nor project found - this should not happen
+                self.logger.warning(f"Document {document_id} has neither issue nor project, cannot transform properly")
+                return None
+
+            if not parent_external_id:
+                self.logger.warning(f"Document {document_id} has no parent ID, cannot transform properly")
+                return None
+
             team_id = record.external_record_group_id or ""
             parent_node_id = record.parent_node_id
-
-            if not issue_id:
-                self.logger.warning(f"Document {document_id} has no issue_id, cannot transform properly")
-                return None
 
             if not parent_node_id:
                 self.logger.warning(f"Document {document_id} has no parent_node_id, cannot transform properly")
@@ -3456,15 +3916,11 @@ class LinearConnector(BaseConnector):
             # Transform document to WebpageRecord
             webpage_record = self._transform_document_to_webpage_record(
                 document_data=document_data,
-                issue_id=issue_id,
+                issue_id=parent_external_id,  # Parameter name is issue_id but can be project_id too
                 parent_node_id=parent_node_id,
                 team_id=team_id,
                 existing_record=record
             )
-
-            # Set indexing status based on filters
-            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.DOCUMENTS):
-                webpage_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             permissions = []
             return (webpage_record, permissions)
@@ -3535,10 +3991,6 @@ class LinearConnector(BaseConnector):
                 team_id=team_id,
                 existing_record=record
             )
-
-            # Set indexing status based on filters
-            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_ATTACHMENTS):
-                link_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             # Look up related record by weburl
             if link_record.weburl:
@@ -3640,10 +4092,6 @@ class LinearConnector(BaseConnector):
                 team_id=team_id,
                 existing_record=record
             )
-
-            # Set indexing status based on FILES filter (external links are treated as files)
-            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.PROJECTS):
-                link_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             # Look up related record by weburl
             if link_record.weburl:
