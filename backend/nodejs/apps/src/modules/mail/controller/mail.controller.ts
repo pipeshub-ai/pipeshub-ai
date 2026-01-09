@@ -33,6 +33,7 @@ export class MailController {
       if (!this.config.smtp) {
         throw new NotFoundError('Smtp Configuration not set');
       }
+      console.log('body', body);
       result = await this.emailSender(body, this.config.smtp);
       if (!result.status) {
         throw new InternalServerError(result.data || 'Error sending mail');

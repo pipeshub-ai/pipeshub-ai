@@ -52,6 +52,8 @@ import {
 import { useAdmin } from 'src/context/AdminContext';
 
 import { Iconify } from 'src/components/iconify';
+import axios from 'src/utils/axios';
+import { CONFIG } from 'src/config-global';
 
 import {
   setCounts,
@@ -107,6 +109,8 @@ const Users = () => {
     message: '',
     severity: 'success',
   });
+  const [emailLoading, setEmailLoading] = useState<Record<string, boolean>>({});
+  const [userEmails, setUserEmails] = useState<Record<string, string>>({});
 
   const navigate = useNavigate();
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -115,6 +119,29 @@ const Users = () => {
 
   const handleSnackbarClose = () => {
     setSnackbarState({ ...snackbarState, open: false });
+  };
+
+  const fetchUserEmail = async (userIdentifier: string) => {
+    // If email is already fetched, don't fetch again
+    if (userEmails[userIdentifier]) {
+      return;
+    }
+
+    setEmailLoading((prev) => ({ ...prev, [userIdentifier]: true }));
+    try {
+      const response = await axios.get<{ email: string }>(
+        `${CONFIG.backendUrl}/api/v1/users/${userIdentifier}/email`
+      );
+      setUserEmails((prev) => ({ ...prev, [userIdentifier]: response.data.email }));
+    } catch (error) {
+      setSnackbarState({
+        open: true,
+        message: 'Failed to fetch email',
+        severity: 'error',
+      });
+    } finally {
+      setEmailLoading((prev) => ({ ...prev, [userIdentifier]: false }));
+    }
   };
 
   useEffect(() => {
@@ -338,7 +365,7 @@ const Users = () => {
             sx={{ color: 'text.disabled', mr: 1 }}
           />
           <InputBase
-            placeholder="Search users by name or email"
+            placeholder="Search users by name"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             fullWidth
@@ -492,13 +519,43 @@ const Users = () => {
                             <Typography variant="subtitle2">
                               {user.fullName || 'Unnamed User'}
                             </Typography>
-                            <Typography
-                              variant="body2"
-                              color="text.secondary"
-                              sx={{ fontSize: '0.75rem' }}
-                            >
-                              {user.email || 'No email'}
-                            </Typography>
+                            {userEmails[user._id] ? (
+                              <Typography
+                                variant="body2"
+                                color="text.secondary"
+                                sx={{ fontSize: '0.75rem' }}
+                              >
+                                {userEmails[user._id]}
+                              </Typography>
+                            ) : (
+                              <Button
+                                size="small"
+                                variant="text"
+                                onClick={() => fetchUserEmail(user._id)}
+                                disabled={emailLoading[user._id]}
+                                sx={{
+                                  fontSize: '0.75rem',
+                                  minWidth: 'auto',
+                                  p: 0.5,
+                                  textTransform: 'none',
+                                  color: 'text.secondary',
+                                  '&:hover': {
+                                    bgcolor: 'transparent',
+                                  },
+                                }}
+                              >
+                                {emailLoading[user._id] ? (
+                                  <Stack direction="row" alignItems="center" spacing={0.5}>
+                                    <CircularProgress size={12} />
+                                    <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
+                                      Loading...
+                                    </Typography>
+                                  </Stack>
+                                ) : (
+                                  'Show Email'
+                                )}
+                              </Button>
+                            )}
                           </Box>
                         </Stack>
                       )}
@@ -730,9 +787,39 @@ const Users = () => {
                 <Typography variant="h6" sx={{ mb: 0.5 }}>
                   {selectedUser.fullName || 'Unnamed User'}
                 </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {selectedUser.email || 'No email'}
-                </Typography>
+                {userEmails[selectedUser._id] ? (
+                  <Typography variant="body2" color="text.secondary">
+                    {userEmails[selectedUser._id]}
+                  </Typography>
+                ) : (
+                  <Button
+                    size="small"
+                    variant="text"
+                    onClick={() => fetchUserEmail(selectedUser._id)}
+                    disabled={emailLoading[selectedUser._id]}
+                    sx={{
+                      fontSize: '0.875rem',
+                      minWidth: 'auto',
+                      p: 0.5,
+                      textTransform: 'none',
+                      color: 'text.secondary',
+                      '&:hover': {
+                        bgcolor: 'transparent',
+                      },
+                    }}
+                  >
+                    {emailLoading[selectedUser._id] ? (
+                      <Stack direction="row" alignItems="center" spacing={0.5}>
+                        <CircularProgress size={12} />
+                        <Typography variant="body2" sx={{ fontSize: '0.875rem' }}>
+                          Loading...
+                        </Typography>
+                      </Stack>
+                    ) : (
+                      'Show Email'
+                    )}
+                  </Button>
+                )}
               </Box>
             </Stack>
 
@@ -1595,9 +1682,34 @@ function AddUsersToGroupsModal({
     message: '',
     severity: 'success',
   });
+  const [emailLoading, setEmailLoading] = useState<Record<string, boolean>>({});
+  const [userEmails, setUserEmails] = useState<Record<string, string>>({});
 
   const handleSnackbarClose = () => {
     setSnackbarState({ ...snackbarState, open: false });
+  };
+
+  const fetchUserEmail = async (userIdentifier: string) => {
+    // If email is already fetched, don't fetch again
+    if (userEmails[userIdentifier]) {
+      return;
+    }
+
+    setEmailLoading((prev) => ({ ...prev, [userIdentifier]: true }));
+    try {
+      const response = await axios.get<{ email: string }>(
+        `${CONFIG.backendUrl}/api/v1/users/${userIdentifier}/email`
+      );
+      setUserEmails((prev) => ({ ...prev, [userIdentifier]: response.data.email }));
+    } catch (error) {
+      setSnackbarState({
+        open: true,
+        message: 'Failed to fetch email',
+        severity: 'error',
+      });
+    } finally {
+      setEmailLoading((prev) => ({ ...prev, [userIdentifier]: false }));
+    }
   };
 
   const handleAddUsersToGroups = async () => {
@@ -1877,9 +1989,42 @@ function AddUsersToGroupsModal({
                         >
                           {option.fullName || 'Unnamed User'}
                         </Typography>
-                        <Typography variant="caption" color="text.secondary">
-                          {option.email || 'No email'}
-                        </Typography>
+                        {userEmails[option._id] ? (
+                          <Typography variant="caption" color="text.secondary">
+                            {userEmails[option._id]}
+                          </Typography>
+                        ) : (
+                          <Button
+                            size="small"
+                            variant="text"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              fetchUserEmail(option._id);
+                            }}
+                            disabled={emailLoading[option._id]}
+                            sx={{
+                              fontSize: '0.75rem',
+                              minWidth: 'auto',
+                              p: 0.25,
+                              textTransform: 'none',
+                              color: 'text.secondary',
+                              '&:hover': {
+                                bgcolor: 'transparent',
+                              },
+                            }}
+                          >
+                            {emailLoading[option._id] ? (
+                              <Stack direction="row" alignItems="center" spacing={0.5}>
+                                <CircularProgress size={10} />
+                                <Typography variant="caption" sx={{ fontSize: '0.75rem' }}>
+                                  Loading...
+                                </Typography>
+                              </Stack>
+                            ) : (
+                              'Show Email'
+                            )}
+                          </Button>
+                        )}
                       </Box>
                     </Stack>
                   </MenuItem>
