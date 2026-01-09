@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 from logging import Logger
-from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Set
+from typing import Any, AsyncGenerator, Callable, Dict, Optional, Set
 
 from aiokafka import AIOKafkaConsumer, TopicPartition  # type: ignore
 
@@ -234,11 +234,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         partition = message.partition
         offset = message.offset
         message_id = f"{topic}-{partition}-{offset}"
-        
+
         # Get current semaphore state before acquisition
         parsing_available_before = self.parsing_semaphore._value
         indexing_available_before = self.indexing_semaphore._value
-        
+
         # Log acquire attempt
         SemaphoreLogger.log_semaphore_acquire_attempt(
             "both",
@@ -248,21 +248,21 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             indexing_available_before,
             self.max_concurrent_indexing
         )
-        
+
         # Track acquisition start time
         acquire_start = get_timestamp()
-        
+
         # Acquire both semaphores - ensures slots available for both phases
         await self.parsing_semaphore.acquire()
         await self.indexing_semaphore.acquire()
-        
+
         # Calculate wait time
         wait_time_ms = (get_timestamp() - acquire_start) * 1000
-        
+
         # Get semaphore state after acquisition
         parsing_available_after = self.parsing_semaphore._value
         indexing_available_after = self.indexing_semaphore._value
-        
+
         # Initialize timestamp tracking for this message
         self.message_timestamps[message_id] = {
             'acquired': get_timestamp(),
@@ -292,7 +292,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self.active_tasks.add(task)
 
         self.__cleanup_completed_tasks()
-        
+
         # Log semaphore state
         SemaphoreLogger.log_semaphore_state(
             parsing_available_after,
@@ -331,7 +331,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 SemaphoreLogger.log_message_error(message_id, "Failed to parse message")
                 return
 
-      
+
 
             if self.message_handler:
                 async for event in self.message_handler(parsed_message):
@@ -347,7 +347,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                             timestamps['indexing_start'] = get_timestamp()
                         else:
                             parsing_duration = None
-                        
+
                         # Log phase transition
                         SemaphoreLogger.log_phase_transition(
                             message_id,
@@ -355,14 +355,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                             record_id,
                             parsing_duration
                         )
-                        
+
                         # Capture semaphore value before releasing (to avoid race condition)
                         parsing_available = self.parsing_semaphore._value
-                        
+
                         # Release semaphore
                         self.parsing_semaphore.release()
                         parsing_released = True
-                        
+
                         # Log release with post-release state (available + 1)
                         SemaphoreLogger.log_semaphore_release(
                             "parsing",
@@ -371,7 +371,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                             self.max_concurrent_parsing,
                             parsing_duration
                         )
-                        
+
                         self.logger.debug(f"Released parsing semaphore for {message_id}")
 
                     elif event_type == IndexingEvent.INDEXING_COMPLETE and not indexing_released:
@@ -385,7 +385,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                 indexing_duration = None
                         else:
                             indexing_duration = None
-                        
+
                         # Log phase transition
                         SemaphoreLogger.log_phase_transition(
                             message_id,
@@ -393,14 +393,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                             record_id,
                             indexing_duration
                         )
-                        
+
                         # Capture semaphore value before releasing (to avoid race condition)
                         indexing_available = self.indexing_semaphore._value
-                        
+
                         # Release semaphore
                         self.indexing_semaphore.release()
                         indexing_released = True
-                        
+
                         # Log release with post-release state (available + 1)
                         SemaphoreLogger.log_semaphore_release(
                             "indexing",
@@ -409,10 +409,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                             self.max_concurrent_indexing,
                             indexing_duration
                         )
-                        
+
                         self.logger.debug(f"Released indexing semaphore for {message_id}")
 
-                
+
                 # Clean up timestamp tracking
                 if message_id in self.message_timestamps:
                     del self.message_timestamps[message_id]
@@ -449,7 +449,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     reason="finally_block_error"
                 )
                 self.logger.debug(f"Released indexing semaphore in finally for {message_id}")
-            
+
             # Clean up timestamp tracking
             if message_id in self.message_timestamps:
                 del self.message_timestamps[message_id]

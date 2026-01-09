@@ -234,7 +234,7 @@ class Processor:
 
             # Signal parsing complete after Docling parsing
             yield {"event": "parsing_complete", "data": {"record_id": recordId}}
-            
+
 
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await self.docling_client.create_blocks(parse_result)
@@ -287,7 +287,7 @@ class Processor:
             # Configure OCR handler
             self.logger.debug("🛠️ Configuring OCR handler")
             handler = None
-            
+
             provider = None
             for config in ocr_configs:
                 provider = config["provider"]
@@ -358,7 +358,7 @@ class Processor:
 
             self.logger.debug("✅ OCR processing completed")
 
-            
+
 
             if provider == OCRProvider.VLM_OCR.value:
                 pages = ocr_result.get("pages", [])
@@ -457,7 +457,7 @@ class Processor:
                 return
             else:
                 yield {"event": "parsing_complete", "data": {"record_id": recordId}}
-            
+
             blocks_from_ocr = ocr_result.get("blocks", [])
             blocks = []
             index = 0
@@ -734,11 +734,11 @@ class Processor:
 
             if csv_result is None or not csv_result:
                 self.logger.info(f"Unable to decode CSV file with any supported encoding or it is empty for record: {recordName}. Setting indexing status to EMPTY.")
-                
+
                 yield {"event": "parsing_complete", "data": {"record_id": recordId}}
                 yield {"event": "indexing_complete", "data": {"record_id": recordId}}
                 await self._mark_record(recordId, ProgressStatus.EMPTY)
-                
+
                 return
 
             self.logger.debug("📑 CSV result processed")
