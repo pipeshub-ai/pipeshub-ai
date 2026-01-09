@@ -1,4 +1,3 @@
-import asyncio
 from datetime import datetime
 from logging import Logger
 from typing import Optional
