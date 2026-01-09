@@ -281,9 +281,8 @@ class EventProcessor:
                 virtual_record_id = record.get("virtualRecordId")
 
             # For both create and update events, we need to process the document
-            if event_type == EventTypes.REINDEX_RECORD.value or event_type == EventTypes.UPDATE_RECORD.value:
+            if event_type == EventTypes.REINDEX_RECORD.value:
                 # For updates, first delete existing embeddings
-
                 self.logger.info(
                     f"""🔄 Deleting existing embeddings for record {record_id} for event {event_type}"""
                 )

@@ -22,12 +22,9 @@ from app.exceptions.indexing_exceptions import IndexingError
 from app.services.messaging.kafka.handlers.entity import BaseEventService
 
 # from app.connectors.sources.google.common.arango_service import ArangoService
-from app.services.scheduler.interface.scheduler import Scheduler
-from app.services.scheduler.scheduler_factory import SchedulerFactory
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
-from app.utils.redis_util import build_redis_url
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=15))
@@ -56,25 +53,12 @@ class RecordEventHandler(BaseEventService):
     def __init__(self, logger: Logger,
                 config_service: ConfigurationService,
                 event_processor: EventProcessor,
-                scheduler: Optional[Scheduler] = None
                 ) -> None:
 
         self.logger = logger
         self.config_service = config_service
-        if scheduler:
-            self.scheduler : Scheduler = scheduler
-        else:
-            self.scheduler : Scheduler = self.__buildDefaultScheduler(logger, config_service)
-        self.scheduled_update_task = asyncio.create_task(self.scheduler.process_scheduled_events(event_processor))
-        self.event_processor : EventProcessor = event_processor
 
-    def __buildDefaultScheduler(self, logger: Logger, config_service: ConfigurationService) -> Scheduler:
-        redis_config = config_service.get_config(config_node_constants.REDIS.value)
-        if not redis_config or not isinstance(redis_config, dict):
-            raise ValueError("Redis configuration not found")
-        # Build Redis URL with password if provided
-        redis_url = build_redis_url(redis_config)
-        return SchedulerFactory.scheduler("redis", redis_url, logger, config_service, delay_hours=1)
+        self.event_processor : EventProcessor = event_processor
 
     async def _trigger_next_queued_duplicate(self, record_id: str, virtual_record_id) -> None:
         try:
@@ -466,12 +450,3 @@ class RecordEventHandler(BaseEventService):
             self.logger.error(f"❌ Failed to update document status: {str(e)}")
             return None
 
-    async def clean_event_handler(self) -> None:
-        """Clean up the event handler"""
-        # await self.scheduler.stop()
-        if self.scheduled_update_task:
-            self.scheduled_update_task.cancel()
-            try:
-                await self.scheduled_update_task
-            except asyncio.CancelledError:
-                pass
