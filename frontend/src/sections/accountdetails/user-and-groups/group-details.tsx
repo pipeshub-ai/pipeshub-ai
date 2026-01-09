@@ -50,8 +50,7 @@ import {
 import { useAdmin } from 'src/context/AdminContext';
 
 import { Iconify } from 'src/components/iconify';
-import axios from 'src/utils/axios';
-import { CONFIG } from 'src/config-global';
+import { useUserEmails } from 'src/hooks/use-user-emails';
 
 import {
   fetchAllUsers,
@@ -96,9 +95,16 @@ export default function GroupDetails() {
     message: '',
     severity: 'success',
   });
-  const [emailLoading, setEmailLoading] = useState<Record<string, boolean>>({});
-  const [userEmails, setUserEmails] = useState<Record<string, string>>({});
   const { isAdmin } = useAdmin();
+  const { userEmails, emailLoading, fetchUserEmail } = useUserEmails({
+    onError: () => {
+      setSnackbarState({
+        open: true,
+        message: 'Failed to fetch email',
+        severity: 'error',
+      });
+    },
+  });
 
   const location = useLocation();
   const pathSegments = location?.pathname?.split('/') || [];
@@ -106,29 +112,6 @@ export default function GroupDetails() {
 
   const handleSnackbarClose = (): void => {
     setSnackbarState({ ...snackbarState, open: false });
-  };
-
-  const fetchUserEmail = async (userIdentifier: string) => {
-    // If email is already fetched, don't fetch again
-    if (userEmails[userIdentifier]) {
-      return;
-    }
-
-    setEmailLoading((prev) => ({ ...prev, [userIdentifier]: true }));
-    try {
-      const response = await axios.get<{ email: string }>(
-        `${CONFIG.backendUrl}/api/v1/users/${userIdentifier}/email`
-      );
-      setUserEmails((prev) => ({ ...prev, [userIdentifier]: response.data.email }));
-    } catch (error) {
-      setSnackbarState({
-        open: true,
-        message: 'Failed to fetch email',
-        severity: 'error',
-      });
-    } finally {
-      setEmailLoading((prev) => ({ ...prev, [userIdentifier]: false }));
-    }
   };
 
   const filterGroupUsers = (users: AppUser[], groupUserIds: string[]): AppUser[] =>
@@ -1159,35 +1142,20 @@ function AddUsersToGroupsModal({
     message: '',
     severity: 'success',
   });
-  const [emailLoading, setEmailLoading] = useState<Record<string, boolean>>({});
-  const [userEmails, setUserEmails] = useState<Record<string, string>>({});
 
   const handleSnackbarClose = () => {
     setSnackbarState({ ...snackbarState, open: false });
   };
 
-  const fetchUserEmail = async (userIdentifier: string) => {
-    // If email is already fetched, don't fetch again
-    if (userEmails[userIdentifier]) {
-      return;
-    }
-
-    setEmailLoading((prev) => ({ ...prev, [userIdentifier]: true }));
-    try {
-      const response = await axios.get<{ email: string }>(
-        `${CONFIG.backendUrl}/api/v1/users/${userIdentifier}/email`
-      );
-      setUserEmails((prev) => ({ ...prev, [userIdentifier]: response.data.email }));
-    } catch (error) {
+  const { userEmails, emailLoading, fetchUserEmail } = useUserEmails({
+    onError: () => {
       setSnackbarState({
         open: true,
         message: 'Failed to fetch email',
         severity: 'error',
       });
-    } finally {
-      setEmailLoading((prev) => ({ ...prev, [userIdentifier]: false }));
-    }
-  };
+    },
+  });
 
   const handleAddUsersToGroups = async () => {
     try {

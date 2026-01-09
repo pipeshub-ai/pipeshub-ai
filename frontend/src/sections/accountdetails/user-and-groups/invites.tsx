@@ -38,12 +38,9 @@ import {
 import { useAdmin } from 'src/context/AdminContext';
 
 import { Iconify } from 'src/components/iconify';
-import axios from 'src/utils/axios';
-import { CONFIG } from 'src/config-global';
-
+import { useUserEmails } from 'src/hooks/use-user-emails';
 import { removeUser, resendInvite, getAllUsersWithGroups } from '../utils';
 import { setInviteCount, decrementInvitesCount } from '../../../store/user-and-groups-slice';
-
 import type { GroupUser } from '../types/group-details';
 import type { SnackbarState } from '../types/organization-data';
 
@@ -74,11 +71,18 @@ export default function Invites() {
     message: '',
     severity: 'info',
   });
-  const [emailLoading, setEmailLoading] = useState<Record<string, boolean>>({});
-  const [userEmails, setUserEmails] = useState<Record<string, string>>({});
 
   const dispatch = useDispatch();
   const { isAdmin } = useAdmin();
+  const { userEmails, emailLoading, fetchUserEmail } = useUserEmails({
+    onError: () => {
+      setSnackbar({
+        open: true,
+        message: 'Failed to fetch email',
+        severity: 'error',
+      });
+    },
+  });
 
   useEffect(() => {
     const fetchUsers = async (): Promise<void> => {
@@ -97,29 +101,6 @@ export default function Invites() {
     };
     fetchUsers();
   }, [dispatch]);
-
-  const fetchUserEmail = async (userIdentifier: string) => {
-    // If email is already fetched, don't fetch again
-    if (userEmails[userIdentifier]) {
-      return;
-    }
-
-    setEmailLoading((prev) => ({ ...prev, [userIdentifier]: true }));
-    try {
-      const response = await axios.get<{ email: string }>(
-        `${CONFIG.backendUrl}/api/v1/users/${userIdentifier}/email`
-      );
-      setUserEmails((prev) => ({ ...prev, [userIdentifier]: response.data.email }));
-    } catch (error) {
-      setSnackbar({
-        open: true,
-        message: 'Failed to fetch email',
-        severity: 'error',
-      });
-    } finally {
-      setEmailLoading((prev) => ({ ...prev, [userIdentifier]: false }));
-    }
-  };
 
   const filteredUsers = users.filter((user) => {
     const email = userEmails[user._id] || '';
@@ -514,8 +495,20 @@ export default function Invites() {
                             variant="outlined"
                             color="primary"
                             startIcon={<Iconify icon={emailIcon} />}
-                            onClick={() => handleResendInvite(user._id || '', userEmails[user._id] || '')}
-                            disabled={!isAdmin}
+                            onClick={async () => {
+                              if (!user._id) return;
+                              const email = await fetchUserEmail(user._id);
+                              if (email) {
+                                handleResendInvite(user._id, email);
+                              } else {
+                                setSnackbar({
+                                  open: true,
+                                  message: 'Failed to fetch email. Please try again.',
+                                  severity: 'error',
+                                });
+                              }
+                            }}
+                            disabled={!isAdmin || emailLoading[user._id]}
                             sx={{
                               borderRadius: 1.5,
                               fontSize: '0.75rem',
@@ -535,8 +528,20 @@ export default function Invites() {
                             variant="outlined"
                             color="error"
                             startIcon={<Iconify icon={trashIcon} />}
-                            onClick={() => handleRemoveUser(user._id || '', userEmails[user._id] || '')}
-                            disabled={!isAdmin}
+                            onClick={async () => {
+                              if (!user._id) return;
+                              const email = await fetchUserEmail(user._id);
+                              if (email) {
+                                handleRemoveUser(user._id, email);
+                              } else {
+                                setSnackbar({
+                                  open: true,
+                                  message: 'Failed to fetch email. Please try again.',
+                                  severity: 'error',
+                                });
+                              }
+                            }}
+                            disabled={!isAdmin || emailLoading[user._id]}
                             sx={{
                               borderRadius: 1.5,
                               fontSize: '0.75rem',

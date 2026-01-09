@@ -52,8 +52,7 @@ import {
 import { useAdmin } from 'src/context/AdminContext';
 
 import { Iconify } from 'src/components/iconify';
-import axios from 'src/utils/axios';
-import { CONFIG } from 'src/config-global';
+import { useUserEmails } from 'src/hooks/use-user-emails';
 
 import {
   setCounts,
@@ -109,39 +108,23 @@ const Users = () => {
     message: '',
     severity: 'success',
   });
-  const [emailLoading, setEmailLoading] = useState<Record<string, boolean>>({});
-  const [userEmails, setUserEmails] = useState<Record<string, string>>({});
 
   const navigate = useNavigate();
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const dispatch = useDispatch();
   const { isAdmin } = useAdmin();
-
-  const handleSnackbarClose = () => {
-    setSnackbarState({ ...snackbarState, open: false });
-  };
-
-  const fetchUserEmail = async (userIdentifier: string) => {
-    // If email is already fetched, don't fetch again
-    if (userEmails[userIdentifier]) {
-      return;
-    }
-
-    setEmailLoading((prev) => ({ ...prev, [userIdentifier]: true }));
-    try {
-      const response = await axios.get<{ email: string }>(
-        `${CONFIG.backendUrl}/api/v1/users/${userIdentifier}/email`
-      );
-      setUserEmails((prev) => ({ ...prev, [userIdentifier]: response.data.email }));
-    } catch (error) {
+  const { userEmails, emailLoading, fetchUserEmail } = useUserEmails({
+    onError: () => {
       setSnackbarState({
         open: true,
         message: 'Failed to fetch email',
         severity: 'error',
       });
-    } finally {
-      setEmailLoading((prev) => ({ ...prev, [userIdentifier]: false }));
-    }
+    },
+  });
+
+  const handleSnackbarClose = () => {
+    setSnackbarState({ ...snackbarState, open: false });
   };
 
   useEffect(() => {
@@ -1682,35 +1665,20 @@ function AddUsersToGroupsModal({
     message: '',
     severity: 'success',
   });
-  const [emailLoading, setEmailLoading] = useState<Record<string, boolean>>({});
-  const [userEmails, setUserEmails] = useState<Record<string, string>>({});
 
   const handleSnackbarClose = () => {
     setSnackbarState({ ...snackbarState, open: false });
   };
 
-  const fetchUserEmail = async (userIdentifier: string) => {
-    // If email is already fetched, don't fetch again
-    if (userEmails[userIdentifier]) {
-      return;
-    }
-
-    setEmailLoading((prev) => ({ ...prev, [userIdentifier]: true }));
-    try {
-      const response = await axios.get<{ email: string }>(
-        `${CONFIG.backendUrl}/api/v1/users/${userIdentifier}/email`
-      );
-      setUserEmails((prev) => ({ ...prev, [userIdentifier]: response.data.email }));
-    } catch (error) {
+  const { userEmails, emailLoading, fetchUserEmail } = useUserEmails({
+    onError: () => {
       setSnackbarState({
         open: true,
         message: 'Failed to fetch email',
         severity: 'error',
       });
-    } finally {
-      setEmailLoading((prev) => ({ ...prev, [userIdentifier]: false }));
-    }
-  };
+    },
+  });
 
   const handleAddUsersToGroups = async () => {
     if (selectedUsers.length === 0 || selectedGroups.length === 0) return;
