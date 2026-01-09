@@ -16,6 +16,7 @@ import { Iconify } from 'src/components/iconify';
 import messageTextIcon from '@iconify-icons/mdi/message-text';
 import informationIcon from '@iconify-icons/mdi/information';
 import saveIcon from '@iconify-icons/mdi/content-save';
+import restoreIcon from '@iconify-icons/mdi/restore';
 import axios from 'src/utils/axios';
 
 // Default hardcoded system prompt
@@ -41,7 +42,7 @@ export default function PromptsSettings() {
   const [snackbar, setSnackbar] = useState({
     open: false,
     message: '',
-    severity: 'success' as 'success' | 'error',
+    severity: 'success' as 'success' | 'error' | 'info' | 'warning',
   });
 
   useEffect(() => {
@@ -96,6 +97,10 @@ export default function PromptsSettings() {
 
   const handleCloseSnackbar = () => {
     setSnackbar((prev) => ({ ...prev, open: false }));
+  };
+
+  const handleUseDefault = () => {
+    setSettings((prev) => ({ ...prev, customSystemPrompt: DEFAULT_SYSTEM_PROMPT }));
   };
 
   const hasChanges = useMemo(
@@ -175,31 +180,6 @@ export default function PromptsSettings() {
               Configure the custom system prompt for AI responses
             </Typography>
           </Box>
-
-          {/* Save button */}
-          <Button
-            onClick={handleSave}
-            disabled={saving || loading || !hasChanges}
-            startIcon={
-              saving ? (
-                <CircularProgress size={18} sx={{ color: 'inherit' }} />
-              ) : (
-                <Iconify icon={saveIcon} width={18} height={18} />
-              )
-            }
-            variant="contained"
-            color="primary"
-            sx={{
-              borderRadius: 1,
-              borderColor: theme.palette.divider,
-              color: theme.palette.common.white,
-              '&:hover': {
-                backgroundColor: theme.palette.primary.main,
-              },
-            }}
-          >
-            {saving ? 'Saving...' : 'Save Changes'}
-          </Button>
         </Box>
 
         {/* Error message */}
@@ -272,11 +252,44 @@ export default function PromptsSettings() {
                 border: `1px solid ${theme.palette.divider}`,
               }}
             >
+              <Box
+                sx={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  mb: 1.5,
+                }}
+              >
+                <Typography
+                  variant="body2"
+                  sx={{ fontWeight: 500, color: theme.palette.text.secondary }}
+                >
+                  Custom System Prompt
+                </Typography>
+                <Button
+                  onClick={handleUseDefault}
+                  variant="outlined"
+                  color="primary"
+                  size="small"
+                  startIcon={<Iconify icon={restoreIcon} width={16} height={16} />}
+                  sx={{
+                    borderRadius: 1,
+                    borderColor: theme.palette.primary.main,
+                    textTransform: 'none',
+                    fontSize: '0.8125rem',
+                    '&:hover': {
+                      borderColor: theme.palette.primary.dark,
+                      backgroundColor: alpha(theme.palette.primary.main, 0.08),
+                    },
+                  }}
+                >
+                  Use Default Prompt
+                </Button>
+              </Box>
               <TextField
                 multiline
                 rows={6}
                 fullWidth
-                label="Custom System Prompt"
                 value={settings.customSystemPrompt}
                 onChange={(e) =>
                   setSettings((prev) => ({ ...prev, customSystemPrompt: e.target.value }))
@@ -315,6 +328,33 @@ export default function PromptsSettings() {
             </Box>
           </Box>
         </Stack>
+
+        <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 3 }}>
+          {/* Save button */}
+          <Button
+            onClick={handleSave}
+            disabled={saving || loading || !hasChanges}
+            startIcon={
+              saving ? (
+                <CircularProgress size={18} sx={{ color: 'inherit' }} />
+              ) : (
+                <Iconify icon={saveIcon} width={18} height={18} />
+              )
+            }
+            variant="contained"
+            color="primary"
+            sx={{
+              borderRadius: 1,
+              borderColor: theme.palette.divider,
+              color: theme.palette.common.white,
+              '&:hover': {
+                backgroundColor: theme.palette.primary.main,
+              },
+            }}
+          >
+            {saving ? 'Saving...' : 'Save Changes'}
+          </Button>
+        </Box>
 
         {/* Info box */}
         <Box
