@@ -681,75 +681,9 @@ class LinearConnector:
         return True
 
 
-@ConnectorBuilder("S3")\
-    .in_group("S3")\
-    .with_auth_type("ACCESS_KEY")\
-    .with_description("Sync files and folders from S3")\
-    .with_categories(["Storage"])\
-    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
-    .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/s3.svg")
-        .add_documentation_link(DocumentationLink(
-            "S3 Access Key Setup",
-            "https://docs.aws.amazon.com/general/latest/gr/aws-sec-cred-types.html#access-keys-and-secret-access-keys",
-            "setup"
-        ))
-        .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/s3/s3',
-            'pipeshub'
-        ))
-        .with_redirect_uri("", False)
-        .add_auth_field(AuthField(
-            name="accessKey",
-            display_name="Access Key",
-            placeholder="Enter your Access Key",
-            description="The Access Key from S3 instance",
-            field_type="PASSWORD",
-            max_length=2000,
-            is_secret=True
-        ))
-        .add_auth_field(AuthField(
-            name="secretKey",
-            display_name="Secret Key",
-            placeholder="Enter your Secret Key",
-            description="The Secret Key from S3 instance",
-            field_type="PASSWORD",
-            max_length=2000,
-            is_secret=True
-        ))
-        .add_auth_field(AuthField(
-            name="region",
-            display_name="Region",
-            placeholder="Enter your Region Name",
-            description="The Region from S3 instance",
-            field_type="TEXT",
-            max_length=2000
-        ))
-        .add_auth_field(AuthField(
-            name="bucket",
-            display_name="Bucket Name",
-            placeholder="Enter your Bucket Name",
-            description="The Bucket from S3 instance",
-            field_type="TEXT",
-            max_length=2000
-        ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
-        .with_sync_support(False)
-        .with_agent_support(True)
-    )\
-    .build_decorator()
-class S3Connector:
-    """S3 connector built with the builder pattern"""
-
-    def __init__(self) -> None:
-        self.name = "S3"
-
-    def connect(self) -> bool:
-        """Connect to S3"""
-        print(f"Connecting to {self.name}")
-        return True
+# S3Connector is now implemented in app.connectors.sources.s3.connector
+# This placeholder is kept for registry compatibility but the actual implementation
+# is imported in connector_factory.py
 
 
 @ConnectorBuilder("Zendesk")\

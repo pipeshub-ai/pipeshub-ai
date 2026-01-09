@@ -97,18 +97,91 @@ parser = PydanticOutputParser(pydantic_object=AnswerWithMetadataJSON)
 format_instructions = parser.get_format_instructions()
 
 
-async def stream_content(signed_url: str) -> AsyncGenerator[bytes, None]:
+async def stream_content(signed_url: str, record_id: Optional[str] = None, file_name: Optional[str] = None) -> AsyncGenerator[bytes, None]:
+    # Validate that signed_url is actually a string, not a coroutine
+    if not isinstance(signed_url, str):
+        error_msg = f"Expected signed_url to be a string, but got {type(signed_url).__name__}"
+        logger.error(f"❌ {error_msg} | Record ID: {record_id}")
+        raise TypeError(error_msg)
+    
+    # Extract file path from signed URL for logging (remove query parameters for security)
+    file_path_info = signed_url[:200] if len(signed_url) > 200 else signed_url  # Default fallback
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(signed_url) as response:
+        from urllib.parse import urlparse
+        parsed_url = urlparse(signed_url)
+        # Extract path without query parameters to avoid logging sensitive tokens
+        file_path_info = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
+    except Exception:
+        # If parsing fails, use truncated URL
+        file_path_info = signed_url[:200] if len(signed_url) > 200 else signed_url
+    
+    # Build log message parts with available information
+    log_parts = []
+    if record_id:
+        log_parts.append(f"Record ID: {record_id}")
+    if file_name:
+        log_parts.append(f"File name: {file_name}")
+    log_parts.append(f"File path: {file_path_info}")
+    log_prefix = " | ".join(log_parts)
+    
+    # Log truncated presigned URL for debugging (first 150 chars to see structure)
+    logger.debug(f"Fetching presigned URL (truncated): {signed_url[:150]}...")
+    
+    try:
+        # Use a timeout to prevent hanging requests
+        timeout = aiohttp.ClientTimeout(total=300, connect=10)
+        
+        # Create session - AWS presigned URLs must be used exactly as generated
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            # Make request - presigned URLs include all necessary authentication in the URL itself
+            # We don't modify headers to avoid breaking the signature
+            async with session.get(
+                signed_url,
+                allow_redirects=True
+            ) as response:
                 if response.status != HttpStatusCode.SUCCESS.value:
+                    # Try to get error details from response body for better debugging
+                    error_details = ""
+                    try:
+                        error_body = await response.text()
+                        if error_body:
+                            # Truncate long error messages
+                            error_details = f" | Error details: {error_body[:500]}"
+                    except Exception:
+                        pass
+                    
+                    # Distinguish between different error types
+                    if response.status == 400:
+                        logger.error(
+                            f"❌ BAD REQUEST (400): The presigned URL may be malformed or the request is invalid. "
+                            f"This could be: URL encoding issue, malformed query parameters, or invalid signature. "
+                            f"{log_prefix}{error_details}"
+                        )
+                    elif response.status == 403:
+                        logger.error(
+                            f"❌ ACCESS DENIED (403): Failed to fetch file content due to permissions issue. "
+                            f"This could be: expired presigned URL, insufficient IAM permissions (s3:GetObject), "
+                            f"or bucket policy restrictions. {log_prefix}{error_details}"
+                        )
+                    elif response.status == 404:
+                        logger.error(
+                            f"❌ FILE NOT FOUND (404): The file may not exist or the key may be incorrect "
+                            f"(possibly encoding issue with special characters). {log_prefix}{error_details}"
+                        )
+                    else:
+                        logger.error(
+                            f"❌ HTTP {response.status}: Failed to fetch file content. {log_prefix}{error_details}"
+                        )
                     raise HTTPException(
                         status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail=f"Failed to fetch file content: {response.status}"
+                        detail=f"Failed to fetch file content: {response.status}{error_details}"
                     )
                 async for chunk in response.content.iter_chunked(8192):
                     yield chunk
     except aiohttp.ClientError as e:
+        logger.error(
+            f"❌ NETWORK ERROR: Failed to fetch file content from signed URL: {str(e)} | {log_prefix}"
+        )
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to fetch file content from signed URL {str(e)}"

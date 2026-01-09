@@ -1,9 +1,11 @@
+import asyncio
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
 try:
     import aioboto3  # type: ignore
     from botocore.exceptions import ClientError  # type: ignore
+    from botocore.config import Config  # type: ignore
 except ImportError:
     raise ImportError("aioboto3 is not installed. Please install it with `pip install aioboto3`")
 
@@ -1170,7 +1172,8 @@ class S3DataSource:
         ClientMethod: str,
         Params: Optional[Dict[str, Any]] = None,
         ExpiresIn: Optional[int] = None,
-        HttpMethod: Optional[str] = None) -> S3Response:
+        HttpMethod: Optional[str] = None,
+        region_name: Optional[str] = None) -> S3Response:
         """S3 Generate Presigned Url operation.
 
         Args:
@@ -1178,6 +1181,7 @@ class S3DataSource:
             Params (Optional[Optional[Dict[str, Any]]]): Optional parameter
             ExpiresIn (Optional[int]): Optional parameter
             HttpMethod (Optional[str]): Optional parameter
+            region_name (Optional[str]): Optional bucket-specific region. If not provided, uses configured region.
 
         Returns:
             S3Response: Standardized response with success/data/error format
@@ -1192,8 +1196,22 @@ class S3DataSource:
 
         try:
             session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
-                response = await getattr(s3_client, 'generate_presigned_url')(**kwargs)
+            # Use provided region_name if available, otherwise fall back to configured region
+            if region_name is None:
+                region_name = self._s3_client.get_region_name()
+            # Use Signature Version 4 (AWS4-HMAC-SHA256) as required by AWS S3
+            # This ensures compatibility with all S3 buckets, including those that require SigV4
+            # Explicitly pass region_name to ensure presigned URLs use the correct region
+            s3_config = Config(signature_version='s3v4')
+            async with session.client('s3', config=s3_config, region_name=region_name) as s3_client:
+                # generate_presigned_url is a synchronous method in boto3 that just generates a URL string
+                # It doesn't perform I/O, so we can call it directly
+                # Check if it's a coroutine (aioboto3 might wrap it) and await if needed
+                url_result = s3_client.generate_presigned_url(**kwargs)
+                if asyncio.iscoroutine(url_result):
+                    response = await url_result
+                else:
+                    response = url_result
                 return self._handle_s3_response(response)
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')
