@@ -49,6 +49,9 @@ class LinearGraphQLOperations:
                 createdAt
                 updatedAt
                 completedAt
+                trashed
+                archivedAt
+                canceledAt
                 state {
                     id
                     name
@@ -337,8 +340,8 @@ class LinearGraphQLOperations:
 
         "issues": {
             "query": """
-                query issues($first: Int, $after: String, $filter: IssueFilter) {
-                    issues(first: $first, after: $after, filter: $filter) {
+                query issues($first: Int, $after: String, $filter: IssueFilter, $includeArchived: Boolean) {
+                    issues(first: $first, after: $after, filter: $filter, includeArchived: $includeArchived) {
                         nodes {
                             ...IssueFields
                         }
@@ -400,8 +403,8 @@ class LinearGraphQLOperations:
 
         "projects": {
             "query": """
-                query Projects($first: Int, $after: String, $filter: ProjectFilter, $orderBy: PaginationOrderBy) {
-                    projects(first: $first, after: $after, filter: $filter, orderBy: $orderBy) {
+                query Projects($first: Int, $after: String, $filter: ProjectFilter, $orderBy: PaginationOrderBy, $includeArchived: Boolean) {
+                    projects(first: $first, after: $after, filter: $filter, orderBy: $orderBy, includeArchived: $includeArchived) {
                         nodes {
                             ...ProjectFields
                         }
@@ -438,6 +441,69 @@ class LinearGraphQLOperations:
             """,
             "fragments": ["IssueFields", "UserFields", "TeamFields"],
             "description": "Search issues by query string"
+        },
+
+        "trashedIssues": {
+            "query": """
+                query TrashedIssues($first: Int, $after: String, $filter: IssueFilter) {
+                    issues(first: $first, after: $after, filter: $filter, includeArchived: true) {
+                        nodes {
+                            id
+                            identifier
+                            title
+                            trashed
+                            archivedAt
+                            canceledAt
+                            updatedAt
+                            team {
+                                id
+                                key
+                            }
+                        }
+                        pageInfo {
+                            hasNextPage
+                            hasPreviousPage
+                            startCursor
+                            endCursor
+                        }
+                    }
+                }
+            """,
+            "fragments": [],
+            "description": "Get trashed issues for deletion sync"
+        },
+
+        "trashedProjects": {
+            "query": """
+                query TrashedProjects($first: Int, $after: String, $filter: ProjectFilter) {
+                    projects(first: $first, after: $after, filter: $filter, includeArchived: true) {
+                        nodes {
+                            id
+                            name
+                            slugId
+                            url
+                            trashed
+                            archivedAt
+                            canceledAt
+                            updatedAt
+                            teams {
+                                nodes {
+                                    id
+                                    key
+                                }
+                            }
+                        }
+                        pageInfo {
+                            hasNextPage
+                            hasPreviousPage
+                            startCursor
+                            endCursor
+                        }
+                    }
+                }
+            """,
+            "fragments": [],
+            "description": "Get trashed projects for deletion sync"
         },
 
         "organization": {
@@ -508,6 +574,14 @@ class LinearGraphQLOperations:
                         issue {
                             id
                             identifier
+                            team {
+                                id
+                                key
+                            }
+                        }
+                        project {
+                            id
+                            name
                         }
                     }
                 }
@@ -573,6 +647,10 @@ class LinearGraphQLOperations:
                                     id
                                     key
                                 }
+                            }
+                            project {
+                                id
+                                name
                             }
                         }
                         pageInfo {

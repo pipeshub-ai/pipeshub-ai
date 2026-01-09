@@ -35,6 +35,15 @@ class LinearGraphQLClientViaToken(GraphQLClient):
         """Get the authorization header value."""
         return self.token
 
+    def get_token(self) -> str:
+        """Get the token."""
+        return self.token
+
+    def set_token(self, token: str) -> None:
+        """Set the token and update Authorization header."""
+        self.token = token
+        self.headers["Authorization"] = token
+
 
 class LinearGraphQLClientViaOAuth(GraphQLClient):
     """Linear GraphQL client via OAuth token."""
@@ -67,6 +76,19 @@ class LinearGraphQLClientViaOAuth(GraphQLClient):
         if oauth_token and not oauth_token.startswith("Bearer "):
             return f"Bearer {oauth_token}"
         return oauth_token
+
+    def get_token(self) -> str:
+        """Get the OAuth token."""
+        return self.oauth_token
+
+    def set_token(self, token: str) -> None:
+        """Set the OAuth token and update Authorization header."""
+        self.oauth_token = token
+        # Format token as Bearer token if not already formatted
+        if token and not token.startswith("Bearer "):
+            self.headers["Authorization"] = f"Bearer {token}"
+        else:
+            self.headers["Authorization"] = token
 
 class LinearTokenConfig(BaseModel):
     """Configuration for Linear GraphQL client via API token.
