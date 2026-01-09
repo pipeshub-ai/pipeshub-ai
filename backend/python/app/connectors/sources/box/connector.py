@@ -640,6 +640,7 @@ class BoxConnector(BaseConnector):
                         )
 
             elif record_update.is_updated:
+                # Update the record
                 await self.data_entities_processor.on_new_records([
                     (record_update.record, record_update.new_permissions or [])
                 ])
@@ -1275,9 +1276,10 @@ class BoxConnector(BaseConnector):
         """
         Deduplicates events, handles deletions, and groups updates.
         Now handles "Flat" dictionary schemas AND fetches missing emails.
+        Supports both files and folders.
         """
-        files_to_sync: Dict[str, str] = {}
-        files_to_delete: set = set()
+        items_to_sync: Dict[str, Tuple[str, str]] = {}  # item_id -> (owner_id, item_type)
+        items_to_delete: set = set()
 
         DELETION_EVENTS = {
             'ITEM_TRASH', 'ITEM_DELETE', 'DELETE', 'TRASH',
@@ -1301,6 +1303,9 @@ class BoxConnector(BaseConnector):
         for event in events:
             event_type = get_val(event, 'event_type')
             source = get_val(event, 'source')
+            
+            # Debug: Log every event type for troubleshooting
+            self.logger.debug(f"🔍 Processing event: type={event_type}, source_type={get_val(source, 'type')}, source_id={get_val(source, 'id')}")
 
             # 1. HANDLE REVOCATIONS (Permissions Removed)
             if event_type in REVOCATION_EVENTS:
@@ -1396,42 +1401,56 @@ class BoxConnector(BaseConnector):
 
             # 3. HANDLE DELETIONS
             if event_type in DELETION_EVENTS:
-                self.logger.info(f"🗑️ Found DELETION event ({event_type}) for File ID: {file_id}")
-                files_to_delete.add(file_id)
-                files_to_sync.pop(file_id, None)
+                self.logger.info(f"🗑️ Found DELETION event ({event_type}) for Item ID: {file_id}")
+                items_to_delete.add(file_id)
+                items_to_sync.pop(file_id, None)
                 continue
 
-            # 4. FILTER & PREPARE SYNC
+            # 4. FILTER & PREPARE SYNC (Accept both files and folders)
+            item_type = 'file'  # Default to file
             if source:
-                item_type = get_val(source, 'item_type') or get_val(source, 'type')
-                if item_type and item_type.lower() != 'file':
-                    continue
+                item_type = get_val(source, 'item_type') or get_val(source, 'type') or 'file'
 
-            if file_id in files_to_delete:
-                files_to_delete.remove(file_id)
+            if file_id in items_to_delete:
+                items_to_delete.remove(file_id)
 
             owner = get_val(source, 'owned_by') or get_val(event, 'created_by')
             owner_id = get_val(owner, 'id') if owner else None
 
             if owner_id:
-                files_to_sync[file_id] = owner_id
+                items_to_sync[file_id] = (owner_id, item_type)
 
         # 5. EXECUTE BATCHES
-        if files_to_delete:
-            self.logger.info(f"⚠️ Executing {len(files_to_delete)} deletions...")
-            await self._execute_deletions(list(files_to_delete))
+        if items_to_delete:
+            self.logger.info(f"⚠️ Executing {len(items_to_delete)} deletions...")
+            await self._execute_deletions(list(items_to_delete))
 
-        if files_to_sync:
-            owner_groups = {}
-            for fid, oid in files_to_sync.items():
-                owner_groups.setdefault(oid, []).append(fid)
+        if items_to_sync:
+            self.logger.info(f"📋 Queued {len(items_to_sync)} items for sync (files + folders)")
+            owner_groups = {}  # owner_id -> {'files': [], 'folders': []}
+            for item_id, (owner_id, item_type) in items_to_sync.items():
+                if owner_id not in owner_groups:
+                    owner_groups[owner_id] = {'files': [], 'folders': []}
+                
+                if item_type and item_type.lower() == 'folder':
+                    owner_groups[owner_id]['folders'].append(item_id)
+                else:
+                    owner_groups[owner_id]['files'].append(item_id)
 
-            for owner_id, file_ids in owner_groups.items():
-                await self._fetch_and_sync_files_for_owner(owner_id, file_ids)
+            for owner_id, items in owner_groups.items():
+                if items['files']:
+                    self.logger.info(f"🔄 Syncing {len(items['files'])} file(s) for owner {owner_id}")
+                    await self._fetch_and_sync_files_for_owner(owner_id, items['files'])
+                if items['folders']:
+                    self.logger.info(f"📁 Syncing {len(items['folders'])} folder(s) for owner {owner_id}")
+                    await self._fetch_and_sync_folders_for_owner(owner_id, items['folders'])
+        else:
+            self.logger.debug("ℹ️ No items to sync from this event batch")
 
     async def _fetch_and_sync_files_for_owner(self, owner_id: str, file_ids: List[str]) -> None:
         """
         Impersonates the owner, fetches full file details in parallel, and upserts.
+        Ensures parent folders exist before processing files.
         """
         try:
             # 1. Switch Context to the File Owner
@@ -1442,7 +1461,30 @@ class BoxConnector(BaseConnector):
             responses = await asyncio.gather(*tasks, return_exceptions=True)
 
             updates_to_push = []
+            parent_folders_to_ensure = set()
 
+            # First pass: collect all parent folders that need to exist
+            for res in responses:
+                if isinstance(res, Exception) or not getattr(res, 'success', False):
+                    continue
+
+                file_entry = self._to_dict(res.data)
+                if not file_entry:
+                    continue
+
+                # Check if file has a parent folder
+                path_collection = file_entry.get('path_collection', {}).get('entries', [])
+                if path_collection:
+                    parent_folder = path_collection[-1]
+                    parent_id = parent_folder.get('id')
+                    if parent_id and parent_id != '0':
+                        parent_folders_to_ensure.add(parent_id)
+
+            # 3. Ensure parent folders exist in database
+            if parent_folders_to_ensure:
+                await self._ensure_parent_folders_exist(owner_id, list(parent_folders_to_ensure))
+
+            # 4. Process files (parent folders now exist)
             for res in responses:
                 if isinstance(res, Exception) or not getattr(res, 'success', False):
                     continue
@@ -1453,7 +1495,7 @@ class BoxConnector(BaseConnector):
                     self.logger.warning("Converted file entry is empty")
                     continue
 
-                # 3. Reuse existing _process_box_entry logic
+                # 5. Reuse existing _process_box_entry logic
                 update_obj = await self._process_box_entry(
                     entry=file_entry,
                     user_id=owner_id,
@@ -1465,15 +1507,199 @@ class BoxConnector(BaseConnector):
                 if update_obj:
                     updates_to_push.append((update_obj.record, update_obj.new_permissions))
 
-            # 4. Batch Upsert to Database
+            # 6. Batch Upsert to Database
             if updates_to_push:
                 await self.data_entities_processor.on_new_records(updates_to_push)
 
         except Exception as e:
             self.logger.error(f"Error syncing files for owner {owner_id}: {e}")
         finally:
-            # 5. ALWAYS Clear Context
+            # 7. ALWAYS Clear Context
             await self.data_source.clear_as_user_context()
+
+    async def _ensure_parent_folders_exist(self, owner_id: str, folder_ids: List[str]) -> None:
+        """
+        Ensures parent folders exist in the database before processing files.
+        Recursively creates folder hierarchy if needed.
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            for folder_id in folder_ids:
+                try:
+                    # Check if folder already exists in DB
+                    existing_folder = await tx_store.get_record_by_external_id(
+                        external_id=folder_id,
+                        connector_id=self.connector_id
+                    )
+
+                    if existing_folder:
+                        continue  # Folder already exists, skip
+
+                    # Fetch folder from Box and create it
+                    self.logger.info(f"📁 Parent folder {folder_id} not found in DB, fetching and creating...")
+                    folder_response = await self.data_source.folders_get_folder_by_id(folder_id)
+
+                    if not folder_response.success:
+                        self.logger.warning(f"Failed to fetch parent folder {folder_id}: {folder_response.error}")
+                        continue
+
+                    folder_entry = self._to_dict(folder_response.data)
+                    if not folder_entry:
+                        continue
+
+                    # Check if this folder has parents that need to be created first (recursive)
+                    path_collection = folder_entry.get('path_collection', {}).get('entries', [])
+                    if path_collection:
+                        grandparent_ids = [p.get('id') for p in path_collection if p.get('id') and p.get('id') != '0']
+                        if grandparent_ids:
+                            # Recursively ensure grandparents exist first
+                            await self._ensure_parent_folders_exist(owner_id, grandparent_ids)
+
+                    # Now create the folder record
+                    update_obj = await self._process_box_entry(
+                        entry=folder_entry,
+                        user_id=owner_id,
+                        user_email="incremental_sync_user",
+                        record_group_id=owner_id,
+                        is_personal_folder=True
+                    )
+
+                    if update_obj:
+                        # Create folder record immediately (not batched)
+                        await self.data_entities_processor.on_new_records([(update_obj.record, update_obj.new_permissions)])
+                        self.logger.info(f"✅ Created parent folder {folder_id} in database")
+
+                except Exception as e:
+                    self.logger.error(f"Error ensuring parent folder {folder_id} exists: {e}", exc_info=True)
+
+    async def _fetch_and_sync_folders_for_owner(self, owner_id: str, folder_ids: List[str]) -> None:
+        """
+        Impersonates the owner, fetches folder details, syncs folder record,
+        and recursively syncs folder contents (like full sync).
+        """
+        try:
+            # 1. Switch Context to the Folder Owner
+            await self.data_source.set_as_user_context(owner_id)
+
+            batch_records = []
+
+            for folder_id in folder_ids:
+                try:
+                    # 2. Fetch folder metadata from Box
+                    folder_response = await self.data_source.folders_get_folder_by_id(folder_id)
+                    
+                    if not folder_response.success:
+                        self.logger.warning(f"Failed to fetch folder {folder_id}: {folder_response.error}")
+                        continue
+
+                    folder_entry = self._to_dict(folder_response.data)
+
+                    if not folder_entry:
+                        self.logger.warning(f"Converted folder entry {folder_id} is empty")
+                        continue
+
+                    # 3. Process the folder itself as a record
+                    update_obj = await self._process_box_entry(
+                        entry=folder_entry,
+                        user_id=owner_id,
+                        user_email="incremental_sync_user",
+                        record_group_id=owner_id,
+                        is_personal_folder=True
+                    )
+
+                    if update_obj:
+                        batch_records.append((update_obj.record, update_obj.new_permissions))
+
+                    # 4. Recursively sync folder contents (all items inside)
+                    await self._sync_folder_contents_recursively(
+                        owner_id=owner_id,
+                        folder_id=folder_id,
+                        batch_records=batch_records
+                    )
+
+                except Exception as e:
+                    self.logger.error(f"Error processing folder {folder_id}: {e}", exc_info=True)
+
+            # 5. Commit any remaining records
+            if batch_records:
+                self.logger.info(f"Processing batch of {len(batch_records)} records from folder sync")
+                await self.data_entities_processor.on_new_records(batch_records)
+
+        except Exception as e:
+            self.logger.error(f"Error syncing folders for owner {owner_id}: {e}", exc_info=True)
+        finally:
+            # 6. ALWAYS Clear Context
+            await self.data_source.clear_as_user_context()
+
+    async def _sync_folder_contents_recursively(self, owner_id: str, folder_id: str, batch_records: List) -> None:
+        """
+        Recursively fetch all items in a folder, similar to _sync_folder_recursively but simpler.
+        Used by incremental sync to handle new folders.
+        """
+        offset = 0
+        limit = 1000
+        fields = 'type,id,name,size,created_at,modified_at,path_collection,etag,sha1,shared_link,owned_by'
+
+        while True:
+            try:
+                response = await self.data_source.folders_get_folder_items(
+                    folder_id=folder_id,
+                    limit=limit,
+                    offset=offset,
+                    fields=fields,
+                )
+
+                if not response.success:
+                    self.logger.error(f"Failed to fetch items for folder {folder_id}: {response.error}")
+                    break
+
+                data = self._to_dict(response.data)
+                items = data.get('entries', [])
+                total_count = data.get('total_count', 0)
+
+                if not items:
+                    break
+
+                sub_folders_to_traverse = []
+
+                # Process each item
+                for item in items:
+                    try:
+                        update_obj = await self._process_box_entry(
+                            entry=item,
+                            user_id=owner_id,
+                            user_email="incremental_sync_user",
+                            record_group_id=owner_id,
+                            is_personal_folder=True
+                        )
+
+                        if update_obj:
+                            batch_records.append((update_obj.record, update_obj.new_permissions))
+
+                            # If it's a folder, mark it for recursive traversal
+                            if not update_obj.record.is_file:
+                                sub_folders_to_traverse.append(update_obj.record.external_record_id)
+
+                        # Process batch if it gets too large
+                        if len(batch_records) >= self.batch_size:
+                            self.logger.info(f"Processing batch of {len(batch_records)} records")
+                            await self.data_entities_processor.on_new_records(batch_records)
+                            batch_records.clear()
+                            await asyncio.sleep(0.1)
+
+                    except Exception as e:
+                        self.logger.error(f"Error processing item in folder {folder_id}: {e}", exc_info=True)
+
+                # Recursively process subfolders
+                for sub_folder_id in sub_folders_to_traverse:
+                    await self._sync_folder_contents_recursively(owner_id, sub_folder_id, batch_records)
+
+                offset += len(items)
+                if offset >= total_count:
+                    break
+
+            except Exception as e:
+                self.logger.error(f"Error in _sync_folder_contents_recursively for folder {folder_id}: {e}", exc_info=True)
+                break
 
     async def _execute_deletions(self, file_ids: List[str]) -> None:
         """
