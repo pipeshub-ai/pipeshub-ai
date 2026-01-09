@@ -59,6 +59,8 @@ import {
   getPlatformSettings,
   setPlatformSettings,
   getAvailablePlatformFeatureFlags,
+  getCustomSystemPrompt,
+  setCustomSystemPrompt,
 } from '../controller/cm_controller';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
@@ -575,6 +577,23 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     metricsMiddleware(container),
     getAvailablePlatformFeatureFlags(),
+  );
+
+  // Custom System Prompt routes
+  router.get(
+    '/prompts/system',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    getCustomSystemPrompt(keyValueStoreService),
+  );
+
+  router.put(
+    '/prompts/system',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    setCustomSystemPrompt(keyValueStoreService),
   );
 
   // message broker config routes

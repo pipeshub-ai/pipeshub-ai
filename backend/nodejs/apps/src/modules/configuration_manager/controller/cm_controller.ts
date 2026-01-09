@@ -3097,3 +3097,86 @@ export const getConnectorConfig =
       next(error);
     }
   };
+
+// Custom System Prompt Management
+export const getCustomSystemPrompt =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (
+    _req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedAIConfig = await keyValueStoreService.get<string>(
+        configPaths.aiModels,
+      );
+
+      if (!encryptedAIConfig) {
+        res.status(200).json({ customSystemPrompt: '' }).end();
+        return;
+      }
+
+      const aiModels = JSON.parse(
+        EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).decrypt(encryptedAIConfig),
+      );
+
+      const customSystemPrompt = aiModels.customSystemPrompt || '';
+      res.status(200).json({ customSystemPrompt }).end();
+    } catch (error: any) {
+      logger.error('Error getting custom system prompt', { error });
+      next(error);
+    }
+  };
+
+export const setCustomSystemPrompt =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { customSystemPrompt } = req.body;
+
+      if (typeof customSystemPrompt !== 'string') {
+        throw new BadRequestError('customSystemPrompt must be a string');
+      }
+
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedAIConfig = await keyValueStoreService.get<string>(
+        configPaths.aiModels,
+      );
+
+      let aiModels: any = {};
+      if (encryptedAIConfig) {
+        aiModels = JSON.parse(
+          EncryptionService.getInstance(
+            configManagerConfig.algorithm,
+            configManagerConfig.secretKey,
+          ).decrypt(encryptedAIConfig),
+        );
+      }
+
+      // Update only the customSystemPrompt field, keeping everything else intact
+      aiModels.customSystemPrompt = customSystemPrompt;
+
+      // Encrypt and save the updated configuration
+      const encryptedUpdatedConfig = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify(aiModels));
+
+      await keyValueStoreService.set<string>(
+        configPaths.aiModels,
+        encryptedUpdatedConfig,
+      );
+
+      res.status(200).json({
+        message: 'Custom system prompt updated successfully',
+        customSystemPrompt,
+      });
+    } catch (error: any) {
+      logger.error('Error setting custom system prompt', { error });
+      next(error);
+    }
+  };
