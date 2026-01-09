@@ -5798,7 +5798,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> List[Dict[str, Any]]:
         """
         Get breadcrumb trail for a node.
-        Uses iterative parent lookup since AQL doesn't support recursive self-reference.
+
+        NOTE(N+1 Queries): Uses iterative parent lookup (one query per level) because a single
+        AQL graph traversal isn't feasible here. Parent relationships are stored via multiple
+        mechanisms: parentId field (recordGroups), PARENT_CHILD edges (records),
+        inheritPermissions edges, and connectorId field (linking to apps). AQL graph traversal
+        requires consistent edge-based relationships, but our hierarchy uses mixed field/edge
+        patterns across different collections (records, recordGroups, apps).
         """
         breadcrumbs = []
         current_id = node_id
@@ -5992,16 +5998,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
         folder_mime_types: List[str],
         transaction: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
-        """Get the parent node of a given node."""
+        """Get the parent node of a given node in a single query."""
         query = """
         LET record = DOCUMENT("records", @node_id)
         LET rg = record == null ? DOCUMENT("recordGroups", @node_id) : null
         LET app = record == null AND rg == null ? DOCUMENT("apps", @node_id) : null
 
+        // Apps have no parent
         LET parent_id = app != null ? null : (
             rg != null ? (
+                // KBs are root level, no parent. Otherwise use parentId or connectorId (app)
                 rg.connectorName == "KB" ? null : (rg.parentId != null ? rg.parentId : rg.connectorId)
             ) : (
+                // Records: check PARENT_CHILD edge first
                 record != null ? FIRST(
                     FOR edge IN recordRelations
                         FILTER edge._to == record._id AND edge.relationshipType == "PARENT_CHILD"
@@ -6010,6 +6019,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
         )
 
+        // Fallback: check inheritPermissions if no PARENT_CHILD edge
         LET final_parent_id = parent_id != null ? parent_id : (
             record != null ? FIRST(
                 FOR edge IN inheritPermissions
@@ -6018,11 +6028,32 @@ class ArangoHTTPProvider(IGraphDBProvider):
             ) : null
         )
 
-        RETURN final_parent_id
-        """
-        results = await self.http_client.execute_aql(query, bind_vars={"node_id": node_id}, txn_id=transaction)
-        parent_id = results[0] if results else None
+        // Now get full parent info in the same query
+        LET parent_record = final_parent_id != null ? DOCUMENT("records", final_parent_id) : null
+        LET parent_rg = parent_record == null AND final_parent_id != null ? DOCUMENT("recordGroups", final_parent_id) : null
+        LET parent_app = parent_record == null AND parent_rg == null AND final_parent_id != null ? DOCUMENT("apps", final_parent_id) : null
 
-        if parent_id:
-            return await self.get_knowledge_hub_node_info(parent_id, folder_mime_types, transaction)
-        return None
+        LET parent_info = parent_record != null ? {
+            id: parent_record._key,
+            name: parent_record.recordName,
+            nodeType: parent_record.mimeType IN @folder_mime_types ? "folder" : "record",
+            subType: parent_record.recordType
+        } : (parent_rg != null ? {
+            id: parent_rg._key,
+            name: parent_rg.groupName,
+            nodeType: parent_rg.connectorName == "KB" ? "kb" : "recordGroup",
+            subType: parent_rg.connectorName == "KB" ? "KB" : (parent_rg.groupType || parent_rg.connectorName)
+        } : (parent_app != null ? {
+            id: parent_app._key,
+            name: parent_app.name,
+            nodeType: "app",
+            subType: parent_app.appGroup
+        } : null))
+
+        RETURN parent_info
+        """
+        results = await self.http_client.execute_aql(
+            query, bind_vars={"node_id": node_id, "folder_mime_types": folder_mime_types}, txn_id=transaction
+        )
+        return results[0] if results and results[0] else None
+

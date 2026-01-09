@@ -370,7 +370,10 @@ class KnowledgeHubService:
                     response.breadcrumbs = await self._get_breadcrumbs(parent_id)
 
                 if 'counts' in include:
-                    # Count items by nodeType (from current page items for type breakdown)
+                    # TODO(Counts): Per-type breakdown only reflects current page items, not all
+                    # filtered results. The 'total' is correct, but 'items' breakdown is inaccurate
+                    # for paginated results. To fix properly, add a separate aggregation query
+                    # that counts by nodeType across the entire filtered result set.
                     type_counts = Counter(_get_node_type_value(item.nodeType) for item in items)
 
                     # Map nodeType to display label
