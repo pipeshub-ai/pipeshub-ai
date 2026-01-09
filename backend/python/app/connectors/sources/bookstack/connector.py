@@ -4,7 +4,16 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Set, Tuple
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Set,
+    Tuple,
+)
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -315,7 +324,7 @@ class BookStackConnector(BaseConnector):
                 detail="Record not found or access denied"
             )
         raw_markdown = markdown_response.data.get("markdown")
-        
+
         return create_file_download_response(
             raw_markdown,
             filename=record.record_name,
