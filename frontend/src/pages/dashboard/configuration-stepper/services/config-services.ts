@@ -100,10 +100,8 @@ export const getUniversalConfig = async (configType: string): Promise<any | null
 
       case 'url': {
         try {
-          const [frontendResponse] = await Promise.all([
-            axios.get(`${API_BASE}/frontendPublicUrl`).catch(() => ({ data: null })),
-          ]);
-
+          const frontendResponse = await axios.get(`${API_BASE}/frontendPublicUrl`);
+          console.log('frontendResponse', frontendResponse);
           return {
             providerType: 'urls',
             frontendUrl: frontendResponse.data?.url || '',
@@ -247,14 +245,13 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
       }
 
       case 'url': {
-        const { providerType, _provider, frontendUrl, connectorUrl, ...rest } = config;
+        const { providerType, _provider, frontendUrl, ...rest } = config;
         const normalizeUrl = (url?: string) => {
           if (!url) return '';
           const trimmed = String(url).trim();
           return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
         };
         const normalizedFrontend = normalizeUrl(frontendUrl);
-        const normalizedConnector = normalizeUrl(connectorUrl);
         const apiCalls = [];
 
         // Only save URLs that have values
