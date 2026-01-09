@@ -485,7 +485,8 @@ class BaseArangoService:
         """Gets a list of accessible app connector IDs for a user."""
         try:
             user_app_docs = await self.get_user_apps(user_id)
-            user_apps = [app['_key'] for app in user_app_docs]
+            # Filter out None values and apps without _key before accessing _key
+            user_apps = [app['_key'] for app in user_app_docs if app and app.get('_key')]
             self.logger.debug(f"User has access to {len(user_apps)} apps: {user_apps}")
             return user_apps
         except Exception as e:
