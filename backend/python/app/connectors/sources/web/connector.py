@@ -257,25 +257,20 @@ class WebConnector(BaseConnector):
 
     def get_app_users(self, users: List[User]) -> List[AppUser]:
         """Convert User objects to AppUser objects."""
-        app_users: List[AppUser] = []
-        for user in users:
-            # Skip users without email
-            if not user.email:
-                continue
-
-            app_users.append(
-                AppUser(
-                    app_name=self.connector_name,
-                    connector_id=self.connector_id,
-                    source_user_id=user.source_user_id or user.id or user.email,
-                    org_id=user.org_id or self.data_entities_processor.org_id,
-                    email=user.email,
-                    full_name=user.full_name or user.email,
-                    is_active=user.is_active if user.is_active is not None else True,
-                    title=user.title,
-                )
+        return [
+            AppUser(
+                app_name=self.connector_name,
+                connector_id=self.connector_id,
+                source_user_id=user.source_user_id or user.id or user.email,
+                org_id=user.org_id or self.data_entities_processor.org_id,
+                email=user.email,
+                full_name=user.full_name or user.email,
+                is_active=user.is_active if user.is_active is not None else True,
+                title=user.title,
             )
-        return app_users
+            for user in users
+            if user.email
+        ]
 
     async def run_sync(self) -> None:
         """Main sync method to crawl and index web pages."""
