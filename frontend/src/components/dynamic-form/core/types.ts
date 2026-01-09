@@ -52,7 +52,6 @@ export interface StorageFormValues extends BaseFormValues {
 
 export interface UrlFormValues extends BaseFormValues {
   frontendUrl?: string;
-  connectorUrl?: string;
 }
 
 export interface SmtpFormValues extends BaseFormValues {

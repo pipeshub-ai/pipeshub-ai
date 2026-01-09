@@ -8,7 +8,6 @@ import closeIcon from '@iconify-icons/eva/close-outline';
 import chart3dIcon from '@iconify-icons/carbon/chart-3d';
 import apacheKafkaIcon from '@iconify-icons/mdi/apache-kafka';
 import mongodbIcon from '@iconify-icons/simple-icons/mongodb';
-import linkVariantIcon from '@iconify-icons/mdi/link-variant';
 import arangodbIcon from '@iconify-icons/simple-icons/arangodb';
 
 import {
@@ -43,10 +42,8 @@ import type { StorageServiceFormRef } from './components/storage-service-form';
 // import type { BackendNodejsConfigFormRef } from './components/backend-nodejs-config-form';
 
 import FrontendUrlConfigForm from './components/frontend-url-config-form';
-import ConnectorUrlConfigForm from './components/connector-url-config-form';
 
 import type { FrontendUrlConfigFormRef } from './components/frontend-url-config-form';
-import type { ConnectorUrlConfigFormRef } from './components/connector-url-config-form';
 
 // Method configurations
 interface ServiceConfigType {
@@ -93,11 +90,6 @@ const SERVICE_CONFIG: ServiceConfigType = {
     title: 'Frontend Public Url',
     color: '#87CEEB',
   },
-  connectorPublicUrl: {
-    icon: linkVariantIcon,
-    title: 'Connectors Public Url',
-    color: '#231F20',
-  },
 };
 // Expected save result interface
 interface SaveResult {
@@ -137,9 +129,7 @@ const ConfigureServiceDialog = ({
   const storageServiceFormRef = useRef<StorageServiceFormRef>(null);
 
   const frontendUrlConfigFormRef = useRef<FrontendUrlConfigFormRef>(null);
-  const connectorUrlConfigFormRef = useRef<ConnectorUrlConfigFormRef>(null);
 
-  // Get connector config if available
   const serviceConfig = serviceType ? SERVICE_CONFIG[serviceType] : null;
 
   // Reset state when dialog opens
@@ -181,9 +171,6 @@ const ConfigureServiceDialog = ({
         break;
       case 'frontendPublicUrl':
         currentRef = frontendUrlConfigFormRef;
-        break;
-      case 'connectorPublicUrl':
-        currentRef = connectorUrlConfigFormRef;
         break;
       default:
         currentRef = null;
@@ -356,12 +343,6 @@ const ConfigureServiceDialog = ({
                 <StorageServiceForm
                   onValidationChange={handleValidationChange}
                   ref={storageServiceFormRef}
-                />
-              )}
-              {serviceType === 'connectorPublicUrl' && (
-                <ConnectorUrlConfigForm
-                  onValidationChange={handleValidationChange}
-                  ref={connectorUrlConfigFormRef}
                 />
               )}
               {serviceType === 'frontendPublicUrl' && (

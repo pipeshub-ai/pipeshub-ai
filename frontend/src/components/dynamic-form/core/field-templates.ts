@@ -203,18 +203,6 @@ export const FIELD_TEMPLATES = {
       .refine((val) => val === '' || /^https?:\/\/.+/.test(val), 'Please enter a valid URL'),
   },
 
-  connectorUrl: {
-    name: 'connectorUrl',
-    label: 'Connector URL',
-    type: 'url' as const,
-    placeholder: 'https://connector.yourdomain.com',
-    icon: linkIcon,
-    required: true,
-    validation: z
-      .string()
-      .refine((val) => val === '' || /^https?:\/\/.+/.test(val), 'Please enter a valid URL'),
-  },
-
   // STORAGE FIELDS - S3
   s3AccessKeyId: {
     name: 's3AccessKeyId',
