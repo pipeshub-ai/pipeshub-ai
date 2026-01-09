@@ -197,6 +197,26 @@ export function createUserRouter(container: Container) {
   );
 
   router.get(
+    '/:id/email',
+    authMiddleware.authenticate,
+    ValidationMiddleware.validate(UserIdValidationSchema),
+    metricsMiddleware(container),
+    userExists,
+    async (
+      req: AuthenticatedUserRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const userController = container.get<UserController>('UserController');
+        await userController.getUserEmailByUserId(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.get(
     '/:id',
     authMiddleware.authenticate,
     ValidationMiddleware.validate(UserIdValidationSchema),

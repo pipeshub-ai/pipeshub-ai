@@ -57,7 +57,10 @@ export class UserController {
     const users = await Users.find({
       orgId: req.user?.orgId,
       isDeleted: false,
-    });
+    })
+      .select('-email')
+      .lean()
+      .exec();
     res.json(users);
   }
 
@@ -106,7 +109,6 @@ export class UserController {
           userId: 1,
           orgId: 1,
           fullName: 1,
-          email: 1,
           hasLoggedIn: 1,
           groups: {
             $map: {
@@ -153,6 +155,33 @@ export class UserController {
       }
 
       res.json(user);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getUserEmailByUserId(
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ) {
+    const userId = req.params.id;
+    const orgId = req.user?.orgId;
+    try {
+      const user = await Users.findOne({
+        _id: userId,
+        orgId,
+        isDeleted: false,
+      })
+        .select('email')
+        .lean()
+        .exec();
+
+      if (!user) {
+        throw new NotFoundError('User not found');
+      }
+
+      res.json({ email: user.email });
     } catch (error) {
       next(error);
     }
