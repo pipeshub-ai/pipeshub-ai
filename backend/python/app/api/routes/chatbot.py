@@ -623,7 +623,7 @@ async def askAIStream(
                 if custom_system_prompt:
                     logger.info(f"Custom system prompt: {custom_system_prompt}")
                     mode_config["system_prompt"] = custom_system_prompt
-                
+
                 messages = [{"role": "system", "content": mode_config["system_prompt"]}]
 
                 # Add conversation history
