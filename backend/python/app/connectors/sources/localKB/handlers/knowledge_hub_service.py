@@ -2,10 +2,8 @@
 
 import traceback
 from collections import Counter
-from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     AppliedFilters,
     AvailableFilters,
@@ -13,15 +11,15 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     CountItem,
     CountsInfo,
     CurrentNode,
+    FilterOption,
     FiltersInfo,
     ItemPermission,
     KnowledgeHubNodesResponse,
     NodeItem,
     NodeType,
+    OriginType,
     PaginationInfo,
     PermissionsInfo,
-    SourceType,
-    ViewMode,
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -32,127 +30,9 @@ FOLDER_MIME_TYPES = [
 ]
 
 
-@dataclass
-class FilterBuilder:
-    """Helper class to build AQL filter conditions and bind variables."""
-    conditions: List[str] = field(default_factory=list)
-    bind_vars: Dict[str, Any] = field(default_factory=dict)
 
-    def add_node_type_filter(
-        self,
-        node_types: Optional[List[str]],
-        is_folder_var: str = "is_folder"
-    ) -> None:
-        """Add node type filter for folder vs record."""
-        if not node_types:
-            return
-        if "folder" in node_types and "record" not in node_types:
-            self.conditions.append(f"{is_folder_var} == true")
-        elif "record" in node_types and "folder" not in node_types:
-            self.conditions.append(f"{is_folder_var} == false")
 
-    def add_record_type_filter(
-        self,
-        record_types: Optional[List[str]],
-        record_var: str = "record"
-    ) -> None:
-        """Add record type filter."""
-        if record_types:
-            self.bind_vars["record_types"] = record_types
-            self.conditions.append(f"{record_var}.recordType IN @record_types")
 
-    def add_indexing_status_filter(
-        self,
-        indexing_status: Optional[List[str]],
-        record_var: str = "record"
-    ) -> None:
-        """Add indexing status filter."""
-        if indexing_status:
-            self.bind_vars["indexing_status"] = indexing_status
-            self.conditions.append(f"{record_var}.indexingStatus IN @indexing_status")
-
-    def add_date_range_filter(
-        self,
-        date_range: Optional[Dict[str, Optional[int]]],
-        field_name: str,
-        bind_prefix: str,
-        record_var: str = "record"
-    ) -> None:
-        """Add date range filter (gte/lte)."""
-        if not date_range:
-            return
-        if date_range.get("gte"):
-            self.bind_vars[f"{bind_prefix}_gte"] = date_range["gte"]
-            self.conditions.append(f"{record_var}.{field_name} >= @{bind_prefix}_gte")
-        if date_range.get("lte"):
-            self.bind_vars[f"{bind_prefix}_lte"] = date_range["lte"]
-            self.conditions.append(f"{record_var}.{field_name} <= @{bind_prefix}_lte")
-
-    def add_size_filter(
-        self,
-        size: Optional[Dict[str, Optional[int]]],
-        file_info_var: str = "file_info"
-    ) -> None:
-        """Add size range filter."""
-        if not size:
-            return
-        if size.get("gte"):
-            self.bind_vars["size_gte"] = size["gte"]
-            self.conditions.append(f"{file_info_var}.fileSizeInBytes >= @size_gte")
-        if size.get("lte"):
-            self.bind_vars["size_lte"] = size["lte"]
-            self.conditions.append(f"{file_info_var}.fileSizeInBytes <= @size_lte")
-
-    def add_source_filter(
-        self,
-        sources: Optional[List[str]],
-        record_var: str = "record"
-    ) -> None:
-        """Add source filter (KB vs CONNECTOR)."""
-        if sources:
-            self.bind_vars["sources"] = sources
-            self.conditions.append(
-                f'({record_var}.connectorName == "KB" AND "KB" IN @sources) OR '
-                f'({record_var}.connectorName != "KB" AND "CONNECTOR" IN @sources)'
-            )
-
-    def add_connector_filter(
-        self,
-        connectors: Optional[List[str]],
-        record_var: str = "record"
-    ) -> None:
-        """Add connector name filter."""
-        if connectors:
-            self.bind_vars["connectors"] = connectors
-            self.conditions.append(f"{record_var}.connectorName IN @connectors")
-
-    def build_clause(self) -> str:
-        """Build the final filter clause string."""
-        return " AND ".join(self.conditions) if self.conditions else "true"
-
-    def build_record_filters(
-        self,
-        node_types: Optional[List[str]] = None,
-        record_types: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
-        created_at: Optional[Dict[str, Optional[int]]] = None,
-        updated_at: Optional[Dict[str, Optional[int]]] = None,
-        size: Optional[Dict[str, Optional[int]]] = None,
-        sources: Optional[List[str]] = None,
-        connectors: Optional[List[str]] = None,
-        is_folder_var: str = "is_folder",
-        record_var: str = "record",
-        file_info_var: str = "file_info",
-    ) -> None:
-        """Build all common record filters at once."""
-        self.add_node_type_filter(node_types, is_folder_var)
-        self.add_record_type_filter(record_types, record_var)
-        self.add_indexing_status_filter(indexing_status, record_var)
-        self.add_date_range_filter(created_at, "createdAtTimestamp", "created_at", record_var)
-        self.add_date_range_filter(updated_at, "updatedAtTimestamp", "updated_at", record_var)
-        self.add_size_filter(size, file_info_var)
-        self.add_source_filter(sources, record_var)
-        self.add_connector_filter(connectors, record_var)
 
 
 def _get_node_type_value(node_type) -> str:
@@ -173,36 +53,22 @@ class KnowledgeHubService:
         self.logger = logger
         self.graph_provider = graph_provider
 
-    def _determine_view_mode(self, request_params: Dict[str, Any]) -> ViewMode:
-        """Auto-switch to search mode when filters are applied"""
-        has_filters = any([
-            request_params.get('q'),
-            request_params.get('nodeTypes'),
-            request_params.get('recordTypes'),
-            request_params.get('sources'),
-            request_params.get('connectors'),
-            request_params.get('indexingStatus'),
-            request_params.get('createdAt'),
-            request_params.get('updatedAt'),
-            request_params.get('size'),
-        ])
-
-        explicit_view = request_params.get('view')
-        if explicit_view == 'search':
-            return ViewMode.SEARCH
-        elif has_filters:
-            return ViewMode.SEARCH  # Auto-switch
-        elif explicit_view == 'children':
-            return ViewMode.CHILDREN
-        else:
-            return ViewMode.CHILDREN  # Default
+    def _has_search_filters(self, q: Optional[str], node_types: Optional[List[str]],
+                             record_types: Optional[List[str]], origins: Optional[List[str]],
+                             connector_ids: Optional[List[str]], kb_ids: Optional[List[str]],
+                             indexing_status: Optional[List[str]],
+                             created_at: Optional[Dict], updated_at: Optional[Dict],
+                             size: Optional[Dict]) -> bool:
+        """Check if any search/filter parameters are provided."""
+        return any([q, node_types, record_types, origins, connector_ids, kb_ids,
+                    indexing_status, created_at, updated_at, size])
 
     async def get_nodes(
         self,
         user_id: str,
         org_id: str,
         parent_id: Optional[str] = None,
-        view: Optional[str] = None,
+        parent_type: Optional[str] = None,
         only_containers: bool = False,
         page: int = 1,
         limit: int = 50,
@@ -211,8 +77,9 @@ class KnowledgeHubService:
         q: Optional[str] = None,
         node_types: Optional[List[str]] = None,
         record_types: Optional[List[str]] = None,
-        sources: Optional[List[str]] = None,
-        connectors: Optional[List[str]] = None,
+        origins: Optional[List[str]] = None,
+        connector_ids: Optional[List[str]] = None,
+        kb_ids: Optional[List[str]] = None,
         indexing_status: Optional[List[str]] = None,
         created_at: Optional[Dict[str, Optional[int]]] = None,
         updated_at: Optional[Dict[str, Optional[int]]] = None,
@@ -223,22 +90,11 @@ class KnowledgeHubService:
         Get nodes for the Knowledge Hub unified browse API
         """
         try:
-            # Build request params dict for view mode determination
-            request_params = {
-                'view': view,
-                'q': q,
-                'nodeTypes': node_types,
-                'recordTypes': record_types,
-                'sources': sources,
-                'connectors': connectors,
-                'indexingStatus': indexing_status,
-                'createdAt': created_at,
-                'updatedAt': updated_at,
-                'size': size,
-            }
-
-            # Determine view mode (auto-switch to search if filters applied)
-            view_mode = self._determine_view_mode(request_params)
+            # Determine if this is a search request
+            is_search = self._has_search_filters(
+                q, node_types, record_types, origins, connector_ids, kb_ids,
+                indexing_status, created_at, updated_at, size
+            )
 
             # Validate pagination
             page = max(1, page)
@@ -261,8 +117,9 @@ class KnowledgeHubService:
                 )
             user_key = user.get('_key')
 
-            # Get nodes based on parent_id and view mode
-            if view_mode == ViewMode.SEARCH:
+            # Get nodes based on request type
+            if is_search:
+                # Global search across all nodes
                 items, total_count, available_filters = await self._get_search_nodes(
                     user_key=user_key,
                     org_id=org_id,
@@ -273,33 +130,41 @@ class KnowledgeHubService:
                     q=q,
                     node_types=node_types,
                     record_types=record_types,
-                    sources=sources,
-                    connectors=connectors,
+                    origins=origins,
+                    connector_ids=connector_ids,
+                    kb_ids=kb_ids,
                     indexing_status=indexing_status,
                     created_at=created_at,
                     updated_at=updated_at,
                     size=size,
                     only_containers=only_containers,
                 )
-            else:  # ViewMode.CHILDREN
-                items, total_count, available_filters = await self._get_children_nodes(
+            else:
+                # Browse mode - get children of parent
+                items, total_count, _ = await self._get_children_nodes(
                     user_key=user_key,
                     org_id=org_id,
                     parent_id=parent_id,
+                    parent_type=parent_type,  # Now passed directly!
                     skip=skip,
                     limit=limit,
                     sort_by=sort_by,
                     sort_order=sort_order,
                     node_types=node_types,
                     record_types=record_types,
-                    sources=sources,
-                    connectors=connectors,
+                    origins=origins,
+                    connector_ids=connector_ids,
+                    kb_ids=kb_ids,
                     indexing_status=indexing_status,
                     created_at=created_at,
                     updated_at=updated_at,
                     size=size,
                     only_containers=only_containers,
                 )
+                # In browse mode, fetch available filters only if requested
+                available_filters = None
+                if include and 'availableFilters' in include:
+                    available_filters = await self._get_available_filters(user_key, org_id)
 
             # Fetch permissions for all items in batch and assign to each item
             permissions_map = await self._get_batch_permissions(user_key, items)
@@ -333,8 +198,9 @@ class KnowledgeHubService:
                 q=q,
                 nodeTypes=node_types,
                 recordTypes=record_types,
-                sources=sources,
-                connectors=connectors,
+                origins=origins,
+                connectorIds=connector_ids,
+                kbIds=kb_ids,
                 indexingStatus=indexing_status,
                 createdAt=created_at,
                 updatedAt=updated_at,
@@ -343,7 +209,7 @@ class KnowledgeHubService:
                 sortOrder=sort_order,
             )
 
-            # Build filters info
+            # Build filters info (without available filters initially)
             filters_info = FiltersInfo(applied=applied_filters)
 
             # Build response
@@ -366,6 +232,10 @@ class KnowledgeHubService:
 
             # Add optional expansions
             if include:
+                if 'availableFilters' in include:
+                    # Add available filters only when requested
+                    response.filters.available = available_filters
+
                 if 'breadcrumbs' in include and parent_id:
                     response.breadcrumbs = await self._get_breadcrumbs(parent_id)
 
@@ -403,6 +273,20 @@ class KnowledgeHubService:
 
             return response
 
+        except ValueError as ve:
+            # Validation errors (404 - not found, 400 - type mismatch)
+            self.logger.warning(f"⚠️ Validation error: {str(ve)}")
+            return KnowledgeHubNodesResponse(
+                success=False,
+                error=str(ve),
+                id=parent_id,
+                items=[],
+                pagination=PaginationInfo(
+                    page=page, limit=limit, totalItems=0, totalPages=0,
+                    hasNext=False, hasPrev=False
+                ),
+                filters=FiltersInfo(applied=AppliedFilters()),
+            )
         except Exception as e:
             self.logger.error(f"❌ Failed to get nodes: {str(e)}")
             self.logger.error(traceback.format_exc())
@@ -423,14 +307,16 @@ class KnowledgeHubService:
         user_key: str,
         org_id: str,
         parent_id: Optional[str],
+        parent_type: Optional[str],  # Now passed directly from router
         skip: int,
         limit: int,
         sort_by: str,
         sort_order: str,
         node_types: Optional[List[str]],
         record_types: Optional[List[str]],
-        sources: Optional[List[str]],
-        connectors: Optional[List[str]],
+        origins: Optional[List[str]],
+        connector_ids: Optional[List[str]],
+        kb_ids: Optional[List[str]],
         indexing_status: Optional[List[str]],
         created_at: Optional[Dict[str, Optional[int]]],
         updated_at: Optional[Dict[str, Optional[int]]],
@@ -439,16 +325,16 @@ class KnowledgeHubService:
     ) -> Tuple[List[NodeItem], int, Optional[AvailableFilters]]:
         """Get children nodes for a given parent using unified provider method."""
         if parent_id is None:
-            # Root level: return KBs and Apps (special handling, not a "parent")
+            # Root level: return KBs and Apps
             return await self._get_root_level_nodes(
                 user_key, org_id, skip, limit, sort_by, sort_order,
-                node_types, sources, connectors, only_containers
+                node_types, origins, connector_ids, kb_ids, only_containers
             )
 
-        # Determine parent type
-        parent_type = await self._determine_parent_type(parent_id)
-        if not parent_type:
-            return [], 0, None
+        # Validate that the node exists and type matches
+        await self._validate_node_existence_and_type(parent_id, parent_type, user_key, org_id)
+
+        # Type is now known from the URL path - no DB lookup needed!
 
         # Build sort clause
         sort_field_map = {
@@ -510,13 +396,17 @@ class KnowledgeHubService:
                 bind_vars["size_lte"] = size["lte"]
                 filter_conditions.append("(node.sizeInBytes == null OR node.sizeInBytes <= @size_lte)")
 
-        if sources:
-            bind_vars["sources"] = sources
-            filter_conditions.append("node.source IN @sources")
+        if origins:
+            bind_vars["origins"] = origins
+            filter_conditions.append("node.source IN @origins")
 
-        if connectors:
-            bind_vars["connectors"] = connectors
-            filter_conditions.append("node.connector IN @connectors")
+        if connector_ids:
+            bind_vars["connector_ids"] = connector_ids
+            filter_conditions.append("node.appId IN @connector_ids")
+
+        if kb_ids:
+            bind_vars["kb_ids"] = kb_ids
+            filter_conditions.append("node.kbId IN @kb_ids")
 
         filter_clause = " AND ".join(filter_conditions) if filter_conditions else "true"
 
@@ -540,37 +430,11 @@ class KnowledgeHubService:
         # Convert to NodeItem objects
         items = [self._doc_to_node_item(node_doc) for node_doc in nodes_data]
 
+        # Available filters are always None for browse mode (children)
+        # They're only returned in search mode or can be fetched separately
         return items, total_count, None
 
-    async def _determine_parent_type(self, parent_id: str) -> Optional[str]:
-        """Determine the type of a parent node for routing."""
-        parent_doc = await self.graph_provider.get_document(
-            parent_id, CollectionNames.RECORDS.value
-        )
-        if parent_doc:
-            # Check for folder mimeType
-            if parent_doc.get('mimeType') in FOLDER_MIME_TYPES:
-                return "folder"
-            # Check if it's a folder via file type
-            if await self._is_folder(parent_id):
-                return "folder"
-            return "record"
 
-        parent_doc = await self.graph_provider.get_document(
-            parent_id, CollectionNames.APPS.value
-        )
-        if parent_doc:
-            return "app"
-
-        parent_doc = await self.graph_provider.get_document(
-            parent_id, CollectionNames.RECORD_GROUPS.value
-        )
-        if parent_doc:
-            if parent_doc.get('connectorName') == Connectors.KNOWLEDGE_BASE.value:
-                return "kb"
-            return "recordGroup"
-
-        return None
 
     async def _get_root_level_nodes(
         self,
@@ -581,8 +445,9 @@ class KnowledgeHubService:
         sort_by: str,
         sort_order: str,
         node_types: Optional[List[str]],
-        sources: Optional[List[str]],
-        connectors: Optional[List[str]],
+        origins: Optional[List[str]],
+        connector_ids: Optional[List[str]],
+        kb_ids: Optional[List[str]],
         only_containers: bool,
     ) -> Tuple[List[NodeItem], int, Optional[AvailableFilters]]:
         """Get root level nodes (KBs and Apps)"""
@@ -591,20 +456,35 @@ class KnowledgeHubService:
             include_kbs = True
             include_apps = True
 
+            # Filter by kb_ids if provided
+            if kb_ids and len(kb_ids) > 0:
+                # If specifically asking for KBs, we should include them
+                include_kbs = True
+                # But if searching for explicit Apps (connector_ids), we might exclude KBs unless origins say otherwise
+                if connector_ids and not origins:
+                    pass # Keep both included and let ID intersection handle it?
+                         # Actually KBs don't have connector_ids, Apps don't have kb_ids.
+
             if node_types:
                 if 'kb' not in node_types and 'recordGroup' not in node_types:
+                    # Note: recordGroup can be in KB too.
+                    # But root nodes are just KB and APP.
                     include_kbs = False
                 if 'app' not in node_types:
                     include_apps = False
 
-            if sources:
-                if 'KB' not in sources:
+            if origins:
+                if 'KB' not in origins:
                     include_kbs = False
-                if 'CONNECTOR' not in sources:
+                if 'CONNECTOR' not in origins:
                     include_apps = False
 
             # Get user's accessible apps
             user_apps_ids = await self.graph_provider.get_user_app_ids(user_key)
+
+            # Filter apps by connector_ids if provided
+            if connector_ids:
+                user_apps_ids = [app_id for app_id in user_apps_ids if app_id in connector_ids]
 
             # Build sort clause
             sort_field_map = {
@@ -632,6 +512,14 @@ class KnowledgeHubService:
             nodes_data = result.get('nodes', [])
             total_count = result.get('total', 0)
 
+            # Filter KBs if kb_ids provided
+            if kb_ids:
+                nodes_data = [
+                    n for n in nodes_data
+                    if n.get('nodeType') != 'kb' or n.get('id') in kb_ids
+                ]
+                total_count = len(nodes_data)
+
             # Convert to NodeItem objects
             items = [self._doc_to_node_item(node_doc) for node_doc in nodes_data]
 
@@ -642,6 +530,48 @@ class KnowledgeHubService:
             raise
 
 
+
+
+    async def _get_available_filters(self, user_key: str, org_id: str) -> AvailableFilters:
+        """Get filter options (dynamic KBs/Apps + static others)"""
+        try:
+            options = await self.graph_provider.get_knowledge_hub_filter_options(user_key, org_id)
+            kbs_data = options.get('kbs', [])
+            apps_data = options.get('apps', [])
+
+            kb_options = [FilterOption(id=k['id'], label=k['name']) for k in kbs_data]
+            app_options = [FilterOption(id=a['id'], label=a['name']) for a in apps_data]
+
+            return AvailableFilters(
+                nodeTypes=[
+                    FilterOption(id="folder", label="Folder"),
+                    FilterOption(id="record", label="File"),
+                    FilterOption(id="recordGroup", label="Drive/Root"),
+                    FilterOption(id="app", label="Connector"),
+                    FilterOption(id="kb", label="Knowledge Base"),
+                ],
+                recordTypes=[
+                    FilterOption(id="FILE", label="File"),
+                    FilterOption(id="WEBPAGE", label="Webpage"),
+                    FilterOption(id="MESSAGE", label="Message"),
+                    FilterOption(id="EMAIL", label="Email"),
+                    FilterOption(id="TICKET", label="Ticket"),
+                ],
+                origins=[
+                    FilterOption(id="KB", label="Knowledge Base"),
+                    FilterOption(id="CONNECTOR", label="External Connector"),
+                ],
+                connectors=app_options,
+                kbs=kb_options,
+                indexingStatus=[
+                    FilterOption(id="COMPLETED", label="Completed"),
+                    FilterOption(id="IN_PROGRESS", label="In Progress"),
+                    FilterOption(id="FAILED", label="Failed"),
+                ]
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to get available filters: {e}")
+            return AvailableFilters()
 
 
     async def _get_search_nodes(
@@ -655,8 +585,9 @@ class KnowledgeHubService:
         q: Optional[str],
         node_types: Optional[List[str]],
         record_types: Optional[List[str]],
-        sources: Optional[List[str]],
-        connectors: Optional[List[str]],
+        origins: Optional[List[str]],
+        connector_ids: Optional[List[str]],
+        kb_ids: Optional[List[str]],
         indexing_status: Optional[List[str]],
         created_at: Optional[Dict[str, Optional[int]]],
         updated_at: Optional[Dict[str, Optional[int]]],
@@ -691,8 +622,9 @@ class KnowledgeHubService:
                 search_query=q,
                 node_types=node_types,
                 record_types=record_types,
-                sources=sources,
-                connectors_filter=connectors,
+                origins=origins,
+                connector_ids=connector_ids,
+                kb_ids=kb_ids,
                 indexing_status=indexing_status,
                 created_at=created_at,
                 updated_at=updated_at,
@@ -706,7 +638,10 @@ class KnowledgeHubService:
             # Convert to NodeItem objects
             items = [self._doc_to_node_item(node_doc) for node_doc in nodes_data]
 
-            return items, total_count, None
+            # Get available filters
+            available_filters = await self._get_available_filters(user_key, org_id)
+
+            return items, total_count, available_filters
 
         except Exception as e:
             self.logger.error(f"❌ Failed to get search nodes: {str(e)}")
@@ -720,6 +655,40 @@ class KnowledgeHubService:
             folder_mime_types=FOLDER_MIME_TYPES,
         )
 
+    async def _validate_node_existence_and_type(
+        self,
+        node_id: str,
+        expected_type: str,
+        user_key: str,
+        org_id: str
+    ) -> None:
+        """
+        Validate that a node exists and matches the expected type.
+
+        Raises:
+            KnowledgeHubNodesResponse with error if validation fails
+        """
+        # Get node info
+        node_info = await self.graph_provider.get_knowledge_hub_node_info(
+            node_id=node_id,
+            folder_mime_types=FOLDER_MIME_TYPES,
+        )
+
+        if not node_info:
+            raise ValueError(f"Node with ID '{node_id}' not found")
+
+        actual_type = node_info.get('nodeType')
+
+        # Validate type matches
+        if actual_type != expected_type:
+            raise ValueError(
+                f"Node type mismatch: expected '{expected_type}' but found '{actual_type}' for node ID '{node_id}'"
+            )
+
+        # Validate user has access (check permissions)
+        # For now, the queries already filter by user permissions, but we could add explicit check here
+        # TODO: Add explicit permission check if needed
+
     async def _get_current_node_info(self, node_id: str) -> Optional[CurrentNode]:
         """Get current node information (the node being browsed)"""
         node_info = await self.graph_provider.get_knowledge_hub_node_info(
@@ -727,12 +696,12 @@ class KnowledgeHubService:
             folder_mime_types=FOLDER_MIME_TYPES,
         )
         if node_info:
-            return CurrentNode(
+                return CurrentNode(
                 id=node_info['id'],
                 name=node_info['name'],
                 nodeType=node_info['nodeType'],
                 subType=node_info.get('subType'),
-            )
+                )
         return None
 
 
@@ -808,21 +777,17 @@ class KnowledgeHubService:
         except ValueError:
             node_type = NodeType.RECORD
 
-        # Determine if container
-        is_container = node_type in [NodeType.KB, NodeType.FOLDER, NodeType.APP, NodeType.RECORD_GROUP]
-
-        # Get source
-        source_str = doc.get('source', 'KB')
-        source = SourceType.KB if source_str == 'KB' else SourceType.CONNECTOR
+        # Get origin
+        origin_str = doc.get('source', 'KB')
+        origin = OriginType.KB if origin_str == 'KB' else OriginType.CONNECTOR
 
         # Build NodeItem
         item = NodeItem(
             id=doc.get('id', ''),
             name=doc.get('name', ''),
             nodeType=node_type,
-            isContainer=is_container,
             parentId=doc.get('parentId'),
-            source=source,
+            origin=origin,
             connector=doc.get('connector'),
             recordType=doc.get('recordType'),
             indexingStatus=doc.get('indexingStatus'),
@@ -833,7 +798,6 @@ class KnowledgeHubService:
             extension=doc.get('extension'),
             webUrl=doc.get('webUrl'),
             hasChildren=doc.get('hasChildren', False),
-            extra=doc.get('extra'),
         )
 
         return item
@@ -873,7 +837,7 @@ class KnowledgeHubService:
                     role=perm_data.get('role', 'READER'),
                     canEdit=perm_data.get('canEdit', False),
                     canDelete=perm_data.get('canDelete', False),
-                )
+                    )
 
             return permissions
 

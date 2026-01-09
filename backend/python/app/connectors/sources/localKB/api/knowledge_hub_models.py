@@ -1,7 +1,7 @@
 """Knowledge Hub Unified Browse API Request and Response Models"""
 
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -15,8 +15,8 @@ class NodeType(str, Enum):
     RECORD = "record"
 
 
-class SourceType(str, Enum):
-    """Valid source types for nodes"""
+class OriginType(str, Enum):
+    """Valid origin types for nodes"""
     KB = "KB"
     CONNECTOR = "CONNECTOR"
 
@@ -118,10 +118,9 @@ class NodeItem(BaseModel):
     id: str = Field(..., description="Unique identifier for the node")
     name: str = Field(..., description="Display name of the node")
     nodeType: NodeType = Field(..., description="Type of the node")
-    isContainer: bool = Field(..., description="True for kb, folder, app, recordGroup")
     parentId: Optional[str] = Field(None, description="ID of the parent node")
-    source: SourceType = Field(..., description="Source type (KB or CONNECTOR)")
-    connector: Optional[str] = Field(None, description="Connector name (only for CONNECTOR source)")
+    origin: OriginType = Field(..., description="Origin type (KB or CONNECTOR)")
+    connector: Optional[str] = Field(None, description="Connector name (only for CONNECTOR origin)")
     recordType: Optional[str] = Field(None, description="Record type (only when nodeType is record)")
     indexingStatus: Optional[str] = Field(None, description="Indexing status (only when nodeType is record)")
     createdAt: int = Field(..., description="Creation timestamp (epoch ms)")
@@ -131,7 +130,6 @@ class NodeItem(BaseModel):
     extension: Optional[str] = Field(None, description="File extension (only for file records)")
     webUrl: Optional[str] = Field(None, description="Web URL for the node")
     hasChildren: bool = Field(..., description="True if node has any children (for sidebar)")
-    extra: Optional[Dict[str, Any]] = Field(None, description="Connector-specific extra data")
     permission: Optional[ItemPermission] = Field(None, description="User's permission on this item")
 
     class Config:
@@ -172,17 +170,18 @@ class PaginationInfo(BaseModel):
 
 
 class FilterOption(BaseModel):
-    """Response model for a filter option with count"""
-    value: str = Field(..., description="Filter value")
-    count: int = Field(..., description="Number of items matching this filter")
+    """Response model for a filter option"""
+    id: str = Field(..., description="Filter ID value to send in requests")
+    label: str = Field(..., description="Display label for the filter")
 
 
 class AvailableFilters(BaseModel):
     """Response model for available filter options"""
     nodeTypes: List[FilterOption] = Field(default_factory=list, description="Available node types")
     recordTypes: List[FilterOption] = Field(default_factory=list, description="Available record types")
-    sources: List[FilterOption] = Field(default_factory=list, description="Available sources")
-    connectors: List[FilterOption] = Field(default_factory=list, description="Available connectors")
+    origins: List[FilterOption] = Field(default_factory=list, description="Available origins")
+    connectors: List[FilterOption] = Field(default_factory=list, description="Available connectors (instances)")
+    kbs: List[FilterOption] = Field(default_factory=list, description="Available Knowledge Bases")
     indexingStatus: List[FilterOption] = Field(default_factory=list, description="Available indexing statuses")
 
 
@@ -191,8 +190,9 @@ class AppliedFilters(BaseModel):
     q: Optional[str] = Field(None, description="Search query")
     nodeTypes: Optional[List[str]] = Field(None, description="Applied node type filters")
     recordTypes: Optional[List[str]] = Field(None, description="Applied record type filters")
-    sources: Optional[List[str]] = Field(None, description="Applied source filters")
-    connectors: Optional[List[str]] = Field(None, description="Applied connector filters")
+    origins: Optional[List[str]] = Field(None, description="Applied origin filters")
+    connectorIds: Optional[List[str]] = Field(None, description="Applied connector instance ID filters")
+    kbIds: Optional[List[str]] = Field(None, description="Applied KB ID filters")
     indexingStatus: Optional[List[str]] = Field(None, description="Applied indexing status filters")
     createdAt: Optional[DateRangeFilter] = Field(None, description="Applied created date range")
     updatedAt: Optional[DateRangeFilter] = Field(None, description="Applied updated date range")

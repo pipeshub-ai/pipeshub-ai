@@ -5256,7 +5256,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     id: kb._key,
                     name: kb.groupName,
                     nodeType: "kb",
-                    isContainer: true,
                     parentId: null,
                     source: "KB",
                     connector: "KB",
@@ -5281,7 +5280,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     id: app._key,
                     name: app.name,
                     nodeType: "app",
-                    isContainer: true,
                     parentId: null,
                     source: "CONNECTOR",
                     connector: app.appGroup,
@@ -5412,12 +5410,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 ) > 0
                 RETURN {
                     id: rg._key, name: rg.groupName, nodeType: "recordGroup",
-                    isContainer: true, parentId: CONCAT("apps/", @app_id),
+                    parentId: CONCAT("apps/", @app_id),
                     source: "CONNECTOR", connector: app.appGroup,
                     recordType: null, indexingStatus: null,
                     createdAt: rg.createdAtTimestamp, updatedAt: rg.updatedAtTimestamp,
                     sizeInBytes: null, mimeType: null, extension: null,
-                    webUrl: rg.webUrl, hasChildren: has_child_rgs OR has_records, extra: rg.extra
+                    webUrl: rg.webUrl, hasChildren: has_child_rgs OR has_records
                 }
         )
         """
@@ -5440,11 +5438,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         LET hp = LENGTH(FOR pre IN recordRelations FILTER pre._to == r._id AND pre.relationshipType == "PARENT_CHILD" RETURN 1) > 0 FILTER hp == false RETURN 1) > 0
                 RETURN {{
                     id: child_rg._key, name: child_rg.groupName, nodeType: "recordGroup",
-                    isContainer: true, parentId: @rg_doc_id, source: "{source}",
+                    parentId: @rg_doc_id, source: "{source}",
                     connector: child_rg.connectorName, recordType: null, indexingStatus: null,
                     createdAt: child_rg.createdAtTimestamp, updatedAt: child_rg.updatedAtTimestamp,
                     sizeInBytes: null, mimeType: null, extension: null,
-                    webUrl: child_rg.webUrl, hasChildren: has_children, extra: child_rg.extra
+                    webUrl: child_rg.webUrl, hasChildren: has_children
                 }}
         )
 
@@ -5459,13 +5457,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET has_children = LENGTH(FOR ce IN recordRelations FILTER ce._from == record._id AND ce.relationshipType == "PARENT_CHILD" LET c = DOCUMENT(ce._to) FILTER c != null AND c.isDeleted != true RETURN 1) > 0
             RETURN {{
                 id: record._key, name: record.recordName, nodeType: is_folder ? "folder" : "record",
-                isContainer: is_folder OR has_children, parentId: @rg_doc_id,
+                parentId: @rg_doc_id,
                 source: "{source}", connector: record.connectorName,
                 recordType: record.recordType, indexingStatus: record.indexingStatus,
                 createdAt: record.createdAtTimestamp, updatedAt: record.updatedAtTimestamp,
                 sizeInBytes: file_info.fileSizeInBytes, mimeType: file_info.mimeType,
                 extension: file_info.extension, webUrl: record.webUrl,
-                hasChildren: has_children, extra: record.extra
+                hasChildren: has_children
             }}
         )
 
@@ -5493,13 +5491,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 RETURN {
                     id: record._key, name: record.recordName,
                     nodeType: is_folder ? "folder" : "record",
-                    isContainer: is_folder OR has_children, parentId: @record_doc_id,
+                    parentId: @record_doc_id,
                     source: source, connector: record.connectorName,
                     recordType: record.recordType, indexingStatus: record.indexingStatus,
                     createdAt: record.createdAtTimestamp, updatedAt: record.updatedAtTimestamp,
                     sizeInBytes: file_info.fileSizeInBytes, mimeType: file_info.mimeType,
                     extension: file_info.extension, webUrl: record.webUrl,
-                    hasChildren: has_children, extra: record.extra
+                    hasChildren: has_children
                 }
         )
         """
@@ -5517,13 +5515,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
         search_query: Optional[str],
         node_types: Optional[List[str]],
         record_types: Optional[List[str]],
-        sources: Optional[List[str]],
-        connectors_filter: Optional[List[str]],
-        indexing_status: Optional[List[str]],
-        created_at: Optional[Dict[str, Optional[int]]],
-        updated_at: Optional[Dict[str, Optional[int]]],
-        size: Optional[Dict[str, Optional[int]]],
         only_containers: bool,
+        origins: Optional[List[str]] = None,
+        connector_ids: Optional[List[str]] = None,
+        kb_ids: Optional[List[str]] = None,
+        indexing_status: Optional[List[str]] = None,
+        created_at: Optional[Dict[str, Optional[int]]] = None,
+        updated_at: Optional[Dict[str, Optional[int]]] = None,
+        size: Optional[Dict[str, Optional[int]]] = None,
         transaction: Optional[str] = None
     ) -> Dict[str, Any]:
         """
@@ -5551,12 +5550,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
         if record_types:
             bind_vars["record_types"] = record_types
             filters.append("FILTER node.recordType != null AND node.recordType IN @record_types")
-        if sources:
-            bind_vars["sources"] = sources
-            filters.append("FILTER node.source IN @sources")
-        if connectors_filter:
-            bind_vars["connectors_filter"] = connectors_filter
-            filters.append("FILTER node.connector IN @connectors_filter")
+        if origins:
+            bind_vars["origins"] = origins
+            filters.append("FILTER node.source IN @origins")
+        if connector_ids:
+            bind_vars["connector_ids"] = connector_ids
+            # Filter Apps by ID OR Records by connectorId
+            filters.append("FILTER (node.nodeType == 'app' AND node.id IN @connector_ids) OR (node.connectorId IN @connector_ids)")
+        if kb_ids:
+            bind_vars["kb_ids"] = kb_ids
+            filters.append("FILTER (node.nodeType == 'kb' AND node.id IN @kb_ids) OR (node.kbId IN @kb_ids)")
         if indexing_status:
             bind_vars["indexing_status"] = indexing_status
             filters.append("FILTER node.indexingStatus != null AND node.indexingStatus IN @indexing_status")
@@ -5610,10 +5613,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN 1
                 ) > 0
                 RETURN {{
-                    id: kb._key, name: kb.groupName, nodeType: "kb", isContainer: true,
+                    id: kb._key, name: kb.groupName, nodeType: "kb",
                     parentId: null, source: "KB", connector: "KB", recordType: null,
                     indexingStatus: null, createdAt: kb.createdAtTimestamp, updatedAt: kb.updatedAtTimestamp,
-                    sizeInBytes: null, webUrl: CONCAT("/kb/", kb._key), hasChildren: has_children
+                    sizeInBytes: null, webUrl: CONCAT("/kb/", kb._key), hasChildren: has_children,
+                    connectorId: null, kbId: kb._key
                 }}
         )
 
@@ -5624,10 +5628,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FOR rg IN recordGroups FILTER rg.connectorId == app._key AND rg.orgId == @org_id RETURN 1
                 ) > 0
                 RETURN {{
-                    id: app._key, name: app.name, nodeType: "app", isContainer: true,
+                    id: app._key, name: app.name, nodeType: "app",
                     parentId: null, source: "CONNECTOR", connector: app.appGroup, recordType: null,
                     indexingStatus: null, createdAt: app.createdAtTimestamp || 0, updatedAt: app.updatedAtTimestamp || 0,
-                    sizeInBytes: null, webUrl: CONCAT("/app/", app._key), hasChildren: has_children
+                    sizeInBytes: null, webUrl: CONCAT("/app/", app._key), hasChildren: has_children,
+                    connectorId: app._key, kbId: null
                 }}
         )
 
@@ -5661,11 +5666,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 LET source = record.connectorName == "KB" ? "KB" : "CONNECTOR"
                 RETURN {{
                     id: record._key, name: record.recordName, nodeType: is_folder ? "folder" : "record",
-                    isContainer: is_folder OR has_children, parentId: record.parentId, source: source,
+                    parentId: record.parentId, source: source,
                     connector: record.connectorName, recordType: record.recordType,
                     indexingStatus: record.indexingStatus, createdAt: record.createdAtTimestamp,
                     updatedAt: record.updatedAtTimestamp, sizeInBytes: file_info.fileSizeInBytes,
-                    webUrl: record.webUrl, hasChildren: has_children
+                    webUrl: record.webUrl, hasChildren: has_children,
+                    connectorId: record.connectorName == "KB" ? null : record.connectorId,
+                    kbId: record.connectorName == "KB" ? record.parentId : null // Approx for KB root records?
                 }}
         )
 
@@ -5684,11 +5691,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     RETURN 1
                 ) > 0
                 RETURN {{
-                    id: rg._key, name: rg.groupName, nodeType: "recordGroup", isContainer: true,
+                    id: rg._key, name: rg.groupName, nodeType: "recordGroup",
                     parentId: rg.parentId != null ? CONCAT("recordGroups/", rg.parentId) : CONCAT("apps/", rg.connectorId),
                     source: "CONNECTOR", connector: rg.connectorName, recordType: null,
                     indexingStatus: null, createdAt: rg.createdAtTimestamp, updatedAt: rg.updatedAtTimestamp,
-                    sizeInBytes: null, webUrl: rg.webUrl, hasChildren: has_children
+                    sizeInBytes: null, webUrl: rg.webUrl, hasChildren: has_children,
+                    connectorId: rg.connectorId, kbId: null
                 }}
         )
 
@@ -5891,7 +5899,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
         parent_id: Optional[str],
         transaction: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Get user's context-level permissions."""
+        """
+        Get user's context-level permissions.
+        Supports both direct user permissions and team-based permissions.
+        If multiple permissions exist, returns the highest role.
+        """
         if not parent_id:
             query = """
             LET user = DOCUMENT("users", @user_key)
@@ -5913,27 +5925,160 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     (FOR doc IN recordGroups FILTER doc._key == @parent_id RETURN doc._id)
                 ))
             )
-            LET user_permission = FIRST(
+
+            // Role priority: OWNER > ADMIN > EDITOR > WRITER > COMMENTER > READER
+            LET role_priority = {
+                "OWNER": 6,
+                "ADMIN": 5,
+                "EDITOR": 4,
+                "WRITER": 3,
+                "COMMENTER": 2,
+                "READER": 1
+            }
+
+            // Step 1: Get permission target (node itself or its parent via inheritPermissions)
+            LET permission_target = node_id
+
+            // For records, check if they inherit from a parent (KB or record group)
+            LET inherited_from = STARTS_WITH(node_id, "records/") ? FIRST(
+                FOR edge IN inheritPermissions
+                    FILTER edge._from == node_id
+                    RETURN edge._to
+            ) : null
+
+            // Use inherited parent for permission check if it exists, otherwise use node itself
+            LET final_permission_target = inherited_from != null ? inherited_from : permission_target
+
+            // Step 2: Get direct user permission on the target
+            LET direct_user_perm = FIRST(
                 FOR perm IN permission
-                    FILTER perm._from == CONCAT("users/", @user_key) AND perm._to == node_id
-                    RETURN perm
+                    FILTER perm._from == CONCAT("users/", @user_key)
+                    FILTER perm._to == final_permission_target
+                    FILTER perm.type == "USER"
+                    RETURN {
+                        role: perm.role || "READER",
+                        priority: role_priority[perm.role] || 1,
+                        source: "direct_user"
+                    }
             )
-            LET role = user_permission != null ? (user_permission.role || "READER") : "READER"
-            LET can_edit = role IN ["ADMIN", "EDITOR", "WRITER"]
-            LET can_upload = role IN ["ADMIN", "EDITOR", "WRITER"]
-            LET can_create = role IN ["ADMIN", "EDITOR", "WRITER"]
-            LET can_delete = role IN ["ADMIN", "OWNER"]
-            LET can_manage = role IN ["ADMIN", "OWNER"]
+
+            // Step 3: Get team-based permissions on the target
+            LET team_perms = (
+                // Get all teams the user belongs to
+                FOR user_team_perm IN permission
+                    FILTER user_team_perm._from == CONCAT("users/", @user_key)
+                    FILTER user_team_perm.type == "USER"
+                    FILTER STARTS_WITH(user_team_perm._to, "teams/")
+                    // Check if those teams have permission to the target node
+                    FOR team_node_perm IN permission
+                        FILTER team_node_perm._from == user_team_perm._to
+                        FILTER team_node_perm._to == final_permission_target
+                        FILTER team_node_perm.type == "TEAM"
+                        RETURN {
+                            role: user_team_perm.role || "READER",
+                            priority: role_priority[user_team_perm.role] || 1,
+                            source: "team"
+                        }
+            )
+
+            // Step 4: Get group-based permissions on the target
+            LET group_perms = (
+                // Get all groups the user belongs to
+                FOR user_group_perm IN permission
+                    FILTER user_group_perm._from == CONCAT("users/", @user_key)
+                    FILTER user_group_perm.type == "USER"
+                    FILTER STARTS_WITH(user_group_perm._to, "groups/")
+                    // Check if those groups have permission to the target node
+                    FOR group_node_perm IN permission
+                        FILTER group_node_perm._from == user_group_perm._to
+                        FILTER group_node_perm._to == final_permission_target
+                        FILTER group_node_perm.type == "GROUP"
+                        RETURN {
+                            role: user_group_perm.role || "READER",
+                            priority: role_priority[user_group_perm.role] || 1,
+                            source: "group"
+                        }
+            )
+
+            // Step 5: Check org-level and domain-level permissions
+            LET user_doc = DOCUMENT("users", @user_key)
+            LET org_perm = user_doc != null ? FIRST(
+                FOR perm IN permission
+                    FILTER perm._to == final_permission_target
+                    FILTER perm.type == "ORG"
+                    FILTER perm._from == CONCAT("organizations/", @org_id)
+                    RETURN {
+                        role: perm.role || "READER",
+                        priority: role_priority[perm.role] || 1,
+                        source: "org"
+                    }
+            ) : null
+
+            // Step 6: Check ANYONE permissions
+            LET anyone_perm = FIRST(
+                FOR perm IN permission
+                    FILTER perm._to == final_permission_target
+                    FILTER perm.type == "ANYONE"
+                    RETURN {
+                        role: perm.role || "READER",
+                        priority: role_priority[perm.role] || 1,
+                        source: "anyone"
+                    }
+            )
+
+            // Step 7: Combine ALL permissions and get the highest role
+            LET all_perms = REMOVE_VALUE(
+                FLATTEN([
+                    direct_user_perm != null ? [direct_user_perm] : [],
+                    team_perms,
+                    group_perms,
+                    org_perm != null ? [org_perm] : [],
+                    anyone_perm != null ? [anyone_perm] : []
+                ]),
+                null
+            )
+
+            LET highest_perm = LENGTH(all_perms) > 0 ? (
+                FIRST(
+                    FOR p IN all_perms
+                        SORT p.priority DESC
+                        LIMIT 1
+                        RETURN p
+                )
+            ) : null
+
+            LET final_role = highest_perm != null ? highest_perm.role : "READER"
+            LET can_edit = final_role IN ["ADMIN", "EDITOR", "WRITER", "OWNER"]
+            LET can_upload = final_role IN ["ADMIN", "EDITOR", "WRITER", "OWNER"]
+            LET can_create = final_role IN ["ADMIN", "EDITOR", "WRITER", "OWNER"]
+            LET can_delete = final_role IN ["ADMIN", "OWNER"]
+            LET can_manage = final_role IN ["ADMIN", "OWNER"]
+
             RETURN {
-                role: role, canUpload: can_upload, canCreateFolders: can_create,
-                canEdit: can_edit, canDelete: can_delete, canManagePermissions: can_manage
+                role: final_role,
+                canUpload: can_upload,
+                canCreateFolders: can_create,
+                canEdit: can_edit,
+                canDelete: can_delete,
+                canManagePermissions: can_manage
             }
             """
-            results = await self.http_client.execute_aql(query, bind_vars={"user_key": user_key, "parent_id": parent_id}, txn_id=transaction)
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={"user_key": user_key, "org_id": org_id, "parent_id": parent_id},
+                txn_id=transaction
+            )
 
         if results and results[0]:
             return results[0]
-        return {"role": "READER", "canUpload": False, "canCreateFolders": False, "canEdit": False, "canDelete": False, "canManagePermissions": False}
+        return {
+            "role": "READER",
+            "canUpload": False,
+            "canCreateFolders": False,
+            "canEdit": False,
+            "canDelete": False,
+            "canManagePermissions": False
+        }
 
     async def is_knowledge_hub_folder(
         self,
@@ -6056,4 +6201,99 @@ class ArangoHTTPProvider(IGraphDBProvider):
             query, bind_vars={"node_id": node_id, "folder_mime_types": folder_mime_types}, txn_id=transaction
         )
         return results[0] if results and results[0] else None
+
+    async def get_knowledge_hub_filter_options(
+        self,
+        user_key: str,
+        org_id: str,
+        transaction: Optional[str] = None
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Get available filter options (KBs and Apps) for a user.
+        Returns only KBs and Connectors that the user has access to.
+        """
+        self.logger.info(f"🔍 Getting filter options for user_key={user_key}, org_id={org_id}")
+
+        query = """
+        // Get KBs the user has access to (via direct or team/group permissions)
+        LET user_from = CONCAT("users/", @user_key)
+
+        // Direct KB permissions
+        LET direct_kb_perms = (
+            FOR perm IN permission
+                FILTER perm._from == user_from
+                FILTER perm.type == "USER"
+                FILTER STARTS_WITH(perm._to, "recordGroups/")
+                LET kb = DOCUMENT(perm._to)
+                FILTER kb != null AND kb.isDeleted != true
+                FILTER kb.groupType == "KB" AND kb.connectorName == "KB"
+                FILTER kb.orgId == @org_id
+                RETURN kb._key
+        )
+
+        // Team-based KB permissions
+        LET team_kb_perms = (
+            FOR user_team_perm IN permission
+                FILTER user_team_perm._from == user_from
+                FILTER user_team_perm.type == "USER"
+                FILTER STARTS_WITH(user_team_perm._to, "teams/")
+                FOR team_kb_perm IN permission
+                    FILTER team_kb_perm._from == user_team_perm._to
+                    FILTER team_kb_perm.type == "TEAM"
+                    FILTER STARTS_WITH(team_kb_perm._to, "recordGroups/")
+                    LET kb = DOCUMENT(team_kb_perm._to)
+                    FILTER kb != null AND kb.isDeleted != true
+                    FILTER kb.groupType == "KB" AND kb.connectorName == "KB"
+                    FILTER kb.orgId == @org_id
+                    RETURN kb._key
+        )
+
+        // Group-based KB permissions
+        LET group_kb_perms = (
+            FOR user_group_perm IN permission
+                FILTER user_group_perm._from == user_from
+                FILTER user_group_perm.type == "USER"
+                FILTER STARTS_WITH(user_group_perm._to, "groups/")
+                FOR group_kb_perm IN permission
+                    FILTER group_kb_perm._from == user_group_perm._to
+                    FILTER group_kb_perm.type == "GROUP"
+                    FILTER STARTS_WITH(group_kb_perm._to, "recordGroups/")
+                    LET kb = DOCUMENT(group_kb_perm._to)
+                    FILTER kb != null AND kb.isDeleted != true
+                    FILTER kb.groupType == "KB" AND kb.connectorName == "KB"
+                    FILTER kb.orgId == @org_id
+                    RETURN kb._key
+        )
+
+        // Combine and deduplicate KB IDs
+        LET all_kb_ids = UNIQUE(UNION(direct_kb_perms, team_kb_perms, group_kb_perms))
+
+        LET kbs = (
+            FOR kb_id IN all_kb_ids
+                LET kb = DOCUMENT("recordGroups", kb_id)
+                FILTER kb != null
+                RETURN { id: kb._key, name: kb.groupName }
+        )
+
+        // Get connector apps the user has access to
+        // Apps don't have orgId field - they're scoped via user relationship
+        LET apps = (
+            FOR app IN OUTBOUND CONCAT("users/", @user_key) userAppRelation
+                FILTER app != null
+                RETURN { id: app._key, name: app.name }
+        )
+
+        RETURN { kbs: kbs, apps: apps }
+        """
+
+        try:
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={"user_key": user_key, "org_id": org_id},
+                txn_id=transaction
+            )
+            return results[0] if results else {"kbs": [], "apps": []}
+        except Exception:
+            # self.logger.error(f"Failed to get filter options: {e}")
+            return {"kbs": [], "apps": []}
 

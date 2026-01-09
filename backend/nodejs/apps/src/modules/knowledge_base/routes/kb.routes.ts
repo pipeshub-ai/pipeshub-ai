@@ -177,9 +177,17 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     getAllRecords(appConfig),
   );
 
-  // Knowledge Hub unified browse API
+  // Knowledge Hub unified browse API - Root
   router.get(
     '/knowledge-hub/nodes',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    getKnowledgeHubNodes(appConfig),
+  );
+
+  // Knowledge Hub unified browse API - Children
+  router.get(
+    '/knowledge-hub/nodes/:parentType/:parentId',
     authMiddleware.authenticate,
     metricsMiddleware(container),
     getKnowledgeHubNodes(appConfig),

@@ -1897,13 +1897,14 @@ class IGraphDBProvider(ABC):
         search_query: Optional[str],
         node_types: Optional[List[str]],
         record_types: Optional[List[str]],
-        sources: Optional[List[str]],
-        connectors: Optional[List[str]],
-        indexing_status: Optional[List[str]],
-        created_at: Optional[Dict[str, Optional[int]]],
-        updated_at: Optional[Dict[str, Optional[int]]],
-        size: Optional[Dict[str, Optional[int]]],
         only_containers: bool,
+        origins: Optional[List[str]] = None,
+        connector_ids: Optional[List[str]] = None,
+        kb_ids: Optional[List[str]] = None,
+        indexing_status: Optional[List[str]] = None,
+        created_at: Optional[Dict[str, Optional[int]]] = None,
+        updated_at: Optional[Dict[str, Optional[int]]] = None,
+        size: Optional[Dict[str, Optional[int]]] = None,
         transaction: Optional[str] = None
     ) -> Dict[str, Any]:
         """
@@ -1921,7 +1922,8 @@ class IGraphDBProvider(ABC):
             node_types: Filter by node types
             record_types: Filter by record types
             sources: Filter by sources (KB/CONNECTOR)
-            connectors: Filter by connector names
+            connector_ids: Filter by connector IDs
+            kb_ids: Filter by KB IDs
             indexing_status: Filter by indexing status
             created_at: Created date range filter
             updated_at: Updated date range filter
@@ -1993,6 +1995,26 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Dict with role and capability flags
+        """
+        pass
+
+    @abstractmethod
+    async def get_knowledge_hub_filter_options(
+        self,
+        user_key: str,
+        org_id: str,
+        transaction: Optional[str] = None
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Get available filter options (KBs and Apps) for a user.
+
+        Args:
+            user_key: User's internal key
+            org_id: Organization ID
+            transaction: Optional transaction context
+
+        Returns:
+            Dict with 'kbs' and 'apps' lists containing {id, name}
         """
         pass
 

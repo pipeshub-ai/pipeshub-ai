@@ -78,7 +78,8 @@ export const getKnowledgeHubNodes =
         nodeTypes: 'node_types',
         recordTypes: 'record_types',
         sources: 'sources',
-        connectors: 'connectors',
+        connectorIds: 'connector_ids',
+        kbIds: 'kb_ids',
         indexingStatus: 'indexing_status',
         createdAt: 'created_at',
         updatedAt: 'updated_at',
@@ -100,7 +101,14 @@ export const getKnowledgeHubNodes =
         );
       }
 
-      const url = `${appConfig.connectorBackend}/api/v2/knowledge-hub/nodes?${queryParams.toString()}`;
+      const { parentType, parentId } = req.params;
+      let url = `${appConfig.connectorBackend}/api/v2/knowledge-hub/nodes`;
+
+      if (parentType && parentId) {
+        url += `/${parentType}/${parentId}`;
+      }
+
+      url += `?${queryParams.toString()}`;
 
       const response = await executeConnectorCommand(
         url,
