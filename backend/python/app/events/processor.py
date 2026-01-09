@@ -229,21 +229,18 @@ class Processor:
             parse_result = await self.docling_client.parse_pdf(record_name, pdf_binary)
             if parse_result is None:
                 self.logger.error(f"❌ External Docling service failed to parse {recordName}")
-                # Must yield both events to release semaphores properly
-                yield {"event": "parsing_complete", "data": {"record_id": recordId}}
-                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                yield {"event": "docling_failed", "data": {"record_id": recordId}}
                 return
 
             # Signal parsing complete after Docling parsing
             yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+            
 
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await self.docling_client.create_blocks(parse_result)
             if block_containers is None:
                 self.logger.error(f"❌ External Docling service failed to create blocks for {recordName}")
-                # Must yield indexing_complete to release indexing semaphore properly
-                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
-                return
+                raise Exception(f"External Docling service failed to create blocks for {recordName}")
 
             record = await self.arango_service.get_document(
                 recordId, CollectionNames.RECORDS.value
@@ -251,7 +248,6 @@ class Processor:
 
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
-                yield {"event": "parsing_complete", "data": {"record_id": recordId}}
                 yield {"event": "indexing_complete", "data": {"record_id": recordId}}
                 return
 
