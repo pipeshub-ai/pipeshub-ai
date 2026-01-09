@@ -10,6 +10,7 @@ import linkVariantIcon from '@iconify-icons/mdi/link-variant';
 import accountGroupIcon from '@iconify-icons/mdi/account-group';
 import officeBuildingIcon from '@iconify-icons/mdi/office-building';
 import accountServiceIcon from '@iconify-icons/mdi/account-service-outline';
+import messageTextIcon from '@iconify-icons/mdi/message-text';
 
 import List from '@mui/material/List';
 import Drawer from '@mui/material/Drawer';
@@ -84,6 +85,11 @@ export default function Sidebar() {
       name: 'Platform',
       icon: cogIcon,
       path: `${baseUrl}/settings/platform`,
+    },
+    {
+      name: 'Prompts',
+      icon: messageTextIcon,
+      path: `${baseUrl}/settings/prompts`,
     },
   ];
 
