@@ -248,11 +248,7 @@ def serialize_blocks_container(blocks_container: BlocksContainer) -> dict:
 
 
 def serialize_docling_doc(doc: DoclingDocument) -> str:
-    """Serialize DoclingDocument to JSON string.
-
-    Uses the DoclingDocument's export_to_dict method for safe JSON serialization,
-    avoiding pickle's security vulnerabilities.
-    """
+    """Serialize DoclingDocument to JSON string."""
     try:
         return doc.model_dump_json()
     except Exception as e:
