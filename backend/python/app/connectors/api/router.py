@@ -74,7 +74,7 @@ from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsPa
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
 from app.services.featureflag.config.config import CONFIG
 from app.utils.api_call import make_api_call
-from app.utils.filename_utils import sanitize_filename_for_content_disposition
+from app.utils.streaming import create_file_download_response
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import get_oauth_config
@@ -744,16 +744,11 @@ async def download_file(
                             )
                         finally:
                             file_buffer.close()
-                    safe_filename = sanitize_filename_for_content_disposition(
-                        record.record_name,
-                        fallback=f"record_{record_id}"
-                    )
-                    headers = {
-                        "Content-Disposition": f'attachment; filename="{safe_filename}"'
-                    }
-
-                    return StreamingResponse(
-                        file_stream(google_workspace_export_formats[mime_type]), media_type=google_workspace_export_formats[mime_type], headers=headers
+                    return create_file_download_response(
+                        file_stream(google_workspace_export_formats[mime_type]),
+                        filename=record.record_name,
+                        mime_type=google_workspace_export_formats[mime_type],
+                        fallback_filename=f"record_{record_id}"
                     )
 
                 # Enhanced logging for regular file download as a default fallback
@@ -795,16 +790,11 @@ async def download_file(
                         file_buffer.close()
 
                 # Return streaming response with proper headers
-                safe_filename = sanitize_filename_for_content_disposition(
-                    record.record_name,
-                    fallback=f"record_{record_id}"
-                )
-                headers = {
-                    "Content-Disposition": f'attachment; filename="{safe_filename}"'
-                }
-
-                return StreamingResponse(
-                    file_stream(), media_type=mime_type, headers=headers
+                return create_file_download_response(
+                    file_stream(),
+                    filename=record.record_name,
+                    mime_type=mime_type,
+                    fallback_filename=f"record_{record_id}"
                 )
 
             elif connector_type.lower() == Connectors.GOOGLE_MAIL.value.lower():
@@ -1158,18 +1148,13 @@ async def stream_record(
 
                     response_media_type, file_ext = export_media_types.get(export_mime_type, (export_mime_type, ""))
 
-                    safe_filename = sanitize_filename_for_content_disposition(
-                        file_name,
-                        fallback=f"record_{record_id}"
-                    )
+                    file_name_with_ext = file_name if file_name.endswith(file_ext) else f"{file_name}{file_ext}"
 
-                    file_name_with_ext = safe_filename if safe_filename.endswith(file_ext) else f"{safe_filename}{file_ext}"
-
-                    headers = {"Content-Disposition": f'attachment; filename="{file_name_with_ext}"'}
-                    return StreamingResponse(
+                    return create_file_download_response(
                         _stream_google_api_request(request, error_context="Google Workspace file export"),
-                        media_type=response_media_type,
-                        headers=headers
+                        filename=file_name_with_ext,
+                        mime_type=response_media_type,
+                        fallback_filename=f"record_{record_id}"
                     )
 
                 # Check if PDF conversion is requested (for regular files only, Google Workspace handled above)
@@ -1298,13 +1283,11 @@ async def stream_record(
 
 
                 # Return streaming response with proper headers
-                safe_filename = sanitize_filename_for_content_disposition(
-                    file_name,
-                    fallback=f"record_{record_id}"
-                )
-                headers = {"Content-Disposition": f'attachment; filename="{safe_filename}"'}
-                return StreamingResponse(
-                    file_stream(), media_type=mime_type, headers=headers
+                return create_file_download_response(
+                    file_stream(),
+                    filename=file_name,
+                    mime_type=mime_type,
+                    fallback_filename=f"record_{record_id}"
                 )
 
             elif connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
@@ -1645,14 +1628,6 @@ async def stream_record(
                                 )
 
 
-                        safe_filename = sanitize_filename_for_content_disposition(
-                            file_name,
-                            fallback=f"record_{record_id}"
-                        )
-                        headers = {
-                            "Content-Disposition": f'attachment; filename="{safe_filename}"'
-                        }
-
                         # Use the same streaming logic as Drive downloads
                         async def file_stream() -> AsyncGenerator[bytes, None]:
                             try:
@@ -1702,8 +1677,11 @@ async def stream_record(
                             finally:
                                 buffer.close()
 
-                        return StreamingResponse(
-                            file_stream(), media_type=mime_type, headers=headers
+                        return create_file_download_response(
+                            file_stream(),
+                            filename=file_name,
+                            mime_type=mime_type,
+                            fallback_filename=f"record_{record_id}"
                         )
 
                     except Exception as drive_error:
@@ -1784,10 +1762,6 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
 
                     pdf_filename = file.filename.rsplit(".", 1)[0] + ".pdf"
                     pdf_path = os.path.join(tmpdir, pdf_filename)
-                    safe_filename = sanitize_filename_for_content_disposition(
-                        pdf_filename,
-                        fallback="converted_file.pdf"
-                    )
 
                     if process.returncode != 0:
                         error_msg = f"LibreOffice conversion failed: {conversion_error.decode('utf-8', errors='replace')}"
@@ -1812,12 +1786,11 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
                                 detail="Error reading converted PDF file",
                             )
 
-                    return StreamingResponse(
+                    return create_file_download_response(
                         file_iterator(),
-                        media_type="application/pdf",
-                        headers={
-                            "Content-Disposition": f'attachment; filename="{safe_filename}"'
-                        },
+                        filename=pdf_filename,
+                        mime_type="application/pdf",
+                        fallback_filename="converted_file.pdf"
                     )
 
                 except FileNotFoundError as e:

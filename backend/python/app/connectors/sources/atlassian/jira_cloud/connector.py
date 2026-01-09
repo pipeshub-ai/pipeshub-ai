@@ -67,6 +67,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.jira.jira import JiraClient
 from app.sources.external.jira.jira import JiraDataSource
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
+from app.utils.streaming import create_file_download_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # API URLs
@@ -4213,12 +4214,17 @@ class JiraConnector(BaseConnector):
                 )
                 encoded_filename = quote(filename)
 
-                return StreamingResponse(
+                # Jira requires UTF-8 encoded filename in addition to the safe filename
+                additional_headers = {
+                    "Content-Disposition": f'attachment; filename="{safe_filename}"; filename*=UTF-8\'\'{encoded_filename}'
+                }
+
+                return create_file_download_response(
                     generate_attachment(),
-                    media_type=record.mime_type if hasattr(record, 'mime_type') else MimeTypes.UNKNOWN.value,
-                    headers={
-                        "Content-Disposition": f'attachment; filename="{safe_filename}"; filename*=UTF-8\'\'{encoded_filename}'
-                    }
+                    filename=filename,
+                    mime_type=record.mime_type if hasattr(record, 'mime_type') else MimeTypes.UNKNOWN.value,
+                    fallback_filename=f"attachment_{attachment_id}",
+                    additional_headers=additional_headers
                 )
 
             else:

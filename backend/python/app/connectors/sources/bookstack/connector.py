@@ -4,7 +4,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -64,7 +64,7 @@ from app.sources.client.bookstack.bookstack import (
     BookStackTokenConfig,
 )
 from app.sources.external.bookstack.bookstack import BookStackDataSource
-from app.utils.filename_utils import sanitize_filename_for_content_disposition
+from app.utils.streaming import create_file_download_response
 
 
 @dataclass
@@ -315,17 +315,12 @@ class BookStackConnector(BaseConnector):
                 detail="Record not found or access denied"
             )
         raw_markdown = markdown_response.data.get("markdown")
-        # Stream the content from the URL
-        safe_filename = sanitize_filename_for_content_disposition(
-            record.record_name,
-            fallback=f"record_{record.id}"
-        )
-        return StreamingResponse(
+        
+        return create_file_download_response(
             raw_markdown,
-            media_type=record.mime_type if record.mime_type else "application/octet-stream",
-            headers={
-                "Content-Disposition": f'attachment; filename="{safe_filename}"'
-            }
+            filename=record.record_name,
+            mime_type=record.mime_type,
+            fallback_filename=f"record_{record.id}"
         )
 
     def _get_app_users(self, users: List[Dict]) -> List[AppUser]:

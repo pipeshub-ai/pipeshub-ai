@@ -60,8 +60,7 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission
-from app.utils.filename_utils import sanitize_filename_for_content_disposition
-from app.utils.streaming import stream_content
+from app.utils.streaming import create_file_download_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -1354,16 +1353,11 @@ class OneDriveConnector(BaseConnector):
         if not signed_url:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
 
-        safe_filename = sanitize_filename_for_content_disposition(
-            record.record_name,
-            fallback=f"record_{record.id}"
-        )
-        return StreamingResponse(
+        return create_file_download_response(
             stream_content(signed_url),
-            media_type=record.mime_type if record.mime_type else "application/octet-stream",
-            headers={
-                "Content-Disposition": f'attachment; filename="{safe_filename}"'
-            }
+            filename=record.record_name,
+            mime_type=record.mime_type,
+            fallback_filename=f"record_{record.id}"
         )
 
     def _parse_datetime(self, dt_obj) -> Optional[int]:
