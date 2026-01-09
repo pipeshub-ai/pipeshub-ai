@@ -53,6 +53,7 @@ import {
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { PLATFORM_FEATURE_FLAGS } from '../constants/constants';
 import { getPlatformSettingsFromStore } from '../utils/util';
+import { AIModelsConfig } from '../types/ai-models.types';
 
 const logger = Logger.getInstance({
   service: 'ConfigurationManagerController',
@@ -3117,7 +3118,7 @@ export const getCustomSystemPrompt =
         return;
       }
 
-      const aiModels = JSON.parse(
+      const aiModels: AIModelsConfig = JSON.parse(
         EncryptionService.getInstance(
           configManagerConfig.algorithm,
           configManagerConfig.secretKey,
@@ -3143,33 +3144,59 @@ export const setCustomSystemPrompt =
       }
 
       const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = await keyValueStoreService.get<string>(
-        configPaths.aiModels,
-      );
+      
+      // Use Compare-and-Set (CAS) pattern with retries to prevent race conditions
+      const MAX_RETRIES = 5;
+      let success = false;
 
-      let aiModels: any = {};
-      if (encryptedAIConfig) {
-        aiModels = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedAIConfig),
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        const encryptedAIConfig = await keyValueStoreService.get<string>(
+          configPaths.aiModels,
         );
+
+        let aiModels: AIModelsConfig = {};
+        if (encryptedAIConfig) {
+          aiModels = JSON.parse(
+            EncryptionService.getInstance(
+              configManagerConfig.algorithm,
+              configManagerConfig.secretKey,
+            ).decrypt(encryptedAIConfig),
+          );
+        }
+
+        // Update only the customSystemPrompt field, keeping everything else intact
+        aiModels.customSystemPrompt = customSystemPrompt;
+
+        // Encrypt the updated configuration
+        const encryptedUpdatedConfig = EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).encrypt(JSON.stringify(aiModels));
+
+        // Attempt atomic compare-and-set operation
+        const casSuccess = await keyValueStoreService.compareAndSet<string>(
+          configPaths.aiModels,
+          encryptedAIConfig,
+          encryptedUpdatedConfig,
+        );
+
+        if (casSuccess) {
+          success = true;
+          break;
+        } else if (attempt === MAX_RETRIES - 1) {
+          throw new Error(
+            'Failed to update custom system prompt due to persistent concurrent modification. Please try again.',
+          );
+        }
+        // If CAS failed, retry with exponential backoff
+        await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
       }
 
-      // Update only the customSystemPrompt field, keeping everything else intact
-      aiModels.customSystemPrompt = customSystemPrompt;
-
-      // Encrypt and save the updated configuration
-      const encryptedUpdatedConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(aiModels));
-
-      await keyValueStoreService.set<string>(
-        configPaths.aiModels,
-        encryptedUpdatedConfig,
-      );
+      if (!success) {
+        throw new Error(
+          'Failed to update custom system prompt after maximum retries.',
+        );
+      }
 
       res.status(200).json({
         message: 'Custom system prompt updated successfully',
