@@ -236,7 +236,7 @@ const CitationHoverCard = ({
       // Check if blockText exists and is not empty before adding text fragment
       const blockText = citation?.metadata?.blockText;
       if (blockText && typeof blockText === 'string' && blockText.trim().length > 0) {
-        const textFragment = extractCleanTextFragment(blockText, 5);
+        const textFragment = extractCleanTextFragment(blockText);
         if (textFragment) {
           return addTextFragmentToUrl(webUrl, textFragment);
         }
