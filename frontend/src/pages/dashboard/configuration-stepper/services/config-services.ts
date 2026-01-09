@@ -100,21 +100,18 @@ export const getUniversalConfig = async (configType: string): Promise<any | null
 
       case 'url': {
         try {
-          const [frontendResponse, connectorResponse] = await Promise.all([
+          const [frontendResponse] = await Promise.all([
             axios.get(`${API_BASE}/frontendPublicUrl`).catch(() => ({ data: null })),
-            axios.get(`${API_BASE}/connectorPublicUrl`).catch(() => ({ data: null })),
           ]);
 
           return {
             providerType: 'urls',
             frontendUrl: frontendResponse.data?.url || '',
-            connectorUrl: connectorResponse.data?.url || '',
           };
         } catch (error) {
           return {
             providerType: 'urls',
             frontendUrl: '',
-            connectorUrl: '',
           };
         }
       }
@@ -263,10 +260,6 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
         // Only save URLs that have values
         if (normalizedFrontend) {
           apiCalls.push(axios.post(`${API_BASE}/frontendPublicUrl`, { url: normalizedFrontend }));
-        }
-
-        if (normalizedConnector) {
-          apiCalls.push(axios.post(`${API_BASE}/connectorPublicUrl`, { url: normalizedConnector }));
         }
 
         // Execute all API calls
