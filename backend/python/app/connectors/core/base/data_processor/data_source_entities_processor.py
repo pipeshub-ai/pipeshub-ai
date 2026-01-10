@@ -23,6 +23,7 @@ from app.models.entities import (
     FileRecord,
     IndexingStatus,
     MailRecord,
+    ProjectRecord,
     Record,
     RecordGroup,
     RecordType,
@@ -156,6 +157,8 @@ class DataSourceEntitiesProcessor:
             return MailRecord(**base_params)
         elif parent_record_type == RecordType.TICKET:
             return TicketRecord(**base_params)
+        elif parent_record_type == RecordType.PROJECT:
+            return ProjectRecord(**base_params)
         elif parent_record_type in [RecordType.COMMENT, RecordType.INLINE_COMMENT]:
             return CommentRecord(
                 **base_params,

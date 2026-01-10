@@ -38,6 +38,7 @@ from app.models.entities import (
     FileRecord,
     LinkRecord,
     MailRecord,
+    ProjectRecord,
     Record,
     RecordGroup,
     RecordType,
@@ -56,6 +57,7 @@ from app.schema.arango.documents import (
     link_record_schema,
     mail_record_schema,
     orgs_schema,
+    project_record_schema,
     record_group_schema,
     record_schema,
     team_schema,
@@ -109,6 +111,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.AGENT_INSTANCES.value, agent_schema),
     (CollectionNames.AGENT_TEMPLATES.value, agent_template_schema),
     (CollectionNames.TICKETS.value, ticket_record_schema),
+    (CollectionNames.PROJECTS.value, project_record_schema),
     (CollectionNames.SYNC_POINTS.value, None),
     (CollectionNames.TEAMS.value, team_schema),
     (CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, None)
@@ -5380,6 +5383,8 @@ class BaseArangoService:
                 return WebpageRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.TICKETS.value:
                 return TicketRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.PROJECTS.value:
+                return ProjectRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.COMMENTS.value:
                 return CommentRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.LINKS.value:
