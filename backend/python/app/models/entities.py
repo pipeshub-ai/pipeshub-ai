@@ -53,6 +53,7 @@ class RecordType(str, Enum):
     SHAREPOINT_LIST_ITEM = "SHAREPOINT_LIST_ITEM"
     SHAREPOINT_DOCUMENT_LIBRARY = "SHAREPOINT_DOCUMENT_LIBRARY"
     LINK = "LINK"
+    PROJECT = "PROJECT"
     OTHERS = "OTHERS"
 
 
@@ -794,6 +795,83 @@ class TicketRecord(Record):
 
     def to_kafka_record(self) -> Dict:
 
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
+            "mimeType": self.mime_type,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "signedUrl": self.signed_url,
+            "signedUrlRoute": self.fetch_signed_url,
+            "origin": self.origin.value,
+            "webUrl": self.weburl,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+        }
+
+class ProjectRecord(Record):
+    """Record class for projects"""
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    lead_id: Optional[str] = None
+    lead_name: Optional[str] = None
+    lead_email: Optional[str] = None
+
+    def to_arango_record(self) -> Dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "status": self.status,
+            "priority": self.priority,
+            "leadId": self.lead_id,
+            "leadName": self.lead_name,
+            "leadEmail": self.lead_email,
+        }
+
+    @staticmethod
+    def from_arango_record(project_doc: Dict, record_doc: Dict) -> "ProjectRecord":
+        """Create ProjectRecord from ArangoDB documents (records + projects collections)"""
+        conn_name_value = record_doc.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+
+        return ProjectRecord(
+            id=record_doc.get("id", record_doc.get("_key")),
+            org_id=record_doc["orgId"],
+            record_name=record_doc["recordName"],
+            record_type=RecordType(record_doc["recordType"]),
+            external_record_id=record_doc["externalRecordId"],
+            external_revision_id=record_doc.get("externalRevisionId"),
+            external_record_group_id=record_doc.get("externalGroupId"),
+            parent_external_record_id=record_doc.get("externalParentId"),
+            version=record_doc["version"],
+            origin=OriginTypes(record_doc["origin"]),
+            connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
+            mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
+            weburl=record_doc.get("webUrl"),
+            created_at=record_doc.get("createdAtTimestamp"),
+            updated_at=record_doc.get("updatedAtTimestamp"),
+            source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
+            virtual_record_id=record_doc.get("virtualRecordId"),
+            preview_renderable=record_doc.get("previewRenderable", True),
+            is_dependent_node=record_doc.get("isDependentNode", False),
+            parent_node_id=record_doc.get("parentNodeId", None),
+            status=project_doc.get("status"),
+            priority=project_doc.get("priority"),
+            lead_id=project_doc.get("leadId"),
+            lead_name=project_doc.get("leadName"),
+            lead_email=project_doc.get("leadEmail"),
+        )
+
+    def to_kafka_record(self) -> Dict:
         return {
             "recordId": self.id,
             "orgId": self.org_id,

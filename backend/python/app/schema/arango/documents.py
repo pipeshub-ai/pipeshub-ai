@@ -402,6 +402,20 @@ ticket_record_schema = {
     },
 }
 
+project_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "status": {"type": ["string", "null"]},
+            "priority": {"type": ["string", "null"]},
+            "leadId": {"type": ["string", "null"]},
+            "leadName": {"type": ["string", "null"]},
+            "leadEmail": {"type": ["string", "null"]},
+        },
+    },
+}
+
 record_group_schema = {
     "rule": {
         "type": "object",

@@ -28,6 +28,7 @@ from app.models.entities import (
     LinkRecord,
     MailRecord,
     Person,
+    ProjectRecord,
     Record,
     RecordGroup,
     RecordType,
@@ -1306,6 +1307,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return WebpageRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.TICKETS.value:
                 return TicketRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.PROJECTS.value:
+                return ProjectRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.COMMENTS.value:
                 return CommentRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.LINKS.value:

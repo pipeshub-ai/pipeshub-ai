@@ -63,6 +63,7 @@ from app.models.entities import (
     LinkRecord,
     MimeTypes,
     OriginTypes,
+    ProjectRecord,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -1368,7 +1369,7 @@ class LinearConnector(BaseConnector):
                 # Fetch and process projects for this team
                 total_records_processed = 0
                 total_projects = 0
-                # Track max updatedAt ONLY from projects (TicketRecords)
+                # Track max updatedAt ONLY from projects (ProjectRecords)
                 max_project_updated_at: Optional[int] = None
 
                 async for batch_records in self._fetch_projects_for_team_batch(
@@ -1381,7 +1382,7 @@ class LinearConnector(BaseConnector):
 
                     # Count records by type and track max project updatedAt
                     for record, _ in batch_records:
-                        if isinstance(record, TicketRecord):
+                        if isinstance(record, ProjectRecord):
                             total_projects += 1
                             # Only track max from PROJECTS - sync point must match project query filter
                             if record.source_updated_at:
@@ -1493,8 +1494,8 @@ class LinearConnector(BaseConnector):
                         # Parse project data into blocks
                         blocks_container = await self._parse_project_to_blocks(full_project_data)
 
-                        # Transform project to TicketRecord with blocks
-                        project_record = self._transform_project_to_ticket_record(
+                        # Transform project to ProjectRecord with blocks
+                        project_record = self._transform_to_project_record(
                             full_project_data, team_id, existing_record, blocks_container
                         )
 
@@ -1502,7 +1503,7 @@ class LinearConnector(BaseConnector):
                         if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.PROJECTS):
                             project_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
-                        # Add linked issues to related_external_records on TicketRecord
+                        # Add linked issues to related_external_records on ProjectRecord
                         issues_data = project_data.get("issues", {}).get("nodes", [])
                         if issues_data:
                             from app.models.entities import RelatedExternalRecord
@@ -1525,7 +1526,7 @@ class LinearConnector(BaseConnector):
                                 markdown_text=project_content,
                                 parent_external_id=project_id,
                                 parent_node_id=project_record.id,
-                                parent_record_type=RecordType.TICKET,
+                                parent_record_type=RecordType.PROJECT,
                                 team_id=team_id,
                                 tx_store=tx_store,
                                 parent_created_at=project_record.source_created_at,
@@ -1705,7 +1706,8 @@ class LinearConnector(BaseConnector):
                     issue_id=project_id,  # Use project_id as parent
                     parent_node_id=project_node_id,
                     team_id=team_id,
-                    existing_record=existing_link
+                    existing_record=existing_link,
+                    parent_record_type=RecordType.PROJECT
                 )
 
                 # Set indexing status based on FILES filter (external links are treated as files)
@@ -1772,10 +1774,11 @@ class LinearConnector(BaseConnector):
                 # Transform document to WebpageRecord (reuse existing transform function)
                 webpage_record = self._transform_document_to_webpage_record(
                     document_data=document_data,
-                    issue_id=project_id,  # Use project_id as parent (even though it's a project, not an issue)
+                    issue_id=project_id,  # Use project_id as parent
                     parent_node_id=project_node_id,
                     team_id=team_id,
-                    existing_record=existing_document
+                    existing_record=existing_document,
+                    parent_record_type=RecordType.PROJECT
                 )
 
                 # Set indexing status based on PROJECTS filter (documents are part of project content)
@@ -2098,24 +2101,24 @@ class LinearConnector(BaseConnector):
 
         return ticket
 
-    def _transform_project_to_ticket_record(
+    def _transform_to_project_record(
         self,
         project_data: Dict[str, Any],
         team_id: str,
         existing_record: Optional[Record] = None,
         blocks_container: Optional[BlocksContainer] = None
-    ) -> TicketRecord:
+    ) -> ProjectRecord:
         """
-        Transform Linear project to TicketRecord.
-        Normalizes project data to match issue structure and reuses _transform_issue_to_ticket_record().
+        Transform Linear project to ProjectRecord.
 
         Args:
             project_data: Raw project data from Linear API
             team_id: Team ID for external_record_group_id
             existing_record: Existing record from DB (if any) for version handling
+            blocks_container: Blocks container with project content
 
         Returns:
-            TicketRecord: Transformed ticket record
+            ProjectRecord: Transformed project record
         """
         project_id = project_data.get("id", "")
         if not project_id:
@@ -2132,52 +2135,78 @@ class LinearConnector(BaseConnector):
             self.logger.warning(f"Project {project_id} missing both slugId and name, using ID as record name")
             record_name = project_id
 
-        # Normalize project data to match issue structure
-        normalized_data = project_data.copy()
-
-        # Map name -> title (projects use name, issues use title)
-        # Set title to the final record_name we want (since identifier will be empty, transform will use just title)
-        normalized_data["title"] = record_name
-        normalized_data["identifier"] = ""  # Projects don't have identifiers like issues
-
-        # Map status -> state (projects use status, issues use state)
+        # Status information
         status = project_data.get("status", {})
-        status_type = status.get("type") if status else None
-        if status:
-            normalized_data["state"] = {
-                "name": status.get("name"),
-                "type": status_type or "project"
-            }
-        else:
-            normalized_data["state"] = {"type": "project"}
+        status_name = status.get("name") if status else None
 
-        # Map priorityLabel -> priority (projects have priorityLabel, issues have numeric priority)
+        # Priority information
         priority_label = project_data.get("priorityLabel", "")
-        priority_map = {"Urgent": 1, "High": 2, "Medium": 3, "Low": 4, "No priority": None}
-        normalized_data["priority"] = priority_map.get(priority_label) if priority_label else None
 
-        # Map lead -> assignee (projects use lead, issues use assignee)
+        # Lead information
         lead = project_data.get("lead", {})
-        if lead:
-            normalized_data["assignee"] = lead
+        lead_id = lead.get("id") if lead else None
+        lead_name = lead.get("displayName") or lead.get("name") if lead else None
+        lead_email = lead.get("email") if lead else None
+
+        # Timestamps
+        created_at = self._parse_linear_datetime(project_data.get("createdAt", "")) or 0
+        updated_at = self._parse_linear_datetime(project_data.get("updatedAt", "")) or 0
+
+        # Handle versioning: use existing record's id and increment version if changed
+        is_new = existing_record is None
+        record_id = existing_record.id if existing_record else str(uuid4())
+
+        if is_new:
+            version = 0
+        elif hasattr(existing_record, 'source_updated_at') and existing_record.source_updated_at != updated_at:
+            version = existing_record.version + 1
+            self.logger.debug(f"📝 Project {record_name} changed, incrementing version to {version}")
         else:
-            normalized_data["assignee"] = {}
+            version = existing_record.version if existing_record else 0
 
-        # Projects don't have parent, so ensure it's None
-        normalized_data["parent"] = None
+        # Get web URL directly from Linear API response
+        weburl = project_data.get("url")
 
-        # Reuse existing transform function
-        ticket = self._transform_issue_to_ticket_record(normalized_data, team_id, existing_record)
+        # Use updatedAt as external_revision_id
+        external_revision_id = str(updated_at) if updated_at else None
 
-        # Override type to ensure it's "project" if status_type was None
-        if not ticket.type:
-            ticket.type = "project"
+        # Create ProjectRecord
+        project = ProjectRecord(
+            id=record_id,
+            org_id=self.data_entities_processor.org_id,
+            record_name=record_name,
+            record_type=RecordType.PROJECT,
+            external_record_id=project_id,
+            external_revision_id=external_revision_id,
+            external_record_group_id=team_id,
+            parent_external_record_id=None,  # Projects don't have parents
+            parent_record_type=None,
+            version=version,
+            origin=OriginTypes.CONNECTOR.value,
+            connector_name=Connectors.LINEAR,
+            connector_id=self.connector_id,
+            mime_type=MimeTypes.MARKDOWN.value,
+            weburl=weburl,
+            created_at=get_epoch_timestamp_in_ms(),
+            updated_at=get_epoch_timestamp_in_ms(),
+            source_created_at=created_at,
+            source_updated_at=updated_at,
+            status=status_name,
+            priority=priority_label,
+            lead_id=lead_id,
+            lead_name=lead_name,
+            lead_email=lead_email,
+            preview_renderable=False,
+            inherit_permissions=True,
+            is_dependent_node=False,
+            parent_node_id=None,
+        )
 
         # Add blocks container if provided
         if blocks_container:
-            ticket.block_containers = blocks_container
+            project.block_containers = blocks_container
 
-        return ticket
+        return project
 
     def _transform_comment_to_comment_record(
         self,
@@ -2276,7 +2305,8 @@ class LinearConnector(BaseConnector):
         issue_id: str,
         parent_node_id: str,
         team_id: str,
-        existing_record: Optional[Record] = None
+        existing_record: Optional[Record] = None,
+        parent_record_type: RecordType = RecordType.TICKET
     ) -> LinkRecord:
         """
         Transform Linear attachment or external link data to LinkRecord.
@@ -2288,6 +2318,7 @@ class LinearConnector(BaseConnector):
             parent_node_id: Internal record ID of parent (ticket or project)
             team_id: Team ID for external_record_group_id
             existing_record: Existing record from DB (if any) for version handling
+            parent_record_type: Type of parent record (TICKET or PROJECT)
 
         Returns:
             LinkRecord: Transformed link record
@@ -2337,7 +2368,7 @@ class LinearConnector(BaseConnector):
             external_revision_id=external_revision_id,
             external_record_group_id=team_id,
             parent_external_record_id=issue_id,
-            parent_record_type=RecordType.TICKET,
+            parent_record_type=parent_record_type,
             version=version,
             origin=OriginTypes.CONNECTOR.value,
             connector_name=self.connector_name,
@@ -2365,7 +2396,8 @@ class LinearConnector(BaseConnector):
         issue_id: str,
         parent_node_id: str,
         team_id: str,
-        existing_record: Optional[Record] = None
+        existing_record: Optional[Record] = None,
+        parent_record_type: RecordType = RecordType.TICKET
     ) -> WebpageRecord:
         """
         Transform Linear document data to WebpageRecord.
@@ -2373,10 +2405,11 @@ class LinearConnector(BaseConnector):
 
         Args:
             document_data: Raw document data from Linear API
-            issue_id: Parent issue external ID
-            parent_node_id: Internal record ID of parent ticket
+            issue_id: Parent issue/project external ID
+            parent_node_id: Internal record ID of parent ticket/project
             team_id: Team ID for external_record_group_id
             existing_record: Existing record from DB (if any) for version handling
+            parent_record_type: Type of parent record (TICKET or PROJECT)
 
         Returns:
             WebpageRecord: Transformed webpage record
@@ -2423,7 +2456,7 @@ class LinearConnector(BaseConnector):
             external_revision_id=external_revision_id,
             external_record_group_id=team_id,
             parent_external_record_id=issue_id,
-            parent_record_type=RecordType.TICKET,
+            parent_record_type=parent_record_type,
             version=version,
             origin=OriginTypes.CONNECTOR.value,
             connector_name=self.connector_name,
@@ -2864,7 +2897,7 @@ class LinearConnector(BaseConnector):
             - Files (FileRecord) - extracted from issue descriptions and comments
 
         For Projects:
-            - Project (TicketRecord) - contains milestones, updates, and comments as blocks (not separate records)
+            - Project (ProjectRecord) - contains milestones, updates, and comments as blocks (not separate records)
             - Documents (WebPageRecord) - separate records
             - External Links (LinkRecord) - separate records
             - Files (FileRecord) - extracted from project content markdown
@@ -3288,12 +3321,14 @@ class LinearConnector(BaseConnector):
         return content if content else ""
 
     # ==================== ABSTRACT METHODS ====================
+
     async def stream_record(self, record: Record) -> StreamingResponse:
         """
         Stream record content (issue, project, comment, attachment, document, or file).
 
         Handles:
-        - TICKET: Stream issue or project description/content (markdown)
+        - TICKET: Stream issue description/content (markdown)
+        - PROJECT: Stream project description/content (markdown)
         - COMMENT: Stream comment body (markdown)
         - LINK: Stream attachment/link from weburl
         - WEBPAGE: Stream document content (markdown)
@@ -3303,49 +3338,52 @@ class LinearConnector(BaseConnector):
             if not self.data_source:
                 await self.init()
 
-            if record.record_type == RecordType.TICKET:
-                # Simple identification: Check weburl pattern
+            if record.record_type == RecordType.PROJECT:
+                # Project: Fetch and stream from blocks
+                record_id = record.external_record_id
+                datasource = await self._get_fresh_datasource()
+                project_response = await datasource.project(id=record_id)
 
-                weburl = (record.weburl or "").strip().lower()
-                is_project = bool(weburl and "/project/" in weburl)
+                if not project_response.success:
+                    raise Exception(f"Failed to fetch project content: {project_response.message}")
 
-                if is_project:
-                    # Project: Fetch and stream from blocks
-                    record_id = record.external_record_id
-                    datasource = await self._get_fresh_datasource()
-                    project_response = await datasource.project(id=record_id)
+                project_data = project_response.data.get("project", {}) if project_response.data else {}
+                if not project_data:
+                    raise Exception(f"No project data found for ID: {record_id}")
 
-                    if not project_response.success:
-                        raise Exception(f"Failed to fetch project content: {project_response.message}")
+                # Parse to blocks and stream
+                blocks_container = await self._parse_project_to_blocks(project_data)
+                content_parts = []
 
-                    project_data = project_response.data.get("project", {}) if project_response.data else {}
-                    if not project_data:
-                        raise Exception(f"No project data found for ID: {record_id}")
+                for block in blocks_container.blocks:
+                    if block.type == BlockType.TEXT:
+                        if block.name:
+                            content_parts.append(f"## {block.name}\n\n")
+                        content_parts.append(block.data or "")
+                        content_parts.append("\n\n")
+                        if block.comments:
+                            content_parts.append("### Comments:\n\n")
+                            for comment in block.comments:
+                                content_parts.append(f"{comment.text}\n\n")
+                    elif block.type == BlockType.IMAGE:
+                        image_url = block.data if isinstance(block.data, str) else block.weburl
+                        if image_url:
+                            content_parts.append(f"![{block.name or 'Image'}]({image_url})\n\n")
 
-                    # Parse to blocks and stream
-                    blocks_container = await self._parse_project_to_blocks(project_data)
-                    content_parts = []
+                content = "".join(content_parts)
 
-                    for block in blocks_container.blocks:
-                        if block.type == BlockType.TEXT:
-                            if block.name:
-                                content_parts.append(f"## {block.name}\n\n")
-                            content_parts.append(block.data or "")
-                            content_parts.append("\n\n")
-                            if block.comments:
-                                content_parts.append("### Comments:\n\n")
-                                for comment in block.comments:
-                                    content_parts.append(f"{comment.text}\n\n")
-                        elif block.type == BlockType.IMAGE:
-                            image_url = block.data if isinstance(block.data, str) else block.weburl
-                            if image_url:
-                                content_parts.append(f"![{block.name or 'Image'}]({image_url})\n\n")
+                return StreamingResponse(
+                    iter([content.encode('utf-8')]),
+                    media_type=MimeTypes.MARKDOWN.value,
+                    headers={
+                        "Content-Disposition": f'inline; filename="{record.external_record_id}.md"'
+                    }
+                )
 
-                    content = "".join(content_parts)
-                else:
-                    # Issue: Stream from API
-                    issue_id = record.external_record_id
-                    content = await self._fetch_issue_content(issue_id)
+            elif record.record_type == RecordType.TICKET:
+                # Issue: Stream from API
+                issue_id = record.external_record_id
+                content = await self._fetch_issue_content(issue_id)
 
                 return StreamingResponse(
                     iter([content.encode('utf-8')]),
@@ -3549,7 +3587,7 @@ class LinearConnector(BaseConnector):
                 skipped_count = 0
 
                 for record in non_updated_records:
-                    # Only reindex properly typed records (TicketRecord, CommentRecord, etc.)
+                    # Only reindex properly typed records (TicketRecord, ProjectRecord, CommentRecord, etc.)
                     record_class_name = type(record).__name__
                     if record_class_name != 'Record':
                         reindexable_records.append(record)
@@ -3588,16 +3626,13 @@ class LinearConnector(BaseConnector):
             Tuple of (Record, List[Permission]) if updated, None if not updated or error
         """
         try:
-            # Handle TicketRecord: can be either Issue or Project
-            if record.record_type == RecordType.TICKET:
-                # Identify if it's a project or issue by weburl
-                weburl = (record.weburl or "").strip().lower()
-                is_project = bool(weburl and "/project/" in weburl)
+            # Handle ProjectRecord
+            if record.record_type == RecordType.PROJECT:
+                return await self._check_and_fetch_updated_project(record)
 
-                if is_project:
-                    return await self._check_and_fetch_updated_project(record)
-                else:
-                    return await self._check_and_fetch_updated_issue(record)
+            # Handle TicketRecord: only issues now
+            elif record.record_type == RecordType.TICKET:
+                return await self._check_and_fetch_updated_issue(record)
 
             # Handle CommentRecord: only one type
             elif record.record_type == RecordType.COMMENT:
@@ -3615,7 +3650,7 @@ class LinearConnector(BaseConnector):
                     self.logger.warning(f"LinkRecord {record.external_record_id} has no parent, cannot determine source")
                     return None
 
-                # Check if parent is a project by looking up parent record's weburl
+                # Check if parent is a project by looking up parent record's record_type
                 try:
                     async with self.data_store_provider.transaction() as tx_store:
                         parent_record = await tx_store.get_record_by_external_id(
@@ -3623,10 +3658,7 @@ class LinearConnector(BaseConnector):
                             external_id=parent_external_id
                         )
                         if parent_record:
-                            parent_weburl = (parent_record.weburl or "").strip().lower()
-                            is_parent_project = bool(parent_weburl and "/project/" in parent_weburl)
-
-                            if is_parent_project:
+                            if parent_record.record_type == RecordType.PROJECT:
                                 # Project external link - check parent project
                                 return await self._check_and_fetch_updated_project_link(record, parent_record)
                             else:
@@ -3748,15 +3780,15 @@ class LinearConnector(BaseConnector):
             # Parse project data into blocks
             blocks_container = await self._parse_project_to_blocks(project_data)
 
-            # Transform project to ticket record
-            project_record = self._transform_project_to_ticket_record(
+            # Transform project to ProjectRecord
+            project_record = self._transform_to_project_record(
                 project_data, team_id, record, blocks_container
             )
 
             # Extract permissions (empty list for now)
             permissions = []
 
-            # Add linked issues to related_external_records on TicketRecord
+            # Add linked issues to related_external_records on ProjectRecord
             issues_data = project_data.get("issues", {}).get("nodes", [])
             if issues_data:
                 from app.models.entities import RelatedExternalRecord
