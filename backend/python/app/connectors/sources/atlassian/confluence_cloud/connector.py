@@ -10,7 +10,7 @@ Authentication: OAuth 2.0 (3-legged OAuth)
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from logging import Logger
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
@@ -1010,7 +1010,7 @@ class ConfluenceConnector(BaseConnector):
             # Update sync checkpoint with current time (only if we synced something)
             # Using current time instead of last item's time avoids re-fetching due to the 24-hour offset
             if total_synced > 0:
-                current_sync_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                current_sync_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
                 await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": current_sync_time})
                 self.logger.info(f"Updated {content_type}s sync checkpoint to {current_sync_time}")
 
@@ -1759,23 +1759,8 @@ class ConfluenceConnector(BaseConnector):
                     record_version = existing_record.version
 
             # Construct web URL for comment
-            # v2 API: base_url is at response level (passed as parameter)
-            # v1 API: base_url needs to be extracted from comment's _links.self
-            web_url = None
             links = comment_data.get("_links", {})
-            web_path = links.get("webui")
-
-            if web_path:
-                # Use base_url from parameter (v2 API - from response level)
-                if base_url:
-                    web_url = f"{base_url}{web_path}"
-                else:
-                    # Fall back to v1 format (extract from comment's _links.self)
-                    self_link = links.get("self")
-                    if self_link and "https://" in self_link:
-                        if "/wiki/" in self_link:
-                            extracted_base_url = self_link.split("/wiki/")[0] + "/wiki"
-                            web_url = f"{extracted_base_url}{web_path}"
+            web_url = self._construct_web_url(links, base_url)
 
             return CommentRecord(
                 id=comment_record_id,
@@ -1806,6 +1791,37 @@ class ConfluenceConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Failed to transform comment: {e}")
             return None
+
+    def _construct_web_url(self, links: Dict[str, Any], base_url: Optional[str] = None) -> Optional[str]:
+        """
+        Construct web URL from _links dictionary.
+
+        Supports both v1 and v2 API response formats:
+        - v2 API: base_url is at response level (passed as parameter)
+        - v1 API: base_url needs to be extracted from _links.self
+
+        Args:
+            links: The _links dictionary from API response
+            base_url: Optional base URL from response level (v2 API)
+
+        Returns:
+            Constructed web URL or None if not possible
+        """
+        web_path = links.get("webui")
+        if not web_path:
+            return None
+
+        # Use base_url from parameter (v2 API - from response level)
+        if base_url:
+            return f"{base_url}{web_path}"
+
+        # Fall back to v1 format (extract from _links.self)
+        self_link = links.get("self")
+        if self_link and "https://" in self_link and "/wiki/" in self_link:
+            extracted_base_url = self_link.split("/wiki/")[0] + "/wiki"
+            return f"{extracted_base_url}{web_path}"
+
+        return None
 
     def _extract_cursor_from_next_link(self, next_url: str) -> Optional[str]:
         """
@@ -2450,23 +2466,11 @@ class ConfluenceConnector(BaseConnector):
             if '.' in file_name:
                 extension = file_name.split('.')[-1].lower()
 
-            # Construct web URL - v1 vs v2 have different link structures
-            web_url = None
+            # Construct web URL using helper method
             links = attachment_data.get("_links", {})
-            web_path = links.get("webui")
-
-            if web_path:
-                # Try v2 format first (_links.base)
-                base_url = links.get("base")
-                if base_url:
-                    web_url = f"{base_url}{web_path}"
-                else:
-                    # Fall back to v1 format (extract from _links.self)
-                    self_link = links.get("self")
-                    if self_link and "https://" in self_link:
-                        if "/wiki/" in self_link:
-                            base_url = self_link.split("/wiki/")[0] + "/wiki"
-                            web_url = f"{base_url}{web_path}"
+            # For attachments, base_url might be in _links itself (v2 format)
+            base_url_from_links = links.get("base")
+            web_url = self._construct_web_url(links, base_url_from_links)
 
             # Determine record ID and version
             is_new = existing_record is None
