@@ -34,6 +34,7 @@ import { ConfigurationManagerContainer } from './modules/configuration_manager/c
 import { MailServiceContainer } from './modules/mail/container/mailService.container';
 import { createMailServiceRouter } from './modules/mail/routes/mail.routes';
 import { createConnectorRouter } from './modules/tokens_manager/routes/connectors.routes';
+import { createOAuthRouter } from './modules/tokens_manager/routes/oauth.routes';
 import { PrometheusService } from './libs/services/prometheus/prometheus.service';
 import { StorageContainer } from './modules/storage/container/storage.container';
 import { NotificationContainer } from './modules/notification/container/notification.container';
@@ -346,6 +347,12 @@ export class Application {
     this.app.use(
       '/api/v1/connectors',
       createConnectorRouter(this.tokenManagerContainer),
+    );
+
+    // OAuth config routes
+    this.app.use(
+      '/api/v1/oauth',
+      createOAuthRouter(this.tokenManagerContainer),
     );
 
     // knowledge base routes

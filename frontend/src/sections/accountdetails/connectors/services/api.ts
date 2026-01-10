@@ -92,12 +92,14 @@ export class ConnectorApiService {
    * @param instanceName - Name for this instance
    * @param scope - Scope for the connector ('personal' | 'team', default: 'personal')
    * @param config - Optional initial configuration
+   * @param authType - Auth type selected by user (cannot be changed after creation)
    */
   static async createConnectorInstance(
     connectorType: string,
     instanceName: string,
     scope: 'personal' | 'team' = 'personal',
-    config?: any
+    config?: any,
+    authType?: string
   ): Promise<{ connectorId: string; connectorType: string; instanceName: string; scope: string }> {
     const baseUrl = window.location.origin;
     // Trim whitespace from instance name and config
@@ -109,6 +111,7 @@ export class ConnectorApiService {
       scope,
       config: trimmedConfig,
       baseUrl,
+      authType, // Send selected auth type
     });
     if (!response.data) throw new Error('Failed to create connector instance');
     return response.data.connector;
@@ -270,6 +273,151 @@ export class ConnectorApiService {
       authorizationUrl: response.data.authorizationUrl,
       state: response.data.state,
     };
+  }
+
+  // ============================================================================
+  // OAuth Config APIs
+  // ============================================================================
+
+  /**
+   * Get OAuth config registry (available connector/tool types with OAuth support)
+   */
+  static async getOAuthConfigRegistry(
+    page?: number,
+    limit?: number,
+    search?: string
+  ): Promise<{ connectors: any[]; pagination: any }> {
+    const params: any = {};
+    if (typeof page === 'number' && Number.isFinite(page)) params.page = page;
+    if (typeof limit === 'number' && Number.isFinite(limit)) params.limit = limit;
+    if (search) params.search = search;
+    
+    const response = await axios.get(`/api/v1/oauth/registry`, { params });
+    if (!response.data) throw new Error('Failed to fetch OAuth config registry');
+    return {
+      connectors: response.data.connectors || [],
+      pagination: response.data.pagination || {},
+    };
+  }
+
+  /**
+   * Get OAuth config registry information for a specific connector type
+   * More efficient than fetching the entire registry when you only need one connector
+   */
+  static async getOAuthConfigRegistryByType(connectorType: string): Promise<any> {
+    const response = await axios.get(`/api/v1/oauth/registry/${connectorType}`);
+    if (!response.data) throw new Error('Failed to fetch OAuth config registry for connector type');
+    return response.data.connector;
+  }
+
+  /**
+   * Get OAuth config schema for a connector type
+   */
+  static async getOAuthConfigSchema(connectorType: string): Promise<any> {
+    const response = await axios.get(`${BASE_URL}/registry/${connectorType}/schema`);
+    if (!response.data) throw new Error('Failed to fetch OAuth config schema');
+    return response.data.schema;
+  }
+
+  /**
+   * Get all OAuth configs across all connector types
+   * This uses a single backend endpoint that aggregates all OAuth configs
+   */
+  static async getAllOAuthConfigs(
+    page?: number,
+    limit?: number,
+    search?: string
+  ): Promise<{ oauthConfigs: any[]; pagination: any }> {
+    const params: any = {};
+    if (typeof page === 'number' && Number.isFinite(page)) params.page = page;
+    if (typeof limit === 'number' && Number.isFinite(limit)) params.limit = limit;
+    if (search) params.search = search;
+    
+    const response = await axios.get(`/api/v1/oauth`, { params });
+    if (!response.data) throw new Error('Failed to fetch all OAuth configs');
+    return {
+      oauthConfigs: response.data.oauthConfigs || [],
+      pagination: response.data.pagination || {},
+    };
+  }
+
+  /**
+   * List OAuth configs for a connector type
+   * Use this when you need configs for a specific connector type (e.g., when viewing/editing an app)
+   */
+  static async listOAuthConfigs(
+    connectorType: string,
+    page?: number,
+    limit?: number,
+    search?: string
+  ): Promise<{ oauthConfigs: any[]; pagination: any }> {
+    const params: any = {};
+    if (typeof page === 'number' && Number.isFinite(page)) params.page = page;
+    if (typeof limit === 'number' && Number.isFinite(limit)) params.limit = limit;
+    if (search) params.search = search;
+    
+    // Security: Backend automatically determines what data to return based on authentication
+    // Admins get full config (no second API call needed - performance optimization)
+    // Non-admins get only essential fields (credentials excluded)
+    const response = await axios.get(`/api/v1/oauth/${connectorType}`, { params });
+    if (!response.data) throw new Error('Failed to fetch OAuth configs');
+    return {
+      oauthConfigs: response.data.oauthConfigs || [],
+      pagination: response.data.pagination || {},
+    };
+  }
+
+  /**
+   * Create a new OAuth config
+   */
+  static async createOAuthConfig(
+    connectorType: string,
+    oauthInstanceName: string,
+    config: any
+  ): Promise<any> {
+    const response = await axios.post(`/api/v1/oauth/${connectorType}`, {
+      oauth_instance_name: oauthInstanceName,
+      config,
+    });
+    if (!response.data) throw new Error('Failed to create OAuth config');
+    return response.data;
+  }
+
+  /**
+   * Get a specific OAuth config by ID
+   * Returns full config with sensitive fields for admins, metadata only for regular users
+   */
+  static async getOAuthConfig(connectorType: string, oauthConfigId: string): Promise<any> {
+    const response = await axios.get(`/api/v1/oauth/${connectorType}/${oauthConfigId}`);
+    if (!response.data) throw new Error('Failed to fetch OAuth config');
+    // Backend returns camelCase (oauthConfig) for consistency
+    return response.data.oauthConfig;
+  }
+
+  /**
+   * Update an OAuth config
+   */
+  static async updateOAuthConfig(
+    connectorType: string,
+    oauthConfigId: string,
+    oauthInstanceName: string,
+    config: any
+  ): Promise<any> {
+    const response = await axios.put(`/api/v1/oauth/${connectorType}/${oauthConfigId}`, {
+      oauth_instance_name: oauthInstanceName,
+      config,
+    });
+    if (!response.data) throw new Error('Failed to update OAuth config');
+    return response.data;
+  }
+
+  /**
+   * Delete an OAuth config
+   */
+  static async deleteOAuthConfig(connectorType: string, oauthConfigId: string): Promise<boolean> {
+    const response = await axios.delete(`/api/v1/oauth/${connectorType}/${oauthConfigId}`);
+    if (!response.data) throw new Error('Failed to delete OAuth config');
+    return response.data.success;
   }
 
   // ============================================================================

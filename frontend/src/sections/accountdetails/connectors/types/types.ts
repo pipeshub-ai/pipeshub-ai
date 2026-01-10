@@ -197,11 +197,21 @@ interface ConnectorAuthConfig {
     | 'USERNAME_PASSWORD'
     | 'BEARER_TOKEN'
     | 'CUSTOM';
+  supportedAuthTypes?: string[];
   displayRedirectUri?: boolean;
   redirectUri?: string;
   conditionalDisplay?: ConditionalDisplayConfig;
   schema: {
     fields: AuthSchemaField[];
+    redirectUri?: string;
+    displayRedirectUri?: boolean;
+  };
+  schemas?: {
+    [authType: string]: {
+      fields: AuthSchemaField[];
+      redirectUri?: string;
+      displayRedirectUri?: boolean;
+    };
   };
   values: Record<string, any>;
   customFields: AuthCustomField[];
@@ -295,7 +305,8 @@ interface ConnectorRegistry {
   name: string;
   type: string;
   appGroup: string;
-  authType: string;
+  supportedAuthTypes: string[];  // Supported auth types (user selects one during creation)
+  authType?: string;  // Optional: only exists in instance data (from database), not in registry
   appDescription: string;
   appCategories: string[];
   iconPath: string;

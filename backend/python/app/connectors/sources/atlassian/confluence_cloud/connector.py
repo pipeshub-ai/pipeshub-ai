@@ -35,6 +35,11 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncPoint,
     generate_record_sync_point_key,
 )
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
 from app.connectors.core.registry.connector_builder import (
     CommonFields,
     ConnectorBuilder,
@@ -100,10 +105,33 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 
 @ConnectorBuilder("Confluence")\
     .in_group("Atlassian")\
-    .with_auth_type("OAUTH")\
     .with_description("Sync pages, spaces, and users from Confluence Cloud")\
     .with_categories(["Knowledge Management", "Collaboration"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Confluence",
+            authorize_url=AUTHORIZE_URL,
+            token_url=TOKEN_URL,
+            redirect_uri="connectors/oauth/callback/Confluence",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=AtlassianScope.get_confluence_read_access(),
+                agent=AtlassianScope.get_confluence_read_access()
+            ),
+            fields=[
+                CommonFields.client_id("Atlassian OAuth App"),
+                CommonFields.client_secret("Atlassian OAuth App")
+            ],
+            icon_path="/assets/icons/connectors/confluence.svg",
+            app_group="Atlassian",
+            app_description="OAuth application for accessing Confluence Cloud API and collaboration features",
+            app_categories=["Knowledge Management", "Collaboration"]
+        ),
+        # AuthBuilder.type(AuthType.API_TOKEN).fields([
+        #     CommonFields.api_token("Atlassian API Token")
+        # ])
+    ])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/confluence.svg")
         .with_realtime_support(False)
@@ -117,10 +145,6 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
             'https://docs.pipeshub.com/connectors/confluence/confluence',
             'pipeshub'
         ))
-        .with_redirect_uri("connectors/oauth/callback/Confluence", True)
-        .with_oauth_urls(AUTHORIZE_URL, TOKEN_URL, AtlassianScope.get_confluence_read_access())
-        .add_auth_field(CommonFields.client_id("Atlassian OAuth App"))
-        .add_auth_field(CommonFields.client_secret("Atlassian OAuth App"))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)

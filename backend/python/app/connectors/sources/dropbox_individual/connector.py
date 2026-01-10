@@ -37,6 +37,11 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncPoint,
     generate_record_sync_point_key,
 )
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
 from app.connectors.core.registry.connector_builder import (
     CommonFields,
     ConnectorBuilder,
@@ -71,6 +76,7 @@ from app.sources.client.dropbox.dropbox_ import (
     DropboxTokenConfig,
 )
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
+from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.utils.streaming import create_stream_record_response, stream_content
 
 
@@ -146,10 +152,37 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
 
 @ConnectorBuilder("Dropbox Personal")\
     .in_group("Cloud Storage")\
-    .with_auth_type("OAUTH")\
     .with_description("Sync files and folders from Dropbox Personal account")\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Dropbox Personal",
+            authorize_url="https://www.dropbox.com/oauth2/authorize",
+            token_url="https://api.dropboxapi.com/oauth2/token",
+            redirect_uri="connectors/oauth/callback/Dropbox%20Personal",
+            scopes=OAuthScopeConfig(
+                personal_sync=[
+                    "account_info.read",
+                    "files.content.read",
+                    "files.metadata.read",
+                    "sharing.read",
+                    "sharing.write"
+                ],
+                team_sync=[],
+                agent=[]
+            ),
+            fields=[
+                CommonFields.client_id("Dropbox App Console"),
+                CommonFields.client_secret("Dropbox App Console")
+            ],
+            icon_path="/assets/icons/connectors/dropbox.svg",
+            app_group="Cloud Storage",
+            app_description="OAuth application for accessing Dropbox Personal account API",
+            app_categories=["Storage"],
+            token_access_type="offline"
+        )
+    ])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/dropbox.svg")
         .with_realtime_support(True)
@@ -163,20 +196,6 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
             'https://docs.pipeshub.com/connectors/dropbox/dropbox_personal',
             'pipeshub'
         ))
-        .with_redirect_uri("connectors/oauth/callback/Dropbox%20Personal", True)
-        .with_oauth_urls(
-            "https://www.dropbox.com/oauth2/authorize",
-            "https://api.dropboxapi.com/oauth2/token",
-            [
-                "account_info.read",
-                "files.content.read",
-                "files.metadata.read",
-                "sharing.read",
-                "sharing.write"
-            ]
-        )
-        .add_auth_field(CommonFields.client_id("Dropbox App Console"))
-        .add_auth_field(CommonFields.client_secret("Dropbox App Console"))
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
@@ -258,8 +277,29 @@ class DropboxIndividualConnector(BaseConnector):
         refresh_token = credentials_config.get("refresh_token")
 
         auth_config = config.get("auth")
-        app_key = auth_config.get("clientId")
-        app_secret = auth_config.get("clientSecret")
+        oauth_config_id = auth_config.get("oauthConfigId")
+
+        if not oauth_config_id:
+            self.logger.error("Dropbox Individual oauthConfigId not found in auth configuration.")
+            return False
+
+        # Fetch OAuth config
+        oauth_config = await fetch_oauth_config_by_id(
+            oauth_config_id=oauth_config_id,
+            connector_type=Connectors.DROPBOX_PERSONAL.value,
+            config_service=self.config_service,
+            logger=self.logger
+        )
+
+        if not oauth_config:
+            self.logger.error(f"OAuth config {oauth_config_id} not found for Dropbox Individual connector.")
+            return False
+
+        # Use credentials from OAuth config
+        oauth_config_data = oauth_config.get("config", {})
+        app_key = oauth_config_data.get("clientId") or oauth_config_data.get("client_id")
+        app_secret = oauth_config_data.get("clientSecret") or oauth_config_data.get("client_secret")
+        self.logger.info(f"Using shared OAuth config {oauth_config_id} for Dropbox Individual connector")
 
         try:
             config = DropboxTokenConfig(
@@ -385,7 +425,6 @@ class DropboxIndividualConnector(BaseConnector):
                 #         path=entry.path_lower,
                 #     )
 
-                # print("GOING TO RUN ON_RECORD_DELETED 1: ", record["_key"], record["name"])
                 # await self.data_entities_processor.on_record_deleted(
                 #     record_id=record["_key"]
                 # )

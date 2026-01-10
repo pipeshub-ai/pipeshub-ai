@@ -72,4 +72,10 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     description: 'Allow usage of beta connector integrations that may be unstable.',
     defaultEnabled: false,
   },
+  {
+    key: 'ENABLE_MULTIPLE_OAUTH_APPS',
+    label: 'Enable Multiple OAuth Apps',
+    description: 'Allow creating multiple OAuth app configurations for the same connector or tool type.',
+    defaultEnabled: false,
+  },
 ];

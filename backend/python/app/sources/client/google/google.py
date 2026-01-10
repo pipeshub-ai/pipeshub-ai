@@ -244,15 +244,43 @@ class GoogleClient(IClient):
         try:
             config = await GoogleClient._get_connector_config(service_name, logger, config_service, connector_instance_id)
             creds = (config or {}).get("credentials") or {}
-            # Do not persist client secrets under credentials in storage; only enrich the returned view
             auth_cfg = (config or {}).get("auth", {}) or {}
-            if creds:
-                # Return a merged view including client info for SDK constructors
-                merged = dict(creds)
-                merged['clientId'] = auth_cfg.get("clientId")
-                merged['clientSecret'] = auth_cfg.get("clientSecret")
-                merged['connectorScope'] = auth_cfg.get("connectorScope")
-                return merged
+
+            if not creds:
+                return {}
+
+            # Build OAuth flow config (handles shared OAuth configs)
+            client_id = auth_cfg.get("clientId")
+            client_secret = auth_cfg.get("clientSecret")
+            oauth_config_id = auth_cfg.get("oauthConfigId")
+
+            # If using shared OAuth config, fetch credentials from there
+            if oauth_config_id and not (client_id and client_secret):
+                try:
+                    # Get connector type from config or derive from service_name
+                    connector_type = service_name.upper().replace(" ", "_")
+                    oauth_config_path = f"/services/oauth/{connector_type}"
+                    oauth_configs = await config_service.get_config(oauth_config_path, default=[])
+
+                    if isinstance(oauth_configs, list):
+                        # Find the OAuth config by ID
+                        for oauth_cfg in oauth_configs:
+                            if oauth_cfg.get("_id") == oauth_config_id:
+                                oauth_config_data = oauth_cfg.get("config", {})
+                                if oauth_config_data:
+                                    client_id = oauth_config_data.get("clientId") or oauth_config_data.get("client_id")
+                                    client_secret = oauth_config_data.get("clientSecret") or oauth_config_data.get("client_secret")
+                                    logger.info("Using shared OAuth config for token retrieval")
+                                break
+                except Exception as e:
+                    logger.warning(f"Failed to fetch shared OAuth config: {e}, using connector auth config")
+
+            # Return a merged view including client info for SDK constructors
+            merged = dict(creds)
+            merged['clientId'] = client_id
+            merged['clientSecret'] = client_secret
+            merged['connectorScope'] = auth_cfg.get("connectorScope")
+            return merged
         except Exception as e:
             logger.error(f"❌ Failed to get individual token for {service_name}: {str(e)}")
             raise
