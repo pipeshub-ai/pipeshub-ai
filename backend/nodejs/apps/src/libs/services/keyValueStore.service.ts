@@ -156,4 +156,17 @@ export class KeyValueStoreService implements IKVStoreConnection {
     await this.ensureConnection();
     return await this.store.getAllKeys();
   }
+
+  /**
+   * Atomically compares the current value with the expected value and sets the new value if they match.
+   * This is a Compare-and-Set (CAS) operation that prevents race conditions.
+   * @param key - The key to update
+   * @param expectedValue - The expected current value (null if key doesn't exist)
+   * @param newValue - The new value to set if the comparison succeeds
+   * @returns true if the update was successful (values matched), false otherwise
+   */
+  async compareAndSet<T>(key: string, expectedValue: T | null, newValue: T): Promise<boolean> {
+    await this.ensureConnection();
+    return await this.store.compareAndSet(key, expectedValue, newValue);
+  }
 }

@@ -33,6 +33,11 @@ from app.connectors.core.base.data_store.data_store import (
     TransactionStore,
 )
 from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -57,6 +62,8 @@ from app.sources.client.servicenow.servicenow import (
     ServiceNowRESTClientViaOAuthAuthorizationCode,
 )
 from app.sources.external.servicenow.servicenow import ServiceNowDataSource
+from app.utils.oauth_config import fetch_oauth_config_by_id
+from app.utils.streaming import create_stream_record_response
 
 # Organizational entity configuration
 ORGANIZATIONAL_ENTITIES = {
@@ -89,10 +96,57 @@ ORGANIZATIONAL_ENTITIES = {
 
 @ConnectorBuilder("ServiceNow")\
     .in_group("ServiceNow")\
-    .with_auth_type("OAUTH")\
     .with_description("Sync knowledge base articles, categories, and permissions from ServiceNow")\
     .with_categories(["Knowledge Management"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="ServiceNow",
+            authorize_url="https://example.service-now.com/oauth_auth.do",
+            token_url="https://example.service-now.com/oauth_token.do",
+            redirect_uri="connectors/oauth/callback/ServiceNow",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=["useraccount"],
+                agent=[]
+            ),
+            fields=[
+                AuthField(
+                    name="instanceUrl",
+                    display_name="ServiceNow Instance URL",
+                    placeholder="https://your-instance.service-now.com",
+                    description="Your ServiceNow instance URL (e.g., https://dev12345.service-now.com)",
+                    field_type="URL",
+                    required=True,
+                    max_length=2000,
+                ),
+                AuthField(
+                    name="authorizeUrl",
+                    display_name="ServiceNow Authorize URL",
+                    placeholder="https://your-instance.service-now.com/oauth_auth.do",
+                    description="Your ServiceNow authorize URL (e.g., https://dev12345.service-now.com/oauth_auth.do)",
+                    field_type="URL",
+                    required=True,
+                    max_length=2000,
+                ),
+                AuthField(
+                    name="tokenUrl",
+                    display_name="ServiceNow Token URL",
+                    placeholder="https://your-instance.service-now.com/oauth_token.do",
+                    description="Your ServiceNow token URL (e.g., https://dev12345.service-now.com/oauth_token.do)",
+                    field_type="URL",
+                    required=True,
+                    max_length=2000,
+                ),
+                CommonFields.client_id("ServiceNow OAuth Application Registry"),
+                CommonFields.client_secret("ServiceNow OAuth Application Registry")
+            ],
+            icon_path="/assets/icons/connectors/servicenow.svg",
+            app_group="ServiceNow",
+            app_description="OAuth application for accessing ServiceNow API and knowledge base services",
+            app_categories=["Knowledge Management"]
+        )
+    ])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/servicenow.svg")
         .with_realtime_support(False)
@@ -110,47 +164,6 @@ ORGANIZATIONAL_ENTITIES = {
                 "Pipeshub"
             )
         )
-        .with_redirect_uri("connectors/oauth/callback/ServiceNow", True)
-        .with_oauth_urls(
-            "https://example.service-now.com/oauth_auth.do",
-            "https://example.service-now.com/oauth_token.do",
-            ["useraccount"]
-        )
-        .add_auth_field(
-            AuthField(
-                name="instanceUrl",
-                display_name="ServiceNow Instance URL",
-                placeholder="https://your-instance.service-now.com",
-                description="Your ServiceNow instance URL (e.g., https://dev12345.service-now.com)",
-                field_type="URL",
-                required=True,
-                max_length=2000,
-            )
-        )
-        .add_auth_field(
-            AuthField(
-                name="authorizeUrl",
-                display_name="ServiceNow Authorize URL",
-                placeholder="https://your-instance.service-now.com/oauth_auth.do",
-                description="Your ServiceNow authorize URL (e.g., https://dev12345.service-now.com/oauth_auth.do)",
-                field_type="URL",
-                required=True,
-                max_length=2000,
-            )
-        )
-        .add_auth_field(
-            AuthField(
-                name="tokenUrl",
-                display_name="ServiceNow Token URL",
-                placeholder="https://your-instance.service-now.com/oauth_token.do",
-                description="Your ServiceNow token URL (e.g., https://dev12345.service-now.com/oauth_token.do)",
-                field_type="URL",
-                required=True,
-                max_length=2000,
-            )
-        )
-        .add_auth_field(CommonFields.client_id("ServiceNow OAuth Application Registry"))
-        .add_auth_field(CommonFields.client_secret("ServiceNow OAuth Application Registry"))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
@@ -264,10 +277,32 @@ class ServiceNowConnector(BaseConnector):
 
             # Extract OAuth configuration
             auth_config = config.get("auth", {})
-            self.instance_url = auth_config.get("instanceUrl")
-            self.client_id = auth_config.get("clientId")
-            self.client_secret = auth_config.get("clientSecret")
-            self.redirect_uri = auth_config.get("redirectUri")
+            oauth_config_id = auth_config.get("oauthConfigId")
+
+            if not oauth_config_id:
+                self.logger.error("ServiceNow oauthConfigId not found in auth configuration.")
+                return False
+
+            # Fetch OAuth config
+            oauth_config = await fetch_oauth_config_by_id(
+                oauth_config_id=oauth_config_id,
+                connector_type="SERVICENOW",
+                config_service=self.config_service,
+                logger=self.logger
+            )
+
+            if not oauth_config:
+                self.logger.error("OAuth config not found for ServiceNow connector.")
+                return False
+
+            # Use credentials from OAuth config
+            oauth_config_data = oauth_config.get("config", {})
+            self.client_id = oauth_config_data.get("clientId") or oauth_config_data.get("client_id")
+            self.client_secret = oauth_config_data.get("clientSecret") or oauth_config_data.get("client_secret")
+            # instanceUrl, redirectUri should still come from auth config as they're connector-specific
+            self.instance_url = oauth_config_data.get("instanceUrl")
+            self.redirect_uri = oauth_config_data.get("redirectUri")
+            self.logger.info("Using shared OAuth config for ServiceNow connector")
 
             # OAuth tokens (stored after authorization flow completes)
             credentials = config.get("credentials", {})
@@ -486,14 +521,12 @@ class ServiceNowConnector(BaseConnector):
                 async def generate_attachment() -> AsyncGenerator[bytes, None]:
                     yield file_content
 
-                # Use stored mime type or default
-                media_type = record.mime_type or 'application/octet-stream'
                 filename = record.record_name or f"{record.external_record_id}"
-
-                return StreamingResponse(
+                return create_stream_record_response(
                     generate_attachment(),
-                    media_type=media_type,
-                    headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+                    filename=filename,
+                    mime_type=record.mime_type,
+                    fallback_filename=f"record_{record.id}"
                 )
 
             else:

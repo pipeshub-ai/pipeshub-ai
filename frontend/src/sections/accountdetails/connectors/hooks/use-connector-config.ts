@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {useNavigate} from 'react-router-dom';
 import { useAccountType } from 'src/hooks/use-account-type';
+import { useAdmin } from 'src/context/AdminContext';
 import { 
   Connector, 
   ConnectorConfig, 
@@ -104,6 +105,10 @@ interface UseConnectorConfigReturn {
   certificateInputRef: React.RefObject<HTMLInputElement>;
   privateKeyInputRef: React.RefObject<HTMLInputElement>;
   isSharePointCertificateAuthValid: () => boolean;
+  
+  // Auth type selection (create mode only)
+  selectedAuthType: string | null;
+  handleAuthTypeChange: (authType: string) => void;
 }
 
 // Constants
@@ -122,6 +127,7 @@ export const useConnectorConfig = ({
   syncSettingsMode = false,
 }: UseConnectorConfigProps): UseConnectorConfigReturn => {
   const { isBusiness, isIndividual, loading: accountTypeLoading } = useAccountType();
+  const { isAdmin } = useAdmin();
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -153,6 +159,9 @@ export const useConnectorConfig = ({
   // Create mode state
   const [instanceName, setInstanceName] = useState(initialInstanceName);
   const [instanceNameError, setInstanceNameError] = useState<string | null>(null);
+  
+  // Selected auth type (only in create mode, cannot be changed after creation)
+  const [selectedAuthType, setSelectedAuthType] = useState<string | null>(null);
 
   // Business OAuth specific state (Google Workspace)
   const [adminEmail, setAdminEmail] = useState('');
@@ -175,6 +184,7 @@ export const useConnectorConfig = ({
   const [privateKeyData, setPrivateKeyData] = useState<string | null>(null);
 
   // Memoized helper to check if this is custom Google Business OAuth
+  // Checks both scope and account type to determine if this is Google Workspace business account
   const isCustomGoogleBusinessOAuth = useMemo(
     () =>
       isBusiness &&
@@ -187,10 +197,10 @@ export const useConnectorConfig = ({
   // Memoized helper to check if this is SharePoint certificate auth
   const isSharePointCertificateAuth = useMemo(
     () =>
-      connector.name === 'SharePoint Online' &&
+      connector.type === 'SharePoint Online' &&
       (connector.authType === 'OAUTH_CERTIFICATE' || connector.authType === 'OAUTH_ADMIN_CONSENT') &&
       connector.scope === 'team',
-    [connector.name, connector.authType, connector.scope]
+    [connector.type, connector.authType, connector.scope]
   );
 
   // Memoized helper functions
@@ -221,49 +231,92 @@ export const useConnectorConfig = ({
   }, []);
 
   const mergeConfigWithSchema = useCallback(
-    (configResponse: any, schemaResponse: any) => ({
-      ...configResponse,
-      config: {
-        documentationLinks: schemaResponse.documentationLinks || [],
-        auth: {
-          ...schemaResponse.auth,
-          values: configResponse.config.auth?.values || configResponse.config.auth || {},
-          customValues: configResponse.config.auth?.customValues || {},
-        },
-        sync: {
-          ...schemaResponse.sync,
-          selectedStrategy:
-            configResponse.config.sync?.selectedStrategy ||
-            schemaResponse.sync.supportedStrategies?.[0] ||
-            'MANUAL',
-          scheduledConfig: configResponse.config.sync?.scheduledConfig || {},
-          values: configResponse.config.sync?.values || configResponse.config.sync || {},
-          customValues: configResponse.config.sync?.customValues || {},
-        },
-        filters: {
-          ...schemaResponse.filters,
+    (configResponse: any, schemaResponse: any) => {
+      // Extract stored auth type from config (can be in auth.authType or auth.type)
+      const storedAuthType = configResponse.config?.auth?.authType || 
+                             configResponse.config?.auth?.type || 
+                             configResponse.authType || 
+                             schemaResponse.auth?.type || 
+                             '';
+      
+      // Get stored auth values - handle both formats: { values: {...} } and direct {...}
+      const storedAuthValues = configResponse.config?.auth?.values || 
+                               configResponse.config?.auth || {};
+      
+      // Remove authType from values if it exists (it's metadata, not a field value)
+      const { authType: _, type: __, connectorScope: ___, ...cleanAuthValues } = storedAuthValues;
+      
+      return {
+        ...configResponse,
+        config: {
+          documentationLinks: schemaResponse.documentationLinks || [],
+          auth: {
+            ...schemaResponse.auth,
+            // Preserve the stored auth type - this is critical for loading the correct schema
+            type: storedAuthType,
+            // Store the clean auth values (without metadata fields)
+            values: cleanAuthValues,
+            customValues: configResponse.config?.auth?.customValues || {},
+          },
           sync: {
-            ...schemaResponse.filters?.sync,
-            values: configResponse.config.filters?.sync?.values || {},
+            ...schemaResponse.sync,
+            selectedStrategy:
+              configResponse.config?.sync?.selectedStrategy ||
+              schemaResponse.sync.supportedStrategies?.[0] ||
+              'MANUAL',
+            scheduledConfig: configResponse.config?.sync?.scheduledConfig || {},
+            values: configResponse.config?.sync?.values || configResponse.config?.sync || {},
+            customValues: configResponse.config?.sync?.customValues || {},
           },
-          indexing: {
-            ...schemaResponse.filters?.indexing,
-            values: configResponse.config.filters?.indexing?.values || {},
+          filters: {
+            ...schemaResponse.filters,
+            sync: {
+              ...schemaResponse.filters?.sync,
+              values: configResponse.config?.filters?.sync?.values || {},
+            },
+            indexing: {
+              ...schemaResponse.filters?.indexing,
+              values: configResponse.config?.filters?.indexing?.values || {},
+            },
           },
         },
-      },
-    }),
+      };
+    },
     []
   );
 
-  const initializeFormData = useCallback((config: any) => {
-    const authData = { ...(config.config.auth?.values || config.config.auth || {}) };
+  const initializeFormData = useCallback((config: any, authType?: string) => {
+    // Use provided auth type or existing auth type
+    const currentAuthType = authType || config.config.auth?.type || '';
+    
+    // Get schema for the current auth type
+    const authSchemas = config.config.auth?.schemas || {};
+    const currentAuthSchema = currentAuthType && authSchemas[currentAuthType] 
+      ? { fields: authSchemas[currentAuthType].fields || [] }
+      : { fields: [] };
+    
+    // Initialize authData with existing values or empty object
+    const existingAuthValues = config.config.auth?.values || {};
+    const authData: Record<string, any> = { ...existingAuthValues };
 
-    // Set default values from field definitions
-    if (config.config.auth?.schema?.fields) {
-      config.config.auth.schema.fields.forEach((field: any) => {
+    // Set default values from field definitions for the selected auth type
+    // Also ensure all fields exist in authData (even if empty) so they're bound properly
+    if (currentAuthSchema?.fields) {
+      currentAuthSchema.fields.forEach((field: any) => {
+        // If field has a default value and no existing value, use default
         if (field.defaultValue !== undefined && authData[field.name] === undefined) {
           authData[field.name] = field.defaultValue;
+        }
+        // If field has no value at all, initialize with empty string (for text fields)
+        // This ensures the field is bound to formData and can be updated
+        else if (authData[field.name] === undefined) {
+          // Only initialize with empty string for text-like fields
+          // Other field types (boolean, number, etc.) should remain undefined
+          if (field.fieldType === 'TEXT' || field.fieldType === 'PASSWORD' || 
+              field.fieldType === 'EMAIL' || field.fieldType === 'URL' || 
+              field.fieldType === 'TEXTAREA') {
+            authData[field.name] = '';
+          }
         }
       });
     }
@@ -669,19 +722,22 @@ export const useConnectorConfig = ({
 
     const isValid = hasClientId && hasTenantId && hasSharePointDomain && hasAdminConsent && hasCertificate && hasPrivateKey && !hasErrors;
     
-    // Debug logging (can be removed in production)
+    // Update form errors for SharePoint fields
     if (!isValid) {
-      console.log('SharePoint validation failed:', {
-        hasClientId,
-        hasTenantId,
-        hasSharePointDomain,
-        hasAdminConsent,
-        hasCertificate,
-        hasPrivateKey,
-        hasErrors,
-        certificateError,
-        privateKeyError,
-      });
+      const errors: Record<string, string> = {};
+      if (!hasClientId) errors.clientId = 'Application (Client) ID is required';
+      if (!hasTenantId) errors.tenantId = 'Directory (Tenant) ID is required';
+      if (!hasSharePointDomain) errors.sharepointDomain = 'SharePoint Domain is required';
+      if (!hasCertificate) errors.certificate = 'Certificate file is required';
+      if (!hasPrivateKey) errors.privateKey = 'Private key file is required';
+      
+      setFormErrors((prev) => ({
+        ...prev,
+        auth: {
+          ...prev.auth,
+          ...errors,
+        },
+      }));
     }
 
     return isValid;
@@ -747,8 +803,28 @@ export const useConnectorConfig = ({
 
         setConnectorConfig(mergedConfig);
 
-        // Initialize form data
-        const initialFormData = initializeFormData(mergedConfig);
+        // In create mode, initialize selected auth type to first available supported type
+        // Only set if not already set (to prevent resetting user's selection)
+        if (isCreateMode) {
+          const supportedAuthTypes = mergedConfig.config.auth?.supportedAuthTypes || [];
+          if (supportedAuthTypes.length > 0 && selectedAuthType === null) {
+            setSelectedAuthType(supportedAuthTypes[0]);
+          }
+        }
+
+        // Initialize form data with selected auth type
+        // In create mode: use selectedAuthType or first supported type
+        // In edit mode: use the stored auth type from the config (this is the auth type that was saved when connector was created)
+        const currentAuthType = isCreateMode 
+          ? (selectedAuthType || mergedConfig.config.auth?.supportedAuthTypes?.[0] || mergedConfig.config.auth?.type || '')
+          : (mergedConfig.config.auth?.type || ''); // Use stored auth type from config
+        
+        // Ensure the merged config has the correct auth type set
+        if (currentAuthType && mergedConfig.config.auth) {
+          mergedConfig.config.auth.type = currentAuthType;
+        }
+        
+        const initialFormData = initializeFormData(mergedConfig, currentAuthType);
 
         // For business OAuth, load admin email and JSON data from existing config
         if (isCustomGoogleBusinessOAuth) {
@@ -807,6 +883,7 @@ export const useConnectorConfig = ({
     return () => {
       isMounted = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     connector.name,
     connector.type,
@@ -826,6 +903,9 @@ export const useConnectorConfig = ({
     initializeFormData,
     getBusinessOAuthData,
     getSharePointCertificateData,
+    // Intentionally excluded selectedAuthType from dependencies to prevent re-fetch on auth type change.
+    // The auth type change is handled by handleAuthTypeChange which updates formData directly,
+    // avoiding unnecessary API calls and preventing UI flickering.
   ]);
 
   // Reset activeStep to 0 when mode changes (create/enable/edit)
@@ -834,13 +914,22 @@ export const useConnectorConfig = ({
   }, [enableMode, syncOnly, isCreateMode]);
 
   // Recalculate conditional display when auth form data changes
+  // Use a ref to track previous auth data to avoid unnecessary recalculations
+  const prevAuthDataRef = useRef<Record<string, any>>({});
   useEffect(() => {
     if (connectorConfig?.config?.auth?.conditionalDisplay) {
-      const displayRules = evaluateConditionalDisplay(
-        connectorConfig.config.auth.conditionalDisplay,
-        formData.auth
-      );
-      setConditionalDisplay(displayRules);
+      // Only recalculate if auth data actually changed
+      const authDataString = JSON.stringify(formData.auth);
+      const prevAuthDataString = JSON.stringify(prevAuthDataRef.current);
+      
+      if (authDataString !== prevAuthDataString) {
+        const displayRules = evaluateConditionalDisplay(
+          connectorConfig.config.auth.conditionalDisplay,
+          formData.auth
+        );
+        setConditionalDisplay(displayRules);
+        prevAuthDataRef.current = { ...formData.auth };
+      }
     }
   }, [formData.auth, connectorConfig?.config?.auth?.conditionalDisplay]);
 
@@ -907,27 +996,34 @@ export const useConnectorConfig = ({
   const handleFieldChange = useCallback(
     (section: string, fieldName: string, value: any) => {
       setFormData((prev) => {
-        const newFormData = {
-          ...prev,
-          [section]: {
-            ...prev[section as keyof FormData],
-          },
-        };
-
+        // Ensure section exists and is an object
+        const currentSectionData = (prev[section as keyof FormData] || {}) as Record<string, any>;
+        
         // Handle filter removal (when value is undefined)
         if (section === 'filters' && value === undefined) {
-          const { [fieldName]: removed, ...rest } = newFormData[section] as Record<string, any>;
-          newFormData[section] = rest;
-        } else {
-          // Normal field update
-          (newFormData[section] as Record<string, any>)[fieldName] = value;
+          const { [fieldName]: removed, ...rest } = currentSectionData;
+          return {
+            ...prev,
+            [section]: rest,
+          };
         }
+        
+        // Normal field update - create new object to ensure React detects the change
+        const updatedSectionData = {
+          ...currentSectionData,
+          [fieldName]: value,
+        };
+
+        const newFormData = {
+          ...prev,
+          [section]: updatedSectionData,
+        };
 
         // Re-evaluate conditional display rules for auth section
         if (section === 'auth' && connectorConfig?.config.auth.conditionalDisplay) {
           const displayRules = evaluateConditionalDisplay(
             connectorConfig.config.auth.conditionalDisplay,
-            newFormData.auth
+            newFormData.auth as Record<string, any>
           );
           setConditionalDisplay(displayRules);
         }
@@ -936,13 +1032,16 @@ export const useConnectorConfig = ({
       });
 
       // Clear error for this field
-      setFormErrors((prev) => ({
-        ...prev,
-        [section]: {
-          ...prev[section as keyof FormErrors],
-          [fieldName]: '',
-        },
-      }));
+      setFormErrors((prev) => {
+        const currentSectionErrors = (prev[section as keyof FormErrors] || {}) as Record<string, string>;
+        return {
+          ...prev,
+          [section]: {
+            ...currentSectionErrors,
+            [fieldName]: '',
+          },
+        };
+      });
 
       // Clear save error when user makes changes
       setSaveError(null);
@@ -999,21 +1098,90 @@ export const useConnectorConfig = ({
     // Validate current step
     if (currentSection === 'auth') {
       if (isCustomGoogleBusinessOAuth) {
-        if (!isBusinessGoogleOAuthValid()) {
-          errors = { adminEmail: adminEmailError || 'Invalid business credentials' };
+        // Validate Google Business OAuth
+        const businessErrors: Record<string, string> = {};
+        
+        // Validate admin email (adminEmailError is already set by validateAdminEmail)
+        if (!adminEmail || !adminEmail.trim()) {
+          setAdminEmailError('Admin email is required');
+          businessErrors.adminEmail = 'Admin email is required';
+        } else if (adminEmailError) {
+          businessErrors.adminEmail = adminEmailError;
         }
+        
+        // Validate JSON file
+        if (!jsonData) {
+          setFileError('Service account credentials file is required');
+          businessErrors.jsonFile = 'Service account credentials file is required';
+        } else if (fileError) {
+          businessErrors.jsonFile = fileError;
+        }
+        
+        errors = businessErrors;
       } else if (isSharePointCertificateAuth) {
         // Validate SharePoint certificate authentication
-        if (!isSharePointCertificateAuthValid()) {
-          setSaveError('Please complete all required SharePoint authentication fields and upload valid certificate and private key files.');
-          return;
-        }
+        const sharePointErrors: Record<string, string> = {};
+        
+        // Validate required fields
+        const hasClientId = formData.auth.clientId && String(formData.auth.clientId).trim() !== '';
+        const hasTenantId = formData.auth.tenantId && String(formData.auth.tenantId).trim() !== '';
+        const hasSharePointDomain = formData.auth.sharepointDomain && String(formData.auth.sharepointDomain).trim() !== '';
+        const hasAdminConsent = formData.auth.hasAdminConsent === true;
+        
+        if (!hasClientId) sharePointErrors.clientId = 'Application (Client) ID is required';
+        if (!hasTenantId) sharePointErrors.tenantId = 'Directory (Tenant) ID is required';
+        if (!hasSharePointDomain) sharePointErrors.sharepointDomain = 'SharePoint Domain is required';
+        if (!hasAdminConsent) sharePointErrors.hasAdminConsent = 'Admin consent is required';
+        
+        // Validate certificate and private key
+        const hasCertificate = !!(certificateContent || formData.auth.certificate);
+        const hasPrivateKey = !!(privateKeyData || formData.auth.privateKey);
+        
+        if (!hasCertificate) sharePointErrors.certificate = 'Certificate file is required';
+        if (!hasPrivateKey) sharePointErrors.privateKey = 'Private key file is required';
+        
+        // Check for file validation errors
+        if (certificateError) sharePointErrors.certificate = certificateError;
+        if (privateKeyError) sharePointErrors.privateKey = privateKeyError;
+        
+        errors = sharePointErrors;
       } else {
+        // Get schema for current auth type
+        const validationAuthType = isCreateMode
+          ? (selectedAuthType || connectorConfig.config.auth?.supportedAuthTypes?.[0] || '')
+          : (connectorConfig.config.auth?.type || '');
+        const validationAuthSchemas = connectorConfig.config.auth?.schemas || {};
+        const validationSchema = validationAuthType && validationAuthSchemas[validationAuthType]
+          ? validationAuthSchemas[validationAuthType]
+          : { fields: [] };
+        
+        // Validate schema fields
         errors = validateSection(
           'auth',
-          connectorConfig.config.auth.schema.fields,
+          validationSchema.fields || [],
           formData.auth
         );
+        
+        // For OAuth type: Additional validation for creating new OAuth apps
+        if (validationAuthType === 'OAUTH' && !formData.auth.oauthConfigId && isAdmin) {
+          // If no OAuth config is selected, validate that credential fields are filled
+          const oauthFieldNames = (validationSchema.fields || []).map((f: any) => f.name);
+          oauthFieldNames.forEach((fieldName: string) => {
+            const field = validationSchema.fields?.find((f: any) => f.name === fieldName);
+            if (field && field.required) {
+              const value = formData.auth[fieldName];
+              if (!value || (typeof value === 'string' && !value.trim())) {
+                errors[fieldName] = `${field.displayName || fieldName} is required`;
+              }
+            }
+          });
+          
+          // Validate oauthInstanceName is required when creating new OAuth app
+          const instanceNameValue = formData.auth.oauthInstanceName;
+          if (!instanceNameValue || (typeof instanceNameValue === 'string' && !instanceNameValue.trim())) {
+            errors.oauthInstanceName = 'OAuth App Instance Name is required when creating a new OAuth app';
+          }
+        }
       }
     } else if (currentSection === 'filters') {
       // Filters are optional, so no validation needed
@@ -1037,12 +1205,19 @@ export const useConnectorConfig = ({
     formData,
     validateSection,
     isCustomGoogleBusinessOAuth,
-    isBusinessGoogleOAuthValid,
+    adminEmail,
     adminEmailError,
+    jsonData,
+    fileError,
     isSharePointCertificateAuth,
-    isSharePointCertificateAuthValid,
+    certificateContent,
+    certificateError,
+    privateKeyData,
+    privateKeyError,
     enableMode,
     isCreateMode,
+    selectedAuthType,
+    isAdmin,
   ]);
 
   const handleBack = useCallback(() => {
@@ -1289,19 +1464,76 @@ export const useConnectorConfig = ({
         let authErrors: Record<string, string> = {};
         if (!isNoAuthType) {
           if (isCustomGoogleBusinessOAuth) {
-            if (!isBusinessGoogleOAuthValid()) {
-              authErrors = { adminEmail: adminEmailError || 'Invalid business credentials' };
+            // Validate Google Business OAuth
+            if (!adminEmail || !adminEmail.trim()) {
+              setAdminEmailError('Admin email is required');
+              authErrors.adminEmail = 'Admin email is required';
+            } else if (adminEmailError) {
+              authErrors.adminEmail = adminEmailError;
+            }
+            
+            if (!jsonData) {
+              setFileError('Service account credentials file is required');
+              authErrors.jsonFile = 'Service account credentials file is required';
+            } else if (fileError) {
+              authErrors.jsonFile = fileError;
             }
           } else if (isSharePointCertificateAuth) {
-            if (!isSharePointCertificateAuthValid()) {
-              authErrors = { certificate: 'Invalid SharePoint certificate authentication' };
-            }
+            // Validate SharePoint certificate authentication
+            const hasClientId = formData.auth.clientId && String(formData.auth.clientId).trim() !== '';
+            const hasTenantId = formData.auth.tenantId && String(formData.auth.tenantId).trim() !== '';
+            const hasSharePointDomain = formData.auth.sharepointDomain && String(formData.auth.sharepointDomain).trim() !== '';
+            const hasAdminConsent = formData.auth.hasAdminConsent === true;
+            
+            if (!hasClientId) authErrors.clientId = 'Application (Client) ID is required';
+            if (!hasTenantId) authErrors.tenantId = 'Directory (Tenant) ID is required';
+            if (!hasSharePointDomain) authErrors.sharepointDomain = 'SharePoint Domain is required';
+            if (!hasAdminConsent) authErrors.hasAdminConsent = 'Admin consent is required';
+            
+            const hasCertificate = !!(certificateContent || formData.auth.certificate);
+            const hasPrivateKey = !!(privateKeyData || formData.auth.privateKey);
+            
+            if (!hasCertificate) authErrors.certificate = 'Certificate file is required';
+            if (!hasPrivateKey) authErrors.privateKey = 'Private key file is required';
+            
+            if (certificateError) authErrors.certificate = certificateError;
+            if (privateKeyError) authErrors.privateKey = privateKeyError;
           } else {
+            // Use schema from existing auth type in edit mode (authOnly mode)
+            const validationAuthType = connectorConfig.config.auth?.type || '';
+            const validationAuthSchemas = connectorConfig.config.auth?.schemas || {};
+            const validationSchema = validationAuthType && validationAuthSchemas[validationAuthType]
+              ? validationAuthSchemas[validationAuthType]
+              : connectorConfig.config.auth?.schema || { fields: [] };
+            
             authErrors = validateSection(
               'auth',
-              connectorConfig.config.auth.schema.fields,
+              validationSchema.fields || [],
               formData.auth
             );
+            
+            // For OAuth type: Additional validation for creating new OAuth apps
+            if (validationAuthType === 'OAUTH' && !formData.auth.oauthConfigId && isAdmin) {
+              // If no OAuth config is selected, validate that credential fields are filled
+              const oauthFieldNames = (validationSchema.fields || []).map((f: any) => f.name);
+              oauthFieldNames.forEach((fieldName: string) => {
+                const field = validationSchema.fields?.find((f: any) => f.name === fieldName);
+                if (field && field.required) {
+                  const value = formData.auth[fieldName];
+                  if (!value || (typeof value === 'string' && !value.trim())) {
+                    authErrors[fieldName] = `${field.displayName || fieldName} is required`;
+                  }
+                }
+              });
+              
+              // Validate oauthInstanceName if creating new OAuth app
+              if (!formData.auth.oauthConfigId) {
+                const instanceNameValue = formData.auth.oauthInstanceName;
+                if (!instanceNameValue || (typeof instanceNameValue === 'string' && !instanceNameValue.trim())) {
+                  authErrors.oauthInstanceName = 'OAuth App Instance Name is required when creating a new OAuth app';
+                }
+              }
+            }
           }
         }
 
@@ -1313,6 +1545,20 @@ export const useConnectorConfig = ({
 
         // Prepare auth config
         let authToSave = { ...formData.auth };
+
+        // For OAuth: Ensure oauthInstanceName is included if creating new OAuth app
+        // The backend uses this to create a new OAuth config when oauthConfigId is not provided
+        // If not provided, backend will use connector instance name as fallback
+        if (formData.auth.oauthInstanceName) {
+          authToSave.oauthInstanceName = formData.auth.oauthInstanceName;
+        }
+
+        // For OAuth: Remove oauthConfigId if it's null/empty to ensure backend creates new OAuth config
+        // Only keep it if an existing OAuth config is selected
+        if (!authToSave.oauthConfigId) {
+          // Explicitly remove this field to ensure backend creates new OAuth config
+          delete authToSave.oauthConfigId;
+        }
 
         // For business OAuth, merge JSON data and admin email
         if (isCustomGoogleBusinessOAuth && jsonData) {
@@ -1413,19 +1659,76 @@ export const useConnectorConfig = ({
         let authErrors: Record<string, string> = {};
         if (!isNoAuthType) {
           if (isCustomGoogleBusinessOAuth) {
-            if (!isBusinessGoogleOAuthValid()) {
-              authErrors = { adminEmail: adminEmailError || 'Invalid business credentials' };
+            // Validate Google Business OAuth
+            if (!adminEmail || !adminEmail.trim()) {
+              setAdminEmailError('Admin email is required');
+              authErrors.adminEmail = 'Admin email is required';
+            } else if (adminEmailError) {
+              authErrors.adminEmail = adminEmailError;
+            }
+            
+            if (!jsonData) {
+              setFileError('Service account credentials file is required');
+              authErrors.jsonFile = 'Service account credentials file is required';
+            } else if (fileError) {
+              authErrors.jsonFile = fileError;
             }
           } else if (isSharePointCertificateAuth) {
-            if (!isSharePointCertificateAuthValid()) {
-              authErrors = { certificate: 'Invalid SharePoint certificate authentication' };
-            }
+            // Validate SharePoint certificate authentication
+            const hasClientId = formData.auth.clientId && String(formData.auth.clientId).trim() !== '';
+            const hasTenantId = formData.auth.tenantId && String(formData.auth.tenantId).trim() !== '';
+            const hasSharePointDomain = formData.auth.sharepointDomain && String(formData.auth.sharepointDomain).trim() !== '';
+            const hasAdminConsent = formData.auth.hasAdminConsent === true;
+            
+            if (!hasClientId) authErrors.clientId = 'Application (Client) ID is required';
+            if (!hasTenantId) authErrors.tenantId = 'Directory (Tenant) ID is required';
+            if (!hasSharePointDomain) authErrors.sharepointDomain = 'SharePoint Domain is required';
+            if (!hasAdminConsent) authErrors.hasAdminConsent = 'Admin consent is required';
+            
+            const hasCertificate = !!(certificateContent || formData.auth.certificate);
+            const hasPrivateKey = !!(privateKeyData || formData.auth.privateKey);
+            
+            if (!hasCertificate) authErrors.certificate = 'Certificate file is required';
+            if (!hasPrivateKey) authErrors.privateKey = 'Private key file is required';
+            
+            if (certificateError) authErrors.certificate = certificateError;
+            if (privateKeyError) authErrors.privateKey = privateKeyError;
           } else {
+            // Use schema from selected auth type in create mode
+            const validationAuthType = selectedAuthType || connectorConfig.config.auth?.type || '';
+            const validationAuthSchemas = connectorConfig.config.auth?.schemas || {};
+            const validationSchema = validationAuthType && validationAuthSchemas[validationAuthType]
+              ? validationAuthSchemas[validationAuthType]
+              : connectorConfig.config.auth?.schema || { fields: [] };
+            
             authErrors = validateSection(
               'auth',
-              connectorConfig.config.auth.schema.fields,
+              validationSchema.fields || [],
               formData.auth
             );
+            
+            // For OAuth type: Additional validation for creating new OAuth apps
+            if (validationAuthType === 'OAUTH' && !formData.auth.oauthConfigId && isAdmin) {
+              // If no OAuth config is selected, validate that credential fields are filled
+              const oauthFieldNames = (validationSchema.fields || []).map((f: any) => f.name);
+              oauthFieldNames.forEach((fieldName: string) => {
+                const field = validationSchema.fields?.find((f: any) => f.name === fieldName);
+                if (field && field.required) {
+                  const value = formData.auth[fieldName];
+                  if (!value || (typeof value === 'string' && !value.trim())) {
+                    authErrors[fieldName] = `${field.displayName || fieldName} is required`;
+                  }
+                }
+              });
+              
+              // Validate oauthInstanceName if creating new OAuth app
+              if (!formData.auth.oauthConfigId) {
+                const instanceNameValue = formData.auth.oauthInstanceName;
+                if (!instanceNameValue || (typeof instanceNameValue === 'string' && !instanceNameValue.trim())) {
+                  authErrors.oauthInstanceName = 'OAuth App Instance Name is required when creating a new OAuth app';
+                }
+              }
+            }
           }
         }
 
@@ -1437,6 +1740,20 @@ export const useConnectorConfig = ({
 
         // Prepare auth config
         let authToSave = { ...formData.auth };
+
+        // For OAuth: Ensure oauthInstanceName is included if creating new OAuth app
+        // The backend uses this to create a new OAuth config when oauthConfigId is not provided
+        // If not provided, backend will use connector instance name as fallback
+        if (formData.auth.oauthInstanceName) {
+          authToSave.oauthInstanceName = formData.auth.oauthInstanceName;
+        }
+
+        // For OAuth: Remove oauthConfigId if it's null/empty to ensure backend creates new OAuth config
+        // Only keep it if an existing OAuth config is selected
+        if (!authToSave.oauthConfigId) {
+          // Explicitly remove this field to ensure backend creates new OAuth config
+          delete authToSave.oauthConfigId;
+        }
 
         // For business OAuth, merge JSON data and admin email
         if (isCustomGoogleBusinessOAuth && jsonData) {
@@ -1465,13 +1782,25 @@ export const useConnectorConfig = ({
           };
         }
 
-        // Create new instance with auth config
+
         const scope = connector.scope || 'personal';
+        
+        // Compute auth type with fallback (same logic as currentAuthType)
+        // Ensures auth type is always sent, even when there's only one supported type
+        const authTypeToSend = selectedAuthType || 
+          connectorConfig.config.auth?.supportedAuthTypes?.[0] || 
+          connectorConfig.config.auth?.type || 
+          undefined;
+
+        authToSave.authType = authTypeToSend;
+        
+        
         const created = await ConnectorApiService.createConnectorInstance(
           connector.type,
           trimmedName,
           scope,
-          { auth: authToSave }
+          { auth: authToSave },
+          authTypeToSend
         );
 
         onSuccess?.();
@@ -1489,19 +1818,76 @@ export const useConnectorConfig = ({
       let authErrors: Record<string, string> = {};
       if (!isNoAuthType) {
         if (isCustomGoogleBusinessOAuth) {
-          if (!isBusinessGoogleOAuthValid()) {
-            authErrors = { adminEmail: adminEmailError || 'Invalid business credentials' };
+          // Validate Google Business OAuth
+          if (!adminEmail || !adminEmail.trim()) {
+            setAdminEmailError('Admin email is required');
+            authErrors.adminEmail = 'Admin email is required';
+          } else if (adminEmailError) {
+            authErrors.adminEmail = adminEmailError;
+          }
+          
+          if (!jsonData) {
+            setFileError('Service account credentials file is required');
+            authErrors.jsonFile = 'Service account credentials file is required';
+          } else if (fileError) {
+            authErrors.jsonFile = fileError;
           }
         } else if (isSharePointCertificateAuth) {
-          if (!isSharePointCertificateAuthValid()) {
-            authErrors = { certificate: 'Invalid SharePoint certificate authentication' };
-          }
+          // Validate SharePoint certificate authentication
+          const hasClientId = formData.auth.clientId && String(formData.auth.clientId).trim() !== '';
+          const hasTenantId = formData.auth.tenantId && String(formData.auth.tenantId).trim() !== '';
+          const hasSharePointDomain = formData.auth.sharepointDomain && String(formData.auth.sharepointDomain).trim() !== '';
+          const hasAdminConsent = formData.auth.hasAdminConsent === true;
+          
+          if (!hasClientId) authErrors.clientId = 'Application (Client) ID is required';
+          if (!hasTenantId) authErrors.tenantId = 'Directory (Tenant) ID is required';
+          if (!hasSharePointDomain) authErrors.sharepointDomain = 'SharePoint Domain is required';
+          if (!hasAdminConsent) authErrors.hasAdminConsent = 'Admin consent is required';
+          
+          const hasCertificate = !!(certificateContent || formData.auth.certificate);
+          const hasPrivateKey = !!(privateKeyData || formData.auth.privateKey);
+          
+          if (!hasCertificate) authErrors.certificate = 'Certificate file is required';
+          if (!hasPrivateKey) authErrors.privateKey = 'Private key file is required';
+          
+          if (certificateError) authErrors.certificate = certificateError;
+          if (privateKeyError) authErrors.privateKey = privateKeyError;
         } else {
+          // Use schema from existing auth type in edit mode (cannot be changed)
+          const editAuthType = connectorConfig.config.auth?.type || '';
+          const editAuthSchemas = connectorConfig.config.auth?.schemas || {};
+          const editSchema = editAuthType && editAuthSchemas[editAuthType]
+            ? editAuthSchemas[editAuthType]
+            : connectorConfig.config.auth?.schema || { fields: [] };
+          
           authErrors = validateSection(
             'auth',
-            connectorConfig.config.auth.schema.fields,
+            editSchema.fields || [],
             formData.auth
           );
+          
+          // For OAuth type: Additional validation for creating new OAuth apps
+          if (editAuthType === 'OAUTH' && !formData.auth.oauthConfigId && isAdmin) {
+            // If no OAuth config is selected, validate that credential fields are filled
+            const oauthFieldNames = (editSchema.fields || []).map((f: any) => f.name);
+            oauthFieldNames.forEach((fieldName: string) => {
+              const field = editSchema.fields?.find((f: any) => f.name === fieldName);
+              if (field && field.required) {
+                const value = formData.auth[fieldName];
+                if (!value || (typeof value === 'string' && !value.trim())) {
+                  authErrors[fieldName] = `${field.displayName || fieldName} is required`;
+                }
+              }
+            });
+            
+            // Validate oauthInstanceName if creating new OAuth app
+            if (!formData.auth.oauthConfigId) {
+              const instanceNameValue = formData.auth.oauthInstanceName;
+              if (!instanceNameValue || (typeof instanceNameValue === 'string' && !instanceNameValue.trim())) {
+                authErrors.oauthInstanceName = 'OAuth App Instance Name is required when creating a new OAuth app';
+              }
+            }
+          }
         }
       }
       const syncErrors = validateSection(
@@ -1521,6 +1907,20 @@ export const useConnectorConfig = ({
       // Save auth config if not NONE auth type
       if (!isNoAuthType) {
         let authToSave = { ...formData.auth };
+
+        // For OAuth: Ensure oauthInstanceName is included if creating new OAuth app
+        // The backend uses this to create a new OAuth config when oauthConfigId is not provided
+        // If not provided, backend will use connector instance name as fallback
+        if (formData.auth.oauthInstanceName) {
+          authToSave.oauthInstanceName = formData.auth.oauthInstanceName;
+        }
+
+        // For OAuth: Remove oauthConfigId if it's null/empty to ensure backend creates new OAuth config
+        // Only keep it if an existing OAuth config is selected
+        if (!authToSave.oauthConfigId) {
+          // Explicitly remove this field to ensure backend creates new OAuth config
+          delete authToSave.oauthConfigId;
+        }
 
         // For business OAuth, merge JSON data and admin email
         if (isCustomGoogleBusinessOAuth && jsonData) {
@@ -1567,9 +1967,20 @@ export const useConnectorConfig = ({
 
       onSuccess?.();
       onClose();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error saving connector config:', error);
-      setSaveError(error?.response?.data?.detail || error?.message ||'Failed to save configuration. Please try again.');
+      
+      // Extract more specific error message
+      let errorMessage = 'Failed to save configuration. Please try again.';
+      if (error?.response?.data?.detail) {
+        errorMessage = error.response.data.detail;
+      } else if (error?.response?.data?.message) {
+        errorMessage = error.response.data.message;
+      } else if (error?.message) {
+        errorMessage = error.message;
+      }
+      
+      setSaveError(errorMessage);
     } finally {
       setSaving(false);
     }
@@ -1581,14 +1992,15 @@ export const useConnectorConfig = ({
     onSuccess,
     connector,
     adminEmail,
-    jsonData,
-    isBusinessGoogleOAuthValid,
-    isCustomGoogleBusinessOAuth,
     adminEmailError,
+    jsonData,
+    fileError,
+    isCustomGoogleBusinessOAuth,
     isSharePointCertificateAuth,
-    isSharePointCertificateAuthValid,
     certificateContent,
+    certificateError,
     privateKeyData,
+    privateKeyError,
     isCreateMode,
     instanceName,
     isBusiness,
@@ -1600,6 +2012,8 @@ export const useConnectorConfig = ({
     prepareFiltersPayload,
     prepareSyncConfig,
     updateScheduling,
+    selectedAuthType,
+    isAdmin,
   ]);
 
   // Admin email change handler
@@ -1609,6 +2023,76 @@ export const useConnectorConfig = ({
       validateAdminEmail(email);
     },
     [validateAdminEmail]
+  );
+
+  // Auth type change handler (create mode only)
+  const handleAuthTypeChange = useCallback(
+    (authType: string) => {
+      if (!isCreateMode) {
+        console.warn('Auth type cannot be changed after connector creation');
+        return;
+      }
+      
+      // Update selected auth type immediately (no state batching needed)
+      setSelectedAuthType(authType);
+      
+      // Update form data to use the new auth type's schema
+      // Preserve existing values where possible, only set defaults for new fields
+      if (connectorConfig) {
+        const authSchemas = connectorConfig.config.auth?.schemas || {};
+        const newAuthSchema = authSchemas[authType] || { fields: [] };
+        const previousAuthData = formData.auth || {};
+        
+        // Preserve existing values for fields that exist in both schemas
+        // Only set defaults for fields that don't have existing values
+        const newAuthData: Record<string, any> = { ...previousAuthData };
+        newAuthSchema.fields?.forEach((field: any) => {
+          // Only set default if field doesn't exist or is undefined
+          if (field.defaultValue !== undefined && newAuthData[field.name] === undefined) {
+            newAuthData[field.name] = field.defaultValue;
+          }
+        });
+        
+        // Remove fields that don't exist in the new schema
+        const newFieldNames = new Set(newAuthSchema.fields?.map((f: any) => f.name) || []);
+        Object.keys(newAuthData).forEach((key) => {
+          if (!newFieldNames.has(key)) {
+            delete newAuthData[key];
+          }
+        });
+        
+        // Update form data smoothly without full re-initialization
+        // Use functional update to ensure we're working with latest state
+        setFormData((prev) => ({
+          ...prev,
+          auth: newAuthData,
+        }));
+        
+        // Clear auth errors for fields that no longer exist
+        setFormErrors((prev) => {
+          const newAuthErrors = { ...prev.auth };
+          Object.keys(newAuthErrors).forEach((key) => {
+            if (!newFieldNames.has(key)) {
+              delete newAuthErrors[key];
+            }
+          });
+          return {
+            ...prev,
+            auth: newAuthErrors,
+          };
+        });
+        
+        // Re-evaluate conditional display rules for the new auth type
+        if (connectorConfig.config.auth?.conditionalDisplay) {
+          const displayRules = evaluateConditionalDisplay(
+            connectorConfig.config.auth.conditionalDisplay,
+            newAuthData
+          );
+          setConditionalDisplay(displayRules);
+        }
+      }
+    },
+    [isCreateMode, connectorConfig, formData.auth]
   );
 
   return {
@@ -1667,5 +2151,9 @@ export const useConnectorConfig = ({
     certificateInputRef,
     privateKeyInputRef,
     isSharePointCertificateAuthValid,
+    
+    // Auth type selection
+    selectedAuthType,
+    handleAuthTypeChange,
   };
 };

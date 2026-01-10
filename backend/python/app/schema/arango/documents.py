@@ -239,6 +239,8 @@ record_schema = {
             "isShared": {"type": ["boolean", "null"], "default": False},
             "isDependentNode": {"type": "boolean", "default": False},
             "parentNodeId": {"type": ["string", "null"], "default": None},
+            "md5Checksum": {"type": ["string", "null"]},
+            "sizeInBytes": {"type": ["number", "null"]},
         },
         "required": [
             "recordName",

@@ -113,6 +113,10 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     handlePrivateKeyChange,
     certificateInputRef,
     privateKeyInputRef,
+    
+    // Auth type selection
+    selectedAuthType,
+    handleAuthTypeChange,
   } = useConnectorConfig({ connector, onClose, onSuccess, initialInstanceName, enableMode, authOnly, syncOnly, syncSettingsMode });
 
   // Handler for removing filters
@@ -277,6 +281,8 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           instanceName={instanceName}
           instanceNameError={instanceNameError}
           onInstanceNameChange={setInstanceName}
+          selectedAuthType={selectedAuthType}
+          handleAuthTypeChange={handleAuthTypeChange}
         />
       );
     }
@@ -378,6 +384,8 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           instanceName={instanceName || ''}
           instanceNameError={instanceNameError}
           onInstanceNameChange={setInstanceName}
+          selectedAuthType={selectedAuthType}
+          handleAuthTypeChange={handleAuthTypeChange}
           // Google Workspace Business OAuth props
           adminEmail={adminEmail}
           adminEmailError={adminEmailError}
@@ -495,6 +503,8 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
               certificateInputRef={certificateInputRef}
               privateKeyInputRef={privateKeyInputRef}
               onFieldChange={handleFieldChange}
+              selectedAuthType={selectedAuthType}
+              handleAuthTypeChange={handleAuthTypeChange}
             />
           );
         case 1:
@@ -566,6 +576,8 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             certificateInputRef={certificateInputRef}
             privateKeyInputRef={privateKeyInputRef}
             onFieldChange={handleFieldChange}
+            selectedAuthType={selectedAuthType}
+            handleAuthTypeChange={handleAuthTypeChange}
           />
         );
       case 1:
@@ -627,6 +639,8 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     instanceName,
     instanceNameError,
     setInstanceName,
+    selectedAuthType,
+    handleAuthTypeChange,
   ]);
 
   if (loading) {

@@ -26,7 +26,14 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
 )
 from app.connectors.core.registry.filters import FilterOptionsResponse
-from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
+from app.models.entities import (
+    AppUser,
+    FileRecord,
+    Record,
+    RecordGroupType,
+    RecordType,
+    User,
+)
 from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -59,7 +66,7 @@ class WebApp(App):
 
 @ConnectorBuilder("Web")\
     .in_group("Web")\
-    .with_auth_type("NONE")\
+    .with_supported_auth_types("NONE")\
     .with_description("Crawl and sync data from web pages")\
     .with_categories(["Web"])\
     .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
@@ -248,10 +255,33 @@ class WebConnector(BaseConnector):
             self.logger.error(f"❌ Failed to access website: {e}")
             return False
 
+    def get_app_users(self, users: List[User]) -> List[AppUser]:
+        """Convert User objects to AppUser objects."""
+        return [
+            AppUser(
+                app_name=self.connector_name,
+                connector_id=self.connector_id,
+                source_user_id=user.source_user_id or user.id or user.email,
+                org_id=user.org_id or self.data_entities_processor.org_id,
+                email=user.email,
+                full_name=user.full_name or user.email,
+                is_active=user.is_active if user.is_active is not None else True,
+                title=user.title,
+            )
+            for user in users
+            if user.email
+        ]
+
     async def run_sync(self) -> None:
         """Main sync method to crawl and index web pages."""
         try:
             self.logger.info(f"🚀 Starting web crawl: {self.url}")
+
+            # Step 1: fetch and sync all active users
+            self.logger.info("Syncing users...")
+            all_active_users = await self.data_entities_processor.get_all_active_users()
+            app_users = self.get_app_users(all_active_users)
+            await self.data_entities_processor.on_new_app_users(app_users)
 
             # Reset state for new sync
             self.visited_urls.clear()

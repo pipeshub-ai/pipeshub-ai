@@ -17,6 +17,7 @@ from typing import (
 
 import aiohttp
 from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
@@ -43,6 +44,7 @@ from app.utils.citations import (
     normalize_citations_and_chunks,
     normalize_citations_and_chunks_for_agent,
 )
+from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.logger import create_logger
 
 logger = create_logger("streaming")
@@ -113,6 +115,52 @@ async def stream_content(signed_url: str) -> AsyncGenerator[bytes, None]:
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to fetch file content from signed URL {str(e)}"
         )
+
+
+def create_stream_record_response(
+    content_stream: AsyncGenerator[bytes, None],
+    filename: Optional[str],
+    mime_type: Optional[str] = None,
+    fallback_filename: Optional[str] = None,
+    additional_headers: Optional[Dict[str, str]] = None
+) -> StreamingResponse:
+    """
+    Create a StreamingResponse for file downloads with proper headers.
+
+    This utility function encapsulates the common pattern of creating file download
+    responses with Content-Disposition headers and sanitized filenames.
+
+    Args:
+        content_stream: The async generator yielding file bytes
+        filename: Original filename (will be sanitized automatically)
+        mime_type: MIME type for Content-Type header (defaults to "application/octet-stream")
+        fallback_filename: Fallback if sanitization results in empty string
+        additional_headers: Optional dict for any custom headers (e.g., UTF-8 encoded filenames)
+
+    Returns:
+        StreamingResponse configured for file download with proper headers
+    """
+    safe_filename = sanitize_filename_for_content_disposition(
+        filename or "",
+        fallback=fallback_filename or "file"
+    )
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{safe_filename}"'
+    }
+
+    # Merge additional headers if provided
+    if additional_headers:
+        headers.update(additional_headers)
+
+    media_type = mime_type if mime_type else "application/octet-stream"
+
+    return StreamingResponse(
+        content_stream,
+        media_type=media_type,
+        headers=headers
+    )
+
 
 def find_unescaped_quote(text: str) -> int:
     """Return index of first un-escaped quote (") or -1 if none."""

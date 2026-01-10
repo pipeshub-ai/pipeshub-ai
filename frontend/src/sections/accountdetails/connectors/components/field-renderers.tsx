@@ -149,7 +149,7 @@ export const TextFieldRenderer: React.FC<BaseFieldProps> = ({
         label={field.displayName}
         placeholder={field.placeholder}
         type={field.isSecret ? (showPassword ? 'text' : 'password') : 'text'}
-        value={value || ''}
+        value={value !== undefined && value !== null ? String(value) : ''}
         onChange={(e) => onChange(e.target.value)}
         required={field.required}
         error={!!error}
@@ -201,7 +201,7 @@ export const PasswordFieldRenderer: React.FC<BaseFieldProps> = ({
         label={field.displayName}
         placeholder={field.placeholder}
         type={showPassword ? 'text' : 'password'}
-        value={value || ''}
+        value={value !== undefined && value !== null ? String(value) : ''}
         onChange={(e) => onChange(e.target.value)}
         required={field.required}
         error={!!error}
@@ -252,7 +252,7 @@ export const EmailFieldRenderer: React.FC<BaseFieldProps> = ({
         label={field.displayName}
         placeholder={field.placeholder}
         type="email"
-        value={value || ''}
+        value={value !== undefined && value !== null ? String(value) : ''}
         onChange={(e) => onChange(e.target.value)}
         required={field.required}
         error={!!error}
@@ -283,7 +283,7 @@ export const UrlFieldRenderer: React.FC<BaseFieldProps> = ({
         label={field.displayName}
         placeholder={field.placeholder}
         type="url"
-        value={value || ''}
+        value={value !== undefined && value !== null ? String(value) : ''}
         onChange={(e) => onChange(e.target.value)}
         required={field.required}
         error={!!error}
@@ -315,7 +315,7 @@ export const TextareaFieldRenderer: React.FC<BaseFieldProps> = ({
         placeholder={field.placeholder}
         multiline
         rows={3}
-        value={value || ''}
+        value={value !== undefined && value !== null ? String(value) : ''}
         onChange={(e) => onChange(e.target.value)}
         required={field.required}
         error={!!error}
@@ -352,7 +352,7 @@ export const SelectFieldRenderer: React.FC<BaseFieldProps> = ({
           {field.displayName}
         </InputLabel>
         <Select
-          value={value || ''}
+          value={value !== undefined && value !== null ? value : ''}
           onChange={(e) => onChange(e.target.value)}
           label={field.displayName}
           disabled={disabled}
@@ -579,7 +579,7 @@ export const NumberFieldRenderer: React.FC<BaseFieldProps> = ({
         label={field.displayName}
         placeholder={field.placeholder}
         type="number"
-        value={value || ''}
+        value={value !== undefined && value !== null ? String(value) : ''}
         onChange={(e) => onChange(e.target.value)}
         required={field.required}
         error={!!error}
@@ -667,20 +667,20 @@ export const DateFieldRenderer: React.FC<BaseFieldProps> = ({
 
   return (
     <Box>
-      <TextField
-        fullWidth
-        label={field.displayName}
-        type="date"
-        value={value || ''}
-        onChange={(e) => onChange(e.target.value)}
-        required={field.required}
-        error={!!error}
-        helperText={error}
-        disabled={disabled}
-        variant="outlined"
-        size="small"
-        inputRef={inputRef}
-        onClick={handleContainerClick}
+        <TextField
+          fullWidth
+          label={field.displayName}
+          type="date"
+          value={value !== undefined && value !== null ? String(value) : ''}
+          onChange={(e) => onChange(e.target.value)}
+          required={field.required}
+          error={!!error}
+          helperText={error}
+          disabled={disabled}
+          variant="outlined"
+          size="small"
+          inputRef={inputRef}
+          onClick={handleContainerClick}
         InputLabelProps={{
           shrink: true,
           sx: { fontSize: '0.875rem', fontWeight: 500 },

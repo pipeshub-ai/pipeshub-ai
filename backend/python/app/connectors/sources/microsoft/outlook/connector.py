@@ -26,6 +26,7 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncPoint,
     generate_record_sync_point_key,
 )
+from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -71,6 +72,7 @@ from app.sources.external.microsoft.users_groups.users_groups import (
     UsersGroupsDataSource,
     UsersGroupsResponse,
 )
+from app.utils.streaming import create_stream_record_response
 
 # Thread detection constants
 THREAD_ROOT_EMAIL_CONVERSATION_INDEX_LENGTH = 22  # Length (in bytes) of conversation_index for root email in a thread
@@ -98,10 +100,50 @@ class OutlookCredentials:
 
 @ConnectorBuilder("Outlook")\
     .in_group("Microsoft 365")\
-    .with_auth_type("OAUTH_ADMIN_CONSENT")\
     .with_description("Sync emails from Outlook")\
     .with_categories(["Email"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH_ADMIN_CONSENT).fields([
+            AuthField(
+                name="clientId",
+                display_name="Application (Client) ID",
+                placeholder="Enter your Azure AD Application ID",
+                description="The Application (Client) ID from Azure AD App Registration"
+            ),
+            AuthField(
+                name="clientSecret",
+                display_name="Client Secret",
+                placeholder="Enter your Azure AD Client Secret",
+                description="The Client Secret from Azure AD App Registration",
+                field_type="PASSWORD",
+                is_secret=True
+            ),
+            AuthField(
+                name="tenantId",
+                display_name="Directory (Tenant) ID",
+                placeholder="Enter your Azure AD Tenant ID",
+                description="The Directory (Tenant) ID from Azure AD"
+            ),
+            AuthField(
+                name="hasAdminConsent",
+                display_name="Has Admin Consent",
+                description="Check if admin consent has been granted for the application",
+                field_type="CHECKBOX",
+                required=True,
+                default_value=False
+            ),
+            AuthField(
+                name="redirectUri",
+                display_name="Redirect URI",
+                placeholder="connectors/Outlook/oauth/callback",
+                description="The redirect URI for OAuth authentication",
+                field_type="URL",
+                required=False,
+                max_length=2000
+            )
+        ])
+    ])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/outlook.svg")
         .add_documentation_link(DocumentationLink(
@@ -113,44 +155,6 @@ class OutlookCredentials:
             'Pipeshub Documentation',
             'https://docs.pipeshub.com/connectors/microsoft-365/outlook',
             'pipeshub'
-        ))
-        .with_redirect_uri("connectors/Outlook/oauth/callback", False)
-        .add_auth_field(AuthField(
-            name="clientId",
-            display_name="Application (Client) ID",
-            placeholder="Enter your Azure AD Application ID",
-            description="The Application (Client) ID from Azure AD App Registration"
-        ))
-        .add_auth_field(AuthField(
-            name="clientSecret",
-            display_name="Client Secret",
-            placeholder="Enter your Azure AD Client Secret",
-            description="The Client Secret from Azure AD App Registration",
-            field_type="PASSWORD",
-            is_secret=True
-        ))
-        .add_auth_field(AuthField(
-            name="tenantId",
-            display_name="Directory (Tenant) ID",
-            placeholder="Enter your Azure AD Tenant ID",
-            description="The Directory (Tenant) ID from Azure AD"
-        ))
-        .add_auth_field(AuthField(
-            name="hasAdminConsent",
-            display_name="Has Admin Consent",
-            description="Check if admin consent has been granted for the application",
-            field_type="CHECKBOX",
-            required=True,
-            default_value=False
-        ))
-        .add_auth_field(AuthField(
-            name="redirectUri",
-            display_name="Redirect URI",
-            placeholder="connectors/Outlook/oauth/callback",
-            description="The redirect URI for OAuth authentication",
-            field_type="URL",
-            required=False,
-            max_length=2000
         ))
         .add_conditional_display("redirectUri", "hasAdminConsent", "equals", False)
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
@@ -1373,12 +1377,13 @@ class OutlookConnector(BaseConnector):
                 async def generate_attachment() -> AsyncGenerator[bytes, None]:
                     yield attachment_data
 
-                # Set proper filename and content type
                 filename = record.record_name or "attachment"
-                headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
-                media_type = record.mime_type or 'application/octet-stream'
-
-                return StreamingResponse(generate_attachment(), media_type=media_type, headers=headers)
+                return create_stream_record_response(
+                    generate_attachment(),
+                    filename=filename,
+                    mime_type=record.mime_type,
+                    fallback_filename=f"record_{record.id}"
+                )
 
             else:
                 raise HTTPException(status_code=400, detail="Unsupported record type for streaming")

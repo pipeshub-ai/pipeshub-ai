@@ -20,21 +20,6 @@ const SERVICES_LIST = [
     color: '#87CEEB',
     darkModeColor: '#87CEEB', // Same color for dark mode
   },
-  {
-    id: 'connectorPublicUrl',
-    icon: linkVariantIcon,
-    title: 'Connectors Public DNS',
-    description: 'Publicly accessible connector service DNS',
-    color: '#231F20',
-    darkModeColor: '#9EA2A9', // Lighter color for dark mode
-  },
-  // {
-  //   id: 'backendNodejs',
-  //   icon: 'mdi-nodejs',
-  //   title: 'Backend-NodeJS',
-  //   description: 'Backend-nodejs-services-url',
-  //   color: '#DC382D',
-  // },
 ];
 
 const InternalServicesSettings = () => {
@@ -156,7 +141,7 @@ const InternalServicesSettings = () => {
                         borderRadius: 1,
                         flexShrink: 0,
                         border:
-                          theme.palette.mode === 'dark' && service.id === 'connectorPublicUrl'
+                          theme.palette.mode === 'dark'
                             ? `1px solid ${alpha(serviceColor, 0.3)}`
                             : 'none',
                       }}

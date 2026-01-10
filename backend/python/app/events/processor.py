@@ -90,7 +90,6 @@ class Processor:
         parsers,
         document_extractor,
         sink_orchestrator,
-        domain_extractor,
     ) -> None:
         self.logger = logger
         self.logger.info("🚀 Initializing Processor")
@@ -100,7 +99,6 @@ class Processor:
         self.config_service = config_service
         self.document_extraction = document_extractor
         self.sink_orchestrator = sink_orchestrator
-        self.domain_extractor = domain_extractor
 
         # Initialize Docling client for external service
         self.docling_client = DoclingClient()
@@ -188,7 +186,6 @@ class Processor:
         except Exception as e:
             self.logger.error(f"❌ Error processing image: {str(e)}")
             raise
-
 
 
 

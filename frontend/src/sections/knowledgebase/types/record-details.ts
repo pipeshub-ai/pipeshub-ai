@@ -92,6 +92,7 @@ export interface Record {
   webUrl?: string;
   reason:string
   mimeType?: string;
+  previewRenderable?: boolean;
 }
 
 export interface FileRecord {

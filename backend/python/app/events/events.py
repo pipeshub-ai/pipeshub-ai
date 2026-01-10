@@ -14,7 +14,6 @@ from app.config.constants.arangodb import (
     ExtensionTypes,
     MimeTypes,
     ProgressStatus,
-    RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
@@ -156,6 +155,98 @@ class EventProcessor:
                 if not file_buffer.closed:
                     file_buffer.close()
 
+    async def _check_duplicate_by_md5(
+        self,
+        content: bytes | str,
+        doc: dict,
+    ) -> bool:
+        """
+        Check for duplicate records by MD5 hash and handle accordingly.
+
+        Args:
+            content: The content to hash (bytes or string)
+            doc: The document dictionary to update
+
+        Returns:
+            True if duplicate was found and handled (caller should return early)
+            False if no duplicate found (caller should proceed with processing)
+        """
+        # Calculate MD5 from content
+        md5_checksum = doc.get("md5Checksum")
+        size_in_bytes = doc.get("sizeInBytes")
+        record_type = doc.get("recordType")
+
+        if md5_checksum is None and content:
+            if isinstance(content, str):
+                content = content.encode('utf-8')
+            md5_checksum = hashlib.md5(content).hexdigest()
+            doc.update({"md5Checksum": md5_checksum})
+            self.logger.info(f"🚀 Calculated md5_checksum: {md5_checksum} for record type: {record_type}")
+            await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+
+        if not md5_checksum:
+            return False
+
+        duplicate_records = await self.arango_service.find_duplicate_records(
+            doc.get('_key'),
+            md5_checksum,
+            record_type,
+            size_in_bytes
+        )
+
+        duplicate_records = [r for r in duplicate_records if r is not None]
+
+        if not duplicate_records:
+            self.logger.info(f"🚀 No duplicate records found for record {doc.get('_key')}")
+            return False
+
+        # Check for processed or in-progress duplicates
+        processed_duplicate = next(
+            (r for r in duplicate_records
+                if (r.get("virtualRecordId") and r.get("indexingStatus") == ProgressStatus.COMPLETED.value)
+                or (r.get("indexingStatus") == ProgressStatus.EMPTY.value)),
+            None
+        )
+
+        if processed_duplicate:
+            # Use data from processed duplicate
+            doc.update({
+                "isDirty": False,
+                "summaryDocumentId": processed_duplicate.get("summaryDocumentId"),
+                "virtualRecordId": processed_duplicate.get("virtualRecordId"),
+                "indexingStatus": processed_duplicate.get("indexingStatus"),
+                "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
+                "extractionStatus": processed_duplicate.get("extractionStatus"),
+                "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
+            })
+            await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+
+            # Copy all relationships from the processed duplicate to this document
+            await self.arango_service.copy_document_relationships(
+                processed_duplicate.get("_key"),
+                doc.get("_key")
+            )
+            return True  # Duplicate handled
+
+        # Check if any duplicate is in progress
+        in_progress = next(
+            (r for r in duplicate_records if r.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value),
+            None
+        )
+
+        # TODO: handle race condition here
+        if in_progress:
+            self.logger.info(f"🚀 Duplicate record {in_progress.get('_key')} is being processed, changing status to QUEUED.")
+
+            doc.update({
+                "indexingStatus": ProgressStatus.QUEUED.value,
+            })
+            await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+            return True  # Marked as queued
+
+        self.logger.info(f"🚀 No duplicate found, proceeding with processing for {doc.get('_key')}")
+        return False  # No duplicate found, proceed with processing
+    
     async def on_event(self, event_data: dict) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Process events received from Kafka consumer, yielding phase completion events.
@@ -197,9 +288,8 @@ class EventProcessor:
                 virtual_record_id = record.get("virtualRecordId")
 
             # For both create and update events, we need to process the document
-            if event_type == EventTypes.REINDEX_RECORD.value or event_type == EventTypes.UPDATE_RECORD.value:
+            if event_type == EventTypes.REINDEX_RECORD.value:
                 # For updates, first delete existing embeddings
-
                 self.logger.info(
                     f"""🔄 Deleting existing embeddings for record {record_id} for event {event_type}"""
                 )
@@ -221,6 +311,24 @@ class EventProcessor:
             if mime_type == "text/gmail_content":
                 if virtual_record_id is None:
                     virtual_record_id = str(uuid4())
+
+                # MD5 deduplication for Gmail messages
+                html_content = event_data.get("body")
+                if html_content:
+                    try:
+                        if await self._check_duplicate_by_md5(html_content, doc):
+                            self.logger.info("Duplicate Gmail message detected, skipping processing")
+                            yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+                            yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                            return
+
+                    except Exception as e:
+                        self.logger.error(f"❌ Error in Gmail MD5/duplicate processing: {repr(e)}")
+                        raise
+
+                if event_type == EventTypes.UPDATE_RECORD.value:
+                    virtual_record_id = str(uuid4())
+
                 self.logger.info("🚀 Processing Gmail Message")
                 async for event in self.processor.process_gmail_message(
                     recordName=record_name,
@@ -228,7 +336,7 @@ class EventProcessor:
                     version=record_version,
                     source=connector,
                     orgId=org_id,
-                    html_content=event_data.get("body"),
+                    html_content=html_content,
                     virtual_record_id=virtual_record_id
                 ):
                     yield event
@@ -245,87 +353,20 @@ class EventProcessor:
             self.logger.debug(f"file_content type: {type(file_content)} length: {len(file_content)}")
 
             record_type = doc.get("recordType")
-            if record_type == RecordTypes.FILE.value:
-                try:
-                    file = await self.arango_service.get_document(
-                        record_id, CollectionNames.FILES.value
-                    )
-                    file_doc = dict(file)
 
-                    md5_checksum = file_doc.get("md5Checksum")
-                    size_in_bytes = file_doc.get("sizeInBytes")
-                    if md5_checksum is None:
-                        md5_checksum = hashlib.md5(file_content).hexdigest()
-                        file_doc.update({"md5Checksum": md5_checksum})
-                        self.logger.info(f"🚀 Calculated md5_checksum: {md5_checksum}")
-                        await self.arango_service.batch_upsert_nodes([file_doc], CollectionNames.FILES.value)
+            # Calculate MD5 hash and check for duplicates for ALL record types
+            try:
+                if await self._check_duplicate_by_md5(file_content, doc):
+                    self.logger.info("Duplicate record detected, skipping processing")
+                    yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+                    yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                    return
+            except Exception as e:
+                self.logger.error(f"❌ Error in MD5/duplicate processing: {repr(e)}")
+                raise
 
-                    # Add indexingStatus to initial duplicate check to find in-progress files
-                    duplicate_files = await self.arango_service.find_duplicate_files(file_doc.get('_key'), md5_checksum, size_in_bytes)
-
-                    duplicate_files = [f for f in duplicate_files if f is not None]
-                    if duplicate_files:
-                        # Wait and check for processed duplicates
-                        for attempt in range(60):
-                            processed_duplicate = next(
-                                (f for f in duplicate_files if (f.get("virtualRecordId") and f.get("indexingStatus") == ProgressStatus.COMPLETED.value) or (f.get("indexingStatus") == ProgressStatus.EMPTY.value)),
-                                None
-                            )
-
-                            if processed_duplicate:
-                                # Use data from processed duplicate
-                                doc.update({
-                                    "isDirty": False,
-                                    "summaryDocumentId": processed_duplicate.get("summaryDocumentId"),
-                                    "virtualRecordId": processed_duplicate.get("virtualRecordId"),
-                                    "indexingStatus": processed_duplicate.get("indexingStatus"),
-                                    "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
-                                    "extractionStatus": processed_duplicate.get("extractionStatus"),
-                                    "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
-                                })
-                                await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
-
-                                # Copy all relationships from the processed duplicate to this document
-                                await self.arango_service.copy_document_relationships(
-                                    processed_duplicate.get("_key"),
-                                    doc.get("_key")
-                                )
-                                # Yield both events since we're using cached data
-                                yield {"event": "parsing_complete", "data": {"record_id": record_id}}
-                                yield {"event": "indexing_complete", "data": {"record_id": record_id}}
-                                return
-
-                            # Check if any duplicate is in progress
-                            in_progress = next(
-                                (f for f in duplicate_files if f.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value),
-                                None
-                            )
-
-                            # TODO: handle race condition here
-                            if in_progress:
-                                self.logger.info(f"🚀 Duplicate file {in_progress.get('_key')} is being processed, changing status to QUEUED.")
-                                self.logger.info(f"Retried {attempt} times")
-
-                                doc.update({
-                                    "indexingStatus": ProgressStatus.QUEUED.value,
-                                })
-                                await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
-                                # Yield both events since we're queuing this record
-                                yield {"event": "parsing_complete", "data": {"record_id": record_id}}
-                                yield {"event": "indexing_complete", "data": {"record_id": record_id}}
-                                return
-                            else:
-                                # No file is being processed, we can proceed
-                                break
-
-                        self.logger.info(f"🚀 No processed duplicate found, proceeding with processing for {record_id}")
-                    else:
-                        self.logger.info(f"🚀 No duplicate files found for record {record_id}")
-                        if event_type == EventTypes.UPDATE_RECORD.value:
-                            virtual_record_id = str(uuid4())
-                except Exception as e:
-                    self.logger.error(f"❌ Error in file processing: {repr(e)}")
-                    raise
+            if event_type == EventTypes.UPDATE_RECORD.value:
+                virtual_record_id = str(uuid4())
 
             if virtual_record_id is None:
                 virtual_record_id = str(uuid4())

@@ -31,6 +31,7 @@ const AuthenticationSettings = lazy(
 );
 const AiModelsSettings = lazy(() => import('src/pages/dashboard/account/ai-models-settings'));
 const PlatformSettings = lazy(() => import('src/pages/dashboard/account/platform-settings'));
+const PromptsSettings = lazy(() => import('src/pages/dashboard/account/prompts-settings'));
 const ConnectorSettings = lazy(
   () => import('src/pages/dashboard/account/connectors/connector-settings')
 );
@@ -45,6 +46,9 @@ const ConnectorManagementPage = lazy(
 const ConnectorOAuthCallback = lazy(
   () => import('src/pages/dashboard/account/connectors/oauth-callback')
 );
+
+// OAuth configuration page
+const OAuthConfig = lazy(() => import('src/pages/dashboard/account/oauth-config'));
 
 const SamlSsoConfigPage = lazy(() => import('src/pages/dashboard/account/saml-sso-config'));
 
@@ -350,6 +354,14 @@ export const dashboardRoutes = [
                     ],
                   },
                   {
+                    path: 'oauth-config',
+                    element: CONFIG.auth.skip ? (
+                      <OAuthConfig />
+                    ) : (
+                      <BusinessAdminOnlyRoute component={OAuthConfig} />
+                    ),
+                  },
+                  {
                     path: 'services',
                     element: CONFIG.auth.skip ? (
                       <ServiceSettings />
@@ -371,6 +383,14 @@ export const dashboardRoutes = [
                       <PlatformSettings />
                     ) : (
                       <BusinessAdminOnlyRoute component={PlatformSettings} />
+                    ),
+                  },
+                  {
+                    path: 'prompts',
+                    element: CONFIG.auth.skip ? (
+                      <PromptsSettings />
+                    ) : (
+                      <BusinessAdminOnlyRoute component={PromptsSettings} />
                     ),
                   },
                 ],
@@ -473,6 +493,14 @@ export const dashboardRoutes = [
                     ],
                   },
                   {
+                    path: 'oauth-config',
+                    element: CONFIG.auth.skip ? (
+                      <OAuthConfig />
+                    ) : (
+                      <IndividualOnlyRoute component={OAuthConfig} />
+                    ),
+                  },
+                  {
                     path: 'services',
                     element: CONFIG.auth.skip ? (
                       <ServiceSettings />
@@ -494,6 +522,14 @@ export const dashboardRoutes = [
                       <PlatformSettings />
                     ) : (
                       <IndividualOnlyRoute component={PlatformSettings} />
+                    ),
+                  },
+                  {
+                    path: 'prompts',
+                    element: CONFIG.auth.skip ? (
+                      <PromptsSettings />
+                    ) : (
+                      <IndividualOnlyRoute component={PromptsSettings} />
                     ),
                   },
                 ],

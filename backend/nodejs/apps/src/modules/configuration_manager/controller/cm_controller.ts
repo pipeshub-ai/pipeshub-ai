@@ -53,6 +53,7 @@ import {
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { PLATFORM_FEATURE_FLAGS } from '../constants/constants';
 import { getPlatformSettingsFromStore } from '../utils/util';
+import { AIModelsConfig } from '../types/ai-models.types';
 
 const logger = Logger.getInstance({
   service: 'ConfigurationManagerController',
@@ -3094,6 +3095,115 @@ export const getConnectorConfig =
       res.status(200).json(config).end();
     } catch (error: any) {
       logger.error('Error getting connector config by name', { error });
+      next(error);
+    }
+  };
+
+// Custom System Prompt Management
+export const getCustomSystemPrompt =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (
+    _req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedAIConfig = await keyValueStoreService.get<string>(
+        configPaths.aiModels,
+      );
+
+      if (!encryptedAIConfig) {
+        res.status(200).json({ customSystemPrompt: '' }).end();
+        return;
+      }
+
+      const aiModels: AIModelsConfig = JSON.parse(
+        EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).decrypt(encryptedAIConfig),
+      );
+
+      const customSystemPrompt = aiModels.customSystemPrompt || '';
+      res.status(200).json({ customSystemPrompt }).end();
+    } catch (error: any) {
+      logger.error('Error getting custom system prompt', { error });
+      next(error);
+    }
+  };
+
+export const setCustomSystemPrompt =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { customSystemPrompt } = req.body;
+
+      if (typeof customSystemPrompt !== 'string') {
+        throw new BadRequestError('customSystemPrompt must be a string');
+      }
+
+      const configManagerConfig = loadConfigurationManagerConfig();
+      
+      // Use Compare-and-Set (CAS) pattern with retries to prevent race conditions
+      const MAX_RETRIES = 5;
+      let success = false;
+
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        const encryptedAIConfig = await keyValueStoreService.get<string>(
+          configPaths.aiModels,
+        );
+
+        let aiModels: AIModelsConfig = {};
+        if (encryptedAIConfig) {
+          aiModels = JSON.parse(
+            EncryptionService.getInstance(
+              configManagerConfig.algorithm,
+              configManagerConfig.secretKey,
+            ).decrypt(encryptedAIConfig),
+          );
+        }
+
+        // Update only the customSystemPrompt field, keeping everything else intact
+        aiModels.customSystemPrompt = customSystemPrompt;
+
+        // Encrypt the updated configuration
+        const encryptedUpdatedConfig = EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).encrypt(JSON.stringify(aiModels));
+
+        // Attempt atomic compare-and-set operation
+        const casSuccess = await keyValueStoreService.compareAndSet<string>(
+          configPaths.aiModels,
+          encryptedAIConfig,
+          encryptedUpdatedConfig,
+        );
+
+        if (casSuccess) {
+          success = true;
+          break;
+        } else if (attempt === MAX_RETRIES - 1) {
+          throw new Error(
+            'Failed to update custom system prompt due to persistent concurrent modification. Please try again.',
+          );
+        }
+        // If CAS failed, retry with exponential backoff
+        await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+      }
+
+      if (!success) {
+        throw new Error(
+          'Failed to update custom system prompt after maximum retries.',
+        );
+      }
+
+      res.status(200).json({
+        message: 'Custom system prompt updated successfully',
+        customSystemPrompt,
+      });
+    } catch (error: any) {
+      logger.error('Error setting custom system prompt', { error });
       next(error);
     }
   };

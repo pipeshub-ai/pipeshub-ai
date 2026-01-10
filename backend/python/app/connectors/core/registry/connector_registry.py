@@ -1,6 +1,6 @@
 from enum import Enum
 from inspect import isclass
-from typing import Any, Callable, Dict, List, Optional, Type
+from typing import Any, Callable, Dict, List, Optional, Type, Union
 from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
@@ -44,7 +44,7 @@ class IndexingStatus(str, Enum):
 def Connector(
     name: str,
     app_group: str,
-    auth_type: str,
+    supported_auth_types: Union[str, List[str]],  # Supported auth types (user selects one during creation)
     app_description: str = "",
     app_categories: Optional[List[str]] = None,
     config: Optional[Dict[str, Any]] = None,
@@ -56,7 +56,8 @@ def Connector(
     Args:
         name: Name of the application (e.g., "Google Drive", "Gmail")
         app_group: Group the app belongs to (e.g., "Google Workspace")
-        auth_type: Authentication type (e.g., "oauth", "api_token")
+        supported_auth_types: Supported authentication types (e.g., ["OAUTH", "API_TOKEN"])
+                             User will select one during connector creation
         app_description: Description of the application
         app_categories: List of categories the app belongs to
         config: Complete configuration schema for the connector
@@ -68,7 +69,7 @@ def Connector(
         @Connector(
             name="Gmail",
             app_group="Google Workspace",
-            auth_type="oauth",
+            supported_auth_types=["OAUTH"],
             app_description="Email client",
             app_categories=["email", "productivity"],
             connector_scopes=["personal", "team"]
@@ -77,11 +78,21 @@ def Connector(
             pass
     """
     def decorator(cls: Type) -> Type:
-        # Store metadata in the class
+        # Normalize supported auth types
+        if isinstance(supported_auth_types, str):
+            supported_auth_types_list = [supported_auth_types]
+        elif isinstance(supported_auth_types, list):
+            if not supported_auth_types:
+                raise ValueError("supported_auth_types list cannot be empty")
+            supported_auth_types_list = supported_auth_types
+        else:
+            raise ValueError(f"supported_auth_types must be str or List[str], got {type(supported_auth_types)}")
+
+        # Store metadata in the class (no authType - it comes from etcd/database when connector is created)
         cls._connector_metadata = {
             "name": name,
             "appGroup": app_group,
-            "authType": auth_type,
+            "supportedAuthTypes": supported_auth_types_list,  # Supported types (user selects one during creation)
             "appDescription": app_description,
             "appCategories": app_categories or [],
             "config": config or {},
@@ -379,7 +390,8 @@ class ConnectorRegistry:
         metadata: Dict[str, Any],
         scope: str,
         created_by: str,
-        org_id: str
+        org_id: str,
+        selected_auth_type: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Create a new connector instance in the database.
@@ -431,12 +443,31 @@ class ConnectorRegistry:
             instance_key = str(uuid4())
             current_timestamp = get_epoch_timestamp_in_ms()
 
+            # Require selected auth type - it must be provided by the user during connector creation
+            # selected_auth_type is the auth type chosen by the user and stored in the database
+            # This cannot be changed after creation
+            if not selected_auth_type:
+                raise ValueError(
+                    f"selected_auth_type is required when creating connector '{connector_type}'. "
+                    f"User must select one of the supported auth types: {metadata.get('supportedAuthTypes', [])}"
+                )
+
+            # Validate that selected auth type is supported by the connector
+            supported_auth_types = metadata.get('supportedAuthTypes', [])
+            if supported_auth_types and selected_auth_type not in supported_auth_types:
+                raise ValueError(
+                    f"Selected auth type '{selected_auth_type}' is not supported for connector '{connector_type}'. "
+                    f"Supported types: {supported_auth_types}"
+                )
+
+            auth_type_to_store = selected_auth_type
+
             instance_document = {
                 '_key': instance_key,
                 'name': instance_name,
                 'type': connector_type,
                 'appGroup': metadata['appGroup'],
-                'authType': metadata['authType'],
+                'authType': auth_type_to_store,  # Store selected auth type (user's choice, not metadata)
                 'scope': scope,
                 'isActive': False,
                 'isAgentActive': False,
@@ -616,7 +647,7 @@ class ConnectorRegistry:
             'name': connector_type,
             'type': connector_type,
             'appGroup': metadata['appGroup'],
-            'authType': metadata['authType'],
+            'supportedAuthTypes': metadata.get('supportedAuthTypes', []),  # Supported types (user selects one)
             'appDescription': metadata.get('appDescription', ''),
             'appCategories': metadata.get('appCategories', []),
             'iconPath': connector_config.get(
@@ -632,7 +663,9 @@ class ConnectorRegistry:
 
         # Add instance-specific data if provided
         if instance_data:
+            # authType comes from instance_data (stored in database when connector was created)
             connector_info.update({
+                'authType': instance_data.get('authType'),  # Selected auth type (from database)
                 'isActive': instance_data.get('isActive', False),
                 'isAgentActive': instance_data.get('isAgentActive', False),
                 'isConfigured': instance_data.get('isConfigured', False),
@@ -728,7 +761,9 @@ class ConnectorRegistry:
             haystacks.append(str(info.get('type', '')).lower())
             haystacks.append(str(info.get('appGroup', '')).lower())
             haystacks.append(str(info.get('appDescription', '')).lower())
-            haystacks.append(str(info.get('authType', '')).lower())
+            # Search in supported auth types
+            for auth_type in info.get('supportedAuthTypes', []) or []:
+                haystacks.append(str(auth_type).lower())
             for cat in info.get('appCategories', []) or []:
                 haystacks.append(str(cat).lower())
             combined = ' '.join(haystacks)
@@ -1288,10 +1323,12 @@ class ConnectorRegistry:
             for metadata in self._connectors.values()
         ))
 
-        auth_types = list(set(
-            metadata['authType']
-            for metadata in self._connectors.values()
-        ))
+        # Collect all supported auth types from all connectors
+        all_auth_types = set()
+        for metadata in self._connectors.values():
+            supported_types = metadata.get('supportedAuthTypes', [])
+            all_auth_types.update(supported_types)
+        auth_types = sorted(list(all_auth_types))
 
         connector_names = list(self._connectors.keys())
 
@@ -1314,6 +1351,7 @@ class ConnectorRegistry:
         created_by: str,
         org_id: str,
         is_admin: bool,
+        selected_auth_type: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Create a connector instance when it's being configured.
@@ -1327,6 +1365,7 @@ class ConnectorRegistry:
             created_by: User ID creating the connector
             org_id: Organization ID
             is_admin: Whether the user is an admin
+            selected_auth_type: Auth type selected by the user (cannot be changed after creation)
         Returns:
             Created connector instance document or None if failed
         Raises:
@@ -1343,7 +1382,8 @@ class ConnectorRegistry:
             self._connectors[connector_type],
             scope,
             created_by,
-            org_id
+            org_id,
+            selected_auth_type=selected_auth_type
         )
 
     async def update_connector_instance(

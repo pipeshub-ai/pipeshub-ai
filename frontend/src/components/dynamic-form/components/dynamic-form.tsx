@@ -147,7 +147,7 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
             hasData = true;
             validationResult = true;
           } else if (finalConfigType === 'url') {
-            hasData = !!(data.frontendUrl?.trim() || data.connectorUrl?.trim());
+            hasData = !!(data.frontendUrl?.trim());
             validationResult = hasData ? isValid : true;
           } else {
             const nonMetaKeys = Object.keys(data).filter(
@@ -419,7 +419,7 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
         }
 
         if (finalConfigType === 'url') {
-          return !!(formData.frontendUrl?.trim() || formData.connectorUrl?.trim());
+          return !!(formData.frontendUrl?.trim());
         }
 
         const nonMetaKeys = Object.keys(formData).filter(
