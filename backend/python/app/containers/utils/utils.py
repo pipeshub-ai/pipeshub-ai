@@ -91,16 +91,6 @@ class ContainerUtils:
         )
         return pipeline
 
-    async def create_domain_extractor(
-        self,
-        logger: Logger,
-        arango_service: BaseArangoService,
-        config_service: ConfigurationService,
-    ) -> DomainExtractor:
-        """Async factory for DomainExtractor"""
-        extractor = DomainExtractor(logger, arango_service, config_service)
-        # Add any necessary async initialization
-        return extractor
 
     async def create_vector_store(self, logger, arango_service, config_service, vector_db_service, collection_name) -> VectorStore:
         """Async factory for VectorStore"""
@@ -161,7 +151,6 @@ class ContainerUtils:
         parsers: dict,
         document_extractor: DocumentExtraction,
         sink_orchestrator: SinkOrchestrator,
-        domain_extractor: DomainExtractor,
     ) -> Processor:
         """Async factory for Processor"""
         processor = Processor(
@@ -171,8 +160,7 @@ class ContainerUtils:
             arango_service=arango_service,
             parsers=parsers,
             document_extractor=document_extractor,
-            sink_orchestrator=sink_orchestrator,
-            domain_extractor=domain_extractor,
+            sink_orchestrator=sink_orchestrator
         )
         # Add any necessary async initialization
         return processor
