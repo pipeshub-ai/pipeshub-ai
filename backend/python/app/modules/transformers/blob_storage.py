@@ -221,9 +221,10 @@ class BlobStorage(Transformer):
                     self.logger.exception("Detailed error trace:")
                     raise e
             else:
+                # Use unique documentPath for each record to ensure separate S3 locations
                 placeholder_data = {
                     "documentName": f"record_{record_id}",
-                    "documentPath": "records",
+                    "documentPath": f"records/{virtual_record_id}",  # Make path unique per record
                     "extension": "json"
                 }
 
@@ -241,23 +242,26 @@ class BlobStorage(Transformer):
 
                         self.logger.info("📄 Created placeholder with ID: %s", document_id)
 
-                        # Step 2: Get signed URL
+                        # Step 2: Get signed URL (only send metadata, not the full record)
                         self.logger.info("🔑 Getting signed URL for document: %s", document_id)
-                        upload_data = {
-                            "record": record,
+                        signed_url_request = {
                             "virtualRecordId": virtual_record_id
                         }
 
                         upload_url = f"{nodejs_endpoint}{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"
-                        upload_result = await self._get_signed_url(session, upload_url, upload_data, headers)
+                        upload_result = await self._get_signed_url(session, upload_url, signed_url_request, headers)
 
                         signed_url = upload_result.get('signedUrl')
                         if not signed_url:
                             self.logger.error("❌ No signed URL in response for document: %s", document_id)
                             raise Exception("No signed URL in response for document")
 
-                        # Step 3: Upload to signed URL
+                        # Step 3: Upload to signed URL (now send the full record data)
                         self.logger.info("📤 Uploading record to storage for document: %s", document_id)
+                        upload_data = {
+                            "record": record,
+                            "virtualRecordId": virtual_record_id
+                        }
                         await self._upload_to_signed_url(session, signed_url, upload_data)
 
                         self.logger.info("✅ Successfully completed record storage process for document: %s", document_id)
@@ -350,14 +354,28 @@ class BlobStorage(Transformer):
                     async with session.get(download_url, headers=headers) as resp:
                         if resp.status == HttpStatusCode.SUCCESS.value:
                             data = await resp.json()
-                            if(data.get("signedUrl")):
+                            if data.get("record"):
+                                self.logger.info("✅ Successfully retrieved record from storage for virtual_record_id: %s", virtual_record_id)
+                                return data.get("record")
+                            elif data.get("signedUrl"):
                                 signed_url = data.get("signedUrl")
                                 # Reuse the same session for signed URL fetch
-                                async with session.get(signed_url, headers=headers) as resp:
-                                        if resp.status == HttpStatusCode.OK.value:
-                                            data = await resp.json()
-                            self.logger.info("✅ Successfully retrieved record for virtual_record_id from blob storage: %s", virtual_record_id)
-                            return data.get("record")
+                                async with session.get(signed_url) as res:
+                                    if res.status == HttpStatusCode.SUCCESS.value:
+                                        data = await res.json()
+
+                                        if data.get("record"):
+                                            self.logger.info("✅ Successfully retrieved record from storage for virtual_record_id: %s", virtual_record_id)
+                                            return data.get("record")
+                                        else:
+                                            self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
+                                            raise Exception("No record found for virtual_record_id")
+                                    else:
+                                        self.logger.error("❌ Failed to retrieve record: status %s, virtual_record_id: %s", resp.status, virtual_record_id)
+                                        raise Exception("Failed to retrieve record from storage")
+                            else:
+                                self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
+                                raise Exception("No record found for virtual_record_id")
                         else:
                             self.logger.error("❌ Failed to retrieve record: status %s, virtual_record_id: %s", resp.status, virtual_record_id)
                             raise Exception("Failed to retrieve record from storage")
