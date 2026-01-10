@@ -1,0 +1,922 @@
+openapi: 3.0.0
+info:
+  title: Crawling Manager Service API
+  description: |
+    RESTful API for the Crawling Manager Service - providing scheduling, management, and monitoring 
+    capabilities for data crawling jobs across various connectors. Supports multiple schedule types 
+    (hourly, daily, weekly, monthly, custom cron, and one-time) with job status tracking, pause/resume 
+    functionality, and queue statistics.
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: support@yourcompany.com
+
+servers:
+  - url: /api/v1/crawlingManager
+    description: Base API URL
+
+tags:
+  - name: Crawling Jobs
+    description: Crawling job scheduling and management operations
+  - name: Queue Management
+    description: Queue statistics and monitoring operations
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT Bearer token for authenticated requests
+
+  schemas:
+    CrawlingScheduleType:
+      type: string
+      enum: [hourly, daily, weekly, monthly, custom, once]
+      description: Type of crawling schedule
+
+    CrawlingStatus:
+      type: string
+      enum: [idle, running, paused, stopped, error, completed, failed]
+      description: Current status of a crawling job
+
+    HourlyScheduleConfig:
+      type: object
+      properties:
+        scheduleType:
+          type: string
+          enum: [hourly]
+          description: Schedule type
+        isEnabled:
+          type: boolean
+          default: true
+          description: Whether the schedule is enabled
+        timezone:
+          type: string
+          default: UTC
+          description: Timezone for the schedule
+        minute:
+          type: integer
+          minimum: 0
+          maximum: 59
+          description: Minute of the hour to run (0-59)
+        interval:
+          type: integer
+          minimum: 1
+          maximum: 24
+          default: 1
+          description: Run every X hours (1-24)
+      required:
+        - scheduleType
+        - minute
+
+    DailyScheduleConfig:
+      type: object
+      properties:
+        scheduleType:
+          type: string
+          enum: [daily]
+          description: Schedule type
+        isEnabled:
+          type: boolean
+          default: true
+          description: Whether the schedule is enabled
+        timezone:
+          type: string
+          default: UTC
+          description: Timezone for the schedule
+        hour:
+          type: integer
+          minimum: 0
+          maximum: 23
+          description: Hour of the day to run (0-23)
+        minute:
+          type: integer
+          minimum: 0
+          maximum: 59
+          description: Minute of the hour to run (0-59)
+      required:
+        - scheduleType
+        - hour
+        - minute
+
+    WeeklyScheduleConfig:
+      type: object
+      properties:
+        scheduleType:
+          type: string
+          enum: [weekly]
+          description: Schedule type
+        isEnabled:
+          type: boolean
+          default: true
+          description: Whether the schedule is enabled
+        timezone:
+          type: string
+          default: UTC
+          description: Timezone for the schedule
+        daysOfWeek:
+          type: array
+          items:
+            type: integer
+            minimum: 0
+            maximum: 6
+          minItems: 1
+          description: Days of the week to run (0=Sunday, 1=Monday, ..., 6=Saturday)
+        hour:
+          type: integer
+          minimum: 0
+          maximum: 23
+          description: Hour of the day to run (0-23)
+        minute:
+          type: integer
+          minimum: 0
+          maximum: 59
+          description: Minute of the hour to run (0-59)
+      required:
+        - scheduleType
+        - daysOfWeek
+        - hour
+        - minute
+
+    MonthlyScheduleConfig:
+      type: object
+      properties:
+        scheduleType:
+          type: string
+          enum: [monthly]
+          description: Schedule type
+        isEnabled:
+          type: boolean
+          default: true
+          description: Whether the schedule is enabled
+        timezone:
+          type: string
+          default: UTC
+          description: Timezone for the schedule
+        dayOfMonth:
+          type: integer
+          minimum: 1
+          maximum: 31
+          description: Day of the month to run (1-31)
+        hour:
+          type: integer
+          minimum: 0
+          maximum: 23
+          description: Hour of the day to run (0-23)
+        minute:
+          type: integer
+          minimum: 0
+          maximum: 59
+          description: Minute of the hour to run (0-59)
+      required:
+        - scheduleType
+        - dayOfMonth
+        - hour
+        - minute
+
+    CustomScheduleConfig:
+      type: object
+      properties:
+        scheduleType:
+          type: string
+          enum: [custom]
+          description: Schedule type
+        isEnabled:
+          type: boolean
+          default: true
+          description: Whether the schedule is enabled
+        timezone:
+          type: string
+          default: UTC
+          description: Timezone for the schedule
+        cronExpression:
+          type: string
+          pattern: '^(\\S+\\s+){4}\\S+$'
+          description: 'Cron expression (5 fields: minute hour day month weekday)'
+          example: '0 9 * * 1-5'
+        description:
+          type: string
+          description: Optional description of the schedule
+      required:
+        - scheduleType
+        - cronExpression
+
+    OnceScheduleConfig:
+      type: object
+      properties:
+        scheduleType:
+          type: string
+          enum: [once]
+          description: Schedule type
+        isEnabled:
+          type: boolean
+          default: true
+          description: Whether the schedule is enabled
+        timezone:
+          type: string
+          default: UTC
+          description: Timezone for the schedule
+        scheduledTime:
+          type: string
+          format: date-time
+          description: ISO 8601 datetime when the job should run
+      required:
+        - scheduleType
+        - scheduledTime
+
+    ScheduleConfig:
+      oneOf:
+        - $ref: '#/components/schemas/HourlyScheduleConfig'
+        - $ref: '#/components/schemas/DailyScheduleConfig'
+        - $ref: '#/components/schemas/WeeklyScheduleConfig'
+        - $ref: '#/components/schemas/MonthlyScheduleConfig'
+        - $ref: '#/components/schemas/CustomScheduleConfig'
+        - $ref: '#/components/schemas/OnceScheduleConfig'
+      discriminator:
+        propertyName: scheduleType
+
+    ScheduleCrawlingJobRequest:
+      type: object
+      properties:
+        scheduleConfig:
+          $ref: '#/components/schemas/ScheduleConfig'
+        priority:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 5
+          description: Job priority (1=lowest, 10=highest)
+        maxRetries:
+          type: integer
+          minimum: 0
+          maximum: 10
+          default: 3
+          description: Maximum number of retry attempts
+        timeout:
+          type: integer
+          minimum: 1000
+          maximum: 600000
+          default: 300000
+          description: Job timeout in milliseconds (1000-600000, default 5 minutes)
+      required:
+        - scheduleConfig
+
+    JobProgress:
+      type: object
+      properties:
+        percentage:
+          type: number
+          minimum: 0
+          maximum: 100
+          description: Job completion percentage
+        current:
+          type: integer
+          description: Current progress value
+        total:
+          type: integer
+          description: Total expected value
+        data:
+          type: object
+          description: Additional progress data
+
+    CrawlingJobData:
+      type: object
+      properties:
+        connector:
+          type: string
+          description: Connector type/name
+        connectorId:
+          type: string
+          description: Connector instance ID
+        scheduleConfig:
+          $ref: '#/components/schemas/ScheduleConfig'
+        orgId:
+          type: string
+          description: Organization ID
+        userId:
+          type: string
+          description: User ID who created the job
+        timestamp:
+          type: string
+          format: date-time
+          description: Job creation timestamp
+        metadata:
+          type: object
+          description: Additional job metadata
+
+    JobStatus:
+      type: object
+      properties:
+        id:
+          type: string
+          nullable: true
+          description: Job ID
+        name:
+          type: string
+          description: Job name
+        data:
+          $ref: '#/components/schemas/CrawlingJobData'
+        progress:
+          $ref: '#/components/schemas/JobProgress'
+        delay:
+          type: integer
+          nullable: true
+          description: Job delay in milliseconds
+        timestamp:
+          type: integer
+          description: Job timestamp
+        attemptsMade:
+          type: integer
+          description: Number of attempts made
+        finishedOn:
+          type: integer
+          nullable: true
+          description: Timestamp when job finished
+        processedOn:
+          type: integer
+          nullable: true
+          description: Timestamp when job was processed
+        failedReason:
+          type: string
+          nullable: true
+          description: Reason for failure if job failed
+        state:
+          type: string
+          description: Current job state
+          enum: [waiting, active, completed, failed, delayed, paused, stuck]
+
+    ScheduleCrawlingJobResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Whether the operation was successful
+        message:
+          type: string
+          description: Response message
+        data:
+          type: object
+          properties:
+            jobId:
+              type: string
+              description: ID of the scheduled job
+            connector:
+              type: string
+              description: Connector type/name
+            connectorId:
+              type: string
+              description: Connector instance ID
+            scheduleConfig:
+              $ref: '#/components/schemas/ScheduleConfig'
+            scheduledAt:
+              type: string
+              format: date-time
+              description: When the job was scheduled
+      required:
+        - success
+        - message
+
+    JobStatusResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Whether the operation was successful
+        message:
+          type: string
+          description: Response message
+        data:
+          $ref: '#/components/schemas/JobStatus'
+          nullable: true
+      required:
+        - success
+        - message
+
+    AllJobStatusesResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Whether the operation was successful
+        message:
+          type: string
+          description: Response message
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/JobStatus'
+          description: Array of all job statuses for the organization
+      required:
+        - success
+        - message
+
+    QueueStats:
+      type: object
+      properties:
+        waiting:
+          type: integer
+          description: Number of jobs waiting
+        active:
+          type: integer
+          description: Number of active jobs
+        completed:
+          type: integer
+          description: Number of completed jobs
+        failed:
+          type: integer
+          description: Number of failed jobs
+        delayed:
+          type: integer
+          description: Number of delayed jobs
+        paused:
+          type: integer
+          description: Number of paused jobs
+        repeatable:
+          type: integer
+          description: Number of repeatable jobs
+        total:
+          type: integer
+          description: Total number of jobs
+
+    QueueStatsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Whether the operation was successful
+        message:
+          type: string
+          description: Response message
+        data:
+          $ref: '#/components/schemas/QueueStats'
+      required:
+        - success
+        - message
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Whether the operation was successful
+        message:
+          type: string
+          description: Response message
+      required:
+        - success
+        - message
+
+    PauseResumeResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Whether the operation was successful
+        message:
+          type: string
+          description: Response message
+        data:
+          type: object
+          properties:
+            connector:
+              type: string
+              description: Connector type/name
+            orgId:
+              type: string
+              description: Organization ID
+            pausedAt:
+              type: string
+              format: date-time
+              description: When the job was paused (for pause operation)
+            resumedAt:
+              type: string
+              format: date-time
+              description: When the job was resumed (for resume operation)
+      required:
+        - success
+        - message
+
+    Error:
+      type: object
+      properties:
+        message:
+          type: string
+          description: Error message
+        code:
+          type: integer
+          description: Error code
+        details:
+          type: object
+          description: Additional error details
+
+security:
+  - bearerAuth: []
+
+paths:
+  /{connector}/{connectorId}/schedule:
+    post:
+      tags:
+        - Crawling Jobs
+      summary: Schedule a crawling job
+      description: |
+        Schedule a new crawling job for a specific connector instance. The job will run according to the 
+        specified schedule configuration. Supports multiple schedule types: hourly, daily, weekly, 
+        monthly, custom cron, and one-time execution.
+      operationId: scheduleCrawlingJob
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: connector
+          in: path
+          required: true
+          description: Connector type/name (e.g., 'gmail', 'onedrive', 'sharepoint')
+          schema:
+            type: string
+          example: 'gmail'
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID
+          schema:
+            type: string
+          example: '507f1f77bcf86cd799439011'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleCrawlingJobRequest'
+        required: true
+      responses:
+        '201':
+          description: Crawling job scheduled successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleCrawlingJobResponse'
+        '400':
+          description: Invalid request or validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    get:
+      tags:
+        - Crawling Jobs
+      summary: Get crawling job status
+      description: |
+        Retrieve the status of a scheduled crawling job for a specific connector instance. Returns detailed 
+        information about the job including its current state, progress, and execution history.
+      operationId: getCrawlingJobStatus
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: connector
+          in: path
+          required: true
+          description: Connector type/name
+          schema:
+            type: string
+          example: 'gmail'
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID
+          schema:
+            type: string
+          example: '507f1f77bcf86cd799439011'
+      responses:
+        '200':
+          description: Job status retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobStatusResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: No scheduled job found for this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /{connector}/{connectorId}/remove:
+    delete:
+      tags:
+        - Crawling Jobs
+      summary: Remove crawling job
+      description: |
+        Remove a scheduled crawling job for a specific connector instance. This will cancel the job and 
+        remove it from the queue.
+      operationId: removeCrawlingJob
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: connector
+          in: path
+          required: true
+          description: Connector type/name
+          schema:
+            type: string
+          example: 'gmail'
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID
+          schema:
+            type: string
+          example: '507f1f77bcf86cd799439011'
+      responses:
+        '200':
+          description: Crawling job removed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /{connector}/{connectorId}/pause:
+    post:
+      tags:
+        - Crawling Jobs
+      summary: Pause a crawling job
+      description: |
+        Pause a running or scheduled crawling job for a specific connector instance. The job can be resumed 
+        later using the resume endpoint.
+      operationId: pauseCrawlingJob
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: connector
+          in: path
+          required: true
+          description: Connector type/name
+          schema:
+            type: string
+          example: 'gmail'
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID
+          schema:
+            type: string
+          example: '507f1f77bcf86cd799439011'
+      responses:
+        '200':
+          description: Crawling job paused successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PauseResumeResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /{connector}/{connectorId}/resume:
+    post:
+      tags:
+        - Crawling Jobs
+      summary: Resume a paused crawling job
+      description: |
+        Resume a previously paused crawling job for a specific connector instance. The job will continue 
+        from where it was paused.
+      operationId: resumeCrawlingJob
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: connector
+          in: path
+          required: true
+          description: Connector type/name
+          schema:
+            type: string
+          example: 'gmail'
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID
+          schema:
+            type: string
+          example: '507f1f77bcf86cd799439011'
+      responses:
+        '200':
+          description: Crawling job resumed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PauseResumeResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /schedule/all:
+    get:
+      tags:
+        - Crawling Jobs
+      summary: Get all crawling job statuses
+      description: |
+        Retrieve the status of all scheduled crawling jobs for the organization. Returns an array 
+        of job statuses across all connectors.
+      operationId: getAllCrawlingJobStatus
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: All job statuses retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AllJobStatusesResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags:
+        - Crawling Jobs
+      summary: Remove all crawling jobs
+      description: |
+        Remove all scheduled crawling jobs for the organization. This will cancel all jobs and 
+        remove them from the queue.
+      operationId: removeAllCrawlingJob
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: All crawling jobs removed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /stats:
+    get:
+      tags:
+        - Queue Management
+      summary: Get queue statistics
+      description: |
+        Retrieve statistics about the crawling job queue including counts of jobs in various states 
+        (waiting, active, completed, failed, delayed, paused).
+      operationId: getQueueStats
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Queue statistics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueStatsResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+

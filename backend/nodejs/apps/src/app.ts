@@ -54,6 +54,9 @@ import { CrawlingManagerContainer } from './modules/crawling_manager/container/c
 import createCrawlingManagerRouter from './modules/crawling_manager/routes/cm_routes';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
 import { createTeamsRouter } from './modules/user_management/routes/teams.routes';
+import { registerAuthSwagger } from './modules/auth/docs/swagger';
+import { registerConfigurationManagerSwagger } from './modules/configuration_manager/docs/swagger';
+import { registerCrawlingManagerSwagger } from './modules/crawling_manager/docs/swagger';
 
 const loggerConfig = {
   service: 'Application',
@@ -467,6 +470,12 @@ export class Application {
 
       // Register module documentation
       registerStorageSwagger(swaggerService);
+
+      registerAuthSwagger(swaggerService);
+
+      registerConfigurationManagerSwagger(swaggerService);
+
+      registerCrawlingManagerSwagger(swaggerService);
       // Register other modules as needed
 
       // Setup the Swagger UI routes
