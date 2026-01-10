@@ -71,6 +71,7 @@ from app.sources.external.microsoft.users_groups.users_groups import (
     UsersGroupsDataSource,
     UsersGroupsResponse,
 )
+from app.utils.streaming import create_stream_record_response
 
 # Thread detection constants
 THREAD_ROOT_EMAIL_CONVERSATION_INDEX_LENGTH = 22  # Length (in bytes) of conversation_index for root email in a thread
@@ -1373,12 +1374,13 @@ class OutlookConnector(BaseConnector):
                 async def generate_attachment() -> AsyncGenerator[bytes, None]:
                     yield attachment_data
 
-                # Set proper filename and content type
                 filename = record.record_name or "attachment"
-                headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
-                media_type = record.mime_type or 'application/octet-stream'
-
-                return StreamingResponse(generate_attachment(), media_type=media_type, headers=headers)
+                return create_stream_record_response(
+                    generate_attachment(),
+                    filename=filename,
+                    mime_type=record.mime_type,
+                    fallback_filename=f"record_{record.id}"
+                )
 
             else:
                 raise HTTPException(status_code=400, detail="Unsupported record type for streaming")

@@ -77,6 +77,7 @@ from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import get_oauth_config
+from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = create_logger("connector_service")
@@ -743,12 +744,11 @@ async def download_file(
                             )
                         finally:
                             file_buffer.close()
-                    headers = {
-                        "Content-Disposition": f'attachment; filename="{record.record_name}"'
-                    }
-
-                    return StreamingResponse(
-                        file_stream(google_workspace_export_formats[mime_type]), media_type=google_workspace_export_formats[mime_type], headers=headers
+                    return create_stream_record_response(
+                        file_stream(google_workspace_export_formats[mime_type]),
+                        filename=record.record_name,
+                        mime_type=google_workspace_export_formats[mime_type],
+                        fallback_filename=f"record_{record_id}"
                     )
 
                 # Enhanced logging for regular file download as a default fallback
@@ -790,12 +790,11 @@ async def download_file(
                         file_buffer.close()
 
                 # Return streaming response with proper headers
-                headers = {
-                    "Content-Disposition": f'attachment; filename="{record.record_name}"'
-                }
-
-                return StreamingResponse(
-                    file_stream(), media_type=mime_type, headers=headers
+                return create_stream_record_response(
+                    file_stream(),
+                    filename=record.record_name,
+                    mime_type=mime_type,
+                    fallback_filename=f"record_{record_id}"
                 )
 
             elif connector_type.lower() == Connectors.GOOGLE_MAIL.value.lower():
@@ -1148,13 +1147,14 @@ async def stream_record(
                     }
 
                     response_media_type, file_ext = export_media_types.get(export_mime_type, (export_mime_type, ""))
+
                     file_name_with_ext = file_name if file_name.endswith(file_ext) else f"{file_name}{file_ext}"
 
-                    headers = {"Content-Disposition": f'attachment; filename="{file_name_with_ext}"'}
-                    return StreamingResponse(
+                    return create_stream_record_response(
                         _stream_google_api_request(request, error_context="Google Workspace file export"),
-                        media_type=response_media_type,
-                        headers=headers
+                        filename=file_name_with_ext,
+                        mime_type=response_media_type,
+                        fallback_filename=f"record_{record_id}"
                     )
 
                 # Check if PDF conversion is requested (for regular files only, Google Workspace handled above)
@@ -1283,9 +1283,11 @@ async def stream_record(
 
 
                 # Return streaming response with proper headers
-                headers = {"Content-Disposition": f'attachment; filename="{file_name}"'}
-                return StreamingResponse(
-                    file_stream(), media_type=mime_type, headers=headers
+                return create_stream_record_response(
+                    file_stream(),
+                    filename=file_name,
+                    mime_type=mime_type,
+                    fallback_filename=f"record_{record_id}"
                 )
 
             elif connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
@@ -1626,10 +1628,6 @@ async def stream_record(
                                 )
 
 
-                        headers = {
-                            "Content-Disposition": f'attachment; filename="{file_name}"'
-                        }
-
                         # Use the same streaming logic as Drive downloads
                         async def file_stream() -> AsyncGenerator[bytes, None]:
                             try:
@@ -1679,8 +1677,11 @@ async def stream_record(
                             finally:
                                 buffer.close()
 
-                        return StreamingResponse(
-                            file_stream(), media_type=mime_type, headers=headers
+                        return create_stream_record_response(
+                            file_stream(),
+                            filename=file_name,
+                            mime_type=mime_type,
+                            fallback_filename=f"record_{record_id}"
                         )
 
                     except Exception as drive_error:
@@ -1785,12 +1786,11 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
                                 detail="Error reading converted PDF file",
                             )
 
-                    return StreamingResponse(
+                    return create_stream_record_response(
                         file_iterator(),
-                        media_type="application/pdf",
-                        headers={
-                            "Content-Disposition": f"attachment; filename={pdf_filename}"
-                        },
+                        filename=pdf_filename,
+                        mime_type="application/pdf",
+                        fallback_filename="converted_file.pdf"
                     )
 
                 except FileNotFoundError as e:

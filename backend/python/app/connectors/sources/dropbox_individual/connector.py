@@ -71,7 +71,7 @@ from app.sources.client.dropbox.dropbox_ import (
     DropboxTokenConfig,
 )
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
-from app.utils.streaming import stream_content
+from app.utils.streaming import create_stream_record_response, stream_content
 
 
 # Helper functions (reused from team connector)
@@ -1051,12 +1051,11 @@ class DropboxIndividualConnector(BaseConnector):
         if not signed_url:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
 
-        return StreamingResponse(
+        return create_stream_record_response(
             stream_content(signed_url),
-            media_type=record.mime_type if record.mime_type else "application/octet-stream",
-            headers={
-                "Content-Disposition": f"attachment; filename={record.record_name}"
-            }
+            filename=record.record_name,
+            mime_type=record.mime_type,
+            fallback_filename=f"record_{record.id}"
         )
 
     async def test_connection_and_access(self) -> bool:

@@ -57,6 +57,7 @@ from app.sources.client.servicenow.servicenow import (
     ServiceNowRESTClientViaOAuthAuthorizationCode,
 )
 from app.sources.external.servicenow.servicenow import ServiceNowDataSource
+from app.utils.streaming import create_stream_record_response
 
 # Organizational entity configuration
 ORGANIZATIONAL_ENTITIES = {
@@ -486,14 +487,12 @@ class ServiceNowConnector(BaseConnector):
                 async def generate_attachment() -> AsyncGenerator[bytes, None]:
                     yield file_content
 
-                # Use stored mime type or default
-                media_type = record.mime_type or 'application/octet-stream'
                 filename = record.record_name or f"{record.external_record_id}"
-
-                return StreamingResponse(
+                return create_stream_record_response(
                     generate_attachment(),
-                    media_type=media_type,
-                    headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+                    filename=filename,
+                    mime_type=record.mime_type,
+                    fallback_filename=f"record_{record.id}"
                 )
 
             else:

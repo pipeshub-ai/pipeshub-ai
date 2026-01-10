@@ -61,7 +61,7 @@ from app.sources.client.box.box import (
     BoxTokenConfig,
 )
 from app.sources.external.box.box import BoxDataSource
-from app.utils.streaming import stream_content
+from app.utils.streaming import create_stream_record_response, stream_content
 
 
 # Helper functions
@@ -1806,12 +1806,11 @@ class BoxConnector(BaseConnector):
                 detail="File not found or access denied"
             )
 
-        return StreamingResponse(
+        return create_stream_record_response(
             stream_content(signed_url),
-            media_type=record.mime_type if record.mime_type else "application/octet-stream",
-            headers={
-                "Content-Disposition": f"attachment; filename={record.record_name}"
-            }
+            filename=record.record_name,
+            mime_type=record.mime_type,
+            fallback_filename=f"record_{record.id}"
         )
 
     async def test_connection_and_access(self) -> bool:
