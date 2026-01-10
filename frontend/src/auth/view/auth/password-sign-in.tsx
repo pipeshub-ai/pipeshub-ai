@@ -19,14 +19,19 @@ import Typography from '@mui/material/Typography';
 import IconButton from '@mui/material/IconButton';
 import LoadingButton from '@mui/lab/LoadingButton';
 import InputAdornment from '@mui/material/InputAdornment';
+import CircularProgress from '@mui/material/CircularProgress';
 
 import { paths } from 'src/routes/paths';
 import { useRouter } from 'src/routes/hooks';
 
 import { useBoolean } from 'src/hooks/use-boolean';
+import { useTurnstile } from 'src/hooks/use-turnstile';
+
+import { CONFIG } from 'src/config-global';
 
 import { Iconify } from 'src/components/iconify';
 import { Form, Field } from 'src/components/hook-form';
+import { TurnstileWidget } from 'src/components/turnstile/turnstile-widget';
 
 import { useAuthContext } from 'src/auth/hooks';
 import { signInWithPassword } from 'src/auth/context/jwt';
@@ -61,7 +66,7 @@ interface PasswordSignInProps {
   email: string;
   onNextStep?: (response: AuthResponse) => void;
   onAuthComplete?: () => void;
-  onForgotPassword: () => void;
+  onForgotPassword: (turnstileToken?: string | null) => void;
   redirectPath?: string;
   sx?: SxProps<Theme>;
 }
@@ -84,6 +89,7 @@ export default function PasswordSignIn({
   const { checkUserSession } = useAuthContext();
   const showPassword = useBoolean();
   const [isProcessing, setIsProcessing] = useState(false);
+  const { turnstileToken, handleSuccess, handleError, handleExpire } = useTurnstile();
 
   const methods = useForm<SignInSchemaType>({
     resolver: zodResolver(SignInSchema),
@@ -106,6 +112,7 @@ export default function PasswordSignIn({
       const response = await signInWithPassword({
         email: data.email,
         password: data.password,
+        turnstileToken,
       });
 
       // Check the response
@@ -201,23 +208,45 @@ export default function PasswordSignIn({
               }}
             />
 
-            <Link
-              variant="body2"
-              color="inherit"
-              onClick={onForgotPassword}
-              sx={{
-                mt: 1,
-                display: 'inline-block',
-                cursor: 'pointer',
-                '&:hover': {
-                  color: 'primary.main',
-                  textDecoration: 'none',
-                },
-              }}
-            >
-              <Typography variant="caption">Forgot Password?</Typography>
-            </Link>
+            <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Tooltip 
+                title={CONFIG.turnstileSiteKey && !turnstileToken ? "Please wait for security verification" : ""}
+                placement="top"
+              >
+                <Link
+                  variant="body2"
+                  color="inherit"
+                  onClick={() => onForgotPassword(turnstileToken)}
+                  sx={{
+                    display: 'inline-block',
+                    cursor: CONFIG.turnstileSiteKey && !turnstileToken ? 'not-allowed' : 'pointer',
+                    opacity: CONFIG.turnstileSiteKey && !turnstileToken ? 0.6 : 1,
+                    pointerEvents: CONFIG.turnstileSiteKey && !turnstileToken ? 'none' : 'auto',
+                    '&:hover': {
+                      color: 'primary.main',
+                      textDecoration: 'none',
+                    },
+                  }}
+                >
+                  <Typography variant="caption">Forgot Password?</Typography>
+                </Link>
+              </Tooltip>
+              {CONFIG.turnstileSiteKey && !turnstileToken && (
+                <CircularProgress size={12} sx={{ color: 'text.secondary' }} />
+              )}
+            </Box>
           </Box>
+
+          {/* Turnstile widget */}
+          {CONFIG.turnstileSiteKey && (
+            <TurnstileWidget
+              siteKey={CONFIG.turnstileSiteKey}
+              onSuccess={handleSuccess}
+              onError={handleError}
+              onExpire={handleExpire}
+              size="invisible"
+            />
+          )}
 
           {/* Submit button */}
           <LoadingButton
@@ -226,9 +255,10 @@ export default function PasswordSignIn({
             type="submit"
             variant="contained"
             loading={isSubmitting || isProcessing}
+            disabled={!turnstileToken && !!CONFIG.turnstileSiteKey}
             sx={{ mt: 2 }}
           >
-            Continue
+            {CONFIG.turnstileSiteKey && !turnstileToken ? 'Verifying...' : 'Continue'}
           </LoadingButton>
         </Stack>
       </Form>

@@ -55,6 +55,7 @@ import {
 } from '../services/cm.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { Org } from '../../user_management/schema/org.schema';
+import { verifyTurnstileToken } from '../../../libs/utils/turnstile-verification';
 
 const {
   LOGIN,
@@ -399,10 +400,25 @@ export class UserAccountController {
     next: NextFunction,
   ): Promise<void> => {
     try {
-      const { email } = req.body;
+      const { email, 'cf-turnstile-response': turnstileToken } = req.body;
       if (!email) {
         throw new BadRequestError('Email is required');
       }
+      
+      // Verify Turnstile token
+      const turnstileSecretKey = process.env.TURNSTILE_SECRET_KEY;
+      if (turnstileSecretKey) { // Only verify if secret key is configured
+        const isValid = await verifyTurnstileToken(
+          turnstileToken,
+          turnstileSecretKey,
+          req.ip,
+          this.logger,
+        );
+        if (!isValid) {
+          throw new UnauthorizedError('Invalid CAPTCHA verification. Please try again.');
+        }
+      }
+      
       const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
       const user = await this.iamService.getUserByEmail(email, authToken);
 
@@ -1143,8 +1159,25 @@ export class UserAccountController {
   ): Promise<void> {
     try {
       this.logger.info('running authenticate');
-      const { method, credentials } = req.body;
+      const { method, credentials, 'cf-turnstile-response': turnstileToken } = req.body;
       const { sessionInfo } = req;
+      
+      // Verify Turnstile token for password authentication
+      if (method === AuthMethodType.PASSWORD) {
+        const turnstileSecretKey = process.env.TURNSTILE_SECRET_KEY;
+        if (turnstileSecretKey) { // Only verify if secret key is configured
+          const isValid = await verifyTurnstileToken(
+            turnstileToken,
+            turnstileSecretKey,
+            req.ip,
+            this.logger,
+          );
+          if (!isValid) {
+            throw new UnauthorizedError('Invalid CAPTCHA verification. Please try again.');
+          }
+        }
+      }
+      
       if (!method) {
         throw new BadRequestError('method is required');
       }

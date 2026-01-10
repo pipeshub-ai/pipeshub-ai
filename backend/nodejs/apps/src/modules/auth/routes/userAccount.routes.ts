@@ -16,6 +16,7 @@ import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
 
 const otpGenerationBody = z.object({
   email: z.string().email('Invalid email'),
+  'cf-turnstile-response': z.string().optional(), // Add Turnstile token for forgot password
 });
 
 const otpGenerationValidationSchema = z.object({
@@ -88,6 +89,7 @@ export function createUserAccountRouter(container: Container) {
         { message: 'Invalid email format' },
       )
       .optional(),
+    'cf-turnstile-response': z.string().optional(), // Add Turnstile token
   }).strict();
 
   const authenticateValidationSchema = z.object({
