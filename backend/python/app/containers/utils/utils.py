@@ -8,7 +8,6 @@ from app.config.constants.service import config_node_constants
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.events.events import EventProcessor
 from app.events.processor import Processor
-from app.modules.extraction.domain_extraction import DomainExtractor
 from app.modules.indexing.run import IndexingPipeline
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser

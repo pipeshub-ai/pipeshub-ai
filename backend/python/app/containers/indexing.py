@@ -92,7 +92,7 @@ class IndexingAppContainer(BaseAppContainer):
 
     # Parsers
     parsers = providers.Resource(container_utils.create_parsers, logger=logger)
-    
+
     # Processor - depends on indexing_pipeline, and arango_service
     processor = providers.Resource(
         container_utils.create_processor,
