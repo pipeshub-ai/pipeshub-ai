@@ -153,10 +153,11 @@ def get_mimetype_enum_for_box(entry_type: str, filename: str = None) -> MimeType
             'https://docs.pipeshub.com/connectors/box',
             'pipeshub'
         ))
-        .with_webhook_config(True, ["FILE.UPLOADED", "FILE.DELETED", "FILE.MOVED", "FOLDER.CREATED", "COLLABORATION.REMOVED"])
+        .with_webhook_config(True, ["FILE.UPLOADED", "FILE.DELETED", "FILE.MOVED", "FOLDER.CREATED", "COLLABORATION.CREATED", "COLLABORATION.ACCEPTED", "COLLABORATION.REMOVED"])
         .with_scheduled_config(True, 60)
         .with_agent_support(False)
         .with_sync_support(True)
+        .add_filter_field(CommonFields.file_extension_filter())
         .add_sync_custom_field(CommonFields.batch_size_field())
     )\
     .build_decorator()
@@ -740,6 +741,67 @@ class BoxConnector(BaseConnector):
             self.logger.error(f"❌ Failed to get users by emails: {e}", exc_info=True)
             return []
 
+    async def _remove_user_access_from_folder_recursively(
+        self,
+        folder_external_id: str,
+        user_id: str
+    ) -> None:
+        """
+        Remove user access from a folder and all its descendant files and folders.
+        This ensures that when folder collaboration is revoked, all items inside
+        also have the user's permissions removed.
+        
+        Args:
+            folder_external_id: External ID of the folder
+            user_id: Internal user ID whose access should be removed
+        """
+        try:
+            self.logger.info(f"📁 Removing user {user_id} access from folder {folder_external_id} and descendants")
+            
+            # Track all items to remove access from
+            items_to_process = [folder_external_id]
+            processed_items = set()
+            
+            async with self.data_store_provider.transaction() as tx_store:
+                # Process items recursively
+                while items_to_process:
+                    current_external_id = items_to_process.pop(0)
+                    
+                    if current_external_id in processed_items:
+                        continue
+                    
+                    processed_items.add(current_external_id)
+                    
+                    # Remove user access from this item
+                    try:
+                        await tx_store.remove_user_access_to_record(
+                            connector_id=self.connector_id,
+                            external_id=current_external_id,
+                            user_id=user_id
+                        )
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ Failed to remove access from {current_external_id}: {e}")
+                    
+                    # Get children of this item
+                    try:
+                        children = await tx_store.get_records_by_parent(
+                            connector_id=self.connector_id,
+                            parent_external_record_id=current_external_id
+                        )
+                        
+                        if children:
+                            # Add children to the processing queue
+                            for child in children:
+                                if child.external_record_id and child.external_record_id not in processed_items:
+                                    items_to_process.append(child.external_record_id)
+                    except Exception as e:
+                        self.logger.debug(f"No children found for {current_external_id} or error: {e}")
+                        
+                self.logger.info(f"✅ Removed user access from folder and {len(processed_items) - 1} descendants")
+                
+        except Exception as e:
+            self.logger.error(f"❌ Failed to remove folder access recursively: {e}", exc_info=True)
+
     async def _sync_user_groups(self) -> None:
         """
         Sync Box groups and their memberships.
@@ -1032,8 +1094,8 @@ class BoxConnector(BaseConnector):
                         batch_records.clear()
                         await asyncio.sleep(0.1)
 
-                # Check is_file is False instead of mime_type
-                if file_record and not file_record.is_file:
+                # Check if it's a folder (not a file)
+                if file_record and file_record.mime_type == MimeTypes.FOLDER.value:
                     sub_folders_to_traverse.append(file_record.external_record_id)
 
             for sub_folder_id in sub_folders_to_traverse:
@@ -1301,6 +1363,14 @@ class BoxConnector(BaseConnector):
             'unshared'
         }
 
+        COLLABORATION_GRANT_EVENTS = {
+            'COLLABORATION_CREATED',
+            'COLLABORATION_INVITE',
+            'COLLABORATION_ACCEPTED',
+            'COLLABORATION.CREATED',
+            'COLLABORATION.ACCEPTED',
+        }
+
         def get_val(obj: Optional[object], key: str, default: Optional[object] = None) -> Optional[object]:
             if obj is None:
                 return default
@@ -1312,14 +1382,109 @@ class BoxConnector(BaseConnector):
             event_type = get_val(event, 'event_type')
             source = get_val(event, 'source')
 
-            # Debug: Log every event type for troubleshooting
             self.logger.debug(f"🔍 Processing event: type={event_type}, source_type={get_val(source, 'type')}, source_id={get_val(source, 'id')}")
+            
+            if event_type and ('COLLABORATION' in event_type.upper() or 'COLLAB' in event_type.upper()):
+                self.logger.debug(f"📋 Full collaboration event: {event}")
 
-            # 1. HANDLE REVOCATIONS (Permissions Removed)
+            # 1. HANDLE COLLABORATION GRANTS (Permissions Added)
+            if event_type in COLLABORATION_GRANT_EVENTS:
+                item_id = None
+                granted_email = None
+                granted_user_box_id = None
+                item_type = 'file'
+
+                if source:
+                    # PATH A: Standard Box Collaboration Object
+                    item = get_val(source, 'item')
+                    if item:
+                        item_id = get_val(item, 'id')
+                        item_type = get_val(item, 'type', 'file')
+
+                    accessible_by = get_val(source, 'accessible_by')
+                    if accessible_by:
+                        granted_email = get_val(accessible_by, 'login')
+                        granted_user_box_id = get_val(accessible_by, 'id')
+
+                    # PATH B: Flat Dictionary
+                    if not item_id:
+                        item_id = get_val(source, 'file_id') or get_val(source, 'folder_id')
+                        if get_val(source, 'folder_id'):
+                            item_type = 'folder'
+
+                    if not granted_user_box_id:
+                        granted_user_box_id = get_val(source, 'user_id')
+
+                    if not item_type or item_type == 'file':
+                        source_type = get_val(source, 'type')
+                        if source_type == 'folder' or get_val(source, 'folder_id'):
+                            item_type = 'folder'
+
+                if not item_id:
+                    item_id = get_val(event, 'source_item_id') or get_val(event, 'item_id')
+
+                # Fetch Email from Box if we only have ID
+                if granted_user_box_id and not granted_email:
+                    try:
+                        user_response = await self.data_source.users_get_user_by_id(granted_user_box_id)
+
+                        if user_response.success and user_response.data:
+                            user_data = self._to_dict(user_response.data)
+                            granted_email = user_data.get('login')
+                        else:
+                            self.logger.warning(f"⚠️ Failed to fetch user details for ID {granted_user_box_id}: {user_response.error}")
+
+                    except AttributeError:
+                        try:
+                            user_response = await self.data_source.users_get_user(granted_user_box_id)
+                            if user_response.success:
+                                user_data = self._to_dict(user_response.data)
+                                granted_email = user_data.get('login')
+                        except Exception as e:
+                            self.logger.error(f"❌ Failed to resolve Box ID {granted_user_box_id} (Fallback): {e}")
+
+                    except Exception as e:
+                        self.logger.error(f"❌ Failed to resolve Box ID {granted_user_box_id}: {e}")
+
+                # EXECUTE GRANT - Queue item for sync to update permissions
+                if item_id:
+                    self.logger.info(f"✅ Collaboration granted on {item_type} {item_id}" + (f" to {granted_email}" if granted_email else ""))
+                    
+                    # Get owner information
+                    owner = get_val(source, 'owned_by') or get_val(event, 'created_by')
+                    owner_id = get_val(owner, 'id') if owner else None
+                    
+                    # If no owner found, try to fetch the item to get owner info
+                    if not owner_id:
+                        try:
+                            if item_type == 'folder':
+                                item_response = await self.data_source.folders_get_folder_by_id(item_id)
+                            else:
+                                item_response = await self.data_source.files_get_file_by_id(item_id)
+                            
+                            if item_response.success:
+                                item_data = self._to_dict(item_response.data)
+                                owned_by = item_data.get('owned_by', {})
+                                owner_id = owned_by.get('id')
+                        except Exception as e:
+                            self.logger.warning(f"⚠️ Failed to fetch owner for {item_type} {item_id}: {e}")
+                    
+                    if owner_id:
+                        # Queue for sync to refresh permissions
+                        items_to_sync[item_id] = (owner_id, item_type)
+                    else:
+                        self.logger.warning(f"⚠️ Cannot sync {item_type} {item_id} - no owner found")
+                else:
+                    self.logger.warning(f"⚠️ Collaboration grant skipped. Missing item ID")
+
+                continue
+
+            # 2. HANDLE REVOCATIONS (Permissions Removed)
             if event_type in REVOCATION_EVENTS:
                 file_id = None
                 removed_email = None
                 removed_user_box_id = None
+                collaboration_id = None
 
                 if source:
                     # PATH A: Standard Box Object
@@ -1332,15 +1497,35 @@ class BoxConnector(BaseConnector):
                         removed_email = get_val(accessible_by, 'login')
                         removed_user_box_id = get_val(accessible_by, 'id')
 
-                    # PATH B: Flat Dictionary
+                    # PATH B: Flat Dictionary (check both file_id and folder_id)
                     if not file_id:
-                        file_id = get_val(source, 'file_id')
+                        file_id = get_val(source, 'file_id') or get_val(source, 'folder_id')
 
                     if not removed_user_box_id:
                         removed_user_box_id = get_val(source, 'user_id')
 
+                    # PATH C: Get collaboration ID to look up later if needed
+                    collaboration_id = get_val(source, 'id')
+
                 if not file_id:
                     file_id = get_val(event, 'source_item_id') or get_val(event, 'item_id')
+
+                # PATH D: If we still don't have file_id but have collaboration_id, try to fetch collaboration details
+                if not file_id and collaboration_id:
+                    try:
+                        self.logger.debug(f"Attempting to fetch collaboration {collaboration_id} to get item details")
+                        collab_response = await self.data_source.collaborations_get_collaboration_by_id(collaboration_id)
+                        if collab_response.success and collab_response.data:
+                            collab_data = self._to_dict(collab_response.data)
+                            item = collab_data.get('item', {})
+                            if item:
+                                file_id = item.get('id')
+                                self.logger.debug(f"Found item ID {file_id} from collaboration lookup")
+                    except Exception as e:
+                        self.logger.debug(f"Could not fetch collaboration details for {collaboration_id}: {e}")
+
+                # Log what we found for debugging
+                self.logger.debug(f"Revocation event - file_id={file_id}, email={removed_email}, user_box_id={removed_user_box_id}, collab_id={collaboration_id}")
 
                 # Fetch Email from Box if we only have ID using data_source
                 if removed_user_box_id and not removed_email:
@@ -1380,12 +1565,28 @@ class BoxConnector(BaseConnector):
                     if internal_user:
                         user_id = getattr(internal_user, 'id', None)
                         if user_id:
+                            # First, check if this is a folder to handle recursively
                             async with self.data_store_provider.transaction() as tx_store:
-                                await tx_store.remove_user_access_to_record(
-                                    connector_id=self.connector_id,
+                                record = await tx_store.get_record_by_external_id(
                                     external_id=file_id,
-                                    user_id=user_id
+                                    connector_id=self.connector_id
                                 )
+                                
+                                if record and record.mime_type == MimeTypes.FOLDER.value:
+                                    # Folder - remove access from folder and all descendants
+                                    self.logger.info(f"📁 Removing folder access recursively for {file_id}")
+                                    await self._remove_user_access_from_folder_recursively(
+                                        folder_external_id=file_id,
+                                        user_id=user_id
+                                    )
+                                else:
+                                    # File - remove direct access
+                                    async with self.data_store_provider.transaction() as tx_store:
+                                        await tx_store.remove_user_access_to_record(
+                                            connector_id=self.connector_id,
+                                            external_id=file_id,
+                                            user_id=user_id
+                                        )
                         else:
                             self.logger.warning("⚠️ User found but has no Internal ID")
                     else:
@@ -1396,7 +1597,7 @@ class BoxConnector(BaseConnector):
 
                 continue
 
-            # 2. EXTRACT FILE ID (Standard Events)
+            # 3. EXTRACT FILE ID (Standard Events)
             file_id = None
             if source:
                 file_id = get_val(source, 'id') or get_val(source, 'item_id') or get_val(source, 'file_id')
@@ -1407,14 +1608,14 @@ class BoxConnector(BaseConnector):
             if not file_id:
                 continue
 
-            # 3. HANDLE DELETIONS
+            # 4. HANDLE DELETIONS
             if event_type in DELETION_EVENTS:
                 self.logger.info(f"🗑️ Found DELETION event ({event_type}) for Item ID: {file_id}")
                 items_to_delete.add(file_id)
                 items_to_sync.pop(file_id, None)
                 continue
 
-            # 4. FILTER & PREPARE SYNC (Accept both files and folders)
+            # 5. FILTER & PREPARE SYNC (Accept both files and folders)
             item_type = 'file'  # Default to file
             if source:
                 item_type = get_val(source, 'item_type') or get_val(source, 'type') or 'file'
@@ -1428,7 +1629,7 @@ class BoxConnector(BaseConnector):
             if owner_id:
                 items_to_sync[file_id] = (owner_id, item_type)
 
-        # 5. EXECUTE BATCHES
+        # 6. EXECUTE BATCHES
         if items_to_delete:
             self.logger.info(f"⚠️ Executing {len(items_to_delete)} deletions...")
             await self._execute_deletions(list(items_to_delete))
@@ -1684,7 +1885,7 @@ class BoxConnector(BaseConnector):
                             batch_records.append((update_obj.record, update_obj.new_permissions))
 
                             # If it's a folder, mark it for recursive traversal
-                            if not update_obj.record.is_file:
+                            if update_obj.record.mime_type == MimeTypes.FOLDER.value:
                                 sub_folders_to_traverse.append(update_obj.record.external_record_id)
 
                         # Process batch if it gets too large
@@ -1900,7 +2101,7 @@ class BoxConnector(BaseConnector):
 
                     tasks = []
                     for rec in owner_records:
-                        if rec.is_file:
+                        if rec.mime_type != MimeTypes.FOLDER.value:
                             tasks.append(self.data_source.files_get_file_by_id(rec.external_record_id))
                         else:
                             tasks.append(self.data_source.folders_get_folder_by_id(rec.external_record_id))
