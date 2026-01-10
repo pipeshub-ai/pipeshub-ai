@@ -1295,8 +1295,8 @@ def _detect_tool_success(result: object) -> bool:
                 # Check for error field
                 if "error" in data:
                     error_value = data["error"]
-                    # If error has content (not None/null), it's a failure
-                    if error_value and error_value != "null":
+                    # If error field exists and is not None, it's a failure
+                    if error_value is not None:
                         return False
 
                 # Check for status field (from tool_system errors and API responses)
