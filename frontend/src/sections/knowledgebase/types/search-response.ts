@@ -41,6 +41,8 @@ export interface DocumentMetadata {
   sheetName?: string;
   _id: string;
   _collection_name: string;
+  webUrl?: string;
+  previewRenderable?: boolean;
 }
 
 export interface DocumentContent {
@@ -82,6 +84,7 @@ export namespace PipesHub {
     sizeInBytes: number;
     webUrl: string;
     path: string;
+    previewRenderable?: boolean;
     [key: string]: any;
   }
 }

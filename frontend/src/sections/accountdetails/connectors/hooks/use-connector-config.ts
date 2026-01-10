@@ -1,11 +1,26 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import {useNavigate} from 'react-router-dom';
 import { useAccountType } from 'src/hooks/use-account-type';
-import { Connector, ConnectorConfig } from '../types/types';
+import { 
+  Connector, 
+  ConnectorConfig, 
+  FilterSchemaField,
+  FilterValueData,
+  FilterValue
+} from '../types/types';
 import { ConnectorApiService } from '../services/api';
 import { CrawlingManagerApi } from '../services/crawling-manager';
 import { buildCronFromSchedule } from '../utils/cron';
 import { evaluateConditionalDisplay } from '../utils/conditional-display';
 import { isNoneAuthType } from '../utils/auth';
+import {
+  normalizeDatetimeValueForDisplay,
+  normalizeDatetimeValueForSave,
+  convertRelativeDateToAbsolute,
+  convertDurationToMilliseconds,
+  isDurationField,
+  EpochDatetimeRange
+} from '../utils/time-utils';
 
 interface FormData {
   auth: Record<string, any>;
@@ -25,6 +40,11 @@ interface UseConnectorConfigProps {
   connector: Connector;
   onClose: () => void;
   onSuccess?: () => void;
+  initialInstanceName?: string;
+  enableMode?: boolean; // If true, opened from toggle - save filters and sync then toggle connector
+  authOnly?: boolean; // If true, show only auth section
+  syncOnly?: boolean; // If true, show only filters and sync (when connector is active) - DEPRECATED
+  syncSettingsMode?: boolean; // If true, opened from Sync Settings button - only save filters, never toggle
 }
 
 interface UseConnectorConfigReturn {
@@ -56,6 +76,11 @@ interface UseConnectorConfigReturn {
   privateKeyError: string | null;
   privateKeyData: string | null;
 
+  // Create mode state
+  isCreateMode: boolean;
+  instanceName: string;
+  instanceNameError: string | null;
+
   // Actions
   handleFieldChange: (section: string, fieldName: string, value: any) => void;
   handleNext: () => void;
@@ -69,6 +94,8 @@ interface UseConnectorConfigReturn {
   isBusinessGoogleOAuthValid: () => boolean;
   fileInputRef: React.RefObject<HTMLInputElement>;
 
+  setInstanceName: (name: string) => void;
+
   // SharePoint Certificate actions
   handleCertificateUpload: () => void;
   handleCertificateChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
@@ -79,13 +106,27 @@ interface UseConnectorConfigReturn {
   isSharePointCertificateAuthValid: () => boolean;
 }
 
+// Constants
+const MIN_INSTANCE_NAME_LENGTH = 3;
+const REQUIRED_SERVICE_ACCOUNT_FIELDS = ['client_id', 'project_id', 'type'];
+const SERVICE_ACCOUNT_TYPE = 'service_account';
+
 export const useConnectorConfig = ({
   connector,
   onClose,
   onSuccess,
+  initialInstanceName = '',
+  enableMode = false,
+  authOnly = false,
+  syncOnly = false,
+  syncSettingsMode = false,
 }: UseConnectorConfigProps): UseConnectorConfigReturn => {
   const { isBusiness, isIndividual, loading: accountTypeLoading } = useAccountType();
+  const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Determine if we're in create mode (no _key means new instance)
+  const isCreateMode = connector?._key === 'new' || connector?._key === null || connector?._key === undefined;
 
   // SharePoint certificate refs
   const certificateInputRef = useRef<HTMLInputElement>(null);
@@ -97,9 +138,9 @@ export const useConnectorConfig = ({
   const [saving, setSaving] = useState(false);
   const [activeStep, setActiveStep] = useState(0);
   const [formData, setFormData] = useState<FormData>({
-    auth: {},
-    sync: {},
-    filters: {},
+    auth: {} as Record<string, unknown>,
+    sync: {} as Record<string, unknown>,
+    filters: {} as Record<string, FilterValueData>,
   });
   const [formErrors, setFormErrors] = useState<FormErrors>({
     auth: {},
@@ -108,6 +149,10 @@ export const useConnectorConfig = ({
   });
   const [saveError, setSaveError] = useState<string | null>(null);
   const [conditionalDisplay, setConditionalDisplay] = useState<Record<string, boolean>>({});
+
+  // Create mode state
+  const [instanceName, setInstanceName] = useState(initialInstanceName);
+  const [instanceNameError, setInstanceNameError] = useState<string | null>(null);
 
   // Business OAuth specific state (Google Workspace)
   const [adminEmail, setAdminEmail] = useState('');
@@ -134,16 +179,18 @@ export const useConnectorConfig = ({
     () =>
       isBusiness &&
       connector.appGroup === 'Google Workspace' &&
-      connector.authType === 'OAUTH',
-    [isBusiness, connector.appGroup, connector.authType]
+      connector.authType === 'OAUTH' &&
+      connector.scope === 'team',
+    [isBusiness, connector.appGroup, connector.authType, connector.scope]
   );
 
   // Memoized helper to check if this is SharePoint certificate auth
   const isSharePointCertificateAuth = useMemo(
     () =>
       connector.name === 'SharePoint Online' &&
-      (connector.authType === 'OAUTH_CERTIFICATE' || connector.authType === 'OAUTH_ADMIN_CONSENT'),
-    [connector.name, connector.authType]
+      (connector.authType === 'OAUTH_CERTIFICATE' || connector.authType === 'OAUTH_ADMIN_CONSENT') &&
+      connector.scope === 'team',
+    [connector.name, connector.authType, connector.scope]
   );
 
   // Memoized helper functions
@@ -152,11 +199,11 @@ export const useConnectorConfig = ({
     return {
       adminEmail: authValues.adminEmail || '',
       jsonData:
-        authValues.client_id && authValues.project_id && authValues.type === 'service_account'
+        authValues.client_id && authValues.project_id && authValues.type === SERVICE_ACCOUNT_TYPE
           ? authValues
           : null,
       fileName:
-        authValues.client_id && authValues.project_id && authValues.type === 'service_account'
+        authValues.client_id && authValues.project_id && authValues.type === SERVICE_ACCOUNT_TYPE
           ? 'existing-credentials.json'
           : null,
     };
@@ -195,8 +242,14 @@ export const useConnectorConfig = ({
         },
         filters: {
           ...schemaResponse.filters,
-          values: configResponse.config.filters?.values || configResponse.config.filters || {},
-          customValues: configResponse.config.filters?.customValues || {},
+          sync: {
+            ...schemaResponse.filters?.sync,
+            values: configResponse.config.filters?.sync?.values || {},
+          },
+          indexing: {
+            ...schemaResponse.filters?.indexing,
+            values: configResponse.config.filters?.indexing?.values || {},
+          },
         },
       },
     }),
@@ -215,6 +268,103 @@ export const useConnectorConfig = ({
       });
     }
 
+    // Initialize filters (both sync and indexing)
+    const filtersData: Record<string, FilterValueData> = {};
+
+    /**
+     * Get default value for a filter field based on its type
+     */
+    const getDefaultFilterValue = (field: FilterSchemaField): FilterValue => {
+      if (field.defaultValue !== undefined) {
+        return field.defaultValue;
+      }
+      
+      switch (field.filterType) {
+        case 'list':
+          return [];
+        case 'datetime':
+          return { start: '', end: '' };
+        case 'boolean':
+          return true;
+        default:
+          return '';
+      }
+    };
+
+    /**
+     * Initialize filter fields - only initialize filters that have existing values
+     */
+    const initializeFilterFields = (
+      filterSchema: { fields: FilterSchemaField[] }, 
+      filterValues: Record<string, FilterValueData> | undefined
+    ) => {
+      if (!filterSchema?.fields) return;
+      
+      filterSchema.fields.forEach((field) => {
+        const existingValue = filterValues?.[field.name];
+        
+        // Only initialize if there's an existing value from saved config
+        if (existingValue === undefined || existingValue === null) {
+          return; // Don't initialize filters without existing values - start blank
+        }
+        
+        // If value exists, use it (could be { operator, value } or just value)
+        if (
+          typeof existingValue === 'object' && 
+          !Array.isArray(existingValue) && 
+          'operator' in existingValue
+        ) {
+          // Already in the correct format: { operator: '...', value: '...' }
+          const operator = existingValue.operator || field.defaultOperator || '';
+          const needsValue = !operator.startsWith('last_');
+          
+          let value: FilterValue = needsValue 
+            ? (existingValue.value !== undefined 
+                ? existingValue.value 
+                : getDefaultFilterValue(field))
+            : null;
+          
+          // Normalize datetime values to {start, end} format for display
+          if (field.filterType === 'datetime' && value !== null && !operator.startsWith('last_')) {
+            value = normalizeDatetimeValueForDisplay(value, operator);
+          }
+          
+          filtersData[field.name] = {
+            operator,
+            value,
+            type: field.filterType,
+          };
+        } else {
+          // Value exists but not in the right format, wrap it
+          let value: FilterValue = existingValue as FilterValue;
+          
+          // Normalize datetime values to {start, end} format
+          if (field.filterType === 'datetime') {
+            const operator = field.defaultOperator || '';
+            value = normalizeDatetimeValueForDisplay(value, operator);
+          }
+          
+          filtersData[field.name] = {
+            operator: field.defaultOperator || '',
+            value,
+            type: field.filterType,
+          };
+        }
+      });
+    };
+    
+    // Initialize sync filters
+    const syncFilters = config.config.filters?.sync;
+    if (syncFilters?.schema) {
+      initializeFilterFields(syncFilters.schema, config.config.filters?.sync?.values);
+    }
+    
+    // Initialize indexing filters
+    const indexingFilters = config.config.filters?.indexing;
+    if (indexingFilters?.schema) {
+      initializeFilterFields(indexingFilters.schema, config.config.filters?.indexing?.values);
+    }
+
     return {
       auth: authData,
       sync: {
@@ -225,7 +375,7 @@ export const useConnectorConfig = ({
         scheduledConfig: config.config.sync?.scheduledConfig || {},
         ...(config.config.sync?.values || config.config.sync || {}),
       },
-      filters: config.config.filters?.values || config.config.filters || {},
+      filters: filtersData,
     };
   }, []);
 
@@ -556,15 +706,45 @@ export const useConnectorConfig = ({
     const fetchConnectorConfig = async () => {
       try {
         setLoading(true);
+        let mergedConfig: any = null;
+        console.log('create mode', isCreateMode);
 
-        // Fetch both config and schema in a single API call
-        const { config: configResponse, schema: schemaResponse } =
-          await ConnectorApiService.getConnectorConfigAndSchema(connector.name);
+        if (isCreateMode) {
+          // Create mode: load schema only
+          const schemaResponse = await ConnectorApiService.getConnectorSchema(connector.type);
+
+          const emptyConfigResponse = {
+            name: connector.name,
+            type: connector.type,
+            appGroup: connector.appGroup,
+            appGroupId: connector.appGroupId || '',
+            authType: connector.authType,
+            isActive: false,
+            isConfigured: false,
+            supportsRealtime: !!connector.supportsRealtime,
+            appDescription: connector.appDescription || '',
+            appCategories: connector.appCategories || [],
+            iconPath: connector.iconPath,
+            config: {
+              auth: {},
+              sync: {},
+              filters: {},
+            },
+          };
+
+          mergedConfig = mergeConfigWithSchema(emptyConfigResponse, schemaResponse);
+        } else {
+          // Edit mode: load both config and schema
+          const [configResponse, schemaResponse] = await Promise.all([
+            ConnectorApiService.getConnectorInstanceConfig(connector._key),
+            ConnectorApiService.getConnectorSchema(connector.type),
+          ]);
+
+          mergedConfig = mergeConfigWithSchema(configResponse, schemaResponse);
+        }
 
         if (!isMounted) return;
 
-        // Merge config with schema
-        const mergedConfig = mergeConfigWithSchema(configResponse, schemaResponse);
         setConnectorConfig(mergedConfig);
 
         // Initialize form data
@@ -613,7 +793,7 @@ export const useConnectorConfig = ({
           const errorMessage = error?.response?.data?.detail || error?.message || 'Beta connectors are not enabled. This connector is a beta connector and cannot be accessed. Please enable beta connectors in platform settings to use this connector.';
           setSaveError(errorMessage);
         } else {
-          setSaveError('Failed to load connector configuration');
+          setSaveError(error?.response?.data?.detail || error?.message || 'Failed to load connector configuration');
         }
       } finally {
         if (isMounted) {
@@ -629,6 +809,16 @@ export const useConnectorConfig = ({
     };
   }, [
     connector.name,
+    connector.type,
+    connector.appGroup,
+    connector.appGroupId,
+    connector.authType,
+    connector.supportsRealtime,
+    connector.appDescription,
+    connector.appCategories,
+    connector.iconPath,
+    connector._key,
+    isCreateMode,
     accountTypeLoading,
     isCustomGoogleBusinessOAuth,
     isSharePointCertificateAuth,
@@ -637,6 +827,11 @@ export const useConnectorConfig = ({
     getBusinessOAuthData,
     getSharePointCertificateData,
   ]);
+
+  // Reset activeStep to 0 when mode changes (create/enable/edit)
+  useEffect(() => {
+    setActiveStep(0);
+  }, [enableMode, syncOnly, isCreateMode]);
 
   // Recalculate conditional display when auth form data changes
   useEffect(() => {
@@ -716,9 +911,17 @@ export const useConnectorConfig = ({
           ...prev,
           [section]: {
             ...prev[section as keyof FormData],
-            [fieldName]: value,
           },
         };
+
+        // Handle filter removal (when value is undefined)
+        if (section === 'filters' && value === undefined) {
+          const { [fieldName]: removed, ...rest } = newFormData[section] as Record<string, any>;
+          newFormData[section] = rest;
+        } else {
+          // Normal field update
+          (newFormData[section] as Record<string, any>)[fieldName] = value;
+        }
 
         // Re-evaluate conditional display rules for auth section
         if (section === 'auth' && connectorConfig?.config.auth.conditionalDisplay) {
@@ -753,47 +956,84 @@ export const useConnectorConfig = ({
     // Clear any previous save error when user tries again
     setSaveError(null);
 
+    const isNoAuthType = isNoneAuthType(connector.authType);
+    const hasFilters = (connectorConfig.config.filters?.sync?.schema?.fields?.length ?? 0) > 0;
+    
+    // Determine which step we're on based on mode
+    let currentSection = '';
+    let maxStep = 0;
+    
+    // Enable mode: filters -> sync (skip auth)
+    if (enableMode) {
+      maxStep = hasFilters ? 1 : 0; // Filters (0) -> Sync (1) or just Sync (0)
+      if (hasFilters) {
+        currentSection = activeStep === 0 ? 'filters' : 'sync';
+      } else {
+        currentSection = 'sync';
+      }
+    }
+    // Create mode: only auth (no next button, should not reach here)
+    else if (isCreateMode) {
+      maxStep = 0; // Only one step (auth)
+      currentSection = 'auth';
+    }
+    // Edit mode: show all steps based on auth type
+    else if (isNoAuthType) {
+      maxStep = hasFilters ? 1 : 0; // Filters (0) -> Sync (1) or just Sync (0)
+      if (hasFilters) {
+        currentSection = activeStep === 0 ? 'filters' : 'sync';
+      } else {
+        currentSection = 'sync';
+      }
+    } else {
+      maxStep = hasFilters ? 2 : 1; // Auth (0) -> Filters (1) -> Sync (2) or Auth (0) -> Sync (1)
+      if (hasFilters) {
+        currentSection = activeStep === 0 ? 'auth' : activeStep === 1 ? 'filters' : 'sync';
+      } else {
+        currentSection = activeStep === 0 ? 'auth' : 'sync';
+      }
+    }
+
     let errors: Record<string, string> = {};
 
     // Validate current step
-    switch (activeStep) {
-      case 0: // Auth
-        if (isCustomGoogleBusinessOAuth) {
-          if (!isBusinessGoogleOAuthValid()) {
-            errors = { adminEmail: adminEmailError || 'Invalid business credentials' };
-          }
-        } else if (isSharePointCertificateAuth) {
-          // Validate SharePoint certificate authentication
-          if (!isSharePointCertificateAuthValid()) {
-            setSaveError('Please complete all required SharePoint authentication fields and upload valid certificate and private key files.');
-            return;
-          }
-        } else {
-          errors = validateSection(
-            'auth',
-            connectorConfig.config.auth.schema.fields,
-            formData.auth
-          );
+    if (currentSection === 'auth') {
+      if (isCustomGoogleBusinessOAuth) {
+        if (!isBusinessGoogleOAuthValid()) {
+          errors = { adminEmail: adminEmailError || 'Invalid business credentials' };
         }
-        break;
-      case 1: // Sync
-        errors = validateSection('sync', connectorConfig.config.sync.customFields, formData.sync);
-        break;
-      default:
-        break;
+      } else if (isSharePointCertificateAuth) {
+        // Validate SharePoint certificate authentication
+        if (!isSharePointCertificateAuthValid()) {
+          setSaveError('Please complete all required SharePoint authentication fields and upload valid certificate and private key files.');
+          return;
+        }
+      } else {
+        errors = validateSection(
+          'auth',
+          connectorConfig.config.auth.schema.fields,
+          formData.auth
+        );
+      }
+    } else if (currentSection === 'filters') {
+      // Filters are optional, so no validation needed
+      errors = {};
+    } else if (currentSection === 'sync') {
+      errors = validateSection('sync', connectorConfig.config.sync.customFields, formData.sync);
     }
 
     setFormErrors((prev) => ({
       ...prev,
-      [activeStep === 0 ? 'auth' : 'sync']: errors,
+      [currentSection]: errors,
     }));
 
-    if (Object.keys(errors).length === 0 && activeStep < 1) {
+    if (Object.keys(errors).length === 0 && activeStep < maxStep) {
       setActiveStep((prev) => prev + 1);
     }
   }, [
     activeStep,
     connectorConfig,
+    connector,
     formData,
     validateSection,
     isCustomGoogleBusinessOAuth,
@@ -801,6 +1041,8 @@ export const useConnectorConfig = ({
     adminEmailError,
     isSharePointCertificateAuth,
     isSharePointCertificateAuthValid,
+    enableMode,
+    isCreateMode,
   ]);
 
   const handleBack = useCallback(() => {
@@ -808,6 +1050,222 @@ export const useConnectorConfig = ({
       setActiveStep((prev) => prev - 1);
     }
   }, [activeStep]);
+
+  // Helper function to process filter fields for saving
+  const processFilterFields = useCallback((
+    filterSchema: { fields: FilterSchemaField[] }
+  ): Record<string, FilterValueData> => {
+    const filtersToSave: Record<string, FilterValueData> = {};
+    if (!filterSchema?.fields) return filtersToSave;
+    
+    filterSchema.fields.forEach((field) => {
+      const filterValue = formData.filters[field.name];
+      if (!filterValue?.operator) {
+        return; // Skip filters without operator
+      }
+      
+      // Convert relative date operators to absolute dates
+      if (filterValue.operator.startsWith('last_')) {
+        const converted = convertRelativeDateToAbsolute(filterValue.operator);
+        if (converted) {
+          try {
+            const normalizedValue = normalizeDatetimeValueForSave(
+              converted.value, 
+              converted.operator
+            );
+            if (normalizedValue.start !== null || normalizedValue.end !== null) {
+              filtersToSave[field.name] = { 
+                operator: converted.operator, 
+                value: normalizedValue, 
+                type: field.filterType 
+              };
+            }
+          } catch (error) {
+            console.warn(`Failed to convert relative date operator for ${field.name}:`, error);
+          }
+        }
+        return;
+      }
+      
+      // Handle filters with values
+      if (filterValue.value === undefined || filterValue.value === null || filterValue.value === '') {
+        if (field.filterType === 'boolean') {
+          filtersToSave[field.name] = { 
+            operator: filterValue.operator, 
+            value: filterValue.value, 
+            type: field.filterType 
+          };
+        }
+        return;
+      }
+      
+      // Process datetime fields
+      if (field.filterType === 'datetime') {
+        try {
+          const normalizedValue = normalizeDatetimeValueForSave(
+            filterValue.value, 
+            filterValue.operator
+          );
+          if (normalizedValue.start !== null || normalizedValue.end !== null) {
+            filtersToSave[field.name] = { 
+              operator: filterValue.operator, 
+              value: normalizedValue, 
+              type: field.filterType 
+            };
+          }
+        } catch (error) {
+          console.warn(`Failed to normalize datetime value for ${field.name}:`, error);
+        }
+        return;
+      }
+      
+      // Process list values
+      if (Array.isArray(filterValue.value) && filterValue.value.length > 0) {
+        let processedValue: FilterValue = filterValue.value;
+        if (isDurationField(field)) {
+          processedValue = filterValue.value.map((item: unknown) => 
+            typeof item === 'string' ? convertDurationToMilliseconds(item) : item
+          );
+        }
+        filtersToSave[field.name] = { 
+          operator: filterValue.operator, 
+          value: processedValue, 
+          type: field.filterType 
+        };
+        return;
+      }
+      
+      // Process non-array values
+      if (!Array.isArray(filterValue.value) && filterValue.value !== '') {
+        let processedValue: FilterValue = filterValue.value;
+        if (isDurationField(field) && typeof filterValue.value === 'string') {
+          processedValue = convertDurationToMilliseconds(filterValue.value);
+        }
+        filtersToSave[field.name] = { 
+          operator: filterValue.operator, 
+          value: processedValue, 
+          type: field.filterType 
+        };
+      }
+    });
+    
+    return filtersToSave;
+  }, [formData.filters]);
+
+  // Helper function to prepare sync config for saving
+  const prepareSyncConfig = useCallback((): any => {
+    const syncToSave: any = {
+      selectedStrategy: formData.sync.selectedStrategy,
+      ...formData.sync,
+    };
+    
+    // Process sync custom fields to convert duration values
+    if (connectorConfig?.config?.sync?.customFields) {
+      connectorConfig.config.sync.customFields.forEach((field: any) => {
+        if (syncToSave[field.name] !== undefined && isDurationField(field)) {
+          const value = syncToSave[field.name];
+          if (typeof value === 'string') {
+            syncToSave[field.name] = convertDurationToMilliseconds(value);
+          }
+        }
+      });
+    }
+    
+    const normalizedStrategy = String(formData.sync.selectedStrategy || '').toUpperCase();
+    if (normalizedStrategy === 'SCHEDULED') {
+      syncToSave.scheduledConfig = formData.sync.scheduledConfig || {};
+    } else if (syncToSave.scheduledConfig !== undefined) {
+      delete syncToSave.scheduledConfig;
+    }
+
+    return syncToSave;
+  }, [formData.sync, connectorConfig]);
+
+  // Helper function to prepare filters payload
+  const prepareFiltersPayload = useCallback((): any => {
+    const syncFiltersToSave = connectorConfig?.config?.filters?.sync?.schema
+      ? processFilterFields(connectorConfig.config.filters.sync.schema)
+      : {};
+    
+    const indexingFiltersToSave = connectorConfig?.config?.filters?.indexing?.schema
+      ? processFilterFields(connectorConfig.config.filters.indexing.schema)
+      : {};
+
+    const filtersPayload: any = {
+      sync: {
+        values: syncFiltersToSave,
+      },
+    };
+    if (Object.keys(indexingFiltersToSave).length > 0) {
+      filtersPayload.indexing = {
+        values: indexingFiltersToSave,
+      };
+    }
+
+    return filtersPayload;
+  }, [connectorConfig, processFilterFields]);
+
+  // Helper function to update scheduling based on sync strategy changes
+  const updateScheduling = useCallback(async (isConnectorActiveAfterSave: boolean = false) => {
+    if (!connectorConfig || !connector) return;
+
+    // Determine if connector is/will be active
+    const isActive = isConnectorActiveAfterSave || !!connector.isActive;
+    
+    // Only update scheduling if connector is or will be active
+    if (!isActive) {
+      return; // Connector is not active, no need to update scheduling
+    }
+
+    const prevStrategy = String(
+      connectorConfig?.config?.sync?.selectedStrategy || ''
+    ).toUpperCase();
+    const newStrategy = String(formData.sync.selectedStrategy || '').toUpperCase();
+
+    const prevScheduled = (connectorConfig?.config?.sync?.scheduledConfig || {}) as any;
+    const newScheduled = (formData.sync.scheduledConfig || {}) as any;
+
+    const strategyChanged = prevStrategy !== newStrategy;
+    const scheduleChanged =
+      JSON.stringify({
+        startTime: prevScheduled.startTime,
+        intervalMinutes: prevScheduled.intervalMinutes,
+        timezone: (prevScheduled.timezone || '').toUpperCase(),
+      }) !==
+      JSON.stringify({
+        startTime: newScheduled.startTime,
+        intervalMinutes: newScheduled.intervalMinutes,
+        timezone: (newScheduled.timezone || '').toUpperCase(),
+      });
+
+    try {
+      if (newStrategy === 'SCHEDULED') {
+        // Strategy is SCHEDULED - ensure schedule is applied
+        const cron = buildCronFromSchedule({
+          startTime: newScheduled.startTime,
+          intervalMinutes: newScheduled.intervalMinutes,
+          timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
+        });
+        await CrawlingManagerApi.schedule(connector.type, connector._key, {
+          scheduleConfig: {
+            scheduleType: 'custom',
+            isEnabled: true,
+            timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
+            cronExpression: cron,
+          },
+          priority: 5,
+          maxRetries: 3,
+          timeout: 300000,
+        });
+      } else if (strategyChanged && prevStrategy === 'SCHEDULED' && newStrategy !== 'SCHEDULED') {
+        // Strategy changed from SCHEDULED to something else - remove schedule
+        await CrawlingManagerApi.remove(connector.type, connector._key);
+      }
+    } catch (scheduleError) {
+      console.error('Scheduling update failed:', scheduleError);
+      // Do not block saving on scheduling issues
+    }
+  }, [connectorConfig, connector, formData.sync]);
 
   const handleSave = useCallback(async () => {
     if (!connectorConfig) return;
@@ -818,23 +1276,216 @@ export const useConnectorConfig = ({
 
       const isNoAuthType = isNoneAuthType(connector.authType);
 
-      // For business OAuth, validate admin email and JSON file
-      if (isCustomGoogleBusinessOAuth) {
-        if (!isBusinessGoogleOAuthValid()) {
-          setSaveError('Please provide valid admin email and JSON credentials file');
-          return;
-        }
+      // For auth-only mode, check if connector is active (auth changes require disabled connector)
+      if (authOnly && connector.isActive) {
+        setSaveError('Cannot update authentication while connector is active. Please disable the connector first.');
+        setSaving(false);
+        return;
       }
 
-      // For SharePoint certificate auth, validate certificate and key
-      if (isSharePointCertificateAuth) {
-        if (!isSharePointCertificateAuthValid()) {
-          setSaveError('Please provide valid certificate and private key files for SharePoint authentication');
+      // Auth only mode: save auth config only
+      if (authOnly) {
+        // Validate auth section
+        let authErrors: Record<string, string> = {};
+        if (!isNoAuthType) {
+          if (isCustomGoogleBusinessOAuth) {
+            if (!isBusinessGoogleOAuthValid()) {
+              authErrors = { adminEmail: adminEmailError || 'Invalid business credentials' };
+            }
+          } else if (isSharePointCertificateAuth) {
+            if (!isSharePointCertificateAuthValid()) {
+              authErrors = { certificate: 'Invalid SharePoint certificate authentication' };
+            }
+          } else {
+            authErrors = validateSection(
+              'auth',
+              connectorConfig.config.auth.schema.fields,
+              formData.auth
+            );
+          }
+        }
+
+        if (Object.keys(authErrors).length > 0) {
+          setFormErrors((prev) => ({ ...prev, auth: authErrors }));
+          setSaving(false);
           return;
         }
+
+        // Prepare auth config
+        let authToSave = { ...formData.auth };
+
+        // For business OAuth, merge JSON data and admin email
+        if (isCustomGoogleBusinessOAuth && jsonData) {
+          authToSave = {
+            ...authToSave,
+            ...jsonData,
+            adminEmail,
+          };
+        }
+
+        // For SharePoint certificate auth, ensure certificate and private key are included
+        if (isSharePointCertificateAuth) {
+          const certContent = certificateContent || formData.auth.certificate;
+          const keyContent = privateKeyData || formData.auth.privateKey;
+          
+          if (!certContent || !keyContent) {
+            setSaveError('Certificate and private key are required for SharePoint authentication');
+            setSaving(false);
+            return;
+          }
+
+          authToSave = {
+            ...authToSave,
+            certificate: certContent,
+            privateKey: keyContent,
+          };
+        }
+
+        // Save auth config using new endpoint
+        await ConnectorApiService.updateConnectorInstanceAuthConfig(connector._key, authToSave);
+
+        onSuccess?.();
+        onClose();
+        return;
       }
 
-      // Validate all sections (skip auth validation for 'NONE' authType)
+      // Sync Settings mode, enable mode, or sync only mode: save filters and sync config
+      if (syncSettingsMode || enableMode || syncOnly) {
+        // Validate sync section only (filters are optional)
+        const syncErrors = validateSection(
+          'sync',
+          connectorConfig.config.sync.customFields,
+          formData.sync
+        );
+
+        if (Object.keys(syncErrors).length > 0) {
+          setFormErrors((prev) => ({ ...prev, sync: syncErrors }));
+          setSaving(false);
+          return;
+        }
+
+        // Prepare filters and sync config using helper functions
+        const filtersPayload = prepareFiltersPayload();
+        const syncToSave = prepareSyncConfig();
+
+        // Save filters and sync using new endpoint
+        await ConnectorApiService.updateConnectorInstanceFiltersSyncConfig(connector._key, {
+          filters: filtersPayload,
+          sync: syncToSave,
+        });
+
+        // If enableMode, toggle connector to enable it
+        let connectorWillBeActive = connector.isActive;
+        if (enableMode) {
+          await ConnectorApiService.toggleConnectorInstance(connector._key, 'sync');
+          connectorWillBeActive = true; // After toggling, connector will be active
+        }
+
+        // Update scheduling after saving sync config
+        // Pass true if connector is/will be active (for enableMode or already active connectors)
+        await updateScheduling(connectorWillBeActive);
+
+        // Call onSuccess to refresh connector data and update UI
+        onSuccess?.();
+        onClose();
+        return;
+      }
+
+      // Create mode: only validate and save auth (skip filters and sync)
+      if (isCreateMode) {
+        // Validate instance name
+        const trimmedName = instanceName.trim();
+        if (!trimmedName) {
+          setInstanceNameError('Instance name is required');
+          setSaving(false);
+          return;
+        }
+        if (trimmedName.length < MIN_INSTANCE_NAME_LENGTH) {
+          setInstanceNameError(
+            `Instance name must be at least ${MIN_INSTANCE_NAME_LENGTH} characters`
+          );
+          setSaving(false);
+          return;
+        }
+        setInstanceNameError(null);
+
+        // Validate auth only
+        let authErrors: Record<string, string> = {};
+        if (!isNoAuthType) {
+          if (isCustomGoogleBusinessOAuth) {
+            if (!isBusinessGoogleOAuthValid()) {
+              authErrors = { adminEmail: adminEmailError || 'Invalid business credentials' };
+            }
+          } else if (isSharePointCertificateAuth) {
+            if (!isSharePointCertificateAuthValid()) {
+              authErrors = { certificate: 'Invalid SharePoint certificate authentication' };
+            }
+          } else {
+            authErrors = validateSection(
+              'auth',
+              connectorConfig.config.auth.schema.fields,
+              formData.auth
+            );
+          }
+        }
+
+        if (Object.keys(authErrors).length > 0) {
+          setFormErrors((prev) => ({ ...prev, auth: authErrors }));
+          setSaving(false);
+          return;
+        }
+
+        // Prepare auth config
+        let authToSave = { ...formData.auth };
+
+        // For business OAuth, merge JSON data and admin email
+        if (isCustomGoogleBusinessOAuth && jsonData) {
+          authToSave = {
+            ...authToSave,
+            ...jsonData,
+            adminEmail,
+          };
+        }
+
+        // For SharePoint certificate auth, ensure certificate and private key are included
+        if (isSharePointCertificateAuth) {
+          const certContent = certificateContent || formData.auth.certificate;
+          const keyContent = privateKeyData || formData.auth.privateKey;
+          
+          if (!certContent || !keyContent) {
+            setSaveError('Certificate and private key are required for SharePoint authentication');
+            setSaving(false);
+            return;
+          }
+
+          authToSave = {
+            ...authToSave,
+            certificate: certContent,
+            privateKey: keyContent,
+          };
+        }
+
+        // Create new instance with auth config
+        const scope = connector.scope || 'personal';
+        const created = await ConnectorApiService.createConnectorInstance(
+          connector.type,
+          trimmedName,
+          scope,
+          { auth: authToSave }
+        );
+
+        onSuccess?.();
+        onClose();
+
+        // Navigate to the new connector
+        const basePath = isBusiness
+          ? '/account/company-settings/settings/connector'
+          : '/account/individual/settings/connector';
+        navigate(`${basePath}/${created.connectorId}`);
+        return;
+      }
+
+      // Edit mode: validate all sections and save separately
       let authErrors: Record<string, string> = {};
       if (!isNoAuthType) {
         if (isCustomGoogleBusinessOAuth) {
@@ -863,132 +1514,62 @@ export const useConnectorConfig = ({
       setFormErrors(allErrors);
 
       if (Object.values(allErrors).some((section) => Object.keys(section).length > 0)) {
+        setSaving(false);
         return;
       }
 
-      // Prepare config for API
-      const syncToSave: any = {
-        selectedStrategy: formData.sync.selectedStrategy,
-        ...formData.sync,
-      };
-      const normalizedStrategy = String(formData.sync.selectedStrategy || '').toUpperCase();
-      if (normalizedStrategy === 'SCHEDULED') {
-        syncToSave.scheduledConfig = formData.sync.scheduledConfig || {};
-      } else if (syncToSave.scheduledConfig !== undefined) {
-        delete syncToSave.scheduledConfig;
-      }
+      // Save auth config if not NONE auth type
+      if (!isNoAuthType) {
+        let authToSave = { ...formData.auth };
 
-      const configToSave: any = {
-        auth: formData.auth,
-        sync: syncToSave,
-        filters: formData.filters || {},
-      };
-
-      // For business OAuth, merge JSON data and admin email into auth config
-      if (isCustomGoogleBusinessOAuth && jsonData) {
-        configToSave.auth = {
-          ...configToSave.auth,
-          ...jsonData,
-          adminEmail,
-        };
-      }
-
-      // For SharePoint certificate auth, ensure certificate and private key are included
-      if (isSharePointCertificateAuth) {
-        const certContent = certificateContent || formData.auth.certificate;
-        const keyContent = privateKeyData || formData.auth.privateKey;
-        
-        if (!certContent || !keyContent) {
-          throw new Error('Certificate and private key are required for SharePoint authentication');
+        // For business OAuth, merge JSON data and admin email
+        if (isCustomGoogleBusinessOAuth && jsonData) {
+          authToSave = {
+            ...authToSave,
+            ...jsonData,
+            adminEmail,
+          };
         }
 
-        configToSave.auth = {
-          ...configToSave.auth,
-          certificate: certContent,
-          privateKey: keyContent,
-        };
-      }
-
-      await ConnectorApiService.updateConnectorConfig(connector.name, configToSave as any);
-
-      // Update scheduling if connector is already active
-      const wasActive = !!connector.isActive;
-      if (wasActive) {
-        const prevStrategy = String(
-          connectorConfig?.config?.sync?.selectedStrategy || ''
-        ).toUpperCase();
-        const newStrategy = String(formData.sync.selectedStrategy || '').toUpperCase();
-
-        const prevScheduled = (connectorConfig?.config?.sync?.scheduledConfig || {}) as any;
-        const newScheduled = (formData.sync.scheduledConfig || {}) as any;
-
-        const strategyChanged = prevStrategy !== newStrategy;
-        const scheduleChanged =
-          JSON.stringify({
-            startTime: prevScheduled.startTime,
-            intervalMinutes: prevScheduled.intervalMinutes,
-            timezone: (prevScheduled.timezone || '').toUpperCase(),
-          }) !==
-          JSON.stringify({
-            startTime: newScheduled.startTime,
-            intervalMinutes: newScheduled.intervalMinutes,
-            timezone: (newScheduled.timezone || '').toUpperCase(),
-          });
-
-        try {
-          if (strategyChanged) {
-            if (prevStrategy === 'SCHEDULED' && newStrategy !== 'SCHEDULED') {
-              // Turn off existing schedule
-              await CrawlingManagerApi.remove(connector.name.toLowerCase());
-            } else if (newStrategy === 'SCHEDULED') {
-              // Apply schedule with new settings
-              const cron = buildCronFromSchedule({
-                startTime: newScheduled.startTime,
-                intervalMinutes: newScheduled.intervalMinutes,
-                timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
-              });
-              await CrawlingManagerApi.schedule(connector.name.toLowerCase(), {
-                scheduleConfig: {
-                  scheduleType: 'custom',
-                  isEnabled: true,
-                  timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
-                  cronExpression: cron,
-                },
-                priority: 5,
-                maxRetries: 3,
-                timeout: 300000,
-              });
-            }
-          } else if (newStrategy === 'SCHEDULED' && scheduleChanged) {
-            // Re-apply schedule when only the schedule parameters changed
-            const cron = buildCronFromSchedule({
-              startTime: newScheduled.startTime,
-              intervalMinutes: newScheduled.intervalMinutes,
-              timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
-            });
-            await CrawlingManagerApi.schedule(connector.name.toLowerCase(), {
-              scheduleConfig: {
-                scheduleType: 'custom',
-                isEnabled: true,
-                timezone: (newScheduled.timezone || 'UTC').toUpperCase(),
-                cronExpression: cron,
-              },
-              priority: 5,
-              maxRetries: 3,
-              timeout: 300000,
-            });
+        // For SharePoint certificate auth, ensure certificate and private key are included
+        if (isSharePointCertificateAuth) {
+          const certContent = certificateContent || formData.auth.certificate;
+          const keyContent = privateKeyData || formData.auth.privateKey;
+          
+          if (!certContent || !keyContent) {
+            setSaveError('Certificate and private key are required for SharePoint authentication');
+            setSaving(false);
+            return;
           }
-        } catch (scheduleError) {
-          console.error('Scheduling update failed:', scheduleError);
-          // Do not block saving on scheduling issues
+
+          authToSave = {
+            ...authToSave,
+            certificate: certContent,
+            privateKey: keyContent,
+          };
         }
+
+        await ConnectorApiService.updateConnectorInstanceAuthConfig(connector._key, authToSave);
       }
+
+      // Save filters and sync config using helper functions
+      const filtersPayload = prepareFiltersPayload();
+      const syncToSave = prepareSyncConfig();
+
+      await ConnectorApiService.updateConnectorInstanceFiltersSyncConfig(connector._key, {
+        filters: filtersPayload,
+        sync: syncToSave,
+      });
+
+      // Update scheduling after saving sync config
+      // Pass connector.isActive to indicate if connector is currently active
+      await updateScheduling(connector.isActive);
 
       onSuccess?.();
       onClose();
     } catch (error) {
       console.error('Error saving connector config:', error);
-      setSaveError('Failed to save configuration. Please try again.');
+      setSaveError(error?.response?.data?.detail || error?.message ||'Failed to save configuration. Please try again.');
     } finally {
       setSaving(false);
     }
@@ -1008,6 +1589,17 @@ export const useConnectorConfig = ({
     isSharePointCertificateAuthValid,
     certificateContent,
     privateKeyData,
+    isCreateMode,
+    instanceName,
+    isBusiness,
+    navigate,
+    enableMode,
+    syncOnly,
+    syncSettingsMode,
+    authOnly,
+    prepareFiltersPayload,
+    prepareSyncConfig,
+    updateScheduling,
   ]);
 
   // Admin email change handler
@@ -1037,6 +1629,12 @@ export const useConnectorConfig = ({
     fileName,
     fileError,
     jsonData,
+
+    // Create mode state
+    isCreateMode,
+    instanceName,
+    instanceNameError,
+    setInstanceName,
 
     // SharePoint Certificate OAuth state
     certificateFile,

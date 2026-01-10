@@ -21,14 +21,18 @@ from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.interfaces.connector.apps import App
 from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
+    ConnectorScope,
     CustomField,
     DocumentationLink,
 )
+from app.connectors.core.registry.filters import FilterOptionsResponse
 from app.models.entities import (
+    AppUser,
     FileRecord,
     Record,
     RecordGroupType,
     RecordType,
+    User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -57,14 +61,15 @@ FILE_MIME_TYPES = {
 }
 
 class WebApp(App):
-    def __init__(self) -> None:
-        super().__init__(Connectors.WEB, AppGroups.WEB)
+    def __init__(self, connector_id: str) -> None:
+        super().__init__(Connectors.WEB, AppGroups.WEB, connector_id)
 
 @ConnectorBuilder("Web")\
     .in_group("Web")\
     .with_auth_type("NONE")\
     .with_description("Crawl and sync data from web pages")\
     .with_categories(["Web"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/web.svg")
         .with_realtime_support(False)
@@ -114,6 +119,8 @@ class WebApp(App):
             default_value="false",
             description="Follow links to external domains"
         ))
+        .with_sync_support(True)
+        .with_agent_support(False)
     )\
     .build_decorator()
 class WebConnector(BaseConnector):
@@ -135,11 +142,13 @@ class WebConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
+        connector_id: str
     ) -> None:
         super().__init__(
-            WebApp(), logger, data_entities_processor, data_store_provider, config_service
+            WebApp(connector_id), logger, data_entities_processor, data_store_provider, config_service, connector_id
         )
         self.connector_name = Connectors.WEB
+        self.connector_id = connector_id
 
         # Configuration
         self.url: Optional[str] = None
@@ -161,9 +170,7 @@ class WebConnector(BaseConnector):
         try:
             # Try to get config from different paths
             config = await self.config_service.get_config(
-                "/services/connectors/web/config"
-            ) or await self.config_service.get_config(
-                f"/services/connectors/web/config/{self.data_entities_processor.org_id}"
+                f"/services/connectors/{self.connector_id}/config"
             )
 
             if not config:
@@ -248,10 +255,33 @@ class WebConnector(BaseConnector):
             self.logger.error(f"❌ Failed to access website: {e}")
             return False
 
+    def get_app_users(self, users: List[User]) -> List[AppUser]:
+        """Convert User objects to AppUser objects."""
+        return [
+            AppUser(
+                app_name=self.connector_name,
+                connector_id=self.connector_id,
+                source_user_id=user.source_user_id or user.id or user.email,
+                org_id=user.org_id or self.data_entities_processor.org_id,
+                email=user.email,
+                full_name=user.full_name or user.email,
+                is_active=user.is_active if user.is_active is not None else True,
+                title=user.title,
+            )
+            for user in users
+            if user.email
+        ]
+
     async def run_sync(self) -> None:
         """Main sync method to crawl and index web pages."""
         try:
             self.logger.info(f"🚀 Starting web crawl: {self.url}")
+
+            # Step 1: fetch and sync all active users
+            self.logger.info("Syncing users...")
+            all_active_users = await self.data_entities_processor.get_all_active_users()
+            app_users = self.get_app_users(all_active_users)
+            await self.data_entities_processor.on_new_app_users(app_users)
 
             # Reset state for new sync
             self.visited_urls.clear()
@@ -421,6 +451,7 @@ class WebConnector(BaseConnector):
                     version=0,
                     origin=OriginTypes.CONNECTOR.value,
                     connector_name=self.connector_name,
+                    connector_id=self.connector_id,
                     created_at=timestamp,
                     updated_at=timestamp,
                     source_created_at=timestamp,
@@ -608,7 +639,8 @@ class WebConnector(BaseConnector):
     @classmethod
     async def create_connector(
         cls, logger: Logger, data_store_provider: DataStoreProvider,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
+        connector_id: str
     ) -> BaseConnector:
         """Factory method to create a WebConnector instance."""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -616,7 +648,7 @@ class WebConnector(BaseConnector):
         )
         await data_entities_processor.initialize()
         return WebConnector(
-            logger, data_entities_processor, data_store_provider, config_service
+            logger, data_entities_processor, data_store_provider, config_service, connector_id
         )
 
     async def cleanup(self) -> None:
@@ -631,6 +663,17 @@ class WebConnector(BaseConnector):
         """Reindex records - not implemented for Web connector yet."""
         self.logger.warning("Reindex not implemented for Web connector")
         pass
+
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None
+    ) -> FilterOptionsResponse:
+        """Web connector does not support dynamic filter options."""
+        raise NotImplementedError("Web connector does not support dynamic filter options")
 
     async def handle_webhook_notification(self, notification: Dict) -> None:
         """Web connector doesn't support webhooks."""

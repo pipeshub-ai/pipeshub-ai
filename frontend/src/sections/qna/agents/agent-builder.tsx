@@ -10,6 +10,8 @@ import chatIcon from '@iconify-icons/mdi/chat';
 import sparklesIcon from '@iconify-icons/mdi/auto-awesome';
 import replyIcon from '@iconify-icons/mdi/reply';
 
+import { useAccountType } from 'src/hooks/use-account-type';
+
 import type { AgentFormData, AgentTemplate } from 'src/types/agent';
 import type { AgentBuilderProps, NodeData } from './types/agent';
 // Custom hooks
@@ -33,16 +35,21 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
   const theme = useTheme();
   const SIDEBAR_WIDTH = 280;
 
-  // Data loading hook
+  // Data loading hook - ALL data fetched once
   const {
     availableTools,
     availableModels,
     availableKnowledgeBases,
+    activeAgentConnectors,
+    configuredConnectors,
+    connectorRegistry,
     loading,
     loadedAgent,
     error,
     setError,
   } = useAgentBuilderData(editingAgent);
+
+  const {isBusiness} = useAccountType();
 
   // State management hook
   const {
@@ -75,11 +82,13 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
   const [templates, setTemplates] = useState<AgentTemplate[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
 
-  // Node templates hook
+  // Node templates hook - receives data instead of fetching
   const { nodeTemplates } = useAgentBuilderNodeTemplates(
     availableTools,
     availableModels,
-    availableKnowledgeBases
+    availableKnowledgeBases,
+    activeAgentConnectors,
+    configuredConnectors
   );
 
   // Flow reconstruction hook
@@ -187,8 +196,6 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
             type: `llm-${initalModel?.provider || 'azureOpenAI'}-${initalModel?.modelName || 'default'}`.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase(),
             label:
               initalModel?.modelName
-                ?.replace(/[^a-zA-Z0-9]/g, ' ')
-                .replace(/\s+/g, ' ')
                 .trim() || 'AI Model',
             description: `${formattedProvider(initalModel?.provider || 'AI')} language model for text generation`,
             icon: brainIcon,
@@ -201,7 +208,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
               isDefault: initalModel?.isDefault || false,
               isReasoning: initalModel?.isReasoning || false,
             },
-            inputs: ['prompt', 'context'],
+            inputs: [],
             outputs: ['response'],
             isConfigured: true,
           },
@@ -316,6 +323,50 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
   // Handle connections
   const onConnect = useCallback(
     (connection: Connection) => {
+      // Get source and target nodes
+      const sourceNode = nodes.find((n) => n.id === connection.source);
+      const targetNode = nodes.find((n) => n.id === connection.target);
+
+      // Validate connection rules (NEW FLOW)
+      if (sourceNode && targetNode) {
+        const sourceType = sourceNode.data.type;
+        const targetType = targetNode.data.type;
+
+        // Tool-groups can now connect directly to agent's actions handle
+        if (sourceType.startsWith('tool-group-') && targetType === 'agent-core') {
+          if (connection.targetHandle !== 'actions') {
+            setError('Tool groups must be connected to the agent\'s actions handle');
+            return;
+          }
+        }
+
+        // Individual tools can also connect directly to agent's actions handle
+        if (sourceType.startsWith('tool-') && !sourceType.startsWith('tool-group-') && targetType === 'agent-core') {
+          if (connection.targetHandle !== 'actions') {
+            setError('Tools must be connected to the agent\'s actions handle');
+            return;
+          }
+          
+          // Validate that the tool has a connector instance associated
+          if (!sourceNode.data.config?.connectorInstanceId && !sourceNode.data.config?.connectorType && !sourceNode.data.config?.scope) {
+            setError('This tool needs to be configured with a connector instance first');
+            return;
+          }
+        }
+
+        // Tool-groups should only connect to agent
+        if (sourceType.startsWith('tool-group-') && targetType !== 'agent-core') {
+          setError('Tool groups must be connected to the agent');
+          return;
+        }
+
+        // Individual tools should only connect to agent
+        if (sourceType.startsWith('tool-') && !sourceType.startsWith('tool-group-') && targetType !== 'agent-core') {
+          setError('Tools must be connected to the agent');
+          return;
+        }
+      }
+
       const newEdge = {
         id: `e-${connection.source}-${connection.target}-${Date.now()}`,
         ...connection,
@@ -328,17 +379,18 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
       };
       setEdges((eds) => addEdge(newEdge as any, eds));
     },
-    [setEdges, theme]
+    [setEdges, theme, nodes, setError]
   );
 
-  // Handle edge selection and deletion
+  // Handle edge selection and deletion (one-click delete)
   const onEdgeClick = useCallback(
     (event: React.MouseEvent, edge: any) => {
       event.preventDefault();
-      setEdgeToDelete(edge);
-      setEdgeDeleteDialogOpen(true);
+      event.stopPropagation();
+      // Delete edge immediately without dialog
+      setEdges((eds) => eds.filter((e) => e.id !== edge.id));
     },
-    [setEdgeToDelete, setEdgeDeleteDialogOpen]
+    [setEdges]
   );
 
   // Delete edge
@@ -503,6 +555,10 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         sidebarWidth={SIDEBAR_WIDTH}
         nodeTemplates={nodeTemplates}
         loading={loading}
+        activeAgentConnectors={activeAgentConnectors}
+        configuredConnectors={configuredConnectors}
+        connectorRegistry={connectorRegistry}
+        isBusiness={isBusiness}
         nodes={nodes}
         edges={edges}
         onNodesChange={onNodesChange}
@@ -528,6 +584,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
           setNodeToDelete(nodeId);
           setDeleteDialogOpen(true);
         }}
+        onError={(errorMsg) => setError(errorMsg)}
       />
 
       {/* Notifications */}

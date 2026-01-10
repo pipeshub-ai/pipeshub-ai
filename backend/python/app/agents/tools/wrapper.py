@@ -5,7 +5,7 @@ Enhanced wrapper to adapt registry tools to LangChain format with proper client 
 import json
 from typing import Callable, Dict, List, Union
 
-from langchain.tools import BaseTool
+from langchain_core.tools import BaseTool
 from pydantic import ConfigDict, Field
 
 from app.agents.tools.factories.registry import ClientFactoryRegistry

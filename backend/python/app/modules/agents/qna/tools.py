@@ -7,7 +7,7 @@ from urllib.parse import quote_plus
 
 import requests
 from ddgs import DDGS
-from langchain.tools import BaseTool
+from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.modules.agents.qna.chat_state import ChatState

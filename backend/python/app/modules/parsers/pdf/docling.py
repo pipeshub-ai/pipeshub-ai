@@ -27,20 +27,22 @@ class DoclingProcessor():
 
         self.converter = DocumentConverter(format_options={
             InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options, backend=PyPdfiumDocumentBackend),
-             InputFormat.DOCX: WordFormatOption(),
-                 InputFormat.MD: MarkdownFormatOption(),
+            InputFormat.DOCX: WordFormatOption(),
+            InputFormat.MD: MarkdownFormatOption(),
         })
 
-    async def load_document(self, doc_name: str, content: bytes) -> BlocksContainer|bool:
-        stream = BytesIO(content)
+    async def load_document(self, doc_name: str, content: bytes | BytesIO, page_number: int = None) -> BlocksContainer:
+        # Handle both bytes and BytesIO objects
+        stream = content if isinstance(content, BytesIO) else BytesIO(content)
+
         source = DocumentStream(name=doc_name, stream=stream)
         conv_res: ConversionResult = await asyncio.to_thread(self.converter.convert, source)
         if conv_res.status.value != SUCCESS_STATUS:
             raise ValueError(f"Failed to parse PDF: {conv_res.status}")
 
         doc = conv_res.document
-        doc_to_blocks_converter = DoclingDocToBlocksConverter(logger=self.logger,config=self.config)
-        block_containers = await doc_to_blocks_converter.convert(doc)
+        doc_to_blocks_converter = DoclingDocToBlocksConverter(logger=self.logger, config=self.config)
+        block_containers = await doc_to_blocks_converter.convert(doc, page_number=page_number)
         return block_containers
 
     def process_document(self) -> None:

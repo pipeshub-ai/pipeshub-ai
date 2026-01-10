@@ -9,7 +9,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 class RecordBuilder:
     """Builder for creating Record instances with fluent interface"""
 
-    def __init__(self, _key: str, org_id: str, record_name: str, external_record_id: str, record_type: str, origin: str) -> None:
+    def __init__(self, _key: str, org_id: str, record_name: str, external_record_id: str, record_type: str, origin: str, connector_id: str = None) -> None:
         self._key = _key
         self._org_id = org_id
         self._record_name = record_name
@@ -20,6 +20,7 @@ class RecordBuilder:
         self._version = 0
         self._origin = origin
         self._connector_name = None
+        self._connector_id = connector_id
         self._created_at_timestamp = get_epoch_timestamp_in_ms()
         self._updated_at_timestamp = self._created_at_timestamp
         self._indexing_status = None
@@ -79,6 +80,10 @@ class RecordBuilder:
         if connector_name and connector_name not in valid_connectors:
             raise ValueError(f"Invalid connector: {connector_name}")
         self._connector_name = connector_name
+        return self
+
+    def with_connector_id(self, connector_id: str) -> 'RecordBuilder':
+        self._connector_id = connector_id
         return self
 
     def with_indexing_status(self, status: str) -> 'RecordBuilder':
@@ -185,6 +190,7 @@ class RecordBuilder:
             version=self._version,
             origin=self._origin,
             connector_name=self._connector_name,
+            connector_id=self._connector_id,
             created_at_timestamp=self._created_at_timestamp,
             updated_at_timestamp=self._updated_at_timestamp,
             indexing_status=self._indexing_status,

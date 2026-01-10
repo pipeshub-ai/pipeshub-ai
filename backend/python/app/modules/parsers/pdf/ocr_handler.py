@@ -23,11 +23,10 @@ class OCRStrategy(ABC):
         pass
 
 
-
-    def needs_ocr(self, page) -> bool:
+    @staticmethod
+    def needs_ocr(page,logger) -> bool:
         """Determine if a page needs OCR processing"""
         try:
-            self.logger.debug("🔍 Checking if page needs OCR")
 
             # Get page metrics
             text = page.get_text().strip()
@@ -47,12 +46,6 @@ class OCRStrategy(ABC):
                 # img tuple contains: (xref, smask, width, height, bpc, colorspace, ...)
                 width, height = img[2], img[3]
 
-                self.logger.debug(f"📸 Image {img_index + 1}:")
-                self.logger.debug(f"    Width: {width}, Height: {height}")
-                self.logger.debug(f"    Bits per component: {img[4]}")
-                self.logger.debug(f"    Colorspace: {img[5]}")
-                self.logger.debug(f"    XRef: {img[0]}")
-
                 # Consider an image significant if it's larger than our minimum dimensions
                 if width > MIN_IMAGE_WIDTH and height > MIN_IMAGE_HEIGHT:
                     significant_images += 1
@@ -69,12 +62,6 @@ class OCRStrategy(ABC):
             )
             low_density = text_density < LOW_DENSITY_THRESHOLD
 
-            self.logger.debug(
-                f"📊 OCR metrics - Text length: {len(text)}, "
-                f"Significant images: {significant_images}, "
-                f"Text density: {text_density:.4f}"
-            )
-
             # Extract and save images
             for img_index, img in enumerate(images):
                 xref = img[0]
@@ -84,25 +71,19 @@ class OCRStrategy(ABC):
                     if pix.n - pix.alpha > RGB:  # CMYK: convert to RGB
                         pix = fitz.Pixmap(fitz.csRGB, pix)
 
-                    self.logger.debug(
-                        f"📸 Image {img_index + 1} pixel format: {pix.n} channels"
-                    )
                     # Optionally save the image:
                     # pix.save(f"image_{img_index + 1}_{uuid4()}.png")
 
                     pix = None  # Free memory
                 except Exception as e:
-                    self.logger.error(
-                        f"""❌ Error processing image {
-                                 img_index + 1}: {str(e)}"""
-                    )
+                    logger.warning(f"❌ Error extracting image {img_index + 1}: {str(e)}")
+                    pass
 
             needs_ocr = (has_minimal_text and has_significant_images) or low_density
-            self.logger.debug(f"🔍 OCR need determination: {needs_ocr}")
             return needs_ocr
 
         except Exception as e:
-            self.logger.error(f"❌ Error checking OCR need: {str(e)}")
+            logger.warning(f"❌ Error in needs_ocr function: {str(e)}")
             return True
 
 
@@ -145,6 +126,16 @@ class OCRHandler:
                 endpoint=kwargs["endpoint"],
                 key=kwargs["key"],
                 model_id=kwargs.get("model_id", "prebuilt-document"),
+                config=kwargs.get("config"),
+            )
+        elif strategy_type == OCRProvider.VLM_OCR.value:
+            self.logger.debug("🤖 Creating VLM OCR strategy")
+            from app.modules.parsers.pdf.vlm_ocr_strategy import (
+                VLMOCRStrategy,
+            )
+
+            return VLMOCRStrategy(
+                logger=self.logger,
                 config=kwargs.get("config"),
             )
         else:

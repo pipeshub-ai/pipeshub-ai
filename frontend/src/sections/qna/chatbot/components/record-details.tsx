@@ -5,7 +5,8 @@ import type {
 } from 'src/sections/knowledgebase/types/record-details';
 
 import { Icon } from '@iconify/react';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import linkIcon from '@iconify-icons/mdi/open-in-new';
 import departmentIcon from '@iconify-icons/mdi/domain';
 import fileIcon from '@iconify-icons/mdi/file-outline';
@@ -14,6 +15,7 @@ import filePdfIcon from '@iconify-icons/mdi/file-pdf-box';
 import categoryIcon from '@iconify-icons/mdi/shape-outline';
 import topicIcon from '@iconify-icons/mdi/bookmark-outline';
 import fileDocIcon from '@iconify-icons/mdi/file-document-outline';
+import infoIcon from '@iconify-icons/mdi/information-outline';
 
 import {
   Box,
@@ -27,6 +29,7 @@ import {
   Typography,
   IconButton,
   CircularProgress,
+  Stack,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
@@ -35,6 +38,7 @@ import { CONFIG } from 'src/config-global';
 
 import { ORIGIN } from 'src/sections/knowledgebase/constants/knowledge-search';
 import { getConnectorPublicUrl } from 'src/sections/accountdetails/account-settings/services/utils/services-configuration-service';
+import { useConnectors } from 'src/sections/accountdetails/connectors/context';
 
 import PDFViewer from './pdf-viewer';
 
@@ -139,9 +143,11 @@ interface RecordDetailsProps {
   onExternalLink?: string;
 }
 
-const RecordDetails = ({ recordId, onExternalLink}: RecordDetailsProps) => {
+const RecordDetails = ({ recordId, onExternalLink }: RecordDetailsProps) => {
   const theme = useTheme();
+  const navigate = useNavigate();
   const isDarkMode = theme.palette.mode === 'dark';
+  const { activeConnectors } = useConnectors();
 
   const [recordData, setRecordData] = useState<RecordDetailsResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
@@ -149,6 +155,24 @@ const RecordDetails = ({ recordId, onExternalLink}: RecordDetailsProps) => {
   const [isPDFViewerOpen, setIsPDFViewerOpen] = useState<boolean>(false);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [fileBuffer, setFileBuffer] = useState<ArrayBuffer>();
+
+  // Create connector data map for easy lookup
+  const connectorData = useMemo(() => {
+    const allConnectors = [...activeConnectors];
+    const data: { [key: string]: { iconPath: string; color?: string } } = {};
+    allConnectors.forEach((connector) => {
+      data[connector.name.toUpperCase()] = {
+        iconPath: connector.iconPath || '/assets/icons/connectors/default.svg',
+      };
+    });
+
+    // Add UPLOAD connector for local files
+    data.UPLOAD = {
+      iconPath: '/assets/icons/connectors/kb.svg',
+    };
+
+    return data;
+  }, [activeConnectors]);
 
   useEffect(() => {
     if (!recordId) return;
@@ -373,6 +397,16 @@ const RecordDetails = ({ recordId, onExternalLink}: RecordDetailsProps) => {
     webUrl = newWebUrl;
   }
 
+  // Get connector info
+  const connectorName = record.connectorName || (record.origin === 'UPLOAD' ? 'UPLOAD' : '');
+  const connectorInfo = connectorData[connectorName?.toUpperCase()] || {
+    iconPath: '/assets/icons/connectors/default.svg',
+  };
+
+  const handleNavigateToRecordDetails = () => {
+    window.open(`/record/${recordId}`, '_blank', 'noopener,noreferrer');
+  };
+
   return (
     <StyledPaper sx={{ mt: 2 }}>
       {/* Header Section */}
@@ -396,24 +430,61 @@ const RecordDetails = ({ recordId, onExternalLink}: RecordDetailsProps) => {
           {record.recordName}
           {webUrl && (
             <Tooltip title="View document">
-              <IconButton
-                onClick={() => window.open(webUrl, '_blank', 'noopener,noreferrer')}
+              <Button
                 size="small"
+                variant="text"
+                onClick={() => window.open(webUrl, '_blank', 'noopener,noreferrer')}
                 sx={{
-                  ml: 0.5,
-                  color: 'primary.main',
-                  bgcolor: isDarkMode
-                    ? alpha(theme.palette.primary.main, 0.1)
-                    : alpha(theme.palette.primary.lighter, 0.4),
+                  textTransform: 'none',
+                  fontSize: '11px',
+                  fontWeight: 500,
+                  color: 'text.secondary',
+                  px: { xs: 0.5, sm: 1 },
+                  py: 0.5,
+                  minHeight: 28,
+                  minWidth: 'auto',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 0.5,
                   '&:hover': {
-                    bgcolor: isDarkMode
-                      ? alpha(theme.palette.primary.main, 0.2)
-                      : alpha(theme.palette.primary.lighter, 0.6),
+                    color: 'primary.main',
+                    bgcolor: (t) =>
+                      t.palette.mode === 'dark'
+                        ? alpha(t.palette.primary.main, 0.1)
+                        : alpha(t.palette.primary.main, 0.05),
                   },
                 }}
               >
                 <Icon icon={linkIcon} width={16} height={16} />
-              </IconButton>
+                <Icon icon={connectorInfo.iconPath} width={14} height={14} />
+                <img
+                  src={connectorInfo.iconPath}
+                  alt={connectorName || 'UPLOAD'}
+                  width={16}
+                  height={16}
+                  style={{
+                    objectFit: 'contain',
+                    borderRadius: '2px',
+                    flexShrink: 0,
+                  }}
+                  onError={(e) => {
+                    e.currentTarget.src = '/assets/icons/connectors/default.svg';
+                  }}
+                />
+                <Typography
+                  component="span"
+                  sx={{
+                    fontSize: '11px',
+                    fontWeight: 500,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.3px',
+                    display: { xs: 'none', md: 'inline' },
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {connectorName || 'KB'}
+                </Typography>
+              </Button>
             </Tooltip>
           )}
         </Typography>
@@ -446,6 +517,36 @@ const RecordDetails = ({ recordId, onExternalLink}: RecordDetailsProps) => {
         <SectionTitle variant="subtitle1">
           <Icon icon={fileDocIcon} width={18} height={18} />
           Record Information
+          <Button
+            size="small"
+            variant="text"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleNavigateToRecordDetails();
+            }}
+            sx={{
+              textTransform: 'none',
+              fontSize: '12px',
+              fontWeight: 500,
+              color: 'text.secondary',
+              px: { xs: 0.5, sm: 1 },
+              py: 0.5,
+              minHeight: 28,
+              minWidth: 'auto',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 0.5,
+              '&:hover': {
+                color: 'primary.main',
+                bgcolor: (t) =>
+                  t.palette.mode === 'dark'
+                    ? alpha(t.palette.primary.main, 0.1)
+                    : alpha(t.palette.primary.main, 0.05),
+              },
+            }}
+          >
+            View Record Page
+          </Button>
         </SectionTitle>
 
         <InfoGrid>

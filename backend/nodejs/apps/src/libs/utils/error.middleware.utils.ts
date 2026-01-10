@@ -3,14 +3,16 @@ import { Logger } from '../services/logger.service';
 
 /**
  * Extract error data without circular references
+ * Note: Stack traces are included here for logging purposes only, not for client responses
  */
 export const extractErrorData = (error: any): any => {
   if (!error) return null;
 
   try {
       // For errors with a toJSON method (like BaseError)
+      // Include stack trace for logging purposes only (not for client responses)
       if (typeof error.toJSON === 'function') {
-          return error.toJSON();
+          return error.toJSON(true); // Pass true to include stack for logging
       }
 
       // Handle Axios error response data
@@ -20,6 +22,7 @@ export const extractErrorData = (error: any): any => {
           detail: data.detail || data.reason || data.message || 'Unknown error',
           status: error.response.status,
           statusText: error.response.statusText,
+          // Stack traces included for server-side logging only
           stack: error.stack,
       };
       }
@@ -29,6 +32,7 @@ export const extractErrorData = (error: any): any => {
       message: error.message || 'Unknown error',
       code: error.code,
       name: error.name,
+      // Stack traces included for server-side logging only
       stack: error.stack,
       };
   } catch (extractionError) {

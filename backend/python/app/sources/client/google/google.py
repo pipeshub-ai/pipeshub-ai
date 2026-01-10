@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from app.config.configuration_service import ConfigurationService
+from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.sources.google.common.connector_google_exceptions import (
     AdminAuthError,
     AdminDelegationError,
@@ -114,6 +115,7 @@ class GoogleClient(IClient):
         scopes: Optional[List[str]] = None, # Scopes of the service to build the client
         calendar_id: Optional[str] = 'primary', # Calendar ID to build the client for
         user_email: Optional[str] = None, # User email for enterprise impersonation
+        connector_instance_id: Optional[str] = None,
     ) -> 'GoogleClient':
         """
         Build GoogleClient using configuration service and arango service
@@ -128,10 +130,15 @@ class GoogleClient(IClient):
             GoogleClient instance
         """
 
-        if is_individual:
+        config = await GoogleClient._get_connector_config(service_name, logger, config_service, connector_instance_id)
+        if not config:
+            raise ValueError(f"Failed to get Google connector configuration for instance {service_name} {connector_instance_id}")
+        connector_scope = config.get("auth", {}).get("connectorScope", None)
+
+        if is_individual or connector_scope == ConnectorScope.PERSONAL.value:
             try:
                 #fetch saved credentials
-                saved_credentials = await GoogleClient.get_individual_token(service_name, logger, config_service)
+                saved_credentials = await GoogleClient.get_individual_token(service_name, logger, config_service, connector_instance_id)
                 if not saved_credentials:
                     raise ValueError("Failed to get individual token")
 
@@ -153,7 +160,7 @@ class GoogleClient(IClient):
                 raise GoogleAuthError("Failed to get individual token: " + str(e)) from e
         else:
             try:
-                saved_credentials = await GoogleClient.get_enterprise_token(service_name, logger, config_service)
+                saved_credentials = await GoogleClient.get_enterprise_token(service_name, logger, config_service, connector_instance_id)
                 if not saved_credentials:
                     raise AdminAuthError(
                         "Failed to get enterprise credentials",
@@ -208,32 +215,34 @@ class GoogleClient(IClient):
         return cls(client)
 
     @staticmethod
-    async def _get_connector_config(service_name: str,logger: logging.Logger, config_service: ConfigurationService) -> Dict:
+    async def _get_connector_config(service_name: str,logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict:
         """Fetch connector config from etcd for the given app."""
         try:
             service_name = service_name.replace(" ", "").lower()
             config = await config_service.get_config(
-                f"/services/connectors/{service_name}/config"
+                f"/services/connectors/{connector_instance_id}/config"
             )
-            return config or {}
+            if not config:
+                raise ValueError(f"Failed to get Google connector configuration for instance {service_name} {connector_instance_id}")
+            return config
         except Exception as e:
             logger.error(f"❌ Failed to get connector config for {service_name}: {e}")
-            return {}
+            raise ValueError(f"Failed to get Google connector configuration for instance {service_name} {connector_instance_id}")
 
 
     @staticmethod
-    async def get_account_scopes(service_name: str, logger: logging.Logger, config_service: ConfigurationService) -> list:
+    async def get_account_scopes(service_name: str, logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> list:
         """Get account scopes for a specific connector (gmail/drive)."""
-        config = await GoogleClient._get_connector_config(service_name, logger, config_service)
+        config = await GoogleClient._get_connector_config(service_name, logger, config_service, connector_instance_id)
         return config.get("config", {}).get("auth", {}).get("scopes", [])
 
 
     @staticmethod
-    async def get_individual_token(service_name: str, logger: logging.Logger,config_service: ConfigurationService, ) -> dict:
+    async def get_individual_token(service_name: str, logger: logging.Logger,config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> dict:
         """Get individual OAuth token for a specific connector (gmail/drive/calendar/)."""
 
         try:
-            config = await GoogleClient._get_connector_config(service_name, logger, config_service)
+            config = await GoogleClient._get_connector_config(service_name, logger, config_service, connector_instance_id)
             creds = (config or {}).get("credentials") or {}
             # Do not persist client secrets under credentials in storage; only enrich the returned view
             auth_cfg = (config or {}).get("auth", {}) or {}
@@ -242,6 +251,7 @@ class GoogleClient(IClient):
                 merged = dict(creds)
                 merged['clientId'] = auth_cfg.get("clientId")
                 merged['clientSecret'] = auth_cfg.get("clientSecret")
+                merged['connectorScope'] = auth_cfg.get("connectorScope")
                 return merged
         except Exception as e:
             logger.error(f"❌ Failed to get individual token for {service_name}: {str(e)}")
@@ -251,8 +261,9 @@ class GoogleClient(IClient):
     async def get_enterprise_token(
         service_name: str,
         logger: logging.Logger,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None
     ) -> dict[str, Any]:
         """Handle enterprise token for a specific connector."""
-        config = await GoogleClient._get_connector_config(service_name, logger, config_service)
+        config = await GoogleClient._get_connector_config(service_name, logger, config_service, connector_instance_id)
         return config.get("auth", {})

@@ -1,4 +1,7 @@
-from langchain.prompts import ChatPromptTemplate
+from typing import List
+
+from langchain_core.prompts import ChatPromptTemplate
+from pydantic import BaseModel
 
 # Prompt for summarizing an entire sheet with multiple tables
 sheet_summary_prompt = ChatPromptTemplate.from_messages(
@@ -31,6 +34,14 @@ table_summary_prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
+class RowDescriptions(BaseModel):
+    descriptions: List[str]
+
+
+class TableHeaders(BaseModel):
+    headers: List[str]
+
+
 # Prompt for converting row data into natural language
 row_text_prompt = ChatPromptTemplate.from_messages(
     [
@@ -38,17 +49,7 @@ row_text_prompt = ChatPromptTemplate.from_messages(
             "system",
             """You are a data analysis expert who converts structured data into natural language descriptions.
 Your task is to convert each row of data into a clear, concise and detailed natural language description.
-Use the provided table summary to make the descriptions more meaningful.
-
-IMPORTANT: Your response must be a valid JSON array of strings. For example:
-[
-    "Description of first row",
-    "Description of second row",
-    "Description of third row"
-]
-
-Do not include any other text or explanation in your response - only the JSON array.""",
-        ),
+Use the provided table summary to make the descriptions more meaningful."""),
         (
             "user",
             """Please convert these rows of data into natural language descriptions.
@@ -59,7 +60,16 @@ Table Summary:
 Rows Data:
 {rows_data}
 
-Remember: Respond with ONLY a JSON array of strings containing one description per row. Number of strings should be equal to the number of rows in the data.""",
+Respond with ONLY a JSON object with the following structure:
+{{
+    "descriptions": [
+        "Description of first row",
+        "Description of second row",
+        "Description of third row"
+    ]
+}}
+
+Number of descriptions should be equal to the number of rows in the data. Do not include any other text or explanation in your response - only the JSON object.""",
         ),
     ]
 )
@@ -106,11 +116,4 @@ You will be given:
 # Table Metadata:
 - Start Position: Row {start_row}, Column {start_col}
 - End Position: Row {end_row}, Column {end_col}
-- Number of Columns: {num_columns}
-
-# Output Format:
-Return ONLY a comma-separated list of headers, one for each column. Example:
-ID,First Name,Last Name,Email,Department
-
-Do not include any additional explanation or text.
-"""
+- Number of Columns: {num_columns}"""

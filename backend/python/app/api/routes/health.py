@@ -322,13 +322,15 @@ async def perform_llm_health_check(
             )
 
         model_name = model_names[0]
-
+        logger.info("Getting generator model")
         # Create LLM model
         llm_model = get_generator_model(
             provider=llm_config.get("provider"),
             config=llm_config,
             model_name=model_name
         )
+
+        logger.info("Generator model created")
 
         # Check if multimodal is enabled
         is_multimodal = llm_config.get("isMultimodal", False) or llm_config.get("configuration", {}).get("isMultimodal", False)
@@ -554,7 +556,6 @@ async def perform_embedding_health_check(
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
             )
-
         except asyncio.TimeoutError:
             logger.error(f"Embedding health check timed out for {embedding_config.get('provider')} with configuration model {embedding_config.get('configuration', {}).get('model', '')}")
             return JSONResponse(
@@ -569,21 +570,8 @@ async def perform_embedding_health_check(
                 },
             },
         )
-
-    except Exception as e:
-        logger.error(f"Embedding health check failed for {embedding_config.get('provider')} with configuration model {embedding_config.get('configuration', {}).get('model', '')}: {str(e)}", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={
-            "status": "error",
-            "message": f"Embedding health check failed: {str(e)}",
-            "details": {
-                "provider": embedding_config.get("provider"),
-                "model": embedding_config.get("configuration").get("model"),
-                "error_type": type(e).__name__
-            },
-            },
-        )
+        except Exception as e:
+            raise e
 
     except HTTPException as he:
         return JSONResponse(status_code=he.status_code, content=he.detail)

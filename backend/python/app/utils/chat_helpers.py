@@ -25,7 +25,7 @@ group_types = [GroupType.LIST.value,GroupType.ORDERED_LIST.value,GroupType.FORM_
 # Create a logger for this module
 logger = create_logger("chat_helpers")
 
-async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],from_tool: bool = False,from_retrieval_service: bool = False) -> List[Dict[str, Any]]:
+async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False) -> List[Dict[str, Any]]:
     flattened_results = []
     image_index = 0
     seen_chunks = set()
@@ -50,7 +50,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         meta = result.get("metadata")
 
         if virtual_record_id not in virtual_record_id_to_result:
-            await get_record(meta,virtual_record_id,virtual_record_id_to_result,blob_store,org_id)
+            await get_record(meta,virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map)
 
 
 
@@ -358,6 +358,10 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
                 else:
                     block_num = [block.get("index", 0) + 1]
 
+            preview_renderable = meta.get("previewRenderable")
+            if preview_renderable is None:
+                preview_renderable = record.get("preview_renderable", True)
+
             enhanced_metadata = {
                         "orgId": meta.get("orgId") or record.get("org_id", ""),
                         "recordId": meta.get("recordId") or record.get("id", ""),
@@ -375,6 +379,7 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
                         "mimeType": mime_type,
                         "blockNum":block_num,
                         "webUrl": meta.get("webUrl") or record.get("weburl", ""),
+                        "previewRenderable": preview_renderable,
                     }
             if extension == "xlsx" or meta.get("sheetName"):
                 if isinstance(data, dict):
@@ -410,10 +415,22 @@ def extract_bounding_boxes(citation_metadata) -> List[Dict[str, float]]:
         except Exception as e:
             raise e
 
-async def get_record(meta: Dict[str, Any],virtual_record_id: str,virtual_record_id_to_result: Dict[str, Dict[str, Any]],blob_store: BlobStorage,org_id: str) -> None:
+async def get_record(meta: Dict[str, Any],virtual_record_id: str,virtual_record_id_to_result: Dict[str, Dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: Dict[str, Dict[str, Any]]=None) -> None:
     try:
         record = await blob_store.get_record_from_storage(virtual_record_id=virtual_record_id, org_id=org_id)
         if record:
+            arango_record = (virtual_to_record_map or {}).get(virtual_record_id)
+            if arango_record:
+                record["id"] = arango_record.get("_key")
+                record["org_id"] = org_id
+                record["record_name"] = arango_record.get("recordName")
+                record["record_type"] = arango_record.get("recordType")
+                record["version"] = arango_record.get("version")
+                record["origin"] = arango_record.get("origin")
+                record["connector_name"] = arango_record.get("connectorName")
+                record["weburl"] = arango_record.get("webUrl")
+                record["preview_renderable"] = arango_record.get("previewRenderable", True)
+
             virtual_record_id_to_result[virtual_record_id] = record
         else:
             virtual_record_id_to_result[virtual_record_id] = None
@@ -444,6 +461,8 @@ async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: s
             "departments": departments,
         }
 
+        extension = get_extension_from_mimetype(metadata.get("mimeType",""))
+
         record = {
             "id": metadata.get("recordId", ""),
             "org_id": org_id,
@@ -453,7 +472,7 @@ async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: s
             "external_revision_id": metadata.get("externalRevisionId", virtual_record_id),
             "version": metadata.get("version",""),
             "origin": metadata.get("origin",""),
-            "connector_name": metadata.get("connectorName",""),
+            "connector_name": metadata.get("connector") or metadata.get("connectorName",""),
             "virtual_record_id": virtual_record_id,
             "mime_type": metadata.get("mimeType",""),
             "created_at": metadata.get("createdAtTimestamp", ""),
@@ -462,6 +481,7 @@ async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: s
             "source_updated_at": metadata.get("sourceLastModifiedTimestamp", ""),
             "weburl": metadata.get("webUrl", ""),
             "semantic_metadata": semantic_metadata,
+            "extension": extension,
         }
         blocks = []
         container_utils = ContainerUtils()
@@ -523,10 +543,9 @@ async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: s
 def create_block_from_metadata(metadata: Dict[str, Any],page_content: str) -> Dict[str, Any]:
     try:
         page_num = metadata.get("pageNum")
-        if page_num:
-            page_num = page_num[0] if isinstance(page_num, list) else page_num
-        else:
-            page_num = None
+        if isinstance(page_num, (list,tuple)):
+            page_num = page_num[0] if page_num else None
+
         citation_metadata = {
             "page_number": page_num,
             "bounding_boxes": metadata.get("bounding_box")
@@ -1303,16 +1322,14 @@ def count_tokens(messages: List[Any], message_contents: List[str]) -> Tuple[int,
     try:
         import tiktoken  # type: ignore
         try:
-            enc = tiktoken.get_encoding("cl200k_base")
+            enc = tiktoken.get_encoding("cl100k_base")
         except Exception:
+            logger.warning("tiktoken encoding failed, falling back to heuristic.")
             enc = None
     except Exception:
+        logger.warning("tiktoken import failed, falling back to heuristic.")
         enc = None
 
-    logger.debug(
-        "Using %s for tokenization",
-        "tiktoken(cl200k_base)" if enc is not None else "heuristic (~4 chars/token)",
-    )
 
     current_message_tokens = count_tokens_in_messages(messages,enc)
     new_tokens = 0
@@ -1322,6 +1339,5 @@ def count_tokens(messages: List[Any], message_contents: List[str]) -> Tuple[int,
 
 
     return current_message_tokens, new_tokens
-
 
 

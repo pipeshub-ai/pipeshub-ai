@@ -27,7 +27,7 @@ interface GroupsProviderProps {
 const GroupsContext = createContext<Group[] | undefined>(undefined);
 
 export const GroupsProvider: React.FC<GroupsProviderProps> = ({ children }) => {
-  const [groups, setGroups] = useState<Group[] | null>(null);
+  const [groups, setGroups] = useState<Group[] | null>(null);  
 
   useEffect(() => {
     const fetchUsers = async (): Promise<void> => {

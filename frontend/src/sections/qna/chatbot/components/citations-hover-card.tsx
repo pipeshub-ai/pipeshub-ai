@@ -22,7 +22,10 @@ import {
   Link,
 } from '@mui/material';
 
-import { extractCleanTextFragment, addTextFragmentToUrl } from 'src/sections/knowledgebase/utils/utils';
+import {
+  extractCleanTextFragment,
+  addTextFragmentToUrl,
+} from 'src/sections/knowledgebase/utils/utils';
 import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
 
 // Styled components for consistent design
@@ -233,7 +236,7 @@ const CitationHoverCard = ({
       // Check if blockText exists and is not empty before adding text fragment
       const blockText = citation?.metadata?.blockText;
       if (blockText && typeof blockText === 'string' && blockText.trim().length > 0) {
-        const textFragment = extractCleanTextFragment(blockText, 5);
+        const textFragment = extractCleanTextFragment(blockText);
         if (textFragment) {
           return addTextFragmentToUrl(webUrl, textFragment);
         }
@@ -265,6 +268,15 @@ const CitationHoverCard = ({
   const handleOpenPdf = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+
+    // Check if previewRenderable is false - if so, open webUrl instead of viewer
+    if (citation?.metadata?.previewRenderable === false) {
+      const webUrl = getWebUrl();
+      if (webUrl) {
+        window.open(webUrl, '_blank', 'noopener,noreferrer');
+      }
+      return;
+    }
 
     if (citation?.metadata?.recordId) {
       try {
@@ -326,6 +338,7 @@ const CitationHoverCard = ({
                       color: 'primary.main',
                     }
                   : {},
+                pb:1,
               }}
             >
               <Icon
@@ -337,9 +350,19 @@ const CitationHoverCard = ({
                   color: theme.palette.primary.main,
                 }}
               />
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {citation.metadata?.recordName || 'Document'}
-              </span>
+              <Tooltip
+                title={citation.metadata?.recordName}
+                arrow
+                placement="top"
+                sx={{ zIndex: 2999,}}
+              >
+                <Box
+                  component="span"
+                  style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                >
+                  {citation.metadata?.recordName || 'Document'}
+                </Box>
+              </Tooltip>
             </DocumentTitle>
 
             <Box sx={{ display: 'flex', alignItems: 'center' }}>

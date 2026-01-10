@@ -46,8 +46,9 @@ class Connectors(Enum):
 
     CONFLUENCE = "CONFLUENCE"
     JIRA = "JIRA"
-
+    BOX = "BOX"
     DROPBOX = "DROPBOX"
+    DROPBOX_PERSONAL = "DROPBOX PERSONAL"
     WEB = "WEB"
     BOOKSTACK = "BOOKSTACK"
 
@@ -61,6 +62,7 @@ class AppGroups(Enum):
     ATLASSIAN = "Atlassian"
     MICROSOFT = "Microsoft"
     DROPBOX = "Dropbox"
+    BOX = "Box"
     SERVICENOW = "Servicenow"
     WEB = "Web"
     BOOKSTACK = "BookStack"
@@ -269,10 +271,15 @@ class AccountType(Enum):
     BUSINESS = "business"
     ADMIN = "admin"
 
+class ConnectorScopes(Enum):
+    PERSONAL = "personal"
+    TEAM = "team"
+
 RECORD_TYPE_COLLECTION_MAPPING = {
     "FILE": CollectionNames.FILES.value,
     "MAIL": CollectionNames.MAILS.value,
     "WEBPAGE": CollectionNames.WEBPAGES.value,
+    "SHAREPOINT_PAGE": CollectionNames.WEBPAGES.value,
     "CONFLUENCE_PAGE": CollectionNames.WEBPAGES.value,
     "CONFLUENCE_BLOGPOST": CollectionNames.WEBPAGES.value,
     "TICKET": CollectionNames.TICKETS.value,

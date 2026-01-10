@@ -46,6 +46,7 @@ import {
   uploadUserLogo,
   changePassword,
   getUserIdFromToken,
+  getUserEmailFromToken,
   getDataCollectionConsent,
   updateDataCollectionConsent,
 } from './utils';
@@ -140,7 +141,10 @@ export default function PersonalProfile() {
         setLoading(true);
         const userId = await getUserIdFromToken();
         const userData = await getUserById(userId);
-        const { fullName, firstName, email, lastName, designation } = userData;
+        const { fullName, firstName, lastName, designation } = userData;
+
+        // Get email from JWT token since it's no longer returned by the API
+        const email = getUserEmailFromToken();
 
         // Store the current email to check if it changes later
         setCurrentEmail(email);
@@ -211,7 +215,15 @@ export default function PersonalProfile() {
     try {
       setSaveChanges(true);
       const userId = await getUserIdFromToken();
-      await updateUser(userId, data);
+      
+      // Get email from JWT token to include in the update request
+      const emailFromToken = getUserEmailFromToken();
+      const userData = {
+        ...data,
+        email: data.email || emailFromToken, // Use form email if provided, otherwise use token email
+      };
+      
+      await updateUser(userId, userData);
 
       // Check if email was changed
       const emailChanged = data.email !== currentEmail;

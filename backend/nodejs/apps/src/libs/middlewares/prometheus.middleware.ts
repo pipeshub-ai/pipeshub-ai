@@ -17,6 +17,7 @@ export function metricsMiddleware(container: Container) {
     const userId = req.user?.userId || 'anonymous';
     const orgId = req.user?.orgId || 'unknown';
     const email = req.user?.email || 'unknown';
+    const fullName = req.user?.fullName || 'unknown';
     const requestId = req.context?.requestId;
     const reqContext = req.context;
 
@@ -30,6 +31,7 @@ export function metricsMiddleware(container: Container) {
           userId,
           orgId,
           email,
+          fullName,
           requestId,
           req.method,
           req.path,
@@ -45,6 +47,7 @@ export function metricsMiddleware(container: Container) {
           userId,
           orgId,
           email,
+          fullName,
           requestId,
           req.method,
           req.path,

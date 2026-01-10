@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TextIO, Union
 
-from langchain.chat_models.base import BaseChatModel
+from langchain_core.language_models.chat_models import BaseChatModel
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -24,9 +24,11 @@ from app.models.blocks import (
     TableMetadata,
 )
 from app.modules.parsers.excel.prompt_template import (
+    RowDescriptions,
     row_text_prompt,
     table_summary_prompt,
 )
+from app.utils.streaming import invoke_with_structured_output_and_reflection
 
 
 class CSVParser:
@@ -46,7 +48,6 @@ class CSVParser:
         self.quotechar = quotechar
         self.encoding = encoding
         self.table_summary_prompt = table_summary_prompt
-
 
         # Configure retry parameters
         self.max_retries = 3
@@ -270,38 +271,27 @@ class CSVParser:
                 rows_data=json.dumps(rows_data, indent=2),
             )
 
-            response = await self._call_llm(llm, messages)
-            if '</think>' in response.content:
-                response.content = response.content.split('</think>')[-1]
-            # Try to extract JSON array from response
-            try:
-                processed_texts.extend(json.loads(response.content))
-            except json.JSONDecodeError:
-                # If that fails, try to find and parse a JSON array in the response
-                content = response.content
-                start = content.find("[")
-                end = content.rfind("]")
-                if start != -1 and end != -1:
-                    try:
-                        processed_texts.extend(json.loads(content[start : end + 1]))
-                    except json.JSONDecodeError:
-                        # If still can't parse, add response as single-item array
-                        processed_texts.append(content)
-                else:
-                    # If no array found, add response as single-item array
-                    processed_texts.append(content)
+            # Default to string representations of rows
+            descriptions = [str(row) for row in rows_data]
+
+            # Use centralized utility with reflection
+            parsed_response = await invoke_with_structured_output_and_reflection(
+                llm, messages, RowDescriptions
+            )
+
+            if parsed_response is not None and parsed_response.descriptions:
+                descriptions = parsed_response.descriptions
+
+            processed_texts.extend(descriptions)
 
         return processed_texts
     #  recordName, recordId, version, source, orgId, csv_binary, virtual_record_id
-    async def get_blocks_from_csv_result(self, csv_result: List[Dict[str, Any]], recordId: str, orgId: str, recordName: str, version: str, origin: str, llm: BaseChatModel) -> BlocksContainer:
+    async def get_blocks_from_csv_result(self, csv_result: List[Dict[str, Any]],llm: BaseChatModel) -> BlocksContainer:
 
         blocks = []
         children = []
 
-        # Determine optimal batch size based on file size
         batch_size = 50
-
-
 
         # Create batches
         batches = []

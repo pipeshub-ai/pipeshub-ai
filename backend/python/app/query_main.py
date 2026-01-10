@@ -19,6 +19,7 @@ from app.api.routes.search import router as search_router
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.containers.query import QueryAppContainer
+from app.health.health import Health
 from app.services.graph_db.arango.config import ArangoConfig
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
@@ -33,16 +34,16 @@ async def initialize_container(container: QueryAppContainer) -> bool:
     logger.info("🚀 Initializing application resources")
 
     try:
-        # Connect to ArangoDB and Redis
-        logger.info("Connecting to ArangoDB")
+        # Ensure connector service is healthy before starting query service
+        logger.info("Checking Connector service health before startup")
+        await Health.health_check_connector_service(container)
+
+        # Ensure ArangoDB service is initialized (connection is handled in the resource factory)
+        logger.info("Ensuring ArangoDB service is initialized")
         arango_service = await container.arango_service()
-        if arango_service:
-            arango_connected = await arango_service.connect()
-            if not arango_connected:
-                raise Exception("Failed to connect to ArangoDB")
-            logger.info("✅ Connected to ArangoDB")
-        else:
-            raise Exception("Failed to connect to ArangoDB")
+        if not arango_service:
+            raise Exception("Failed to initialize ArangoDB service")
+        logger.info("✅ ArangoDB service initialized")
 
         return True
 

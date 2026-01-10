@@ -260,6 +260,7 @@ class NotionClient(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None,
     ) -> "NotionClient":
         """Build NotionClient using configuration service
         Args:
@@ -270,22 +271,23 @@ class NotionClient(IClient):
         """
         try:
             # Get Notion configuration from the configuration service
-            config = await cls._get_connector_config(logger, config_service)
+            config = await cls._get_connector_config(logger, config_service, connector_instance_id)
 
             if not config:
                 raise ValueError("Failed to get Notion connector configuration")
 
             # Extract configuration values
-            auth_type = config.get("authType", "apiToken")  # token, oauth
             version = config.get("version", "2022-06-28")
+            auth_config = config.get("auth",{})
+            auth_type = auth_config.get("authType", "apiToken")  # token, oauth
 
             # Create appropriate client based on auth type
             # to be implemented
             if auth_type == "OAUTH":
-                client_id = config.get("clientId", "")
-                client_secret = config.get("clientSecret", "")
-                redirect_uri = config.get("redirectUri", "")
-                access_token = config.get("accessToken", "")
+                client_id = auth_config.get("clientId", "")
+                client_secret = auth_config.get("clientSecret", "")
+                redirect_uri = auth_config.get("redirectUri", "")
+                access_token = auth_config.get("accessToken", "")
 
                 if not client_id or not client_secret or not redirect_uri:
                     raise ValueError("Client ID, client secret, and redirect URI required for OAuth auth type")
@@ -299,7 +301,7 @@ class NotionClient(IClient):
                 )
 
             elif auth_type == "API_TOKEN":  # Default to token auth
-                token = config.get("apiToken", "")
+                token = auth_config.get("apiToken", "")
                 if not token:
                     raise ValueError("Token required for token auth type")
                 client = NotionRESTClientViaToken(token, version)
@@ -314,11 +316,13 @@ class NotionClient(IClient):
             raise
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:
         """Fetch connector config from etcd for Notion."""
         try:
-            config = await config_service.get_config("/services/connectors/notion/config")
-            return config.get("auth",{}) or {}
+            config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")
+            if not config:
+                raise ValueError(f"Failed to get Notion connector configuration for instance {connector_instance_id}")
+            return config
         except Exception as e:
             logger.error(f"Failed to get Notion connector config: {e}")
-            return {}
+            raise ValueError(f"Failed to get Notion connector configuration for instance {connector_instance_id}")

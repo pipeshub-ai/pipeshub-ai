@@ -126,6 +126,7 @@ class DiscordClient(IClient):
         cls,
         logger,
         config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None,
     ) -> "DiscordClient":
         """Build DiscordClient using configuration service.
 
@@ -137,11 +138,11 @@ class DiscordClient(IClient):
             DiscordClient instance
         """
         try:
-            config = await cls._get_connector_config(logger, config_service)
+            config = await cls._get_connector_config(logger, config_service, connector_instance_id)
             if not config:
                 raise ValueError("Failed to get Discord connector configuration")
-            auth_type = config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
             auth_config = config.get("auth", {})
+            auth_type = auth_config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
             if auth_type == "API_TOKEN":
                 token = auth_config.get("apiToken", "")
                 base_url = auth_config.get("baseURL", "https://discord.com/api/v10")
@@ -156,11 +157,13 @@ class DiscordClient(IClient):
             raise
 
     @staticmethod
-    async def _get_connector_config(logger, config_service: ConfigurationService) -> dict[str, Any]:
+    async def _get_connector_config(logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> dict[str, Any]:
         """Fetch connector config from etcd for Discord."""
         try:
-            config = await config_service.get_config("/services/connectors/discord/config")
-            return config or {}
+            config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")
+            if not config:
+                raise ValueError(f"Failed to get Discord connector configuration for instance {connector_instance_id}")
+            return config
         except Exception as e:
             logger.error(f"Failed to get Discord connector config: {e}")
-            return {}
+            raise ValueError(f"Failed to get Discord connector configuration for instance {connector_instance_id}")

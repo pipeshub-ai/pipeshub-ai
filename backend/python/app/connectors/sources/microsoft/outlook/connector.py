@@ -3,7 +3,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
 
 from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
@@ -28,15 +28,27 @@ from app.connectors.core.base.sync_point.sync_point import (
 )
 from app.connectors.core.registry.connector_builder import (
     AuthField,
+    CommonFields,
     ConnectorBuilder,
+    ConnectorScope,
     DocumentationLink,
+)
+from app.connectors.core.registry.filters import (
+    FilterCategory,
+    FilterCollection,
     FilterField,
+    FilterType,
+    IndexingFilterKey,
+    OptionSourceType,
+    SyncFilterKey,
+    load_connector_filters,
 )
 from app.connectors.sources.microsoft.common.apps import OutlookApp
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
     FileRecord,
+    IndexingStatus,
     MailRecord,
     Record,
     RecordGroupType,
@@ -59,9 +71,22 @@ from app.sources.external.microsoft.users_groups.users_groups import (
     UsersGroupsDataSource,
     UsersGroupsResponse,
 )
+from app.utils.streaming import create_stream_record_response
 
 # Thread detection constants
 THREAD_ROOT_EMAIL_CONVERSATION_INDEX_LENGTH = 22  # Length (in bytes) of conversation_index for root email in a thread
+
+# Standard Outlook folder names
+STANDARD_OUTLOOK_FOLDERS = [
+    "Inbox",
+    "Sent Items",
+    "Drafts",
+    "Deleted Items",
+    "Junk Email",
+    "Archive",
+    "Outbox",
+    "Conversation History"
+]
 
 
 @dataclass
@@ -77,6 +102,7 @@ class OutlookCredentials:
     .with_auth_type("OAUTH_ADMIN_CONSENT")\
     .with_description("Sync emails from Outlook")\
     .with_categories(["Email"])\
+    .with_scopes([ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/outlook.svg")
         .add_documentation_link(DocumentationLink(
@@ -131,16 +157,47 @@ class OutlookCredentials:
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .add_filter_field(FilterField(
-            name="mailFolders",
-            display_name="Mail Folders",
-            description="Select mail folders to sync"
-        ), "static")
+            name=SyncFilterKey.FOLDERS.value,
+            display_name="Standard Folders",
+            description="Select standard Outlook folders to sync emails from.",
+            filter_type=FilterType.MULTISELECT,
+            category=FilterCategory.SYNC,
+            default_value=[],
+            option_source_type=OptionSourceType.STATIC,
+            options=STANDARD_OUTLOOK_FOLDERS
+        ))
         .add_filter_field(FilterField(
-            name="dateRange",
-            display_name="Date Range",
-            description="Select date range for emails",
-            field_type="DATERANGE"
-        ), "static")
+            name=SyncFilterKey.CUSTOM_FOLDERS.value,
+            display_name="Custom Folders",
+            description="Include custom/non-standard email folders",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.SYNC,
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name=SyncFilterKey.RECEIVED_DATE.value,
+            display_name="Received Date",
+            description="Filter emails by received date.",
+            filter_type=FilterType.DATETIME,
+            category=FilterCategory.SYNC
+        ))
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.MAILS.value,
+            display_name="Index Emails",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of email messages",
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.ATTACHMENTS.value,
+            display_name="Index Attachments",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of email attachments",
+            default_value=True
+        ))
     )\
     .build_decorator()
 class OutlookConnector(BaseConnector):
@@ -151,19 +208,22 @@ class OutlookConnector(BaseConnector):
         logger: Logger,
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
+        connector_id: str
     ) -> None:
         super().__init__(
-            OutlookApp(),
+            OutlookApp(connector_id),
             logger,
             data_entities_processor,
             data_store_provider,
             config_service,
+            connector_id
         )
         self.rate_limiter = AsyncLimiter(50, 1)
         self.external_outlook_client: Optional[OutlookCalendarContactsDataSource] = None
         self.external_users_client: Optional[UsersGroupsDataSource] = None
         self.credentials: Optional[OutlookCredentials] = None
+        self.connector_id = connector_id
 
         # User cache for performance optimization
         self._user_cache: Dict[str, str] = {}  # email -> source_user_id mapping
@@ -171,21 +231,24 @@ class OutlookConnector(BaseConnector):
         self._user_cache_ttl: int = 3600  # 1 hour TTL in seconds
 
         self.email_delta_sync_point = SyncPoint(
-            connector_name=Connectors.OUTLOOK,
+            connector_id=self.connector_id,
             org_id=self.data_entities_processor.org_id,
             sync_data_point_type=SyncDataPointType.RECORDS,
             data_store_provider=self.data_store_provider
         )
+
+        self.sync_filters: FilterCollection = FilterCollection()
+        self.indexing_filters: FilterCollection = FilterCollection()
 
 
     async def init(self) -> bool:
         """Initialize the Outlook connector with credentials and Graph client."""
         try:
 
-            org_id = self.data_entities_processor.org_id
+            connector_id = self.connector_id
 
             # Load credentials
-            self.credentials = await self._get_credentials(org_id)
+            self.credentials = await self._get_credentials(connector_id)
 
             # Create shared MSGraph client - store as instance variable for proper cleanup
             self.external_client: ExternalMSGraphClient = ExternalMSGraphClient.build_with_config(
@@ -201,6 +264,10 @@ class OutlookConnector(BaseConnector):
             self.external_outlook_client = OutlookCalendarContactsDataSource(self.external_client)
             self.external_users_client = UsersGroupsDataSource(self.external_client)
 
+            # Load filters from config service
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "outlook", connector_id, self.logger
+            )
 
             # Test connection
             if not await self.test_connection_and_access():
@@ -246,14 +313,14 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Connection test failed: {e}")
             return False
 
-    async def _get_credentials(self, org_id: str) -> OutlookCredentials:
+    async def _get_credentials(self, connector_id: str) -> OutlookCredentials:
         """Load Outlook credentials from configuration."""
         try:
-            config_path = "/services/connectors/outlook/config"
+            config_path = f"/services/connectors/{connector_id}/config"
             config = await self.config_service.get_config(config_path)
 
             if not config:
-                raise ValueError("Outlook configuration not found")
+                raise ValueError(f"Outlook configuration not found for connector {connector_id}")
 
             return OutlookCredentials(
                 tenant_id=config["auth"]["tenantId"],
@@ -262,7 +329,7 @@ class OutlookConnector(BaseConnector):
                 has_admin_consent=config["auth"].get("hasAdminConsent", False),
             )
         except Exception as e:
-            self.logger.error(f"Failed to load Outlook credentials: {e}")
+            self.logger.error(f"Failed to load Outlook credentials for connector {connector_id}: {e}")
             raise
 
     async def _populate_user_cache(self) -> None:
@@ -374,6 +441,7 @@ class OutlookConnector(BaseConnector):
 
                 app_user = AppUser(
                     app_name=Connectors.OUTLOOK,
+                    connector_id=self.connector_id,
                     source_user_id=self._safe_get_attr(user, 'id'),
                     email=self._safe_get_attr(user, 'mail') or self._safe_get_attr(user, 'user_principal_name'),
                     full_name=full_name
@@ -403,11 +471,19 @@ class OutlookConnector(BaseConnector):
         try:
             user_id = user.source_user_id
 
-            # Get all folders for this user
-            folders = await self._get_all_folders_for_user(user_id)
+            # Determine folder filtering strategy based on user's filter selections
+            folder_names, folder_filter_mode = self._determine_folder_filter_strategy()
+
+            # Get folders for this user with optional filtering
+            folders = await self._get_all_folders_for_user(
+                user_id,
+                folder_names=folder_names,
+                folder_filter_mode=folder_filter_mode
+            )
 
             if not folders:
-                return f"No folders found for {user.email}"
+                filter_msg = " after applying filters" if folder_names else ""
+                return f"No folders found for {user.email}{filter_msg}"
 
             total_processed = 0
             folder_results = []
@@ -461,7 +537,7 @@ class OutlookConnector(BaseConnector):
             # Search in ArangoDB for parent message
             async with self.data_store_provider.transaction() as tx_store:
                 parent_record = await tx_store.get_record_by_conversation_index(
-                    connector_name=Connectors.OUTLOOK,
+                    connector_id=self.connector_id,
                     conversation_index=parent_index,
                     thread_id=thread_id,
                     org_id=org_id,
@@ -502,8 +578,10 @@ class OutlookConnector(BaseConnector):
 
                     if parent_id:
                         edge = {
-                            "_from": f"records/{parent_id}",
-                            "_to": f"records/{record.id}",
+                            "from_id": parent_id,
+                            "from_collection": CollectionNames.RECORDS.value,
+                            "to_id": record.id,
+                            "to_collection": CollectionNames.RECORDS.value,
                             "relationType": "SIBLING"
                         }
                         edges.append(edge)
@@ -524,15 +602,166 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error creating all thread edges for user {user.email}: {e}")
             return 0
 
-    async def _get_all_folders_for_user(self, user_id: str) -> List[Dict]:
-        """Get all top-level folders for a user."""
+    def _determine_folder_filter_strategy(self) -> Tuple[Optional[List[str]], Optional[str]]:
+        """Determine the folder filtering strategy based on user's filter selections.
+
+        Retrieves filter settings and determines the appropriate filtering strategy:
+
+        5 Scenarios:
+        1. Nothing selected + custom enabled → Sync ALL folders (standard + custom)
+        2. Nothing selected + custom disabled → Sync ONLY standard folders
+        3. Standard folders selected + custom disabled → Sync ONLY selected standard folders
+        4. Standard folders selected + custom enabled → Sync selected standard + ALL custom folders
+        5. All standard folders selected + custom enabled → Sync ALL folders
+
+        Returns:
+            Tuple of (folder_names, filter_mode):
+            - (None, None) = No filter, sync all folders
+            - (list, "include") = Sync only these folders
+            - (list, "exclude") = Sync all except these folders
+        """
+        # Get selected standard folders from filter
+        selected_folders = []
+        folders_filter = self.sync_filters.get(SyncFilterKey.FOLDERS)
+        if folders_filter and not folders_filter.is_empty():
+            filter_value = folders_filter.get_value()
+            if filter_value and isinstance(filter_value, list):
+                selected_folders = filter_value
+
+        # Get sync_custom_folders boolean (default: True)
+        sync_custom_folders = True
+        sync_custom_folders_filter = self.sync_filters.get(SyncFilterKey.CUSTOM_FOLDERS)
+        if sync_custom_folders_filter and not sync_custom_folders_filter.is_empty():
+            sync_custom_folders = sync_custom_folders_filter.get_value()
+
+        # Determine strategy
+        has_selection = bool(selected_folders)
+
+        if not has_selection:
+            # No folders selected - behavior depends on sync_custom_folders
+            if sync_custom_folders:
+                # Scenario 1: Sync everything (default behavior)
+                self.logger.info("No folders selected, custom enabled - syncing all folders")
+                return None, None
+            else:
+                # Scenario 2: Sync only standard folders
+                self.logger.info("No folders selected, custom disabled - syncing only standard folders")
+                return STANDARD_OUTLOOK_FOLDERS, "include"
+
+        if not sync_custom_folders:
+            # Scenario 3: Only selected standard folders
+            self.logger.info(f"Syncing only selected standard folders: {selected_folders}")
+            return selected_folders, "include"
+
+        # Custom folders are enabled and some standard folders are selected
+        all_standard_selected = set(selected_folders) == set(STANDARD_OUTLOOK_FOLDERS)
+
+        if all_standard_selected:
+            # Scenario 4: All standard folders + custom = everything
+            self.logger.info("All standard folders selected + custom enabled - syncing all folders")
+            return None, None
+
+        # Scenario 5: Selected standard + all custom folders
+        # Strategy: Exclude the non-selected standard folders
+        non_selected = [f for f in STANDARD_OUTLOOK_FOLDERS if f not in selected_folders]
+        self.logger.info(
+            f"Syncing selected standard folders {selected_folders} + all custom folders "
+            f"(excluding non-selected standard: {non_selected})"
+        )
+        return non_selected, "exclude"
+
+    async def _get_child_folders_recursive(
+        self,
+        user_id: str,
+        parent_folder: Dict
+    ) -> List[Dict]:
+        """Recursively get all child folders of a parent folder.
+
+        Args:
+            user_id: User identifier
+            parent_folder: Parent folder dictionary
+
+        Returns:
+            Flattened list of all child folders (including nested children)
+        """
+        try:
+            parent_folder_id = self._safe_get_attr(parent_folder, 'id')
+            parent_folder_name = self._safe_get_attr(parent_folder, 'display_name', 'Unknown')
+
+            if not parent_folder_id:
+                return []
+
+            # Check if folder has children
+            child_folder_count = self._safe_get_attr(parent_folder, 'child_folder_count', 0)
+            if child_folder_count == 0:
+                self.logger.debug(f"Folder '{parent_folder_name}' has no child folders")
+                return []
+
+            # Fetch child folders using the API
+            if not self.external_outlook_client:
+                raise Exception("External Outlook client not initialized")
+
+            response: OutlookMailFoldersResponse = await self.external_outlook_client.users_mail_folders_list_child_folders(
+                user_id=user_id,
+                mailFolder_id=parent_folder_id
+            )
+
+            if not response.success:
+                self.logger.warning(
+                    f"Failed to get child folders for '{parent_folder_name}': {response.error}"
+                )
+                return []
+
+            data = response.data or {}
+            child_folders = data.get('value', [])
+
+            if not child_folders:
+                return []
+
+            self.logger.info(
+                f"Found {len(child_folders)} child folder(s) under '{parent_folder_name}'"
+            )
+
+            # Recursively process each child folder
+            all_descendants = []
+            for child in child_folders:
+                all_descendants.append(child)
+                # Recursively get grandchildren
+                grandchildren = await self._get_child_folders_recursive(user_id, child)
+                all_descendants.extend(grandchildren)
+
+            return all_descendants
+
+        except Exception as e:
+            parent_name = self._safe_get_attr(parent_folder, 'display_name', 'Unknown')
+            self.logger.error(f"Error getting child folders for '{parent_name}': {e}")
+            return []
+
+    async def _get_all_folders_for_user(
+        self,
+        user_id: str,
+        folder_names: Optional[List[str]] = None,
+        folder_filter_mode: Optional[str] = None
+    ) -> List[Dict]:
+        """Get all folders for a user with optional filtering and nested folder support.
+
+        Args:
+            user_id: User identifier
+            folder_names: Optional list of folder display names to filter
+            folder_filter_mode: 'include' to whitelist or 'exclude' to blacklist folder_names
+
+        Returns:
+            List of folder dictionaries (includes nested folders by default)
+        """
         try:
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
-            # Use the existing folder delta method but ignore delta_link for simplicity
+            # Get top-level folders with API-level filtering
             response: OutlookMailFoldersResponse = await self.external_outlook_client.users_list_mail_folders(
-                user_id=user_id
+                user_id=user_id,
+                folder_names=folder_names,
+                folder_filter_mode=folder_filter_mode,
             )
 
             if not response.success:
@@ -540,9 +769,27 @@ class OutlookConnector(BaseConnector):
                 return []
 
             data = response.data or {}
-            folders = data.get('value', [])
+            top_level_folders = data.get('value', [])
 
-            return folders
+            # Always include nested folders (no filter needed, it's always enabled)
+            all_folders = []
+            for folder in top_level_folders:
+                all_folders.append(folder)
+                # Recursively get child folders
+                child_folders = await self._get_child_folders_recursive(user_id, folder)
+                all_folders.extend(child_folders)
+
+            total_nested = len(all_folders) - len(top_level_folders)
+            if total_nested > 0:
+                self.logger.info(
+                    f"Retrieved {len(top_level_folders)} top-level folders + "
+                    f"{total_nested} nested folders = {len(all_folders)} total folders"
+                )
+            else:
+                self.logger.info(f"Retrieved {len(top_level_folders)} folders (no nested folders found)")
+
+            return all_folders
+
         except Exception as e:
             self.logger.error(f"Error getting folders for user {user_id}: {e}")
             return []
@@ -648,18 +895,42 @@ class OutlookConnector(BaseConnector):
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
+            # Build filter string for receivedDateTime if configured
+            # Note: MS Graph delta queries have limited filter support
+            # receivedDateTime filter only supports 'ge' (greater than or equal)
+            # For 'le' (IS_BEFORE), we apply client-side filtering after fetching
+            filter_string = None
+            received_before_dt: Optional[datetime] = None  # For client-side filtering
+
+            received_date_filter = self.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+            if received_date_filter and not received_date_filter.is_empty():
+                received_after_iso, received_before_iso = received_date_filter.get_datetime_iso()
+
+                # API supports 'ge' (greater than or equal) - apply server-side
+                if received_after_iso:
+                    filter_string = f"receivedDateTime ge {received_after_iso}Z"
+                    self.logger.info(f"Applying received date filter (server-side): {filter_string}")
+
+                # API doesn't support 'le' - we'll filter client-side
+                if received_before_iso:
+                    # Parse ISO string to datetime for client-side comparison
+                    received_before_dt = datetime.strptime(received_before_iso, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+                    self.logger.info(f"Will apply received date filter (client-side): receivedDateTime before {received_before_iso}")
+
             # Use the new fetch_all_messages_delta method that handles pagination automatically
             messages, new_delta_link = await self.external_outlook_client.fetch_all_messages_delta(
                 user_id=user_id,
                 mailFolder_id=folder_id,
                 saved_delta_link=delta_link,
                 page_size=100,
+                filter=filter_string,
                 select = [
                     'id',
                     'subject',
                     'hasAttachments',
                     'createdDateTime',
                     'lastModifiedDateTime',
+                    'receivedDateTime',
                     'webLink',
                     'from',
                     'toRecipients',
@@ -670,6 +941,38 @@ class OutlookConnector(BaseConnector):
                     'conversationIndex'
                 ]
             )
+
+            # Apply client-side filtering for IS_BEFORE if needed
+            if received_before_dt is not None and messages:
+                original_count = len(messages)
+                filtered_messages = []
+
+                for msg in messages:
+                    # Get receivedDateTime from message
+                    received_dt = self._safe_get_attr(msg, 'received_date_time')
+                    if received_dt is None:
+                        # If no received date, include the message
+                        filtered_messages.append(msg)
+                        continue
+
+                    # Compare datetime objects directly
+                    if isinstance(received_dt, datetime):
+                        # Ensure timezone-aware comparison
+                        if received_dt.tzinfo is None:
+                            received_dt = received_dt.replace(tzinfo=timezone.utc)
+                        # Include message if received before the cutoff
+                        if received_dt < received_before_dt:
+                            filtered_messages.append(msg)
+                    else:
+                        filtered_messages.append(msg)
+
+                messages = filtered_messages
+                filtered_out = original_count - len(messages)
+                if filtered_out > 0:
+                    self.logger.info(
+                        f"Client-side date filter applied: {original_count} -> {len(messages)} messages "
+                        f"(filtered out {filtered_out} messages received after cutoff)"
+                    )
 
             self.logger.info(f"Delta sync completed for folder {folder_id}: retrieved {len(messages)} total messages across all pages")
 
@@ -696,7 +999,7 @@ class OutlookConnector(BaseConnector):
             if is_deleted:
                 self.logger.info(f"Deleting message: {message_id} and its attachments from folder {folder_name}")
                 async with self.data_store_provider.transaction() as tx_store:
-                    await tx_store.delete_record_by_external_id(Connectors.OUTLOOK, message_id, user.user_id)
+                    await tx_store.delete_record_by_external_id(self.connector_id, message_id, user.user_id)
                 return updates
 
             # Process email with attachments
@@ -768,6 +1071,7 @@ class OutlookConnector(BaseConnector):
                 version=0 if is_new else existing_record.version + 1,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.OUTLOOK,
+                connector_id=self.connector_id,
                 source_created_at=self._parse_datetime(self._safe_get_attr(message, 'created_date_time')),
                 source_updated_at=self._parse_datetime(self._safe_get_attr(message, 'last_modified_date_time')),
                 weburl=self._safe_get_attr(message, 'web_link', ''),
@@ -785,6 +1089,10 @@ class OutlookConnector(BaseConnector):
                 internet_message_id=self._safe_get_attr(message, 'internet_message_id', ''),
                 conversation_index=self._safe_get_attr(message, 'conversation_index', ''),
             )
+
+            # Apply indexing filter for mail records
+            if not self.indexing_filters.is_enabled(IndexingFilterKey.MAILS, default=True):
+                email_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             permissions = await self._extract_email_permissions(message, email_record.id, user_email)
 
@@ -858,7 +1166,8 @@ class OutlookConnector(BaseConnector):
         attachment: Dict,
         message_id: str,
         folder_id: str,
-        existing_record: Optional[Record] = None
+        existing_record: Optional[Record] = None,
+        parent_weburl: Optional[str] = None,
     ) -> FileRecord:
         """Helper method to create a FileRecord from an attachment.
 
@@ -868,14 +1177,21 @@ class OutlookConnector(BaseConnector):
             message_id: Parent message ID
             folder_id: Folder ID
             existing_record: Existing record if updating
+            parent_weburl: Web URL of the parent mail
 
         Returns:
-            FileRecord: Created attachment record
+            FileRecord: Created attachment record, or None if attachment should be skipped
         """
         attachment_id = self._safe_get_attr(attachment, 'id')
         is_new = existing_record is None
 
-        content_type = self._safe_get_attr(attachment, 'content_type', 'application/octet-stream')
+        # Check if content_type is available, skip attachment if not
+        content_type = self._safe_get_attr(attachment, 'content_type')
+        if not content_type:
+            file_name = self._safe_get_attr(attachment, 'name', 'Unknown')
+            self.logger.warning(f"Skipping attachment '{file_name}' (id: {attachment_id}) - no content_type available")
+            return None
+
         mime_type = self._get_mime_type_enum(content_type)
 
         file_name = self._safe_get_attr(attachment, 'name', 'Unnamed Attachment')
@@ -885,7 +1201,10 @@ class OutlookConnector(BaseConnector):
 
         attachment_record_id = existing_record.id if existing_record else str(uuid.uuid4())
 
-        return FileRecord(
+        if not parent_weburl:
+            self.logger.error(f"No parent weburl found for attachment id {attachment_id}, file name {file_name}, with parent message id {message_id}")
+
+        attachment_record = FileRecord(
             id=attachment_record_id,
             org_id=org_id,
             record_name=file_name,
@@ -895,6 +1214,7 @@ class OutlookConnector(BaseConnector):
             version=0 if is_new else existing_record.version + 1,
             origin=OriginTypes.CONNECTOR,
             connector_name=Connectors.OUTLOOK,
+            connector_id=self.connector_id,
             source_created_at=self._parse_datetime(self._safe_get_attr(attachment, 'last_modified_date_time')),
             source_updated_at=self._parse_datetime(self._safe_get_attr(attachment, 'last_modified_date_time')),
             mime_type=mime_type,
@@ -902,11 +1222,17 @@ class OutlookConnector(BaseConnector):
             parent_record_type=RecordType.MAIL,
             external_record_group_id=folder_id,
             record_group_type=RecordGroupType.MAILBOX,
-            weburl="",
+            weburl=parent_weburl,
             is_file=True,
             size_in_bytes=self._safe_get_attr(attachment, 'size', 0),
             extension=extension,
         )
+
+        # Apply indexing filter for attachment records
+        if not self.indexing_filters.is_enabled(IndexingFilterKey.ATTACHMENTS, default=True):
+            attachment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+        return attachment_record
 
     async def _process_email_attachments_with_folder(self, org_id: str, user: AppUser, message: Dict,
                                                   email_permissions: List[Permission], folder_id: str, folder_name: str) -> List[RecordUpdate]:
@@ -916,6 +1242,7 @@ class OutlookConnector(BaseConnector):
         try:
             user_id = user.source_user_id
             message_id = self._safe_get_attr(message, 'id')
+            parent_weburl = self._safe_get_attr(message, 'web_link')
 
             attachments = await self._get_message_attachments_external(user_id, message_id)
 
@@ -941,8 +1268,12 @@ class OutlookConnector(BaseConnector):
                         is_updated = True
 
                 attachment_record = await self._create_attachment_record(
-                    org_id, attachment, message_id, folder_id, existing_record
+                    org_id, attachment, message_id, folder_id, existing_record, parent_weburl
                 )
+
+                # Skip if attachment was filtered out (e.g., no content_type)
+                if not attachment_record:
+                    continue
 
                 attachment_updates.append(RecordUpdate(
                     record=attachment_record,
@@ -990,7 +1321,7 @@ class OutlookConnector(BaseConnector):
         try:
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
-                    connector_name=Connectors.OUTLOOK,
+                    connector_id=self.connector_id,
                     external_id=external_record_id
                 )
                 return existing_record
@@ -1043,12 +1374,13 @@ class OutlookConnector(BaseConnector):
                 async def generate_attachment() -> AsyncGenerator[bytes, None]:
                     yield attachment_data
 
-                # Set proper filename and content type
                 filename = record.record_name or "attachment"
-                headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
-                media_type = record.mime_type or 'application/octet-stream'
-
-                return StreamingResponse(generate_attachment(), media_type=media_type, headers=headers)
+                return create_stream_record_response(
+                    generate_attachment(),
+                    filename=filename,
+                    mime_type=record.mime_type,
+                    fallback_filename=f"record_{record.id}"
+                )
 
             else:
                 raise HTTPException(status_code=400, detail="Unsupported record type for streaming")
@@ -1225,6 +1557,17 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error during Outlook reindex: {e}")
             raise
 
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None
+    ) -> NoReturn:
+        """Outlook connector does not support dynamic filter options."""
+        raise NotImplementedError("Outlook connector does not support dynamic filter options")
+
     async def _reindex_user_records(
         self, user_email: str, records: List[Record]
     ) -> Tuple[List[Tuple[Record, List[Permission]]], List[Record]]:
@@ -1370,10 +1713,15 @@ class OutlookConnector(BaseConnector):
                 return None
 
             email_permissions = await self._extract_email_permissions(message, None, user_email)
+            parent_weburl = self._safe_get_attr(message, 'web_link')
 
             attachment_record = await self._create_attachment_record(
-                org_id, attachment, parent_message_id, folder_id, existing_record=record
+                org_id, attachment, parent_message_id, folder_id, existing_record=record, parent_weburl=parent_weburl
             )
+
+            # Return None if attachment was filtered out
+            if not attachment_record:
+                return None
 
             return (attachment_record, email_permissions)
 
@@ -1449,9 +1797,9 @@ class OutlookConnector(BaseConnector):
 
 
     @classmethod
-    async def create_connector(cls, logger: Logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> 'OutlookConnector':
+    async def create_connector(cls, logger: Logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> 'OutlookConnector':
         """Factory method to create and initialize OutlookConnector."""
         data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
         await data_entities_processor.initialize()
 
-        return OutlookConnector(logger, data_entities_processor, data_store_provider, config_service)
+        return OutlookConnector(logger, data_entities_processor, data_store_provider, config_service, connector_id)

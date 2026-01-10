@@ -29,6 +29,7 @@ export const getUniversalConfig = async (configType: string): Promise<any | null
               modelType: model.provider, // For backward compatibility
               isMultimodal: model.isMultimodal || false,
               isReasoning: model.isReasoning || false,
+              contextLength: model.contextLength || undefined,
             };
           }
 
@@ -37,6 +38,7 @@ export const getUniversalConfig = async (configType: string): Promise<any | null
             return {
               providerType: 'default',
               modelType: 'default',
+              contextLength: undefined,
             };
           }
         } catch (error) {
@@ -45,6 +47,7 @@ export const getUniversalConfig = async (configType: string): Promise<any | null
             return {
               providerType: 'default',
               modelType: 'default',
+              contextLength: undefined,
             };
           }
           throw error;
@@ -97,21 +100,16 @@ export const getUniversalConfig = async (configType: string): Promise<any | null
 
       case 'url': {
         try {
-          const [frontendResponse, connectorResponse] = await Promise.all([
-            axios.get(`${API_BASE}/frontendPublicUrl`).catch(() => ({ data: null })),
-            axios.get(`${API_BASE}/connectorPublicUrl`).catch(() => ({ data: null })),
-          ]);
-
+          const frontendResponse = await axios.get(`${API_BASE}/frontendPublicUrl`);
+          console.log('frontendResponse', frontendResponse);
           return {
             providerType: 'urls',
             frontendUrl: frontendResponse.data?.url || '',
-            connectorUrl: connectorResponse.data?.url || '',
           };
         } catch (error) {
           return {
             providerType: 'urls',
             frontendUrl: '',
-            connectorUrl: '',
           };
         }
       }
@@ -163,7 +161,15 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
         }
 
         // Remove meta fields and prepare clean config
-        const { providerType, modelType, _provider, isMultimodal, isReasoning, ...cleanConfig } = config;
+        const {
+          providerType,
+          modelType,
+          _provider,
+          isMultimodal,
+          isReasoning,
+          contextLength,
+          ...cleanConfig
+        } = config;
         const provider = providerType || modelType;
 
         if (!provider) {
@@ -177,6 +183,7 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
           configuration: cleanConfig,
           isMultimodal: Boolean(isMultimodal),
           isReasoning: Boolean(isReasoning),
+          contextLength,
           isDefault: true,
         };
 
@@ -238,23 +245,18 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
       }
 
       case 'url': {
-        const { providerType, _provider, frontendUrl, connectorUrl, ...rest } = config;
+        const { providerType, _provider, frontendUrl, ...rest } = config;
         const normalizeUrl = (url?: string) => {
           if (!url) return '';
           const trimmed = String(url).trim();
-          return (trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed)
+          return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
         };
         const normalizedFrontend = normalizeUrl(frontendUrl);
-        const normalizedConnector = normalizeUrl(connectorUrl);
         const apiCalls = [];
 
         // Only save URLs that have values
         if (normalizedFrontend) {
           apiCalls.push(axios.post(`${API_BASE}/frontendPublicUrl`, { url: normalizedFrontend }));
-        }
-
-        if (normalizedConnector) {
-          apiCalls.push(axios.post(`${API_BASE}/connectorPublicUrl`, { url: normalizedConnector }));
         }
 
         // Execute all API calls
@@ -313,8 +315,18 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
 };
 
 export const updateOnboardingAiModelsConfig = async (
-  llmConfig?: { provider: string; configuration: Record<string, any>; isMultimodal?: boolean; isReasoning?: boolean }[] | null,
-  embeddingConfig?: { provider: string; configuration: Record<string, any>; isMultimodal?: boolean }[] | null
+  llmConfig?:
+    | {
+        provider: string;
+        configuration: Record<string, any>;
+        isMultimodal?: boolean;
+        isReasoning?: boolean;
+        contextLength?: number;
+      }[]
+    | null,
+  embeddingConfig?:
+    | { provider: string; configuration: Record<string, any>; isMultimodal?: boolean }[]
+    | null
 ): Promise<any> => {
   try {
     const promises: Promise<any>[] = [];
@@ -328,6 +340,7 @@ export const updateOnboardingAiModelsConfig = async (
           configuration: config.configuration,
           isMultimodal: config.isMultimodal || false,
           isReasoning: config.isReasoning || false,
+          contextLength: config.contextLength || undefined,
           isDefault: true,
         })
       );
@@ -380,6 +393,16 @@ export const getSmtpConfig = () => getUniversalConfig('smtp');
 export const updateSmtpConfig = (config: SmtpFormValues) => updateUniversalConfig('smtp', config);
 
 export const updateStepperAiModelsConfig = async (
-  llmConfig?: { provider: string; configuration: Record<string, any>; isMultimodal?: boolean; isReasoning?: boolean }[] | null,
-  embeddingConfig?: { provider: string; configuration: Record<string, any>; isMultimodal?: boolean }[] | null
+  llmConfig?:
+    | {
+        provider: string;
+        configuration: Record<string, any>;
+        isMultimodal?: boolean;
+        isReasoning?: boolean;
+        contextLength?: number;
+      }[]
+    | null,
+  embeddingConfig?:
+    | { provider: string; configuration: Record<string, any>; isMultimodal?: boolean }[]
+    | null
 ): Promise<any> => updateOnboardingAiModelsConfig(llmConfig, embeddingConfig);

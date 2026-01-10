@@ -759,7 +759,8 @@ const DynamicField = memo(({
               }
             }}
             // Convert number values back to string for display
-            value={isNumberField && field.value !== undefined ? String(field.value) : field.value || ''}
+            // For number fields, show empty string if value is undefined, null, or 0 (for optional fields)
+            value={isNumberField && (field.value !== undefined && field.value !== null) ? String(field.value) : field.value || ''}
             // Additional event handlers for autofill detection
             onFocus={() => {
               // Check for autofill on focus

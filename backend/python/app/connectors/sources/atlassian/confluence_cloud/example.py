@@ -135,7 +135,7 @@ async def test_run() -> None:
     # Create and initialize connector
     logger.info("🔧 Creating Confluence connector...")
     connector: BaseConnector = await ConfluenceConnector.create_connector(
-        logger, data_store_provider, config_service
+        logger, data_store_provider, config_service, "confluence"
     )
 
     logger.info("🔧 Initializing Confluence connector...")

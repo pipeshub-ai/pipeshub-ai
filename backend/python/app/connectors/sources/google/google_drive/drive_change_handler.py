@@ -1,5 +1,5 @@
 import traceback
-from typing import Dict
+from typing import Dict, Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -21,7 +21,7 @@ class DriveChangeHandler:
         self.config_service = config_service
         self.arango_service = arango_service
 
-    async def process_change(self, change: Dict, user_service, org_id, user_id) -> None:
+    async def process_change(self, change: Dict, user_service, org_id, user_id, connector_id: Optional[str] = None) -> None:
         """Process a single change with revision checking"""
         txn = None
         try:
@@ -131,7 +131,7 @@ class DriveChangeHandler:
                 if removed or is_trashed:
                     change_type = ""
                 else:
-                    await self.handle_insert(new_file, org_id, transaction=txn)
+                    await self.handle_insert(new_file, org_id, connector_id, transaction=txn)
                     change_type = EventTypes.NEW_RECORD.value
             else:
                 if removed or is_trashed:
@@ -145,7 +145,7 @@ class DriveChangeHandler:
                     )
                     if needs_update_var:
                         await self.handle_update(
-                            new_file, db_file, db_record, org_id, transaction=txn
+                            new_file, db_file, db_record, org_id, connector_id, transaction=txn
                         )
                         if reindex_var:
                             change_type = EventTypes.UPDATE_RECORD.value
@@ -206,6 +206,7 @@ class DriveChangeHandler:
                     "eventType": change_type,
                     "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/drive/record/{file_key}/signedUrl",
                     "connectorName": Connectors.GOOGLE_DRIVE.value,
+                    "connectorId": connector_id,
                     "origin": OriginTypes.CONNECTOR.value,
                     "extension": extension,
                     "mimeType": mime_type,
@@ -229,6 +230,7 @@ class DriveChangeHandler:
                     "eventType": change_type,
                     "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/drive/record/{file_key}/signedUrl",
                     "connectorName": Connectors.GOOGLE_DRIVE.value,
+                    "connectorId": connector_id,
                     "origin": OriginTypes.CONNECTOR.value,
                     "extension": new_file.get("extension"),
                     "mimeType": new_file.get("mimeType"),
@@ -252,6 +254,7 @@ class DriveChangeHandler:
                     "eventType": change_type,
                     "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/drive/record/{file_key}/signedUrl",
                     "connectorName": Connectors.GOOGLE_DRIVE.value,
+                    "connectorId": connector_id,
                     "origin": OriginTypes.CONNECTOR.value,
                     "extension": extension,
                     "mimeType": mime_type,
@@ -469,7 +472,7 @@ class DriveChangeHandler:
             )
             raise
 
-    async def handle_insert(self, file_metadata, org_id, transaction) -> None:
+    async def handle_insert(self, file_metadata, org_id, connector_id, transaction) -> None:
         """Handle file insert"""
         try:
             self.logger.info(
@@ -493,7 +496,7 @@ class DriveChangeHandler:
                 existing_files.append(file_id)
 
             else:
-                file_record, record, is_of_type_record = await process_drive_file(file_metadata, org_id)
+                file_record, record, is_of_type_record = await process_drive_file(file_metadata, org_id, connector_id)
                 self.logger.info("file_record: %s", file_record.to_dict())
                 self.logger.info("record: %s", record.to_dict())
                 recordRelations = []
@@ -557,7 +560,7 @@ class DriveChangeHandler:
             raise
 
     async def handle_update(
-        self, updated_file, existing_file, existing_record, org_id, transaction
+        self, updated_file, existing_file, existing_record, org_id, connector_id, transaction
     ) -> None:
         """Handle file update or creation"""
         try:
@@ -591,6 +594,7 @@ class DriveChangeHandler:
                 "version": 0,
                 "externalRecordId": str(updated_file.get("id")),
                 "externalRevisionId": updated_file.get("headRevisionId", None),
+                "connectorId": connector_id,
                 "createdAtTimestamp": existing_record.get(
                     "createdAtTimestamp", get_epoch_timestamp_in_ms()
                 ),

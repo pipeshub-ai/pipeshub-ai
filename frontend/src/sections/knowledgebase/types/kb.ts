@@ -53,6 +53,7 @@ export interface UserPermission {
   canCreateFolders: boolean;
   canEdit: boolean;
   canDelete: boolean;
+  canManagePermissions: boolean;
 }
 
 export interface FolderContents {

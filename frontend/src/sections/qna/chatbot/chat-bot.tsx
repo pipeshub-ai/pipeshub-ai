@@ -268,6 +268,31 @@ class StreamingManager {
     return null;
   }
 
+  resetStreamingContent(messageId: string) {
+    const conversationKey = this.getConversationForMessage(messageId);
+    if (!conversationKey) return;
+
+    // Reset accumulated content and citations to start fresh
+    this.updateConversationState(conversationKey, {
+      accumulatedContent: '',
+      content: '',
+      citations: [],
+    });
+
+    // Clear the message content in the UI
+    this.updateConversationMessages(conversationKey, (prev) => {
+      const messageIndex = prev.findIndex((msg) => msg.id === messageId);
+      if (messageIndex === -1) return prev;
+      const updated = [...prev];
+      updated[messageIndex] = {
+        ...updated[messageIndex],
+        content: '',
+        citations: [],
+      };
+      return updated;
+    });
+  }
+
   updateStreamingContent(messageId: string, newChunk: string, citations: CustomCitation[] = []) {
     const conversationKey = this.getConversationForMessage(messageId);
     if (!conversationKey) return;
@@ -668,12 +693,12 @@ const ChatInterface = () => {
   useEffect(() => {
     const connectors = [...(activeConnectors || [])];
     const apps = connectors.map((c: any) => ({
-      id: (c.name || '').toLowerCase(),
+      id: c._key,
       name: c.name || '',
       iconPath: c.iconPath || '/assets/icons/connectors/default.svg',
     }));
-    // include local KB app selector
-    setAllApps([{ id: 'local', name: 'KB', iconPath: '/assets/icons/connectors/kb.svg' }, ...apps]);
+    
+    setAllApps(apps);
   }, [activeConnectors]);
 
   // Load knowledge bases once
@@ -956,6 +981,18 @@ const ChatInterface = () => {
         }
 
         switch (event) {
+          case 'restreaming':
+            // When restreaming event is received, clear previous accumulated content
+            // and wait for new chunks to start streaming
+            if (context.hasCreatedMessage.current) {
+              streamingManager.resetStreamingContent(context.streamingBotMessageId);
+            }
+            streamingManager.updateStatus(
+              context.conversationKey,
+              '🔄 Refining response...'
+            );
+            break;
+
           case 'answer_chunk':
             if (data.chunk) {
               if (!context.hasCreatedMessage.current) {
@@ -1639,7 +1676,7 @@ const ChatInterface = () => {
           let params = {};
           if (['pptx', 'ppt'].includes(citationMeta?.extension)) {
             params = {
-              convertTo: 'pdf',
+              convertTo: 'application/pdf',
             };
             handleLargePPTFile(record);
           }
@@ -2207,6 +2244,7 @@ const ChatInterface = () => {
                     citations={aggregatedCitations}
                     highlightCitation={highlightedCitation}
                     onClosePdf={onClosePdf}
+                    fileExtension={highlightedCitation?.metadata?.extension}
                   />
                 ) : (
                   <PdfHighlighterComp

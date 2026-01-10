@@ -222,7 +222,7 @@ export const ErrorProvider: React.FC<ErrorProviderProps> = ({ children }) => {
       {children}
       <Snackbar
         open={snackbarOpen}
-        autoHideDuration={6000}
+        autoHideDuration={10000}
         onClose={handleClose}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
       >

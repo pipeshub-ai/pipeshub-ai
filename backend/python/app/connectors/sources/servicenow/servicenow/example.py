@@ -86,7 +86,7 @@ async def test_run() -> None:
     }
     await key_value_store.create_key("/services/connectors/servicenow/config", config)
     connector: BaseConnector = await ServiceNowConnector.create_connector(
-        logger, data_store_provider, config_service
+        logger, data_store_provider, config_service, "servicenow"
     )
     await connector.init()
     await connector.run_sync()

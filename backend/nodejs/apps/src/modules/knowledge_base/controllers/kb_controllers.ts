@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import * as crypto from 'crypto';
 import { AuthenticatedUserRequest } from './../../../libs/middlewares/types';
 import { NextFunction, Response } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
@@ -35,13 +36,112 @@ import {
   handleConnectorResponse,
 } from '../../tokens_manager/utils/connector.utils';
 import { NotificationService } from '../../notification/service/notification.service';
+import {
+  safeParsePagination,
+} from '../../../utils/safe-integer';
+import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
 const logger = Logger.getInstance({
   service: 'Knowledge Base Controller',
 });
 
+/**
+ * Get Knowledge Hub nodes (unified browse API)
+ * Supports browsing KBs, apps, folders, record groups, and records
+ */
+export const getKnowledgeHubNodes =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { userId, orgId } = req.user || {};
+      if (!userId || !orgId) {
+        throw new UnauthorizedError('User not authenticated');
+      }
+
+      logger.info('Getting knowledge hub nodes', {
+        userId,
+        orgId,
+        query: req.query,
+      });
+
+      // Build query string from request query params
+      const queryParams = new URLSearchParams();
+
+      // Map query params (camelCase to snake_case for Python backend)
+      const paramMapping: { [key: string]: string } = {
+        parentId: 'parent_id',
+        view: 'view',
+        page: 'page',
+        limit: 'limit',
+        sortBy: 'sort_by',
+        sortOrder: 'sort_order',
+        q: 'q',
+        nodeTypes: 'node_types',
+        recordTypes: 'record_types',
+        sources: 'sources',
+        connectorIds: 'connector_ids',
+        kbIds: 'kb_ids',
+        indexingStatus: 'indexing_status',
+        createdAt: 'created_at',
+        updatedAt: 'updated_at',
+        size: 'size',
+        include: 'include',
+      };
+
+      for (const [key, snakeKey] of Object.entries(paramMapping)) {
+        const value = req.query[key];
+        if (value) {
+          queryParams.append(snakeKey, value as string);
+        }
+      }
+
+      if (req.query.onlyContainers !== undefined) {
+        queryParams.append(
+          'only_containers',
+          String(req.query.onlyContainers),
+        );
+      }
+
+      const { parentType, parentId } = req.params;
+      let url = `${appConfig.connectorBackend}/api/v2/knowledge-hub/nodes`;
+
+      if (parentType && parentId) {
+        url += `/${parentType}/${parentId}`;
+      }
+
+      url += `?${queryParams.toString()}`;
+
+      const response = await executeConnectorCommand(
+        url,
+        HttpMethod.GET,
+        req.headers as Record<string, string>, // Forwards auth headers
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Getting knowledge hub nodes',
+        'Failed to get nodes',
+      );
+    } catch (error: any) {
+      logger.error('Error getting knowledge hub nodes', {
+        error: error.message,
+        stack: error.stack,
+      });
+      const handleError = handleBackendError(
+        error,
+        'get knowledge hub nodes',
+      );
+      next(handleError);
+    }
+  };
+
 // Types and helpers for active connector validation
 interface ConnectorInfo {
-  name: string;
+  _key: string;
 }
 
 interface ActiveConnectorsResponse {
@@ -52,7 +152,7 @@ const normalizeAppName = (value: string): string =>
   value.replace(' ', '').toLowerCase();
 
 const validateActiveConnector = async (
-  appName: string,
+  connectorId: string,
   appConfig: AppConfig,
   headers: Record<string, string>,
 ): Promise<void> => {
@@ -68,13 +168,16 @@ const validateActiveConnector = async (
 
   const data = activeAppsResponse.data as ActiveConnectorsResponse;
   const connectors = data?.connectors || [];
-  const allowedApps = connectors.map((connector) =>
-    normalizeAppName(connector.name),
-  );
 
-  if (!allowedApps.includes(normalizeAppName(appName))) {
-    throw new BadRequestError(`Connector ${appName} not allowed`);
+  const isAllowed = connectors.some((connector) => connector._key === connectorId);
+
+  if (!isAllowed) {
+    throw new BadRequestError(`Connector ${connectorId} not allowed`);
   }
+
+  logger.debug('Connector validation successful', {
+    connectorId,
+  });
 };
 
 export const createKnowledgeBase =
@@ -173,12 +276,43 @@ export const listKnowledgeBases =
         throw new UnauthorizedError('User authentication required');
       }
 
-      // Extract and parse query parameters
-      const page = req.query.page ? parseInt(String(req.query.page), 10) : 1;
-      const limit = req.query.limit
-        ? parseInt(String(req.query.limit), 10)
-        : 20;
+      // Extract and parse query parameters with safe integer validation
+      let page: number;
+      let limit: number;
+      try {
+        const pagination = safeParsePagination(
+          req.query.page as string | undefined,
+          req.query.limit as string | undefined,
+          1,
+          20,
+          100,
+        );
+        page = pagination.page;
+        limit = pagination.limit;
+      } catch (error: any) {
+        throw new BadRequestError(
+          error.message || 'Invalid pagination parameters',
+        );
+      }
+
       const search = req.query.search ? String(req.query.search) : undefined;
+      
+      // Additional validation for search parameter (defense in depth)
+      if (search) {
+        try {
+          validateNoXSS(search, 'search parameter');
+          validateNoFormatSpecifiers(search, 'search parameter');
+          
+          if (search.length > 1000) {
+            throw new BadRequestError('Search parameter too long (max 1000 characters)');
+          }
+        } catch (error: any) {
+          throw new BadRequestError(
+            error.message || 'Search parameter contains potentially dangerous content'
+          );
+        }
+      }
+      
       const permissions = req.query.permissions
         ? String(req.query.permissions).split(',')
         : undefined;
@@ -186,14 +320,6 @@ export const listKnowledgeBases =
       const sortOrder = req.query.sortOrder
         ? String(req.query.sortOrder)
         : 'asc';
-
-      // Validate pagination parameters
-      if (page < 1) {
-        throw new BadRequestError('Page must be greater than 0');
-      }
-      if (limit < 1 || limit > 100) {
-        throw new BadRequestError('Limit must be between 1 and 100');
-      }
 
       // Validate sort parameters
       const validSortFields = [
@@ -764,6 +890,7 @@ export const uploadRecordsToKB =
           version: 1,
           webUrl: webUrl,
           mimeType: correctMimeType,
+          connectorId: kbId
         };
 
         const fileRecord: IFileRecordDocument = {
@@ -1091,6 +1218,7 @@ export const uploadRecordsToFolder =
           version: 1,
           webUrl: webUrl,
           mimeType: correctMimeType,
+          connectorId: kbId
         };
 
         const fileRecord: IFileRecordDocument = {
@@ -1208,7 +1336,7 @@ export const updateRecord =
 
       // Check if there's a file in the request
       const hasFileBuffer = req.body.fileBuffer && req.body.fileBuffer.buffer;
-      let originalname, mimetype, size, extension, lastModified;
+      let originalname, mimetype, size, extension, lastModified, sha256Hash;
 
       if (hasFileBuffer) {
         ({ originalname, mimetype, size, lastModified } = req.body.fileBuffer);
@@ -1219,6 +1347,9 @@ export const updateRecord =
               .substring(originalname.lastIndexOf('.') + 1)
               .toLowerCase()
           : null;
+        // Calculate SHA-256 checksum for security
+        const buffer = req.body.fileBuffer.buffer;
+        sha256Hash = crypto.createHash('sha256').update(buffer).digest('hex');
       }
 
       if (!recordName) {
@@ -1240,6 +1371,7 @@ export const updateRecord =
           size,
           extension,
           lastModified,
+          sha256Hash,
         };
 
         // Get filename without extension to use as record name
@@ -1431,12 +1563,43 @@ export const getKBContent =
         throw new BadRequestError('Knowledge Base ID is required');
       }
 
-      // Extract and parse query parameters
-      const page = req.query.page ? parseInt(String(req.query.page), 10) : 1;
-      const limit = req.query.limit
-        ? parseInt(String(req.query.limit), 10)
-        : 20;
+      // Extract and parse query parameters with safe integer validation
+      let page: number;
+      let limit: number;
+      try {
+        const pagination = safeParsePagination(
+          req.query.page as string | undefined,
+          req.query.limit as string | undefined,
+          1,
+          20,
+          100,
+        );
+        page = pagination.page;
+        limit = pagination.limit;
+      } catch (error: any) {
+        throw new BadRequestError(
+          error.message || 'Invalid pagination parameters',
+        );
+      }
+
       const search = req.query.search ? String(req.query.search) : undefined;
+      
+      // Validate search parameter for XSS and format specifiers
+      if (search) {
+        try {
+          validateNoXSS(search, 'search parameter');
+          validateNoFormatSpecifiers(search, 'search parameter');
+          
+          if (search.length > 1000) {
+            throw new BadRequestError('Search parameter too long (max 1000 characters)');
+          }
+        } catch (error: any) {
+          throw new BadRequestError(
+            error.message || 'Search parameter contains potentially dangerous content'
+          );
+        }
+      }
+      
       const recordTypes = req.query.recordTypes
         ? String(req.query.recordTypes).split(',')
         : undefined;
@@ -1450,13 +1613,29 @@ export const getKBContent =
         ? String(req.query.indexingStatus).split(',')
         : undefined;
 
-      // Parse date filters
-      const dateFrom = req.query.dateFrom
-        ? parseInt(String(req.query.dateFrom), 10)
-        : undefined;
-      const dateTo = req.query.dateTo
-        ? parseInt(String(req.query.dateTo), 10)
-        : undefined;
+      // Parse date filters with safe integer validation
+      let dateFrom: number | undefined;
+      let dateTo: number | undefined;
+      if (req.query.dateFrom) {
+        try {
+          dateFrom = parseInt(String(req.query.dateFrom), 10);
+          if (isNaN(dateFrom) || dateFrom < 0) {
+            throw new BadRequestError('Invalid dateFrom parameter');
+          }
+        } catch (error: any) {
+          throw new BadRequestError('Invalid dateFrom parameter');
+        }
+      }
+      if (req.query.dateTo) {
+        try {
+          dateTo = parseInt(String(req.query.dateTo), 10);
+          if (isNaN(dateTo) || dateTo < 0) {
+            throw new BadRequestError('Invalid dateTo parameter');
+          }
+        } catch (error: any) {
+          throw new BadRequestError('Invalid dateTo parameter');
+        }
+      }
 
       // Sorting parameters
       const sortBy = req.query.sortBy
@@ -1469,14 +1648,6 @@ export const getKBContent =
         sortOrderParam === 'asc' || sortOrderParam === 'desc'
           ? sortOrderParam
           : 'desc';
-
-      // Validate pagination parameters
-      if (page < 1) {
-        throw new BadRequestError('Page must be greater than 0');
-      }
-      if (limit < 1 || limit > 100) {
-        throw new BadRequestError('Limit must be between 1 and 100');
-      }
 
       logger.info('Getting KB records', {
         kbId,
@@ -1587,12 +1758,43 @@ export const getFolderContents =
         throw new BadRequestError('Knowledge Base ID is required');
       }
 
-      // Extract and parse query parameters
-      const page = req.query.page ? parseInt(String(req.query.page), 10) : 1;
-      const limit = req.query.limit
-        ? parseInt(String(req.query.limit), 10)
-        : 20;
+      // Extract and parse query parameters with safe integer validation
+      let page: number;
+      let limit: number;
+      try {
+        const pagination = safeParsePagination(
+          req.query.page as string | undefined,
+          req.query.limit as string | undefined,
+          1,
+          20,
+          100,
+        );
+        page = pagination.page;
+        limit = pagination.limit;
+      } catch (error: any) {
+        throw new BadRequestError(
+          error.message || 'Invalid pagination parameters',
+        );
+      }
+
       const search = req.query.search ? String(req.query.search) : undefined;
+      
+      // Validate search parameter for XSS and format specifiers
+      if (search) {
+        try {
+          validateNoXSS(search, 'search parameter');
+          validateNoFormatSpecifiers(search, 'search parameter');
+          
+          if (search.length > 1000) {
+            throw new BadRequestError('Search parameter too long (max 1000 characters)');
+          }
+        } catch (error: any) {
+          throw new BadRequestError(
+            error.message || 'Search parameter contains potentially dangerous content'
+          );
+        }
+      }
+      
       const recordTypes = req.query.recordTypes
         ? String(req.query.recordTypes).split(',')
         : undefined;
@@ -1606,13 +1808,29 @@ export const getFolderContents =
         ? String(req.query.indexingStatus).split(',')
         : undefined;
 
-      // Parse date filters
-      const dateFrom = req.query.dateFrom
-        ? parseInt(String(req.query.dateFrom), 10)
-        : undefined;
-      const dateTo = req.query.dateTo
-        ? parseInt(String(req.query.dateTo), 10)
-        : undefined;
+      // Parse date filters with safe integer validation
+      let dateFrom: number | undefined;
+      let dateTo: number | undefined;
+      if (req.query.dateFrom) {
+        try {
+          dateFrom = parseInt(String(req.query.dateFrom), 10);
+          if (isNaN(dateFrom) || dateFrom < 0) {
+            throw new BadRequestError('Invalid dateFrom parameter');
+          }
+        } catch (error: any) {
+          throw new BadRequestError('Invalid dateFrom parameter');
+        }
+      }
+      if (req.query.dateTo) {
+        try {
+          dateTo = parseInt(String(req.query.dateTo), 10);
+          if (isNaN(dateTo) || dateTo < 0) {
+            throw new BadRequestError('Invalid dateTo parameter');
+          }
+        } catch (error: any) {
+          throw new BadRequestError('Invalid dateTo parameter');
+        }
+      }
 
       // Sorting parameters
       const sortBy = req.query.sortBy
@@ -1625,14 +1843,6 @@ export const getFolderContents =
         sortOrderParam === 'asc' || sortOrderParam === 'desc'
           ? sortOrderParam
           : 'desc';
-
-      // Validate pagination parameters
-      if (page < 1) {
-        throw new BadRequestError('Page must be greater than 0');
-      }
-      if (limit < 1 || limit > 100) {
-        throw new BadRequestError('Limit must be between 1 and 100');
-      }
 
       logger.info('Getting KB records', {
         kbId,
@@ -1744,6 +1954,23 @@ export const getAllRecords =
         ? parseInt(String(req.query.limit), 10)
         : 20;
       const search = req.query.search ? String(req.query.search) : undefined;
+      
+      // Validate search parameter for XSS and format specifiers
+      if (search) {
+        try {
+          validateNoXSS(search, 'search parameter');
+          validateNoFormatSpecifiers(search, 'search parameter');
+          
+          if (search.length > 1000) {
+            throw new BadRequestError('Search parameter too long (max 1000 characters)');
+          }
+        } catch (error: any) {
+          throw new BadRequestError(
+            error.message || 'Search parameter contains potentially dangerous content'
+          );
+        }
+      }
+      
       const recordTypes = req.query.recordTypes
         ? String(req.query.recordTypes).split(',')
         : undefined;
@@ -1978,6 +2205,7 @@ export const reindexRecord =
     try {
       const { recordId } = req.params as { recordId: string };
       const { userId, orgId } = req.user || {};
+      const { depth = 0 } = req.body || {};
 
       // Validate user authentication
       if (!userId || !orgId) {
@@ -1986,11 +2214,12 @@ export const reindexRecord =
         );
       }
 
-      // Call the Python service to get record
+      // Call the Python service to reindex record
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/records/${recordId}/reindex`,
         HttpMethod.POST,
         req.headers as Record<string, string>,
+        { depth },
       );
 
       handleConnectorResponse(
@@ -2000,7 +2229,7 @@ export const reindexRecord =
         'Record not reindexed',
       );
 
-      // Log successful retrieval
+      // Log successful reindex
       logger.info('Record reindexed successfully');
     } catch (error: any) {
       logger.error('Error reindexing record', {
@@ -2009,7 +2238,53 @@ export const reindexRecord =
       });
       const handleError = handleBackendError(error, 'reindex record');
       next(handleError);
-      return; // Added return statement
+      return;
+    }
+  };
+
+export const reindexRecordGroup =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { recordGroupId } = req.params as { recordGroupId: string };
+      const { userId, orgId } = req.user || {};
+      const { depth = 0 } = req.body || {};
+
+      // Validate user authentication
+      if (!userId || !orgId) {
+        throw new UnauthorizedError(
+          'User not authenticated or missing organization ID',
+        );
+      }
+
+      // Call the Python service to reindex record group
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/record-groups/${recordGroupId}/reindex`,
+        HttpMethod.POST,
+        req.headers as Record<string, string>,
+        { depth },
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Record group not found',
+        'Record group not reindexed',
+      );
+
+      // Log successful reindex
+      logger.info('Record group reindexed successfully', {
+        recordGroupId,
+        depth,
+      });
+    } catch (error: any) {
+      logger.error('Error reindexing record group', {
+        recordGroupId: req.params.recordGroupId,
+        error,
+      });
+      const handleError = handleBackendError(error, 'reindex record group');
+      next(handleError);
+      return;
     }
   };
 
@@ -2071,26 +2346,30 @@ export const createKBPermission =
         throw new BadRequestError('User IDs or team IDs are required');
       }
 
-      if (!role) {
-        throw new BadRequestError('Role is required');
+      // Role is required only if users are provided (teams don't need roles)
+      if (userIds.length > 0 && !role) {
+        throw new BadRequestError('Role is required when adding users');
       }
 
-      const validRoles = [
-        'OWNER',
-        'ORGANIZER',
-        'FILEORGANIZER',
-        'WRITER',
-        'COMMENTER',
-        'READER',
-      ];
-      if (!validRoles.includes(role)) {
-        throw new BadRequestError(
-          `Invalid role. Must be one of: ${validRoles.join(', ')}`,
-        );
+      // Validate role only if it's provided (for users)
+      if (role) {
+        const validRoles = [
+          'OWNER',
+          'ORGANIZER',
+          'FILEORGANIZER',
+          'WRITER',
+          'COMMENTER',
+          'READER',
+        ];
+        if (!validRoles.includes(role)) {
+          throw new BadRequestError(
+            `Invalid role. Must be one of: ${validRoles.join(', ')}`,
+          );
+        }
       }
 
       logger.info(
-        `Creating ${role} permissions for ${userIds.length} users and ${teamIds.length} teams on KB ${kbId}`,
+        `Creating ${role || 'team'} permissions for ${userIds.length} users and ${teamIds.length} teams on KB ${kbId}`,
         {
           userIds:
             userIds.length > 5
@@ -2100,20 +2379,25 @@ export const createKBPermission =
             teamIds.length > 5
               ? `${teamIds.slice(0, 5).join(', ')} and ${teamIds.length - 5} more`
               : teamIds.join(', '),
-          role,
+          role: role || 'N/A (team access)',
         },
       );
 
       try {
+        const payload: { userIds: string[]; teamIds: string[]; role?: string } = {
+          userIds: userIds,
+          teamIds: teamIds,
+        };
+        // Only include role if it's provided (for users)
+        if (role) {
+          payload.role = role;
+        }
+
         const response = await executeConnectorCommand(
           `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
           HttpMethod.POST,
           req.headers as Record<string, string>,
-          {
-            userIds: userIds,
-            teamIds: teamIds,
-            role: role,
-          },
+          payload,
         );
 
         if (response.statusCode !== 200) {
@@ -2126,7 +2410,7 @@ export const createKBPermission =
           kbId,
           grantedCount: permissionResult.grantedCount,
           updatedCount: permissionResult.updatedCount,
-          role,
+          role: role || 'N/A (team access)',
         });
 
         res.status(201).json({
@@ -2460,17 +2744,17 @@ export const getConnectorStats =
         );
       }
 
-      if (!req.params.connector) {
-        throw new BadRequestError('Connector is required');
+      if (!req.params.connectorId) {
+        throw new BadRequestError('Connector ID is required');
       }
 
       try {
         // Call the Python service to get record
 
-        let queryParams = new URLSearchParams();
+        const queryParams = new URLSearchParams();
 
         queryParams.append('org_id', orgId);
-        queryParams.append('connector', req.params.connector);
+        queryParams.append('connector_id', req.params.connectorId);
         const response = await executeConnectorCommand(
           `${appConfig.connectorBackend}/api/v1/stats?${queryParams.toString()}`,
           HttpMethod.GET,
@@ -2541,14 +2825,20 @@ export const getRecordBuffer =
     try {
       const { recordId } = req.params as { recordId: string };
       const { userId, orgId } = req.user || {};
-
+      const { convertTo } = req.query as { convertTo: string };
       if (!userId || !orgId) {
         throw new BadRequestError('User authentication is required');
       }
 
+      const queryParams = new URLSearchParams();
+      if (convertTo) {
+        logger.info('Converting file to ', { convertTo });
+        queryParams.append('convertTo', convertTo);
+      }
+
       // Make request to FastAPI backend
       const response = await axios.get(
-        `${connectorUrl}/api/v1/stream/record/${recordId}`,
+        `${connectorUrl}/api/v1/stream/record/${recordId}?${queryParams.toString()}`,
         {
           responseType: 'stream',
           headers: {
@@ -2606,19 +2896,20 @@ export const getRecordBuffer =
     }
   };
 
-export const reindexAllRecords =
+export const reindexFailedRecords =
   (recordRelationService: RecordRelationService, appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
       const app = req.body.app;
+      const connectorId = req.body.connectorId;
       if (!userId || !orgId) {
         throw new BadRequestError('User not authenticated');
       }
 
       await validateActiveConnector(
-        app,
+        connectorId,
         appConfig,
         req.headers as Record<string, string>,
       );
@@ -2627,10 +2918,11 @@ export const reindexAllRecords =
         userId,
         orgId,
         app: normalizeAppName(app),
+        connectorId,
       };
 
       const reindexResponse =
-        await recordRelationService.reindexAllRecords(reindexPayload);
+        await recordRelationService.reindexFailedRecords(reindexPayload);
 
       res.status(200).json({
         reindexResponse,
@@ -2638,7 +2930,7 @@ export const reindexAllRecords =
 
       return; // Added return statement
     } catch (error: any) {
-      logger.error('Error re indexing all records', {
+      logger.error('Error re indexing failed records', {
         error,
       });
       next(error);
@@ -2653,12 +2945,13 @@ export const resyncConnectorRecords =
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
       const connectorName = req.body.connectorName;
+      const connectorId = req.body.connectorId;
       if (!userId || !orgId) {
         throw new BadRequestError('User not authenticated');
       }
 
       await validateActiveConnector(
-        connectorName,
+        connectorId,
         appConfig,
         req.headers as Record<string, string>,
       );
@@ -2667,6 +2960,7 @@ export const resyncConnectorRecords =
         userId,
         orgId,
         connectorName: normalizeAppName(connectorName),
+        connectorId,
       };
 
       const resyncConnectorResponse =

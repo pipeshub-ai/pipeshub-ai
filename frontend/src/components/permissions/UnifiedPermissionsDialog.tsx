@@ -8,6 +8,7 @@ import deleteIcon from '@iconify-icons/mdi/delete-outline';
 import searchIcon from '@iconify-icons/eva/search-outline';
 import teamIcon from '@iconify-icons/mdi/account-group';
 import warningIcon from '@iconify-icons/eva/alert-triangle-outline';
+import CreateTeamDialog from 'src/sections/knowledgebase/components/dialogs/create-team-dialog';
 
 import {
   Box,
@@ -88,11 +89,11 @@ export interface Team {
 
 export interface UnifiedPermission {
   id: string;
-  userId: string;
+  userId?: string; // Only for users
   type: 'USER' | 'TEAM';
   name: string;
   email?: string;
-  role: UnifiedRole;
+  role?: UnifiedRole; // Optional - teams don't have roles
   createdAtTimestamp?: number;
   updatedAtTimestamp?: number;
 }
@@ -109,14 +110,16 @@ export interface UnifiedPermissionsApi {
   createTeam: (data: {
     name: string;
     description?: string;
-    userIds: string[];
-    role: UnifiedRole;
+    userIds?: string[];
+    role?: UnifiedRole;
+    memberRoles?: Array<{ userId: string; role: UnifiedRole }>;
   }) => Promise<Team>;
   // Grant permissions to users and/or teams
+  // Role is required for users, but optional for teams (teams don't have roles)
   createPermissions: (data: {
     userIds: string[];
     teamIds: string[];
-    role: UnifiedRole;
+    role?: UnifiedRole; // Optional - required if userIds provided
   }) => Promise<void>;
   // Update role for a specific user or team (pass exactly one of userIds/teamIds with a single id)
   updatePermissions: (data: {
@@ -212,15 +215,6 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
 
   // Create Team dialog
   const [teamDialogOpen, setTeamDialogOpen] = useState(false);
-  const [newTeamName, setNewTeamName] = useState('');
-  const [newTeamDescription, setNewTeamDescription] = useState('');
-  const [teamUsers, setTeamUsers] = useState<User[]>([]);
-  const [teamRole, setTeamRole] = useState<UnifiedRole>('READER');
-  const [creatingTeam, setCreatingTeam] = useState(false);
-  
-  // Team validation state
-  const [showTeamNameError, setShowTeamNameError] = useState(false);
-  const [showTeamDescriptionError, setShowTeamDescriptionError] = useState(false);
 
   // Pagination
   const [permissionsPage, setPermissionsPage] = useState(0);
@@ -288,15 +282,24 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
       setError('Please select at least one user or team');
       return;
     }
+    
+    const userIds = selectedUsers.map((u) => u.id).filter(Boolean);
+    const teamIds = selectedTeams.map((t) => t.id).filter(Boolean);
+    
+    // Role is required if users are selected
+    if (userIds.length > 0 && !newRole) {
+      setError('Please select a role for users');
+      return;
+    }
+    
     setActionLoading(true);
     setError(null);
     try {
-      const userIds = selectedUsers.map((u) => u.id).filter(Boolean);
-      const teamIds = selectedTeams.map((t) => t.id).filter(Boolean);
-      console.log('userIds', userIds);
-      console.log('teamIds', teamIds);
-      console.log('newRole', newRole);
-      await api.createPermissions({ userIds, teamIds, role: newRole });
+      await api.createPermissions({ 
+        userIds, 
+        teamIds, 
+        role: userIds.length > 0 ? newRole : undefined // Only send role if users are selected
+      });
       setShowAddForm(false);
       setSelectedUsers([]);
       setSelectedTeams([]);
@@ -310,6 +313,16 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
   };
 
   const startEdit = (p: UnifiedPermission) => {
+    // Teams don't have roles, so we can't edit them
+    if (p.type === 'TEAM') {
+      setError('Teams do not have roles. Access is determined by individual team member roles.');
+      return;
+    }
+    // For USER type, role should always be defined
+    if (!p.role) {
+      setError('Cannot edit permission: role is not defined.');
+      return;
+    }
     setEditingEntity({ type: p.type, id: p.id });
     setEditRole(p.role);
   };
@@ -320,14 +333,15 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
 
   const handleUpdate = async () => {
     if (!editingEntity) return;
+    // Teams don't have roles, so we can only update users
+    if (editingEntity.type === 'TEAM') {
+      setError('Teams do not have roles. Only user permissions can be updated.');
+      return;
+    }
     setActionLoading(true);
     setError(null);
     try {
-      if (editingEntity.type === 'USER') {
-        await api.updatePermissions({ userIds: [editingEntity.id], role: editRole });
-      } else {
-        await api.updatePermissions({ teamIds: [editingEntity.id], role: editRole });
-      }
+      await api.updatePermissions({ userIds: [editingEntity.id], role: editRole });
       setEditingEntity(null);
       await loadAll();
     } catch (e: any) {
@@ -359,54 +373,54 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
 
   const handleOpenTeamDialog = () => {
     setTeamDialogOpen(true);
-    // Reset validation states when opening dialog
-    setShowTeamNameError(false);
-    setShowTeamDescriptionError(false);
   };
 
   const handleCloseTeamDialog = () => {
     setTeamDialogOpen(false);
-    // Reset form and validation states when closing dialog
-    setNewTeamName('');
-    setNewTeamDescription('');
-    setTeamUsers([]);
-    setTeamRole('READER');
-    setShowTeamNameError(false);
-    setShowTeamDescriptionError(false);
   };
 
-  const handleCreateTeam = async () => {
-    // Validate fields before submission
-    const hasNameError = !newTeamName.trim();
-    const hasDescriptionError = !newTeamDescription.trim();
-    
-    setShowTeamNameError(hasNameError);
-    setShowTeamDescriptionError(hasDescriptionError);
-    
-    if (hasNameError || hasDescriptionError) {
-      return; // Don't proceed if validation fails
-    }
-    
-    setCreatingTeam(true);
+  const handleCreateTeam = async (formData: {
+    name: string;
+    description?: string;
+    role: string;
+    members: any[];
+    memberRoles?: Array<{ userId: string; role: string }>;
+  }) => {
     setError(null);
     try {
+      // Convert TeamFormData format to UnifiedPermissionsApi format
+      const memberRoles: Array<{ userId: string; role: UnifiedRole }> = formData.memberRoles 
+        ? formData.memberRoles.map((mr) => ({
+            userId: mr.userId,
+            role: mr.role as UnifiedRole,
+          }))
+        : formData.members.map((member) => ({
+            userId: member.id || member._key || member._id || member.userId || '',
+            role: (formData.role || 'READER') as UnifiedRole,
+          })).filter((mr) => mr.userId);
+
       const created = await api.createTeam({
-        name: newTeamName.trim(),
-        description: newTeamDescription.trim() || undefined,
-        userIds: teamUsers.map((u) => u.id),
-        role: teamRole,
+        name: formData.name,
+        description: formData.description,
+        memberRoles,
       });
-      setTeams((prev) => [created, ...prev]);
-      setSelectedTeams((prev) => [created, ...prev]);
-      setNewTeamName('');
-      setNewTeamDescription('');
-      setTeamUsers([]);
-      setTeamRole('READER');
+
+      // Reload teams list to ensure we have the latest data
+      const updatedTeams = await api.loadTeams();
+      setTeams(updatedTeams || []);
+
+      // Add the newly created team to selected teams if it's not already there
+      if (created && created.id) {
+        setSelectedTeams((prev) => {
+          const exists = prev.some((t) => t.id === created.id);
+          return exists ? prev : [created, ...prev];
+        });
+      }
+
       handleCloseTeamDialog();
     } catch (e: any) {
-      setError(e?.message || 'Failed to create team');
-    } finally {
-      setCreatingTeam(false);
+      console.error('Error creating team:', e);
+      throw new Error(e?.message || 'Failed to create team');
     }
   };
 
@@ -536,10 +550,7 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
                       size="small"
                       startIcon={<Icon icon={addIcon} width={16} height={16} />}
                       onClick={() => setShowAddForm(true)}
-                      disabled={
-                        actionLoading ||
-                        (availableUsers.length === 0 && availableTeams.length === 0)
-                      }
+                      disabled={actionLoading}
                       sx={{
                         textTransform: 'none',
                         fontWeight: 500,
@@ -868,36 +879,50 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
                           alignItems="flex-end"
                           justifyContent="space-between"
                         >
-                          <FormControl size="small" sx={{ minWidth: 280 }}>
+                          {selectedUsers.length > 0 && (
+                            <FormControl size="small" sx={{ minWidth: 280 }}>
+                              <Typography
+                                variant="body2"
+                                sx={{ mb: 1, fontWeight: 500, color: theme.palette.text.primary }}
+                              >
+                                Permission Role {selectedTeams.length > 0 && '(for users only)'}
+                              </Typography>
+                              <Select
+                                value={newRole}
+                                onChange={(e) => setNewRole(e.target.value as UnifiedRole)}
+                                sx={{
+                                  bgcolor: isDark
+                                    ? alpha(theme.palette.background.paper, 0.8)
+                                    : theme.palette.background.paper,
+                                }}
+                              >
+                                {ROLE_OPTIONS.map((option) => (
+                                  <MenuItem key={option.value} value={option.value}>
+                                    <Box>
+                                      <Typography variant="body2" fontWeight={500}>
+                                        {option.label}
+                                      </Typography>
+                                      <Typography variant="caption" color="text.secondary">
+                                        {option.description}
+                                      </Typography>
+                                    </Box>
+                                  </MenuItem>
+                                ))}
+                              </Select>
+                            </FormControl>
+                          )}
+                          {selectedTeams.length > 0 && selectedUsers.length === 0 && (
                             <Typography
                               variant="body2"
-                              sx={{ mb: 1, fontWeight: 500, color: theme.palette.text.primary }}
-                            >
-                              Permission Role
-                            </Typography>
-                            <Select
-                              value={newRole}
-                              onChange={(e) => setNewRole(e.target.value as UnifiedRole)}
-                              sx={{
-                                bgcolor: isDark
-                                  ? alpha(theme.palette.background.paper, 0.8)
-                                  : theme.palette.background.paper,
+                              sx={{ 
+                                color: theme.palette.text.secondary,
+                                fontStyle: 'italic',
+                                fontSize: '0.875rem'
                               }}
                             >
-                              {ROLE_OPTIONS.map((option) => (
-                                <MenuItem key={option.value} value={option.value}>
-                                  <Box>
-                                    <Typography variant="body2" fontWeight={500}>
-                                      {option.label}
-                                    </Typography>
-                                    <Typography variant="caption" color="text.secondary">
-                                      {option.description}
-                                    </Typography>
-                                  </Box>
-                                </MenuItem>
-                              ))}
-                            </Select>
-                          </FormControl>
+                              Teams don&apos;t have roles. Access is determined by individual team member roles.
+                            </Typography>
+                          )}
 
                           <Stack direction="row" spacing={1}>
                             <Button
@@ -938,7 +963,16 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
                             >
                               {actionLoading
                                 ? 'Adding...'
-                                : `Add ${selectedUsers.length + selectedTeams.length || ''} ${selectedUsers.length + selectedTeams.length === 1 ? 'Member' : 'Members'}`}
+                                : (() => {
+                                    const parts = [];
+                                    if (selectedUsers.length > 0) {
+                                      parts.push(`${selectedUsers.length} ${selectedUsers.length === 1 ? 'Member' : 'Members'}`);
+                                    }
+                                    if (selectedTeams.length > 0) {
+                                      parts.push(`${selectedTeams.length} ${selectedTeams.length === 1 ? 'Team' : 'Teams'}`);
+                                    }
+                                    return parts.length > 0 ? `Add ${parts.join(' and ')}` : 'Add';
+                                  })()}
                             </Button>
                           </Stack>
                         </Stack>
@@ -998,7 +1032,6 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
                     <Button
                       variant="outlined"
                       onClick={() => setShowAddForm(true)}
-                      disabled={availableUsers.length === 0 && availableTeams.length === 0}
                       size="small"
                       sx={{ textTransform: 'none' }}
                     >
@@ -1162,25 +1195,61 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
                                       </Button>
                                     </Stack>
                                   ) : (
-                                    <Chip
-                                      label={
-                                        ROLE_OPTIONS.find((r) => r.value === p.role)?.label ||
-                                        p.role
-                                      }
-                                      color={getRoleColor(p.role) as any}
-                                      variant="filled"
-                                      size="small"
-                                      sx={{
-                                        height: 28,
-                                        fontSize: '0.75rem',
-                                        fontWeight: 600,
-                                        borderRadius: 1,
-                                        '&.MuiChip-colorDefault': {
-                                          bgcolor: alpha(theme.palette.text.secondary, 0.1),
-                                          color: theme.palette.text.secondary,
-                                        },
-                                      }}
-                                    />
+                                    p.type === 'TEAM' ? (
+                                      <Chip
+                                        label="Team Access"
+                                        color="info"
+                                        variant="outlined"
+                                        size="small"
+                                        sx={{
+                                          height: 28,
+                                          fontSize: '0.75rem',
+                                          fontWeight: 600,
+                                          borderRadius: 1,
+                                        }}
+                                      />
+                                    ) : (
+                                      (() => {
+                                        const role = p.role;
+                                        if (!role) {
+                                          return (
+                                            <Chip
+                                              label="No Role"
+                                              color="default"
+                                              variant="outlined"
+                                              size="small"
+                                              sx={{
+                                                height: 28,
+                                                fontSize: '0.75rem',
+                                                fontWeight: 600,
+                                                borderRadius: 1,
+                                              }}
+                                            />
+                                          );
+                                        }
+                                        return (
+                                          <Chip
+                                            label={
+                                              ROLE_OPTIONS.find((r) => r.value === role)?.label ||
+                                              role
+                                            }
+                                            color={getRoleColor(role)}
+                                            variant="filled"
+                                            size="small"
+                                            sx={{
+                                              height: 28,
+                                              fontSize: '0.75rem',
+                                              fontWeight: 600,
+                                              borderRadius: 1,
+                                              '&.MuiChip-colorDefault': {
+                                                bgcolor: alpha(theme.palette.text.secondary, 0.1),
+                                                color: theme.palette.text.secondary,
+                                              },
+                                            }}
+                                          />
+                                        );
+                                      })()
+                                    )
                                   )}
                                 </TableCell>
                                 <TableCell sx={{ py: 1.5 }}>
@@ -1202,45 +1271,51 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
                                 </TableCell>
                                 <TableCell align="right" sx={{ py: 1.5 }}>
                                   <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-                                    <Tooltip title="Edit permissions">
-                                      <span>
-                                        <IconButton
-                                          size="small"
-                                          onClick={() => startEdit(p)}
-                                          disabled={actionLoading || p.role === 'OWNER'}
-                                          sx={{
-                                            color: theme.palette.text.secondary,
-                                            '&:hover': {
-                                              bgcolor: alpha(theme.palette.primary.main, 0.08),
-                                              color: theme.palette.primary.main,
-                                            },
-                                          }}
-                                        >
-                                          <Icon icon={editIcon} width={14} height={14} />
-                                        </IconButton>
-                                      </span>
-                                    </Tooltip>
-                                    <Tooltip title="Remove access">
-                                      <span>
-                                        <IconButton
-                                          size="small"
-                                          onClick={() => {
-                                            setToDelete(p);
-                                            setDeleteOpen(true);
-                                          }}
-                                          disabled={actionLoading || p.role === 'OWNER'}
-                                          sx={{
-                                            color: theme.palette.text.secondary,
-                                            '&:hover': {
-                                              bgcolor: alpha(theme.palette.error.main, 0.08),
-                                              color: theme.palette.error.main,
-                                            },
-                                          }}
-                                        >
-                                          <Icon icon={deleteIcon} width={14} height={14} />
-                                        </IconButton>
-                                      </span>
-                                    </Tooltip>
+                                    {/* Only show edit button for non-OWNER users and non-TEAM types */}
+                                    {p.type !== 'TEAM' && p.role !== 'OWNER' && (
+                                      <Tooltip title="Edit permissions">
+                                        <span>
+                                          <IconButton
+                                            size="small"
+                                            onClick={() => startEdit(p)}
+                                            disabled={actionLoading}
+                                            sx={{
+                                              color: theme.palette.text.secondary,
+                                              '&:hover': {
+                                                bgcolor: alpha(theme.palette.primary.main, 0.08),
+                                                color: theme.palette.primary.main,
+                                              },
+                                            }}
+                                          >
+                                            <Icon icon={editIcon} width={14} height={14} />
+                                          </IconButton>
+                                        </span>
+                                      </Tooltip>
+                                    )}
+                                    {/* Only show delete button for non-OWNER users */}
+                                    {p.role !== 'OWNER' && (
+                                      <Tooltip title="Remove access">
+                                        <span>
+                                          <IconButton
+                                            size="small"
+                                            onClick={() => {
+                                              setToDelete(p);
+                                              setDeleteOpen(true);
+                                            }}
+                                            disabled={actionLoading}
+                                            sx={{
+                                              color: theme.palette.text.secondary,
+                                              '&:hover': {
+                                                bgcolor: alpha(theme.palette.error.main, 0.08),
+                                                color: theme.palette.error.main,
+                                              },
+                                            }}
+                                          >
+                                            <Icon icon={deleteIcon} width={14} height={14} />
+                                          </IconButton>
+                                        </span>
+                                      </Tooltip>
+                                    )}
                                   </Stack>
                                 </TableCell>
                               </TableRow>
@@ -1391,311 +1466,17 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
       </Dialog>
 
       {/* Create Team dialog */}
-      <Dialog
+      <CreateTeamDialog
         open={teamDialogOpen}
         onClose={handleCloseTeamDialog}
-        maxWidth="sm"
-        fullWidth
-        TransitionComponent={Fade}
-        PaperProps={{
-          sx: {
-            borderRadius: 1,
-            boxShadow: '0 20px 60px rgba(0, 0, 0, 0.25)',
-            overflow: 'hidden',
-            zIndex: 1500,
-            border: `2px solid ${alpha(theme.palette.primary.main, 0.2)}`,
-          },
+        onSubmit={handleCreateTeam}
+        onSuccess={() => {
+          // Success is handled in handleCreateTeam
         }}
-      >
-        <DialogTitle
-          sx={{
-            p: 2.5,
-            borderBottom: `1px solid ${alpha(theme.palette.divider, 0.12)}`,
-            bgcolor: alpha(theme.palette.primary.main, 0.03),
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-          }}
-        >
-          <Stack direction="row" alignItems="center" spacing={1.5}>
-            <Box
-              sx={{
-                width: 32,
-                height: 32,
-                borderRadius: '6px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                bgcolor: alpha(theme.palette.success.main, 0.1),
-                color: theme.palette.success.main,
-              }}
-            >
-              <Icon icon={addIcon} width={16} height={16} />
-            </Box>
-            <Typography variant="subtitle1" fontWeight={600}>
-              Create New Team
-            </Typography>
-          </Stack>
-          <IconButton
-            onClick={handleCloseTeamDialog}
-            size="small"
-            sx={{
-              color: theme.palette.text.secondary,
-              '&:hover': {
-                color: theme.palette.text.primary,
-                bgcolor: alpha(theme.palette.action.hover, 0.1),
-              },
-            }}
-          >
-            <Icon icon={closeIcon} width={18} height={18} />
-          </IconButton>
-        </DialogTitle>
-        <DialogContent sx={{ p: 3, minHeight: 450, mt: 2 }}>
-          <Stack spacing={3} mt={2}>
-            <TextField
-              label="Team Name"
-              value={newTeamName}
-              onChange={(e) => {
-                setNewTeamName(e.target.value);
-                // Clear validation error when user starts typing
-                if (showTeamNameError) setShowTeamNameError(false);
-              }}
-              onBlur={() => {
-                // Show error on blur if field is empty and user has interacted
-                if (newTeamName.trim() === '' && showTeamNameError) {
-                  setShowTeamNameError(true);
-                }
-              }}
-              fullWidth
-              autoFocus
-              required
-              error={showTeamNameError && !newTeamName.trim()}
-              helperText={showTeamNameError && !newTeamName.trim() ? 'Team name is required' : ''}
-              sx={{
-                '& .MuiOutlinedInput-root': {
-                  borderRadius: 1,
-                  backgroundColor: alpha(theme.palette.background.paper, 0.8),
-                  border: `1px solid ${alpha(theme.palette.divider, 0.2)}`,
-                  '&:hover': {
-                    borderColor: alpha(theme.palette.primary.main, 0.3),
-                  },
-                  '&.Mui-focused': {
-                    borderColor: theme.palette.primary.main,
-                    backgroundColor: alpha(theme.palette.background.paper, 0.95),
-                  },
-                  '&.Mui-error': {
-                    borderColor: theme.palette.error.main,
-                  },
-                },
-              }}
-            />
-            <TextField
-              label="Description"
-              value={newTeamDescription}
-              onChange={(e) => {
-                setNewTeamDescription(e.target.value);
-                // Clear validation error when user starts typing
-                if (showTeamDescriptionError) setShowTeamDescriptionError(false);
-              }}
-              onBlur={() => {
-                // Show error on blur if field is empty and user has interacted
-                if (newTeamDescription.trim() === '' && showTeamDescriptionError) {
-                  setShowTeamDescriptionError(true);
-                }
-              }}
-              fullWidth
-              multiline
-              rows={3}
-              required
-              error={showTeamDescriptionError && !newTeamDescription.trim()}
-              helperText={showTeamDescriptionError && !newTeamDescription.trim() ? 'Team description is required' : ''}
-              placeholder="Describe the team's purpose..."
-              sx={{
-                '& .MuiOutlinedInput-root': {
-                  borderRadius: 1,
-                  backgroundColor: alpha(theme.palette.background.paper, 0.8),
-                  border: `1px solid ${alpha(theme.palette.divider, 0.2)}`,
-                  '&:hover': {
-                    borderColor: alpha(theme.palette.primary.main, 0.3),
-                  },
-                  '&.Mui-focused': {
-                    borderColor: theme.palette.primary.main,
-                    backgroundColor: alpha(theme.palette.background.paper, 0.95),
-                  },
-                  '&.Mui-error': {
-                    borderColor: theme.palette.error.main,
-                  },
-                },
-              }}
-            />
-            <FormControl fullWidth required>
-              <Typography
-                variant="body2"
-                sx={{ mb: 1, fontWeight: 500, color: theme.palette.text.primary }}
-              >
-                Default Role for Team Members
-              </Typography>
-              <Select
-                value={teamRole}
-                onChange={(e) => setTeamRole(e.target.value as UnifiedRole)}
-                sx={{
-                  borderRadius: 1,
-                  backgroundColor: alpha(theme.palette.background.paper, 0.8),
-                  border: `1px solid ${alpha(theme.palette.divider, 0.2)}`,
-                  '&:hover': {
-                    borderColor: alpha(theme.palette.primary.main, 0.3),
-                  },
-                  '&.Mui-focused': {
-                    borderColor: theme.palette.primary.main,
-                  },
-                }}
-              >
-                {ROLE_OPTIONS.map((option) => (
-                  <MenuItem key={option.value} value={option.value}>
-                    <Box>
-                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                        {option.label}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        {option.description}
-                      </Typography>
-                    </Box>
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-
-            <Autocomplete
-              multiple
-              options={users}
-              value={teamUsers}
-              onChange={(_, newValue) => setTeamUsers(newValue)}
-              getOptionLabel={(option) => option.name || option.email || 'User'}
-              renderInput={(params) => (
-                <TextField
-                  {...params}
-                  label="Add Team Members"
-                  placeholder="Select users to add to the team..."
-                  sx={{
-                    '& .MuiOutlinedInput-root': {
-                      borderRadius: 1,
-                      backgroundColor: alpha(theme.palette.background.paper, 0.8),
-                      border: `1px solid ${alpha(theme.palette.divider, 0.2)}`,
-                      '&:hover': {
-                        borderColor: alpha(theme.palette.primary.main, 0.3),
-                      },
-                      '&.Mui-focused': {
-                        borderColor: theme.palette.primary.main,
-                      },
-                    },
-                  }}
-                />
-              )}
-              renderOption={(props, option) => (
-                <li {...props} key={option.id}>
-                  <Stack
-                    direction="row"
-                    alignItems="center"
-                    spacing={2}
-                    sx={{ py: 1, width: '100%' }}
-                  >
-                    <Avatar
-                      sx={{
-                        width: 32,
-                        height: 32,
-                        fontSize: '0.75rem',
-                        bgcolor: getAvatarColor(option.name || option.email || 'U'),
-                      }}
-                    >
-                      {getInitials(option.name || option.email || 'U')}
-                    </Avatar>
-                    <Box sx={{ flexGrow: 1, minWidth: 0 }}>
-                      <Typography
-                        variant="body2"
-                        sx={{
-                          fontWeight: 500,
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        {option.name || option.email}
-                      </Typography>
-                      {option.name && option.email && (
-                        <Typography variant="caption" color="text.secondary">
-                          {option.email}
-                        </Typography>
-                      )}
-                    </Box>
-                  </Stack>
-                </li>
-              )}
-              ListboxProps={{ style: { maxHeight: 240 } }}
-            />
-
-            {teamUsers.length > 0 && (
-              <Paper
-                sx={{
-                  p: 2,
-                  borderRadius: 1,
-                  bgcolor: alpha(theme.palette.info.main, 0.08),
-                  border: `1px solid ${alpha(theme.palette.info.main, 0.2)}`,
-                }}
-              >
-                <Typography variant="body2" color="info.main" sx={{ fontWeight: 500 }}>
-                  Team will be created with {teamUsers.length} member
-                  {teamUsers.length > 1 ? 's' : ''}
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  All members will have{' '}
-                  {ROLE_OPTIONS.find((r) => r.value === teamRole)?.label || teamRole} permissions
-                </Typography>
-              </Paper>
-            )}
-          </Stack>
-        </DialogContent>
-        <DialogActions
-          sx={{
-            p: 2.5,
-            borderTop: `1px solid ${alpha(theme.palette.divider, 0.12)}`,
-            bgcolor: alpha(theme.palette.background.default, 0.3),
-            gap: 2,
-          }}
-        >
-          <Button
-            onClick={handleCloseTeamDialog}
-            disabled={creatingTeam}
-            sx={{ color: theme.palette.text.secondary, fontWeight: 500 }}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant="outlined"
-            disabled={creatingTeam || !newTeamName.trim() || !newTeamDescription.trim()}
-            onClick={handleCreateTeam}
-            startIcon={
-              creatingTeam ? (
-                <CircularProgress size={16} color="inherit" />
-              ) : (
-                <Icon icon={addIcon} width={16} height={16} />
-              )
-            }
-            sx={{
-              fontWeight: 500,
-              px: 3,
-              color: theme.palette.success.main,
-              '&:hover': {
-                color: theme.palette.success.dark,
-              },
-              '&:disabled': {
-                color: alpha(theme.palette.success.main, 0.3),
-              },
-            }}
-          >
-            {creatingTeam ? 'Creating...' : 'Create Team'}
-          </Button>
-        </DialogActions>
-      </Dialog>
+        onError={(message) => {
+          setError(message);
+        }}
+      />
     </>
   );
 };

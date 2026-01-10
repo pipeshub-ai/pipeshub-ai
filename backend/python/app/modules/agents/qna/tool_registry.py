@@ -3,9 +3,10 @@ Migrated wrapper.py - Now uses the new factory system for cleaner code
 """
 
 import json
+import re
 from typing import Callable, Dict, List, Optional, Union
 
-from langchain.tools import BaseTool
+from langchain_core.tools import BaseTool
 from pydantic import ConfigDict, Field
 
 from app.agents.tools.factories.registry import ClientFactoryRegistry
@@ -18,6 +19,33 @@ RESULT_PREVIEW_MAX_LENGTH = 150
 
 # Type aliases
 ToolResult = Union[tuple, str, dict, list, int, float, bool]
+
+
+def sanitize_tool_name(tool_name: str) -> str:
+    """
+    Sanitize tool name to match the pattern: ^[a-zA-Z0-9_-]{1,128}$
+
+    Replaces dots with underscores to comply with the pattern.
+
+    Args:
+        tool_name: Original tool name (e.g., "calendar.get_calendar_events")
+
+    Returns:
+        Sanitized tool name (e.g., "calendar_get_calendar_events")
+    """
+    # Replace dots with underscores
+    sanitized = tool_name.replace(".", "_")
+
+    # Ensure it matches the pattern (only alphanumeric, underscore, hyphen)
+    # Remove any other invalid characters
+    sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', sanitized)
+    MAX_TOOL_NAME_LENGTH = 128
+
+    # Ensure length is within limit (128 chars)
+    if len(sanitized) > MAX_TOOL_NAME_LENGTH:
+        sanitized = sanitized[:MAX_TOOL_NAME_LENGTH]
+
+    return sanitized
 
 
 class RegistryToolWrapper(BaseTool):
@@ -68,8 +96,12 @@ class RegistryToolWrapper(BaseTool):
         except Exception:
             full_description = base_description
 
+        # Store original name and create sanitized name for compatibility
+        original_name = f"{app_name}.{tool_name}"
+        sanitized_name = sanitize_tool_name(original_name)
+
         init_data: Dict[str, Union[str, object]] = {
-            'name': f"{app_name}.{tool_name}",
+            'name': sanitized_name,  # Use sanitized name for compatibility
             'description': full_description,
             'app_name': app_name,
             'tool_name': tool_name,
@@ -79,6 +111,9 @@ class RegistryToolWrapper(BaseTool):
         }
 
         super().__init__(**init_data)
+
+        # Store original name as a regular attribute (not a Pydantic field)
+        object.__setattr__(self, '_original_name', original_name)
 
     @staticmethod
     def _format_parameters(params: List[object]) -> List[str]:
@@ -116,6 +151,16 @@ class RegistryToolWrapper(BaseTool):
             Chat state object
         """
         return self.chat_state
+
+    @property
+    def original_name(self) -> str:
+        """Get the original tool name before sanitization.
+
+        Returns:
+            Original tool name in format "app_name.tool_name"
+        """
+        # Access the private attribute stored during initialization
+        return getattr(self, '_original_name', f"{self.app_name}.{self.tool_name}")
 
     def _run(self, **kwargs: Union[str, int, bool, dict, list, None]) -> str:
         """Execute the registry tool directly.
@@ -230,8 +275,30 @@ class RegistryToolWrapper(BaseTool):
                     config_service = retrieval_service.config_service
                     logger = self.state.get("logger")
 
+                    # Find connector instance ID for this tool/app
+                    connector_instance_id = self._get_connector_instance_id()
+
+                    if connector_instance_id and logger:
+                        logger.info(f"Using connector instance ID {connector_instance_id} for {self.app_name}")
+                    elif logger:
+                        logger.debug(f"No connector instance ID found for {self.app_name}, using default config")
+
+                    # Pass connector instance ID in state for factory to use
+                    # The factory will use this to get the correct config from etcd
+                    # Create a copy of state to avoid mutating the original
+                    if isinstance(self.state, dict):
+                        tool_state = dict(self.state)
+                    else:
+                        tool_state = self.state
+
+                    # Add connector instance ID to state
+                    if not isinstance(tool_state, dict):
+                        tool_state = {"connector_instance_id": connector_instance_id}
+                    else:
+                        tool_state["connector_instance_id"] = connector_instance_id
+
                     # Pass chat state into factory for auth/impersonation decisions
-                    client = factory.create_client_sync(config_service, logger, self.state)
+                    client = factory.create_client_sync(config_service, logger, tool_state, connector_instance_id)
                     return action_class(client)
 
             raise ValueError("Not able to get the client from factory")
@@ -243,6 +310,22 @@ class RegistryToolWrapper(BaseTool):
                     f"Factory creation failed for {self.app_name}, using fallback: {e}"
                 )
             raise
+
+    def _get_connector_instance_id(self) -> Optional[str]:
+        """Get connector instance ID for this tool based on app_name.
+
+        Returns:
+            Connector instance ID if found, None otherwise
+        """
+        tool_to_connector_map = self.state.get("tool_to_connector_map")
+        if not tool_to_connector_map:
+            return None
+
+        # Try to find connector instance ID by app_name (normalized to uppercase)
+        app_name_normalised = self.app_name.replace(" ", "").lower()
+        connector_id = tool_to_connector_map.get(app_name_normalised) or tool_to_connector_map.get(self.app_name)
+
+        return connector_id
 
     def _format_result(self, result: ToolResult) -> str:
         """Format tool result for LLM consumption.
@@ -345,9 +428,9 @@ def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
     user_enabled_tools = state.get("tools", None)
 
     if user_enabled_tools is not None and len(user_enabled_tools) == 0:
-        user_enabled_tools = None
+        user_enabled_tools = []
         if logger:
-            logger.info("Empty tools list detected - loading ALL available tools")
+            logger.info("Empty tools list detected - loading essential tools")
 
     for full_tool_name, registry_tool in registry_tools.items():
         try:
@@ -428,8 +511,8 @@ def _should_include_tool(
     Returns:
         True if tool should be included
     """
-    if user_enabled_tools is None:
-        return True
+    if user_enabled_tools is None or len(user_enabled_tools) == 0:
+        return _is_essential_tool(full_tool_name)
 
     if (full_tool_name in user_enabled_tools or
         tool_name in user_enabled_tools or

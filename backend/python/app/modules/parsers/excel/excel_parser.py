@@ -4,7 +4,8 @@ import json
 from datetime import datetime
 from typing import Any, Dict, List, Union
 
-from langchain.chat_models.base import BaseChatModel
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import HumanMessage
 from openpyxl import load_workbook
 from openpyxl.cell.cell import MergedCell
 from openpyxl.utils import get_column_letter
@@ -25,11 +26,14 @@ from app.models.blocks import (
     TableMetadata,
 )
 from app.modules.parsers.excel.prompt_template import (
+    RowDescriptions,
+    TableHeaders,
     prompt,
     row_text_prompt,
     sheet_summary_prompt,
     table_summary_prompt,
 )
+from app.utils.streaming import invoke_with_structured_output_and_reflection
 
 
 class ExcelParser:
@@ -335,7 +339,7 @@ class ExcelParser:
             f"Retrying LLM call after error. Attempt {retry_state.attempt_number}"
         ),
     )
-    async def _call_llm(self, messages) -> Union[str, dict, list]:
+    async def _call_llm(self,messages) -> Union[str, dict, list]:
         """Wrapper for LLM calls with retry logic"""
         return await self.llm.ainvoke(messages)
 
@@ -374,26 +378,32 @@ class ExcelParser:
                     num_columns=len(table["data"][0]) if table["data"] else 0,
                 )
 
-                # Get LLM response with retry
+                # Get LLM response with structured output
                 messages = [
-                    {
-                        "role": "system",
-                        "content": "You are a data analysis expert. Respond with only the list of headers.",
-                    },
-                    {"role": "user", "content": formatted_prompt},
+                    HumanMessage(
+                        content=f"""{formatted_prompt}
+
+Respond with a JSON object containing a list of headers:
+{{
+    "headers": ["Header1", "Header2", "Header3", ...]
+}}
+
+Do not include any additional explanation or text."""
+                    )
                 ]
-                response = await self._call_llm(messages)
-                if '</think>' in response.content:
-                    response.content = response.content.split('</think>')[-1]
 
                 try:
-                    # Parse LLM response to get headers
-                    new_headers = [
-                        h.strip() for h in response.content.strip().split(",")
-                    ]
+                    # Use centralized utility with reflection
+                    parsed_response = await invoke_with_structured_output_and_reflection(
+                        self.llm, messages, TableHeaders
+                    )
+
+                    new_headers = []
+                    if parsed_response is not None and parsed_response.headers:
+                        new_headers = parsed_response.headers
 
                     # Ensure we have the right number of headers
-                    if len(new_headers) != len(table["data"][0]):
+                    if not new_headers or len(new_headers) != len(table["data"][0]) if table["data"] else 0:
                         new_headers = table["headers"]
 
                     # Reconstruct table with new headers
@@ -416,7 +426,7 @@ class ExcelParser:
                     processed_tables.append(new_table)
 
                 except Exception:
-                    # Fall back to original table
+                    # Fall back to original table if LLM call itself fails
                     processed_tables.append(table)
 
             return processed_tables
@@ -475,29 +485,18 @@ class ExcelParser:
                 table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2)
             )
 
-            response = await self._call_llm(messages)
-            if '</think>' in response.content:
-                response.content = response.content.split('</think>')[-1]
-            # Try to extract JSON array from response
-            try:
-                # First try direct JSON parsing
-                return json.loads(response.content)
-            except json.JSONDecodeError:
-                # If that fails, try to find and parse a JSON array in the response
-                content = response.content
-                # Look for array between [ and ]
-                start = content.find("[")
-                end = content.rfind("]")
-                if start != -1 and end != -1:
-                    try:
-                        return json.loads(content[start : end + 1])
-                    except json.JSONDecodeError:
-                        # If still can't parse, return response as single-item array
-                        return [content]
-                else:
-                    # If no array found, return response as single-item array
-                    return [content]
+            # Default to string representations of rows
+            descriptions = [str(row) for row in rows_data]
 
+            # Use centralized utility with reflection
+            parsed_response = await invoke_with_structured_output_and_reflection(
+                self.llm, messages, RowDescriptions
+            )
+
+            if parsed_response is not None and parsed_response.descriptions:
+                descriptions = parsed_response.descriptions
+
+            return descriptions
         except Exception:
             raise
 

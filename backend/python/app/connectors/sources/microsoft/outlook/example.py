@@ -102,7 +102,7 @@ async def test_run() -> None:
     data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
     await data_entities_processor.initialize()
 
-    outlook_connector = await OutlookConnector.create_connector(logger, data_store_provider, config_service)
+    outlook_connector = await OutlookConnector.create_connector(logger, data_store_provider, config_service, "outlook")
     app.connector = outlook_connector
     await outlook_connector.init()
     await outlook_connector.run_sync()

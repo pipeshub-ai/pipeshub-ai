@@ -147,7 +147,7 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
             hasData = true;
             validationResult = true;
           } else if (finalConfigType === 'url') {
-            hasData = !!(data.frontendUrl?.trim() || data.connectorUrl?.trim());
+            hasData = !!(data.frontendUrl?.trim());
             validationResult = hasData ? isValid : true;
           } else {
             const nonMetaKeys = Object.keys(data).filter(
@@ -366,11 +366,19 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
       getFormData: async (): Promise<any> => {
         const formData = getValues();
         const isLegacyModelType = ['llm', 'embedding'].includes(finalConfigType);
-        return {
+        
+        const result = {
           ...formData,
           [isLegacyModelType ? 'modelType' : 'providerType']: currentProvider,
           _provider: currentProvider,
         };
+        
+        // Handle "other" provider case for Bedrock: use customProvider value
+        if (currentProvider === 'bedrock' && formData.provider === 'other' && formData.customProvider) {
+          result.provider = formData.customProvider;
+        }
+        
+        return result;
       },
 
       validateForm: async (): Promise<boolean> => {
@@ -411,7 +419,7 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
         }
 
         if (finalConfigType === 'url') {
-          return !!(formData.frontendUrl?.trim() || formData.connectorUrl?.trim());
+          return !!(formData.frontendUrl?.trim());
         }
 
         const nonMetaKeys = Object.keys(formData).filter(

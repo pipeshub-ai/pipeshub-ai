@@ -195,7 +195,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
     async def delete_key(self, key: str) -> bool:
         client = await self._get_client()
         try:
-            result = await client.delete(key)
+            result = await asyncio.to_thread(lambda: client.delete(key))
             return result is not None
         except Exception as e:
             raise ConnectionError(f"Failed to delete key: {str(e)}")

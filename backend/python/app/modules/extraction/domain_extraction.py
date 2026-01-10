@@ -6,9 +6,9 @@ from typing import List, Literal
 import aiohttp
 import jwt
 import numpy as np
-from langchain.output_parsers import PydanticOutputParser
-from langchain.prompts import PromptTemplate
-from langchain.schema import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
 from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -206,6 +206,7 @@ class DomainExtractor:
         try:
             self.llm, config = await get_llm(self.config_service)
             context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
+            self.logger.info(f"Context length: {context_length}")
 
             self.logger.info("✅ LLM initialized successfully")
         except Exception as e:

@@ -13,7 +13,7 @@ from app.modules.qna.agent_prompt import (
     detect_response_mode,
 )
 from app.utils.citations import fix_json_string, process_citations
-from app.utils.streaming import stream_llm_response
+from app.utils.streaming import bind_tools_for_llm, stream_llm_response
 
 # Constants
 RESULT_PREVIEW_LENGTH = 150
@@ -754,7 +754,15 @@ async def conditional_retrieve_node(state: ChatState, writer: StreamWriter) -> C
             limit=adjusted_limit,
             filter_groups=state["filters"],
             arango_service=arango_service,
+            is_agent=True,
         )
+
+        # Handle case where retrieval service returns None (shouldn't happen, but safety check)
+        if results is None:
+            logger.warning("Retrieval service returned None, treating as empty results")
+            state["search_results"] = []
+            state["final_results"] = []
+            return state
 
         status_code = results.get("status_code", 200)
         if status_code in [202, 500, 503]:
@@ -1009,7 +1017,7 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
         if tools:
             logger.debug(f"Agent has {len(tools)} tools available")
             try:
-                llm_with_tools = llm.bind_tools(tools)
+                llm_with_tools = bind_tools_for_llm(llm, tools)
             except (NotImplementedError, AttributeError) as e:
                 logger.warning(f"LLM does not support tool binding: {e}")
                 llm_with_tools = llm
@@ -1210,6 +1218,20 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
             else:
                 tool_args = tool_call.args
                 tool_id = tool_call.id
+
+            # Handle Anthropic's nested kwargs format
+            # Anthropic sometimes wraps arguments in a 'kwargs' key when using custom tools
+            # Unwrap it if it's the only key or if it contains the actual arguments
+            if isinstance(tool_args, dict) and "kwargs" in tool_args:
+                # If kwargs is the only key, unwrap it
+                if len(tool_args) == 1:
+                    tool_args = tool_args["kwargs"]
+                    logger.debug(f"  Unwrapped kwargs: {tool_args}")
+                # If kwargs exists but there are other keys, check if kwargs contains the actual args
+                elif isinstance(tool_args.get("kwargs"), dict) and len(tool_args.get("kwargs", {})) > 0:
+                    # Prefer kwargs if it has content, otherwise keep original
+                    tool_args = tool_args["kwargs"]
+                    logger.debug(f"  Unwrapped kwargs (had other keys): {tool_args}")
 
             try:
                 result = None

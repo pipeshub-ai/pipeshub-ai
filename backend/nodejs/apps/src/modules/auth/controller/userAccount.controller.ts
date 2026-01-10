@@ -202,9 +202,7 @@ export class UserAccountController {
   ): Promise<void> {
     try {
       const { email } = req.body;
-      if (!email) {
-        throw new BadRequestError('Email is required');
-      }
+
       const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
       let result = await this.iamService.getUserByEmail(email, authToken);
 
@@ -1289,7 +1287,7 @@ export class UserAccountController {
 
         if (!user.hasLoggedIn) {
           const userInfo = {
-            ...user,
+            email: user.email,
             hasLoggedIn: true,
           };
           await this.iamService.updateUser(user._id, userInfo, accessToken);

@@ -325,6 +325,13 @@ export const getUserIdFromToken = (): string => {
   return userId;
 };
 
+export const getUserEmailFromToken = (): string => {
+  const accessToken = localStorage.getItem(STORAGE_KEY);
+  const decodedToken = jwtDecode(accessToken);
+  const { email } = decodedToken;
+  return email;
+};
+
 export const logout = async (): Promise<void> => {
   try {
     // Simply remove the JWT token from localStorage

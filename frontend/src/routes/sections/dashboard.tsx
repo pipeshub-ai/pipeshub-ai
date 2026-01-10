@@ -31,19 +31,21 @@ const AuthenticationSettings = lazy(
 );
 const AiModelsSettings = lazy(() => import('src/pages/dashboard/account/ai-models-settings'));
 const PlatformSettings = lazy(() => import('src/pages/dashboard/account/platform-settings'));
+const PromptsSettings = lazy(() => import('src/pages/dashboard/account/prompts-settings'));
 const ConnectorSettings = lazy(
   () => import('src/pages/dashboard/account/connectors/connector-settings')
 );
+const ConnectorRegistry = lazy(() => import('src/pages/dashboard/account/connectors/registry'));
 
 // Generic connector management (parameterized by name)
 const ConnectorManagementPage = lazy(
-  () => import('src/pages/dashboard/account/connectors/[connectorName]')
+  () => import('src/pages/dashboard/account/connectors/[connectorId]')
 );
 
-  // OAuth callback page for connectors
-  const ConnectorOAuthCallback = lazy(
-    () => import('src/pages/dashboard/account/connectors/oauth-callback')
-  );
+// OAuth callback page for connectors
+const ConnectorOAuthCallback = lazy(
+  () => import('src/pages/dashboard/account/connectors/oauth-callback')
+);
 
 const SamlSsoConfigPage = lazy(() => import('src/pages/dashboard/account/saml-sso-config'));
 
@@ -193,13 +195,19 @@ export const dashboardRoutes = [
       { path: 'agents/:agentKey', element: <AgentChatPage key="agent-chat" /> },
       { path: 'agents/:agentKey/edit', element: <AgentBuilderPage key="agent-edit" /> },
       { path: 'agents/:agentKey/flow', element: <AgentBuilderPage key="flow-agent-edit" /> },
-      { path: 'agents/:agentKey/conversations/:conversationId', element: <AgentChatPage key="agent-conversation" /> },
+      {
+        path: 'agents/:agentKey/conversations/:conversationId',
+        element: <AgentChatPage key="agent-conversation" />,
+      },
       { path: 'record/:recordId', element: <RecordDetails /> },
-      { path: 'connectors', element: <Navigate to="/account/individual/settings/connector" replace /> },
-      
+      {
+        path: 'connectors',
+        element: <Navigate to="/account/individual/settings/connector" replace />,
+      },
+
       // OAuth callback route for connectors
       {
-        path: 'connectors/oauth/callback/:connectorName',
+        path: 'connectors/oauth/callback/:connectorId',
         element: <ConnectorOAuthCallback />,
       },
       {
@@ -325,29 +333,21 @@ export const dashboardRoutes = [
                     path: 'connector',
                     children: [
                       {
-                        element: CONFIG.auth.skip ? (
-                          <ConnectorSettings />
-                        ) : (
-                          <BusinessAdminOnlyRoute component={ConnectorSettings} />
-                        ),
+                        element: <ConnectorSettings />,
                         index: true,
                       },
                       {
-                        path: 'oauth/callback/:connectorName',
-                        element: CONFIG.auth.skip ? (
-                          <ConnectorOAuthCallback />
-                        ) : (
-                          <BusinessAdminOnlyRoute component={ConnectorOAuthCallback} />
-                        ),
+                        path: 'registry',
+                        element: <ConnectorRegistry />,
                       },
                       {
-                        path: ':connectorName',
-                        element: CONFIG.auth.skip ? (
-                          <ConnectorManagementPage />
-                        ) : (
-                          <BusinessAdminOnlyRoute component={ConnectorManagementPage} />
-                        ),
-                      }
+                        path: 'oauth/callback/:connectorId',
+                        element: <ConnectorOAuthCallback />,
+                      },
+                      {
+                        path: ':connectorId',
+                        element: <ConnectorManagementPage />,
+                      },
                     ],
                   },
                   {
@@ -372,6 +372,14 @@ export const dashboardRoutes = [
                       <PlatformSettings />
                     ) : (
                       <BusinessAdminOnlyRoute component={PlatformSettings} />
+                    ),
+                  },
+                  {
+                    path: 'prompts',
+                    element: CONFIG.auth.skip ? (
+                      <PromptsSettings />
+                    ) : (
+                      <BusinessAdminOnlyRoute component={PromptsSettings} />
                     ),
                   },
                 ],
@@ -451,7 +459,15 @@ export const dashboardRoutes = [
                         index: true,
                       },
                       {
-                        path: 'oauth/callback/:connectorName',
+                        path: 'registry',
+                        element: CONFIG.auth.skip ? (
+                          <ConnectorRegistry />
+                        ) : (
+                          <IndividualOnlyRoute component={ConnectorRegistry} />
+                        ),
+                      },
+                      {
+                        path: 'oauth/callback/:connectorId',
                         element: CONFIG.auth.skip ? (
                           <ConnectorOAuthCallback />
                         ) : (
@@ -460,9 +476,9 @@ export const dashboardRoutes = [
                       },
                       // Parameterized connector management page
                       {
-                        path: ':connectorName',
+                        path: ':connectorId',
                         element: <IndividualOnlyRoute component={ConnectorManagementPage} />,
-                      }
+                      },
                     ],
                   },
                   {
@@ -487,6 +503,14 @@ export const dashboardRoutes = [
                       <PlatformSettings />
                     ) : (
                       <IndividualOnlyRoute component={PlatformSettings} />
+                    ),
+                  },
+                  {
+                    path: 'prompts',
+                    element: CONFIG.auth.skip ? (
+                      <PromptsSettings />
+                    ) : (
+                      <IndividualOnlyRoute component={PromptsSettings} />
                     ),
                   },
                 ],

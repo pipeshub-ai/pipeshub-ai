@@ -1,6 +1,6 @@
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.exception.exception import HttpStatusCode
@@ -239,6 +239,7 @@ class ConfluenceClient(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None,
     ) -> "ConfluenceClient":
         """Build ConfluenceClient using configuration service
         Args:
@@ -249,7 +250,7 @@ class ConfluenceClient(IClient):
         """
         try:
             # Get Confluence configuration from the configuration service
-            config = await cls._get_connector_config(logger, config_service)
+            config = await cls._get_connector_config(logger, config_service, connector_instance_id)
             if not config:
                 raise ValueError("Failed to get Confluence connector configuration")
             auth_config = config.get("auth",{}) or {}
@@ -314,11 +315,13 @@ class ConfluenceClient(IClient):
             raise
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:
         """Fetch connector config from etcd for Confluence."""
         try:
-            config = await config_service.get_config("/services/connectors/confluence/config")
-            return config or {}
+            config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")
+            if not config:
+                raise ValueError(f"Failed to get Confluence connector configuration for instance {connector_instance_id}")
+            return config
         except Exception as e:
             logger.error(f"Failed to get Confluence connector config: {e}")
-            return {}
+            raise ValueError(f"Failed to get Confluence connector configuration for instance {connector_instance_id}")

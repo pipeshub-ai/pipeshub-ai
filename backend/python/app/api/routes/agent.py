@@ -5,9 +5,10 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from langchain.chat_models.base import BaseChatModel
+from langchain_core.language_models.chat_models import BaseChatModel
 from pydantic import BaseModel
 
+from app.api.routes.chatbot import get_llm_for_chat
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.modules.agents.qna.chat_state import build_initial_state
@@ -18,7 +19,6 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 router = APIRouter()
 
-
 class ChatQuery(BaseModel):
     query: str
     limit: Optional[int] = 50
@@ -28,6 +28,10 @@ class ChatQuery(BaseModel):
     retrievalMode: Optional[str] = "HYBRID"
     systemPrompt: Optional[str] = None
     tools: Optional[List[str]] = None
+    chatMode: Optional[str] = "quick"
+    modelKey: Optional[str] = None
+    modelName: Optional[str] = None
+
 
 
 async def get_services(request: Request) -> Dict[str, Any]:
@@ -266,7 +270,7 @@ async def create_agent_template(request: Request) -> JSONResponse:
 
         # Get user first
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found")
 
@@ -338,7 +342,7 @@ async def get_agent_templates(request: Request) -> JSONResponse:
             "userId": request.state.user.get("userId"),
         }
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for getting agent templates")
         # Get all templates
@@ -380,7 +384,7 @@ async def get_agent_template(request: Request, template_id: str) -> JSONResponse
             "userId": request.state.user.get("userId"),
         }
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for getting agent template")
         # Get the template access
@@ -414,7 +418,7 @@ async def share_agent_template(request: Request, template_id: str, user_ids: Lis
             "userId": request.state.user.get("userId"),
         }
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for sharing agent template")
         # Get the template
@@ -474,7 +478,7 @@ async def delete_agent_template(request: Request, template_id: str) -> JSONRespo
             "userId": request.state.user.get("userId"),
         }
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for deleting agent template")
         # Delete the template
@@ -509,7 +513,7 @@ async def update_agent_template(request: Request, template_id: str) -> JSONRespo
         body_dict = json.loads(body.decode('utf-8'))
         # Update the template
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for updating agent template")
         result = await arango_service.update_agent_template(template_id, body_dict, user.get("_key"))
@@ -543,8 +547,11 @@ async def create_agent(request: Request) -> JSONResponse:
         time = get_epoch_timestamp_in_ms()
         body = await request.body()
         body_dict = json.loads(body.decode('utf-8'))
+        if not body_dict.get("name"):
+            raise HTTPException(status_code=400, detail="Agent name is required")
+
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for creating agent")
 
@@ -562,6 +569,46 @@ async def create_agent(request: Request) -> JSONResponse:
                     detail="At least one reasoning model must be present in the models array. Please add a reasoning model to your agent configuration."
                 )
 
+        # Validate connectors: Ensure category field is present and valid, and no duplicates
+        connectors = body_dict.get("connectors", [])
+        if connectors and isinstance(connectors, list):
+            connector_keys = set()  # Track id:category combinations
+            duplicates = []
+
+            for instance in connectors:
+                if isinstance(instance, dict):
+                    # Validate required fields
+                    if not instance.get("id"):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Connector instance must have an 'id' field"
+                        )
+                    if not instance.get("type"):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Connector instance must have a 'type' field"
+                        )
+                    # Validate category field
+                    category = instance.get("category")
+                    if category not in ["knowledge", "action"]:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Connector instance category must be 'knowledge' or 'action', got: {category}"
+                        )
+
+                    # Check for duplicate id:category combinations
+                    connector_key = f"{instance.get('id')}:{category}"
+                    if connector_key in connector_keys:
+                        duplicates.append(connector_key)
+                    else:
+                        connector_keys.add(connector_key)
+
+            if duplicates:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Duplicate connector instances found. Each connector ID can only appear once per category. Duplicates: {', '.join(duplicates)}"
+                )
+
         agent = {
             "_key": str(uuid.uuid4()),
             "name": body_dict.get("name"),
@@ -570,8 +617,8 @@ async def create_agent(request: Request) -> JSONResponse:
             "systemPrompt": body_dict.get("systemPrompt"),
             "tools": body_dict.get("tools"),
             "models": body_dict.get("models"),
-            "apps": body_dict.get("apps"),
             "kb": body_dict.get("kb"),
+            "connectors": connectors,  # Unified array with category field
             "vectorDBs": body_dict.get("vectorDBs"),
             "tags": body_dict.get("tags"),
             "orgId": user_info.get("orgId"),
@@ -626,7 +673,7 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
             "userId": request.state.user.get("userId"),
         }
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for getting agent")
 
@@ -659,7 +706,7 @@ async def get_agents(request: Request) -> JSONResponse:
             "userId": request.state.user.get("userId"),
         }
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for getting agents")
         # Get all agents
@@ -695,7 +742,6 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         body_dict = json.loads(body.decode('utf-8'))
 
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for updating agent")
 
@@ -707,6 +753,46 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         # Only OWNER can edit the agent
         if not agent_with_permission.get("can_edit", False):
             raise HTTPException(status_code=403, detail="Only the owner can edit this agent")
+
+        # Validate connectors: Ensure category field is present and valid, and no duplicates
+        connectors = body_dict.get("connectors", [])
+        if connectors and isinstance(connectors, list):
+            connector_keys = set()  # Track id:category combinations
+            duplicates = []
+
+            for instance in connectors:
+                if isinstance(instance, dict):
+                    # Validate required fields
+                    if not instance.get("id"):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Connector instance must have an 'id' field"
+                        )
+                    if not instance.get("type"):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Connector instance must have a 'type' field"
+                        )
+                    # Validate category field
+                    category = instance.get("category")
+                    if category not in ["knowledge", "action"]:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Connector instance category must be 'knowledge' or 'action', got: {category}"
+                        )
+
+                    # Check for duplicate id:category combinations
+                    connector_key = f"{instance.get('id')}:{category}"
+                    if connector_key in connector_keys:
+                        duplicates.append(connector_key)
+                    else:
+                        connector_keys.add(connector_key)
+
+            if duplicates:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Duplicate connector instances found. Each connector ID can only appear once per category. Duplicates: {', '.join(duplicates)}"
+                )
 
         # Update the agent
         result = await arango_service.update_agent(agent_id, body_dict, user.get("_key"))
@@ -737,7 +823,7 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
             "userId": request.state.user.get("userId"),
         }
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for deleting agent")
 
@@ -787,7 +873,7 @@ async def share_agent(request: Request, agent_id: str) -> JSONResponse:
         }
 
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for sharing agent")
 
@@ -835,7 +921,7 @@ async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
         }
 
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for unsharing agent")
 
@@ -881,7 +967,7 @@ async def get_agent_permissions(request: Request, agent_id: str) -> JSONResponse
         }
 
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for viewing agent permissions")
 
@@ -925,7 +1011,7 @@ async def update_agent_permission(request: Request, agent_id: str) -> JSONRespon
         role = body_dict.get("role")
 
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
-        logger.info(f"User: {user}")
+
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for updating agent permission")
 
@@ -983,10 +1069,24 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         else:
             # If no filters, create filters from agent defaults
             filters = {
-                "apps": agent.get("apps"),
-                "kb": agent.get("kb"),
-                "vectorDBs": agent.get("vectorDBs")
+                "apps": [],
+                "kb": agent.get("kb", []),
+                "vectorDBs": agent.get("vectorDBs", []),
+                "connectors": agent.get("connectors", [])
             }
+
+        # Extract connector instance IDs by category for filtering
+        # Knowledge connector instances (category='knowledge') go to apps filter
+        knowledge_connector_ids = []
+        if agent.get("connectors"):
+            knowledge_connector_ids = [
+                ci.get("id") for ci in agent.get("connectors", [])
+                if ci.get("category") == "knowledge" and ci.get("id")
+            ]
+
+        # Set apps filter with connector instance IDs (for knowledge filtering)
+        if knowledge_connector_ids:
+            filters["apps"] = knowledge_connector_ids
 
         # Override individual filter values if they exist in chat query
         if chat_query.filters is not None:
@@ -996,6 +1096,10 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
                 filters["kb"] = chat_query.filters.get("kb")
             if chat_query.filters.get("vectorDBs") is not None:
                 filters["vectorDBs"] = chat_query.filters.get("vectorDBs")
+
+        # Store all connectors for reference (with category)
+        if agent.get("connectors"):
+            filters["connectors"] = agent.get("connectors")
 
         # Override tools if provided in chat query
         tools = chat_query.tools if chat_query.tools is not None else agent.get("tools")
@@ -1057,10 +1161,22 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         # Get all services
         services = await get_services(request)
         logger = services["logger"]
+        config_service = services["config_service"]
         arango_service = services["arango_service"]
         retrieval_service = services["retrieval_service"]
-        llm = services["llm"]
+        # llm = services["llm"]
         reranker_service = services["reranker_service"]
+
+        body = await request.body()
+        body_dict = json.loads(body.decode('utf-8'))
+        chat_query = ChatQuery(**body_dict)
+
+        logger.info(f"body dict : {body_dict}")
+
+        llm = (await get_llm_for_chat(config_service, chat_query.modelKey, chat_query.modelName, chat_query.chatMode))[0]
+
+        if llm is None:
+            raise HTTPException(status_code=500, detail="Failed to initialize LLM service. LLM configuration is missing.")
 
         # Extract user info from request
         user_info = {
@@ -1081,14 +1197,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         if agent is None:
             raise HTTPException(status_code=404, detail="Agent not found")
 
-        body = await request.body()
-        body_dict = json.loads(body.decode('utf-8'))
-
-        logger.info(f"body_dict: {body_dict}")
-        chat_query = ChatQuery(**body_dict)
-
-        logger.info(f"chat_query: {chat_query}")
-
         # Build filters object
         filters = {}
         if chat_query.filters is not None:
@@ -1097,10 +1205,24 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         else:
             # If no filters, create filters from agent defaults
             filters = {
-                "apps": agent.get("apps"),
-                "kb": agent.get("kb"),
-                "vectorDBs": agent.get("vectorDBs")
+                "apps": [],
+                "kb": agent.get("kb", []),
+                "vectorDBs": agent.get("vectorDBs", []),
+                "connectors": agent.get("connectors", [])
             }
+
+        # Extract connector instance IDs by category for filtering
+        # Knowledge connector instances (category='knowledge') go to apps filter
+        knowledge_connector_ids = []
+        if agent.get("connectors"):
+            knowledge_connector_ids = [
+                ci.get("id") for ci in agent.get("connectors", [])
+                if ci.get("category") == "knowledge" and ci.get("id")
+            ]
+
+        # Set apps filter with connector instance IDs (for knowledge filtering)
+        if knowledge_connector_ids:
+            filters["apps"] = knowledge_connector_ids
 
         # Override individual filter values if they exist in chat query
         if chat_query.filters is not None:
@@ -1110,6 +1232,10 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 filters["kb"] = chat_query.filters.get("kb")
             if chat_query.filters.get("vectorDBs") is not None:
                 filters["vectorDBs"] = chat_query.filters.get("vectorDBs")
+
+        # Store all connectors for reference (with category)
+        if agent.get("connectors"):
+            filters["connectors"] = agent.get("connectors")
 
         # Override tools if provided in chat query
         if chat_query.tools is not None:

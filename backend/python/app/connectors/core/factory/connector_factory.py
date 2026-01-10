@@ -5,7 +5,9 @@ from typing import Dict, Optional, Type
 
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.connector.connector_service import BaseConnector
-from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
+
+# from app.connectors.core.interfaces.data_store.data_store_provider import DataStoreProvider
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.registry.connector import (
     AirtableConnector,
     AzureBlobConnector,
@@ -25,7 +27,11 @@ from app.connectors.sources.atlassian.confluence_cloud.connector import (
 )
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.connectors.sources.bookstack.connector import BookStackConnector
+from app.connectors.sources.box.connector import BoxConnector
 from app.connectors.sources.dropbox.connector import DropboxConnector
+from app.connectors.sources.dropbox_individual.connector import (
+    DropboxIndividualConnector,
+)
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
@@ -47,7 +53,9 @@ class ConnectorFactory:
         "outlook": OutlookConnector,
         "confluence": ConfluenceConnector,
         "jira": JiraConnector,
+        "box": BoxConnector,
         "dropbox": DropboxConnector,
+        "dropboxpersonal": DropboxIndividualConnector,
         "servicenow": ServiceNowConnector,
         "web": WebConnector,
         "bookstack": BookStackConnector,
@@ -110,14 +118,15 @@ class ConnectorFactory:
         cls,
         name: str,
         logger: logging.Logger,
-        data_store_provider: ArangoDataStore,
+        data_store_provider: GraphDataStore,
         config_service: ConfigurationService,
+        connector_id: str,
         **kwargs
     ) -> Optional[BaseConnector]:
         """Create a connector instance"""
         connector_class = cls.get_connector_class(name)
         if not connector_class:
-            logger.error(f"Unknown connector type: {name}")
+            logger.error(f"Unknown connector type: {name} {connector_id}")
             return None
 
         try:
@@ -125,12 +134,13 @@ class ConnectorFactory:
                 logger=logger,
                 data_store_provider=data_store_provider,
                 config_service=config_service,
+                connector_id=connector_id,
                 **kwargs
             )
-            logger.info(f"Created {name} connector successfully")
+            logger.info(f"Created {name} {connector_id} connector successfully")
             return connector
         except Exception as e:
-            logger.error(f"❌ Failed to create {name} connector: {str(e)}")
+            logger.error(f"❌ Failed to create {name} {connector_id} connector: {str(e)}")
             return None
 
     @classmethod
@@ -138,8 +148,9 @@ class ConnectorFactory:
         cls,
         name: str,
         logger: logging.Logger,
-        data_store_provider: ArangoDataStore,
+        data_store_provider: GraphDataStore,
         config_service: ConfigurationService,
+        connector_id: str,
         **kwargs
     ) -> Optional[BaseConnector]:
         """Create and initialize a connector"""
@@ -148,16 +159,17 @@ class ConnectorFactory:
             logger=logger,
             data_store_provider=data_store_provider,
             config_service=config_service,
+            connector_id=connector_id,
             **kwargs
         )
 
         if connector:
             try:
                 await connector.init()
-                logger.info(f"Initialized {name} connector successfully")
+                logger.info(f"Initialized {name} {connector_id} connector successfully")
                 return connector
             except Exception as e:
-                logger.error(f"❌ Failed to initialize {name} connector: {str(e)}")
+                logger.error(f"❌ Failed to initialize {name} {connector_id} connector: {str(e)}")
                 return None
 
         return None
@@ -167,8 +179,9 @@ class ConnectorFactory:
         cls,
         name: str,
         logger: logging.Logger,
-        data_store_provider: ArangoDataStore,
+        data_store_provider: GraphDataStore,
         config_service: ConfigurationService,
+        connector_id: str,
         **kwargs
     ) -> Optional[BaseConnector]:
         """Create, initialize, and start sync for a connector"""
@@ -177,6 +190,7 @@ class ConnectorFactory:
             logger=logger,
             data_store_provider=data_store_provider,
             config_service=config_service,
+            connector_id=connector_id,
             **kwargs
         )
 
@@ -184,10 +198,10 @@ class ConnectorFactory:
             try:
                 import asyncio
                 asyncio.create_task(connector.run_sync())
-                logger.info(f"Started sync for {name} connector")
+                logger.info(f"Started sync for {name} {connector_id} connector")
                 return connector
             except Exception as e:
-                logger.error(f"❌ Failed to start sync for {name} connector: {str(e)}")
+                logger.error(f"❌ Failed to start sync for {name} {connector_id} connector: {str(e)}")
                 return None
 
         return None

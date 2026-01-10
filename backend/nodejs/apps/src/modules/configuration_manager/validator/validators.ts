@@ -466,7 +466,8 @@ export const modelConfigurationSchema = z.object({
   configuration: configurationSchema,
   isMultimodal: z.boolean().default(false).describe("Whether the model supports multimodal input"),
   isReasoning: z.boolean().default(false).describe("Whether the model supports reasoning"),
-  isDefault: z.boolean().default(false).describe("Whether this should be the default model")
+  isDefault: z.boolean().default(false).describe("Whether this should be the default model"),
+  contextLength: z.number().optional().nullable().describe("Context length for the model")
 });
 
 export const updateProviderRequestSchema = z.object({
@@ -479,7 +480,8 @@ export const updateProviderRequestSchema = z.object({
     configuration: configurationSchema,
     isMultimodal: z.boolean().default(false).describe("Whether the model supports multimodal input"),
     isReasoning: z.boolean().default(false).describe("Whether the model supports reasoning"),
-    isDefault: z.boolean().default(false).describe("Whether this should be the default model")
+    isDefault: z.boolean().default(false).describe("Whether this should be the default model"),
+    contextLength: z.number().optional().nullable().describe("Context length for the model")
   }),
 });
 
@@ -490,7 +492,8 @@ export const addProviderRequestSchema = z.object({
     configuration: configurationSchema,
     isMultimodal: z.boolean().default(false).describe("Whether the model supports multimodal input"),
     isReasoning: z.boolean().default(false).describe("Whether the model supports reasoning"),
-    isDefault: z.boolean().default(false).describe("Whether this should be the default model")
+    isDefault: z.boolean().default(false).describe("Whether this should be the default model"),
+    contextLength: z.number().optional().nullable().describe("Context length for the model")
   }),
 });
 
@@ -504,9 +507,10 @@ export const aiModelsConfigSchema = z.object({
       llm: z.array(modelConfigurationSchema).optional(),
       reasoning: z.array(modelConfigurationSchema).optional(),
       multiModal: z.array(modelConfigurationSchema).optional(),
+      custom_system_prompt: z.string().optional().nullable(),
     })
     .strict({
-      message: 'ai models can be ocr, embedding, llm, slm, reasoning, multimodal',
+      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, and custom_system_prompt',
     })
     .refine(
       (data) => {

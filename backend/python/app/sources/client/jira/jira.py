@@ -1,6 +1,6 @@
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
@@ -152,13 +152,13 @@ class JiraClient(IClient):
 
             # Check if the response is successful
             if response.status != HttpStatusCode.SUCCESS.value:
-                raise Exception(f"API request failed with status {response.status}: {response.text}")
+                raise Exception(f"API request failed with status {response.status}: {response.text()}")
 
             # Try to parse JSON response
             try:
                 response_data = response.json()
             except Exception as json_error:
-                raise Exception(f"Failed to parse JSON response: {json_error}. Response: {response.text}")
+                raise Exception(f"Failed to parse JSON response: {json_error}. Response: {response.text()}")
 
             # Check if response_data is a list
             if not isinstance(response_data, list):
@@ -176,6 +176,9 @@ class JiraClient(IClient):
             ]
         except Exception as e:
             raise Exception(f"Failed to fetch accessible resources: {str(e)}") from e
+        finally:
+            # Close HTTP client to prevent connection leaks on Windows
+            await http_client.close()
 
     @staticmethod
     async def get_cloud_id(token: str) -> str:
@@ -218,17 +221,19 @@ class JiraClient(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None,
     ) -> "JiraClient":
         """Build JiraClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
+            connector_instance_id: Optional connector instance ID to get specific instance config
         Returns:
             JiraClient instance
         """
         try:
             # Get Jira configuration from the configuration service
-            config = await cls._get_connector_config(logger, config_service)
+            config = await cls._get_connector_config(logger, config_service, connector_instance_id)
             if not config:
                 raise ValueError("Failed to get Jira connector configuration")
             auth_config = config.get("auth",{}) or {}
@@ -298,11 +303,27 @@ class JiraClient(IClient):
             raise
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
-        """Fetch connector config from etcd for Jira."""
+    async def _get_connector_config(
+        logger: logging.Logger,
+        config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Fetch connector config from etcd for Jira.
+
+        Args:
+            logger: Logger instance
+            config_service: Configuration service instance
+            connector_instance_id: Optional connector instance ID to get specific instance config
+
+        Returns:
+            Configuration dictionary
+        """
+
         try:
-            config = await config_service.get_config("/services/connectors/jira/config")
-            return config or {}
+            config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")
+            if not config:
+                raise ValueError(f"Failed to get Jira connector configuration for instance {connector_instance_id}")
+            return config
         except Exception as e:
             logger.error(f"Failed to get Jira connector config: {e}")
-            return {}
+            raise ValueError(f"Failed to get Jira connector configuration for instance {connector_instance_id}")

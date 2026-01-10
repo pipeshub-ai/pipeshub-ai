@@ -94,7 +94,7 @@ async def test_run() -> None:
 
     # 4. Create and run the Dropbox connector
     try:
-        dropbox_connector = await DropboxConnector.create_connector(logger, data_store_provider, config_service)
+        dropbox_connector = await DropboxConnector.create_connector(logger, data_store_provider, config_service, "dropbox")
         if await dropbox_connector.init():
             logger.info("Dropbox connector initialized successfully.")
             await dropbox_connector.run_sync()

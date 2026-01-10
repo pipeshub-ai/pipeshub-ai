@@ -23,6 +23,8 @@ import { useAdmin } from 'src/context/AdminContext';
 
 import { Form, Field } from 'src/components/hook-form';
 
+import axios from 'src/utils/axios';
+import { CONFIG } from 'src/config-global';
 import {
   updateUser,
   getUserById,
@@ -64,6 +66,7 @@ type PasswordFormData = zod.infer<typeof PasswordSchema>;
 export default function UserProfile() {
   const theme = useTheme();
   const [loading, setLoading] = useState<boolean>(true);
+  const [emailLoading, setEmailLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [logo, setLogo] = useState<string | null>(null);
   const [uploading, setUploading] = useState<boolean>(false);
@@ -76,7 +79,6 @@ export default function UserProfile() {
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState<boolean>(false);
   const [saveChanges, setSaveChanges] = useState<boolean>(false);
   const { isAdmin } = useAdmin();
-
   const location = useLocation();
   const pathSegments = location.pathname.split('/');
   const userId = pathSegments.length > 0 ? pathSegments[pathSegments.length - 1] : null;
@@ -94,6 +96,7 @@ export default function UserProfile() {
   const {
     handleSubmit,
     reset,
+    setValue,
     formState: { isValid, isDirty },
   } = methods;
 
@@ -110,17 +113,33 @@ export default function UserProfile() {
         }
 
         const userData = await getUserById(userId);
-        const { fullName, firstName, email, lastName, designation } = userData;
+        const { fullName, firstName, lastName, designation } = userData;
 
+        // Reset form with user data first (without email)
         reset({
           fullName,
           firstName,
-          email,
+          email: '',
           lastName,
           designation,
         });
 
         setLoading(false);
+
+        // Fetch email via API separately with its own loader
+        setEmailLoading(true);
+        try {
+          const emailResponse = await axios.get<{ email: string }>(
+            `${CONFIG.backendUrl}/api/v1/users/${userId}/email`
+          );
+          // Update only the email field in the form
+          setValue('email', emailResponse.data.email);
+        } catch (emailError) {
+          console.error('Failed to fetch email:', emailError);
+          // Email fetch failed, but continue with other data
+        } finally {
+          setEmailLoading(false);
+        }
       } catch (err) {
         setError('Failed to fetch user data');
         // setSnackbar({
@@ -129,11 +148,12 @@ export default function UserProfile() {
         //   severity: 'error',
         // });
         setLoading(false);
+        setEmailLoading(false);
       }
     };
 
     fetchUserData();
-  }, [reset, userId]);
+  }, [reset, userId, setValue]);
 
   // useEffect(() => {
   //   const fetchLogo = async (): Promise<void> => {
@@ -503,24 +523,40 @@ export default function UserProfile() {
                     />
                   </Grid>
                   <Grid item xs={12}>
-                    <Field.Text
-                      name="email"
-                      label="Email address"
-                      fullWidth
-                      variant="outlined"
-                      required
-                      disabled={!isAdmin}
-                      sx={{
-                        '& .MuiOutlinedInput-root': {
-                          height: 50,
-                        },
-                        '& .MuiInputBase-input.Mui-disabled': {
-                          cursor: 'not-allowed',
-                          WebkitTextFillColor: theme.palette.text.secondary,
-                          opacity: 0.7,
-                        },
-                      }}
-                    />
+                    <Box sx={{ position: 'relative' }}>
+                      <Field.Text
+                        name="email"
+                        label="Email address"
+                        fullWidth
+                        variant="outlined"
+                        required
+                        disabled={!isAdmin || emailLoading}
+                        sx={{
+                          '& .MuiOutlinedInput-root': {
+                            height: 50,
+                          },
+                          '& .MuiInputBase-input.Mui-disabled': {
+                            cursor: 'not-allowed',
+                            WebkitTextFillColor: theme.palette.text.secondary,
+                            opacity: 0.7,
+                          },
+                        }}
+                      />
+                      {emailLoading && (
+                        <Box
+                          sx={{
+                            position: 'absolute',
+                            right: 14,
+                            top: '50%',
+                            transform: 'translateY(-50%)',
+                            display: 'flex',
+                            alignItems: 'center',
+                          }}
+                        >
+                          <CircularProgress size={20} />
+                        </Box>
+                      )}
+                    </Box>
                   </Grid>
                   <Grid item xs={12}>
                     <Divider sx={{ mt: 1, mb: 2 }} />

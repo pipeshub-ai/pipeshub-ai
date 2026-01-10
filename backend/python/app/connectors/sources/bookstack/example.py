@@ -110,7 +110,8 @@ async def test_run() -> None:
         bookstack_connector = await BookStackConnector.create_connector(
             logger,
             data_store_provider,
-            config_service
+            config_service,
+            "bookstack"
         )
 
         # Initialize the connector

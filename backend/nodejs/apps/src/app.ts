@@ -213,6 +213,11 @@ export class Application {
     const connectSrc = [
       ...new Set([
         "'self'",
+        "https://static.cloudflareinsights.com",
+        // Login with google urls
+        'https://accounts.google.com',
+        'https://www.googleapis.com',
+        // Login with microsoft urls
         'https://login.microsoftonline.com',
         'https://graph.microsoft.com',
         ...envConnectSrcs,

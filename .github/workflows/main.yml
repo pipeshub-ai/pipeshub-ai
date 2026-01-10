@@ -79,7 +79,6 @@ jobs:
       - name: Install Python dependencies
         run: |
           cd backend/python
-          pip install .[dev]
           pip install ruff pytest
 
       - name: Run Python linting

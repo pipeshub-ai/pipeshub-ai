@@ -1,8 +1,6 @@
-from typing import List, Literal
+from typing import List, Literal, Optional
 
-from langchain.output_parsers import PydanticOutputParser
-from langchain.prompts import PromptTemplate
-from langchain.schema import AIMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
 from app.config.constants.arangodb import DepartmentNames
@@ -12,6 +10,7 @@ from app.modules.extraction.prompt_template import (
 )
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.utils.llm import get_llm
+from app.utils.streaming import invoke_with_structured_output_and_reflection
 
 DEFAULT_CONTEXT_LENGTH = 128000
 CONTENT_TOKEN_RATIO = 0.85
@@ -48,7 +47,6 @@ class DocumentExtraction(Transformer):
         self.logger = logger
         self.arango_service = base_arango_service
         self.config_service = config_service
-        self.parser = PydanticOutputParser(pydantic_object=DocumentClassification)
 
     async def apply(self, ctx: TransformContext) -> None:
         record = ctx.record
@@ -170,14 +168,16 @@ class DocumentExtraction(Transformer):
 
     async def extract_metadata(
         self, blocks: List[Block], org_id: str
-    ) -> DocumentClassification:
+    ) -> Optional[DocumentClassification]:
         """
         Extract metadata from document content.
         """
         self.logger.info("🎯 Extracting domain metadata")
-        self.llm, config= await get_llm(self.config_service)
+        self.llm, config = await get_llm(self.config_service)
         is_multimodal_llm = config.get("isMultimodal")
         context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
+
+        self.logger.info(f"Context length: {context_length}")
 
         try:
             self.logger.info(f"🎯 Extracting departments for org_id: {org_id}")
@@ -194,7 +194,7 @@ class DocumentExtraction(Transformer):
             filled_prompt = prompt_for_document_extraction.replace(
                 "{department_list}", department_list
             ).replace("{sentiment_list}", sentiment_list)
-            self.prompt_template = PromptTemplate.from_template(filled_prompt)
+
 
             # Prepare multimodal content
             content = self._prepare_content(blocks, is_multimodal_llm, context_length)
@@ -219,84 +219,21 @@ class DocumentExtraction(Transformer):
             # Create the message for VLM
             messages = [HumanMessage(content=message_content)]
 
-            # Use retry wrapper for LLM call
-            response = await self._call_llm(messages)
+            # Use centralized utility with reflection
+            parsed_response = await invoke_with_structured_output_and_reflection(
+                self.llm, messages, DocumentClassification
+            )
 
-            # Clean the response content
-            response_text = response.content.strip()
-            if response_text.startswith("```json"):
-                response_text = response_text.replace("```json", "", 1)
-            if response_text.endswith("```"):
-                response_text = response_text.rsplit("```", 1)[0]
-            response_text = response_text.strip()
-
-            try:
-                # Parse the response using the Pydantic parser
-                parsed_response = self.parser.parse(response_text)
+            if parsed_response is not None:
+                self.logger.info("✅ Document classification parsed successfully")
                 return parsed_response
+            else:
+                self.logger.error("❌ Failed to parse document classification after all attempts")
+                raise ValueError("Failed to parse document classification after all attempts")
 
-            except Exception as parse_error:
-                self.logger.error(f"❌ Failed to parse response: {str(parse_error)}")
-                self.logger.error(f"Response content: {response_text}")
-
-                # Reflection: attempt to fix the validation issue by providing feedback to the LLM
-                try:
-                    self.logger.info(
-                        "🔄 Attempting reflection to fix validation issues"
-                    )
-                    reflection_prompt = f"""
-                    The previous response failed validation with the following error:
-                    {str(parse_error)}
-
-                    The response was:
-                    {response_text}
-
-                    Please correct your response to match the expected schema.
-                    Ensure all fields are properly formatted and all required fields are present.
-                    Respond only with valid JSON that matches the DocumentClassification schema.
-                    """
-
-                    reflection_messages = [
-                        HumanMessage(content=message_content),
-                        AIMessage(content=response_text),
-                        HumanMessage(content=reflection_prompt),
-                    ]
-
-                    # Use retry wrapper for reflection LLM call
-                    reflection_response = await self._call_llm(reflection_messages)
-                    reflection_text = reflection_response.content.strip()
-
-                    # Clean the reflection response
-                    if reflection_text.startswith("```json"):
-                        reflection_text = reflection_text.replace("```json", "", 1)
-                    if reflection_text.endswith("```"):
-                        reflection_text = reflection_text.rsplit("```", 1)[0]
-                    reflection_text = reflection_text.strip()
-
-                    self.logger.info(f"🎯 Reflection response: {reflection_text}")
-
-                    # Try parsing again with the reflection response
-                    parsed_reflection = self.parser.parse(reflection_text)
-
-                    self.logger.info(
-                        "✅ Reflection successful - validation passed on second attempt"
-                    )
-                    return parsed_reflection
-                except Exception as reflection_error:
-                    self.logger.error(
-                        f"❌ Reflection attempt failed: {str(reflection_error)}"
-                    )
-                    raise ValueError(
-                        f"Failed to parse LLM response and reflection attempt failed: {str(parse_error)}"
-                    )
         except Exception as e:
             self.logger.error(f"❌ Error during metadata extraction: {str(e)}")
             raise
-
-    async def _call_llm(self, messages) -> dict | None:
-        """Wrapper for LLM calls with retry logic"""
-        return await self.llm.ainvoke(messages)
-
 
     async def process_document(self, blocks: List[Block], org_id: str) -> DocumentClassification:
             self.logger.info("🖼️ Processing blocks for semantic metadata extraction")

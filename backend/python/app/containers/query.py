@@ -28,7 +28,7 @@ class QueryAppContainer(BaseAppContainer):
     )
     kafka_service = providers.Singleton(lambda: None)  # Not used in query service
     arango_service = providers.Resource(
-        container_utils.create_retrieval_arango_service,
+        container_utils.create_arango_service,
         logger=logger,
         arango_client=arango_client,
         config_service=config_service,

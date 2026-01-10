@@ -1,7 +1,6 @@
 from enum import Enum
 from typing import Any, Dict
 
-from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.interfaces.sync_point.isync_point import ISyncPoint
 
@@ -17,7 +16,7 @@ def generate_record_sync_point_key(record_type: str, entity_name: str, entity_id
     return f"{record_type}/{entity_name}/{entity_id}"
 
 class SyncPoint(ISyncPoint):
-    connector_name: str
+    connector_id: str
     org_id: str
     data_store_provider: DataStoreProvider
     sync_data_point_type: SyncDataPointType
@@ -25,22 +24,23 @@ class SyncPoint(ISyncPoint):
 
 
     def _get_full_sync_point_key(self, sync_point_key: str) -> str:
-        return f"{self.org_id}/{self.connector_name}/{self.sync_data_point_type.value}/{sync_point_key}"
+        return f"{self.org_id}/{self.connector_id}/{self.sync_data_point_type.value}/{sync_point_key}"
 
-    def __init__(self, connector_name: Connectors, org_id: str, sync_data_point_type: SyncDataPointType, data_store_provider: DataStoreProvider) -> None:
-        self.connector_name = connector_name.value
+    def __init__(self, connector_id: str, org_id: str, sync_data_point_type: SyncDataPointType, data_store_provider: DataStoreProvider) -> None:
         self.org_id = org_id
         self.data_store_provider = data_store_provider
         self.sync_data_point_type = sync_data_point_type
+        self.connector_id = connector_id
 
     async def create_sync_point(self, sync_point_key: str, sync_point_data: Dict[str, Any]) -> Dict[str, Any]:
         full_sync_point_key = self._get_full_sync_point_key(sync_point_key)
+        # Flatten the document by merging sync_point_data into the top level
         document_data = {
             "orgId": self.org_id,
-            "connectorName": self.connector_name,
+            "connectorId": self.connector_id,
             "syncPointKey": full_sync_point_key,
-            "syncPointData": sync_point_data,
-            "syncDataPointType": self.sync_data_point_type.value
+            "syncDataPointType": self.sync_data_point_type.value,
+            **sync_point_data  # Merge sync_point_data at the top level
         }
 
         async with self.data_store_provider.transaction() as tx_store:
@@ -53,7 +53,12 @@ class SyncPoint(ISyncPoint):
             full_sync_point_key = self._get_full_sync_point_key(sync_point_key)
             sync_point = await tx_store.get_sync_point(full_sync_point_key)
 
-            return sync_point.get('syncPointData', {}) if sync_point else {}
+            if not sync_point:
+                return {}
+
+            # Return all fields except metadata fields (flattened structure)
+            metadata_fields = {'orgId', 'connectorId', 'syncPointKey', 'syncDataPointType', '_key', '_id', '_rev'}
+            return {k: v for k, v in sync_point.items() if k not in metadata_fields}
 
     async def update_sync_point(self, sync_point_key: str, sync_point_data: Dict[str, Any]) -> Dict[str, Any]:
         return await self.create_sync_point(sync_point_key, sync_point_data)

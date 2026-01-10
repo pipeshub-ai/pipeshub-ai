@@ -20,7 +20,7 @@ class RecordGroupType(str, Enum):
     KB = "KB"
     NOTION_WORKSPACE = "NOTION_WORKSPACE"
     DRIVE = "DRIVE"
-    JIRA_PROJECT = "JIRA_PROJECT"
+    PROJECT = "PROJECT"
     SHAREPOINT_SITE = "SHAREPOINT_SITE"
     SHAREPOINT_SUBSITE = "SHAREPOINT_SUBSITE"
     USER_GROUP = "USER_GROUP"
@@ -41,11 +41,20 @@ class RecordType(str, Enum):
     INLINE_COMMENT = "INLINE_COMMENT"
     CONFLUENCE_PAGE = "CONFLUENCE_PAGE"
     CONFLUENCE_BLOGPOST = "CONFLUENCE_BLOGPOST"
+    SHAREPOINT_PAGE = "SHAREPOINT_PAGE"
     SHAREPOINT_LIST = "SHAREPOINT_LIST"
     SHAREPOINT_LIST_ITEM = "SHAREPOINT_LIST_ITEM"
     SHAREPOINT_DOCUMENT_LIBRARY = "SHAREPOINT_DOCUMENT_LIBRARY"
     OTHERS = "OTHERS"
 
+
+class IndexingStatus(str, Enum):
+    """Status of record indexing for search and AI features"""
+    NOT_STARTED = "NOT_STARTED"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    AUTO_INDEX_OFF = "AUTO_INDEX_OFF"  # Record saved but not indexed (filtered out)
 
 class Record(BaseModel):
     # Core record properties
@@ -63,11 +72,13 @@ class Record(BaseModel):
     version: int = Field(description="Version of the record")
     origin: OriginTypes = Field(description="Origin of the record")
     connector_name: Connectors = Field(description="Name of the connector used to create the record")
+    connector_id: str = Field(description="Unique identifier for the connector configuration instance")
     virtual_record_id: Optional[str] = Field(description="Virtual record identifier", default=None)
     summary_document_id: Optional[str] = Field(description="Summary document identifier", default=None)
     md5_hash: Optional[str] = Field(default=None, description="MD5 hash of the record")
     mime_type: str = Field(default=MimeTypes.UNKNOWN.value, description="MIME type of the record")
     inherit_permissions: bool = Field(default=True, description="Inherit permissions from parent record") # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
+    indexing_status: str = Field(default=IndexingStatus.NOT_STARTED.value, description="Indexing status for the record")
     # Epoch Timestamps
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record update")
@@ -80,6 +91,10 @@ class Record(BaseModel):
     fetch_signed_url: Optional[str] = None
     preview_renderable: Optional[bool] = True
     is_shared: Optional[bool] = False
+
+    # Processing flags
+    is_vlm_ocr_processed: Optional[bool] = Field(default=False, description="Flag indicating if VLM OCR processing has been used to process the record")
+
     # Content blocks
     block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
     semantic_metadata: Optional[SemanticMetadata] = None
@@ -87,6 +102,9 @@ class Record(BaseModel):
     parent_record_id: Optional[str] = None
     child_record_ids: Optional[List[str]] = Field(default_factory=list)
     related_record_ids: Optional[List[str]] = Field(default_factory=list)
+    # Hierarchy fields
+    is_dependent_node: bool = Field(default=False, description="True for dependent records, False for root records")
+    parent_node_id: Optional[str] = Field(default=None, description="Internal record ID of the parent node")
     def to_arango_base_record(self) -> Dict:
         return {
             "_key": self.id,
@@ -100,19 +118,23 @@ class Record(BaseModel):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
             "mimeType": self.mime_type,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
-            "indexingStatus": "NOT_STARTED",
-            "extractionStatus": "NOT_STARTED",
+            "indexingStatus": self.indexing_status,
+            "extractionStatus": IndexingStatus.NOT_STARTED.value,
             "isDeleted": False,
             "isArchived": False,
             "deletedByUserId": None,
             "previewRenderable": self.preview_renderable,
             "isShared": self.is_shared,
+            "isVLMOcrProcessed": self.is_vlm_ocr_processed,
+            "isDependentNode": self.is_dependent_node,
+            "parentNodeId": self.parent_node_id,
         }
 
     @staticmethod
@@ -129,7 +151,7 @@ class Record(BaseModel):
             connector_name = Connectors.KNOWLEDGE_BASE
 
         return Record(
-            id=arango_base_record["_key"],
+            id=arango_base_record.get("id", arango_base_record.get("_key")),
             org_id=arango_base_record["orgId"],
             record_name=arango_base_record["recordName"],
             record_type=RecordType(arango_base_record["recordType"]),
@@ -141,6 +163,7 @@ class Record(BaseModel):
             version=arango_base_record["version"],
             origin=OriginTypes(arango_base_record["origin"]),
             connector_name=connector_name,
+            connector_id=arango_base_record.get("connectorId", None),
             mime_type=arango_base_record.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=arango_base_record.get("webUrl", None),
             created_at=arango_base_record.get("createdAtTimestamp", None),
@@ -150,6 +173,9 @@ class Record(BaseModel):
             virtual_record_id=arango_base_record.get("virtualRecordId", None),
             preview_renderable=arango_base_record.get("previewRenderable", True),
             is_shared=arango_base_record.get("isShared", False),
+            is_vlm_ocr_processed=arango_base_record.get("isVLMOcrProcessed", False),
+            is_dependent_node=arango_base_record.get("isDependentNode", False),
+            parent_node_id=arango_base_record.get("parentNodeId", None),
         )
 
     def to_kafka_record(self) -> Dict:
@@ -177,7 +203,7 @@ class FileRecord(Record):
             "extension": self.extension,
             "mimeType": self.mime_type,
             "sizeInBytes": self.size_in_bytes,
-            "webUrl": self.weburl,
+            "webUrl": self.weburl if self.weburl is not None else "",
             "etag": self.etag,
             "ctag": self.ctag,
             "md5Checksum": self.md5_hash,
@@ -191,14 +217,16 @@ class FileRecord(Record):
     @staticmethod
     def from_arango_record(arango_base_file_record: Dict, arango_base_record: Dict) -> "FileRecord":
         return FileRecord(
-            id=arango_base_record["_key"],
+            id=arango_base_record.get("id", arango_base_record.get("_key")),
             org_id=arango_base_record["orgId"],
             record_name=arango_base_record["recordName"],
             record_type=RecordType(arango_base_record["recordType"]),
+            external_revision_id=arango_base_record.get("externalRevisionId", None),
             external_record_id=arango_base_record["externalRecordId"],
             version=arango_base_record["version"],
             origin=OriginTypes(arango_base_record["origin"]),
             connector_name=Connectors(arango_base_record["connectorName"]),
+            connector_id=arango_base_record.get("connectorId"),
             mime_type=arango_base_record.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=arango_base_record["webUrl"],
             external_record_group_id=arango_base_record.get("externalGroupId", None),
@@ -207,6 +235,8 @@ class FileRecord(Record):
             updated_at=arango_base_record["updatedAtTimestamp"],
             source_created_at=arango_base_record["sourceCreatedAtTimestamp"],
             source_updated_at=arango_base_record["sourceLastModifiedTimestamp"],
+            is_dependent_node=arango_base_record.get("isDependentNode", False),
+            parent_node_id=arango_base_record.get("parentNodeId", None),
             is_file=arango_base_file_record["isFile"],
             size_in_bytes=arango_base_file_record["sizeInBytes"],
             extension=arango_base_file_record["extension"],
@@ -229,6 +259,7 @@ class FileRecord(Record):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
             "mimeType": self.mime_type,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
@@ -254,6 +285,8 @@ class MessageRecord(Record):
             "orgId": self.org_id,
             "recordName": self.record_name,
             "recordType": self.record_type.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
@@ -292,6 +325,8 @@ class MailRecord(Record):
         return {
             "recordId": self.id,
             "orgId": self.org_id,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
             "recordName": self.record_name,
             "recordType": self.record_type.value,
             "mimeType": self.mime_type,
@@ -308,7 +343,7 @@ class MailRecord(Record):
             connector_name = Connectors.KNOWLEDGE_BASE
 
         return MailRecord(
-            id=record_doc["_key"],
+            id=record_doc.get("id", record_doc.get("_key")),
             org_id=record_doc["orgId"],
             record_name=record_doc["recordName"],
             record_type=RecordType(record_doc["recordType"]),
@@ -319,6 +354,7 @@ class MailRecord(Record):
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
             connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
             mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=mail_doc.get("webUrl"),
             created_at=record_doc.get("createdAtTimestamp"),
@@ -344,6 +380,8 @@ class WebpageRecord(Record):
             "orgId": self.org_id,
             "recordName": self.record_name,
             "recordType": self.record_type.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
             "mimeType": self.mime_type,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -369,7 +407,7 @@ class WebpageRecord(Record):
             connector_name = Connectors.KNOWLEDGE_BASE
 
         return WebpageRecord(
-            id=record_doc["_key"],
+            id=record_doc.get("id", record_doc.get("_key")),
             org_id=record_doc["orgId"],
             record_name=record_doc["recordName"],
             record_type=RecordType(record_doc["recordType"]),
@@ -380,6 +418,7 @@ class WebpageRecord(Record):
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
             connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
             mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=record_doc.get("webUrl"),
             created_at=record_doc.get("createdAtTimestamp"),
@@ -408,6 +447,8 @@ class CommentRecord(Record):
             "orgId": self.org_id,
             "recordName": self.record_name,
             "recordType": self.record_type.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
             "mimeType": self.mime_type,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -433,7 +474,7 @@ class CommentRecord(Record):
             connector_name = Connectors.KNOWLEDGE_BASE
 
         return CommentRecord(
-            id=record_doc["_key"],
+            id=record_doc.get("id", record_doc.get("_key")),
             org_id=record_doc["orgId"],
             record_name=record_doc["recordName"],
             record_type=RecordType(record_doc["recordType"]),
@@ -444,6 +485,7 @@ class CommentRecord(Record):
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
             connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
             mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=record_doc.get("webUrl"),
             created_at=record_doc.get("createdAtTimestamp"),
@@ -451,16 +493,18 @@ class CommentRecord(Record):
             source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
             source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
             virtual_record_id=record_doc.get("virtualRecordId"),
-            author_id=comment_doc.get("authorId"),
+            preview_renderable=record_doc.get("previewRenderable", True),
+            is_dependent_node=record_doc.get("isDependentNode", False),
+            parent_node_id=record_doc.get("parentNodeId", None),
+            author_source_id=comment_doc.get("authorSourceId") or comment_doc.get("authorId") or "unknown",
             resolution_status=comment_doc.get("resolutionStatus"),
             comment_selection=comment_doc.get("commentSelection"),
         )
 
 class TicketRecord(Record):
-    summary: Optional[str] = None
-    description: Optional[str] = None
     status: Optional[str] = None
     priority: Optional[str] = None
+    type: Optional[str] = None
     assignee: Optional[str] = None
     reporter_email: Optional[str] = None
     assignee_email: Optional[str] = None
@@ -472,11 +516,9 @@ class TicketRecord(Record):
         return {
             "_key": self.id,
             "orgId": self.org_id,
-            "name": self.record_name,
-            "summary": self.summary,
-            "description": self.description,
             "status": self.status,
             "priority": self.priority,
+            "type": self.type,
             "assignee": self.assignee,
             "reporterEmail": self.reporter_email,
             "assigneeEmail": self.assignee_email,
@@ -494,7 +536,7 @@ class TicketRecord(Record):
             connector_name = Connectors.KNOWLEDGE_BASE
 
         return TicketRecord(
-            id=record_doc["_key"],
+            id=record_doc.get("id", record_doc.get("_key")),
             org_id=record_doc["orgId"],
             record_name=record_doc["recordName"],
             record_type=RecordType(record_doc["recordType"]),
@@ -505,6 +547,7 @@ class TicketRecord(Record):
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
             connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
             mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=record_doc.get("webUrl"),
             created_at=record_doc.get("createdAtTimestamp"),
@@ -512,10 +555,14 @@ class TicketRecord(Record):
             source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
             source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
             virtual_record_id=record_doc.get("virtualRecordId"),
+            preview_renderable=record_doc.get("previewRenderable", True),
+            is_dependent_node=record_doc.get("isDependentNode", False),
+            parent_node_id=record_doc.get("parentNodeId", None),
             summary=ticket_doc.get("summary"),
             description=ticket_doc.get("description"),
             status=ticket_doc.get("status"),
             priority=ticket_doc.get("priority"),
+            type=ticket_doc.get("type"),
             assignee=ticket_doc.get("assignee"),
             reporter_email=ticket_doc.get("reporterEmail"),
             assignee_email=ticket_doc.get("assigneeEmail"),
@@ -532,6 +579,7 @@ class TicketRecord(Record):
             "recordName": self.record_name,
             "recordType": self.record_type.value,
             "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
             "mimeType": self.mime_type,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -556,6 +604,7 @@ class SharePointListRecord(Record):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name,
+            "connectorId": self.connector_id,
             "mimeType": self.mime_type,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
@@ -580,6 +629,7 @@ class SharePointListItemRecord(Record):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name,
+            "connectorId": self.connector_id,
             "mimeType": self.mime_type,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
@@ -604,6 +654,7 @@ class SharePointDocumentLibraryRecord(Record):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
             "mimeType": self.mime_type,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
@@ -618,6 +669,12 @@ class SharePointDocumentLibraryRecord(Record):
 class SharePointPageRecord(Record):
     """Record class for SharePoint pages"""
 
+    def to_arango_record(self) -> Dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+        }
+
     def to_kafka_record(self) -> Dict:
         return {
             "recordId": self.id,
@@ -628,6 +685,7 @@ class SharePointPageRecord(Record):
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
             "mimeType": self.mime_type,
             "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
@@ -649,6 +707,7 @@ class RecordGroup(BaseModel):
     parent_external_group_id: Optional[str] = Field(default=None, description="External identifier for the parent record group")
     parent_record_group_id: Optional[str] = Field(default=None, description="Internal identifier for the parent record group")
     connector_name: Connectors = Field(description="Name of the connector used to create the record group")
+    connector_id: str = Field(description="Unique identifier for the connector configuration instance")
     web_url: Optional[str] = Field(default=None, description="Web URL of the record group")
     group_type: Optional[RecordGroupType] = Field(description="Type of the record group")
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record group creation")
@@ -667,6 +726,7 @@ class RecordGroup(BaseModel):
             "externalGroupId": self.external_group_id,
             "parentExternalGroupId": self.parent_external_group_id,
             "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
             "groupType": self.group_type.value,
             "webUrl": self.web_url,
             "createdAtTimestamp": self.created_at,
@@ -679,7 +739,7 @@ class RecordGroup(BaseModel):
     @staticmethod
     def from_arango_base_record_group(arango_base_record_group: Dict) -> "RecordGroup":
         return RecordGroup(
-            id=arango_base_record_group["_key"],
+            id=arango_base_record_group.get("id", arango_base_record_group.get("_key")),
             org_id=arango_base_record_group.get("orgId", ""),
             name=arango_base_record_group["groupName"],
             short_name=arango_base_record_group.get("shortName", None),
@@ -687,6 +747,7 @@ class RecordGroup(BaseModel):
             external_group_id=arango_base_record_group["externalGroupId"],
             parent_external_group_id=arango_base_record_group.get("parentExternalGroupId", None),
             connector_name=arango_base_record_group["connectorName"],
+            connector_id=arango_base_record_group.get("connectorId"),
             group_type=arango_base_record_group["groupType"],
             web_url=arango_base_record_group.get("webUrl", None),
             created_at=arango_base_record_group["createdAtTimestamp"],
@@ -780,7 +841,7 @@ class User(BaseModel):
     @staticmethod
     def from_arango_user(data: Dict[str, Any]) -> 'User':
         return User(
-            id=data.get("_key", None),
+            id=data.get("id", data.get("_key")),
             email=data.get("email", ""),
             org_id=data.get("orgId", ""),
             user_id=data.get("userId", None),
@@ -797,7 +858,7 @@ class UserGroup(BaseModel):
     source_user_group_id: str
     name: str
     mail: Optional[str] = None
-    _key: Optional[str] = None
+    id: Optional[str] = None
     description: Optional[str] = None
     created_at_timestamp: Optional[float] = None
     updated_at_timestamp: Optional[float] = None
@@ -820,11 +881,12 @@ class UserGroup(BaseModel):
         return True
 
     def key(self) -> str:
-        return self._key
+        return self.id
 
 
 class AppUser(BaseModel):
     app_name: Connectors = Field(description="Name of the app")
+    connector_id: str = Field(description="Unique identifier for the connector")
     id: str = Field(description="Unique identifier for the user", default_factory=lambda: str(uuid4()))
     source_user_id: str = Field(description="Unique identifier for the user in the source system")
     org_id: str = Field(default="", description="Unique identifier for the organization")
@@ -852,19 +914,21 @@ class AppUser(BaseModel):
     @staticmethod
     def from_arango_user(data: Dict[str, Any]) -> 'AppUser':
         return AppUser(
-            id=data.get("_key", None),
+            id=data.get("id", data.get("_key")),
             email=data.get("email", ""),
             org_id=data.get("orgId", ""),
             user_id=data.get("userId", None),
             is_active=data.get("isActive", False),
             full_name=data.get("fullName", None),
             source_user_id=data.get("sourceUserId", ""),
-            app_name=Connectors(data.get("appName", Connectors.UNKNOWN.value)),
+            app_name=Connectors(data.get("appName", Connectors.UNKNOWN.value).replace("_", " ").upper()),
+            connector_id=data.get("connectorId", ""),
         )
 
 class AppUserGroup(BaseModel):
     id: str = Field(description="Unique identifier for the user group", default_factory=lambda: str(uuid4()))
     app_name: Connectors = Field(description="Name of the app")
+    connector_id: str = Field(description="Unique identifier for the connector")
     source_user_group_id: str = Field(description="Unique identifier for the user group in the source system")
     name: str = Field(description="Name of the user group")
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the user group creation")
@@ -885,6 +949,7 @@ class AppUserGroup(BaseModel):
             "appName": self.app_name.value,
             "externalGroupId": self.source_user_group_id,
             "connectorName": self.app_name.value,
+            "connectorId": self.connector_id,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
@@ -895,11 +960,12 @@ class AppUserGroup(BaseModel):
     @staticmethod
     def from_arango_base_user_group(arango_doc: Dict[str, Any]) -> "AppUserGroup":
         return AppUserGroup(
-            id=arango_doc["_key"],
+            id=arango_doc.get("id", arango_doc.get("_key")),
             org_id=arango_doc.get("orgId", ""),
             name=arango_doc["name"],
             source_user_group_id=arango_doc["externalGroupId"],
             app_name=Connectors(arango_doc["connectorName"]),
+            connector_id=arango_doc.get("connectorId", None),
             created_at=arango_doc["createdAtTimestamp"],
             updated_at=arango_doc["updatedAtTimestamp"],
             source_created_at=arango_doc.get("sourceCreatedAtTimestamp"),
@@ -909,6 +975,7 @@ class AppUserGroup(BaseModel):
 class AppRole(BaseModel):
     id: str = Field(description="Unique identifier for the role", default_factory=lambda: str(uuid4()))
     app_name: Connectors = Field(description="Name of the app")
+    connector_id: str = Field(description="Unique identifier for the connector")
     source_role_id: str = Field(description="Unique identifier for the role in the source system")
     name: str = Field(description="Name of the role")
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the role creation")
@@ -927,6 +994,7 @@ class AppRole(BaseModel):
             "name": self.name,
             "externalRoleId": self.source_role_id,
             "connectorName": self.app_name.value,
+            "connectorId": self.connector_id,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
@@ -937,11 +1005,12 @@ class AppRole(BaseModel):
     @staticmethod
     def from_arango_base_role(arango_doc: Dict[str, Any]) -> "AppRole":
         return AppRole(
-            id=arango_doc["_key"],
+            id=arango_doc.get("id", arango_doc.get("_key")),
             org_id=arango_doc.get("orgId", ""),
             name=arango_doc["name"],
             source_role_id=arango_doc["externalRoleId"],
             app_name=Connectors(arango_doc["connectorName"]),
+            connector_id=arango_doc.get("connectorId", None),
             created_at=arango_doc["createdAtTimestamp"],
             updated_at=arango_doc["updatedAtTimestamp"],
             source_created_at=arango_doc.get("sourceCreatedAtTimestamp"),

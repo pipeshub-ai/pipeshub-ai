@@ -7,8 +7,9 @@ import {
   updateRecord,
   getRecordBuffer,
   reindexRecord,
+  reindexRecordGroup,
   getConnectorStats,
-  reindexAllRecords,
+  reindexFailedRecords,
   resyncConnectorRecords,
   createKnowledgeBase,
   listKnowledgeBases,
@@ -28,6 +29,7 @@ import {
   createNestedFolder,
   createRootFolder,
   uploadRecordsToKB,
+  getKnowledgeHubNodes,
 } from '../controllers/kb_controllers';
 import { ArangoService } from '../../../libs/services/arango.service';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
@@ -36,7 +38,8 @@ import {
   getRecordByIdSchema,
   updateRecordSchema,
   deleteRecordSchema,
-  reindexAllRecordSchema,
+  reindexRecordGroupSchema,
+  reindexFailedRecordSchema,
   resyncConnectorSchema,
   createKBSchema,
   getKBSchema,
@@ -66,7 +69,6 @@ import { KeyValueStoreService } from '../../../libs/services/keyValueStore.servi
 import { RecordsEventProducer } from '../services/records_events.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { SyncEventProducer } from '../services/sync_events.service';
-import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 import { FileProcessorService } from '../../../libs/middlewares/file_processor/fp.service';
 import { KB_UPLOAD_LIMITS } from '../constants/kb.constants';
 import { getPlatformSettingsFromStore } from '../../configuration_manager/utils/util';
@@ -190,6 +192,22 @@ export function createKnowledgeBaseRouter(
     getAllRecords(appConfig),
   );
 
+  // Knowledge Hub unified browse API - Root
+  router.get(
+    '/knowledge-hub/nodes',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    getKnowledgeHubNodes(appConfig),
+  );
+
+  // Knowledge Hub unified browse API - Children
+  router.get(
+    '/knowledge-hub/nodes/:parentType/:parentId',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    getKnowledgeHubNodes(appConfig),
+  );
+
   // Get a specific record by ID
   router.get(
     '/record/:recordId',
@@ -242,24 +260,31 @@ export function createKnowledgeBaseRouter(
     reindexRecord(appConfig),
   );
 
-  // connector stats
-  router.get(
-    '/stats/:connector',
+  // reindex a record group
+  router.post(
+    '/reindex/record-group/:recordGroupId',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    userAdminCheck,
+    ValidationMiddleware.validate(reindexRecordGroupSchema),
+    reindexRecordGroup(appConfig),
+  );
+
+  // connector stats
+  router.get(
+    '/stats/:connectorId',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
     ValidationMiddleware.validate(getConnectorStatsSchema),
     getConnectorStats(appConfig),
   );
 
   // reindex all failed records per connector
   router.post(
-    '/reindex-all/connector',
+    '/reindex-failed/connector',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    userAdminCheck,
-    ValidationMiddleware.validate(reindexAllRecordSchema),
-    reindexAllRecords(recordRelationService, appConfig),
+    ValidationMiddleware.validate(reindexFailedRecordSchema),
+    reindexFailedRecords(recordRelationService, appConfig),
   );
 
   // resync connector records
@@ -267,7 +292,6 @@ export function createKnowledgeBaseRouter(
     '/resync/connector',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    userAdminCheck,
     ValidationMiddleware.validate(resyncConnectorSchema),
     resyncConnectorRecords(recordRelationService, appConfig),
   );

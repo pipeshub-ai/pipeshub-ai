@@ -1,3 +1,10 @@
+/**
+ * useConnectors Hook
+ *
+ * Hook for managing connector instances with caching.
+ * Provides access to all connector instances with filtering and utilities.
+ */
+
 import { useEffect, useCallback, useMemo } from 'react';
 import { useConnectorContext } from '../context/connector-context';
 
@@ -13,7 +20,7 @@ export const useConnectors = () => {
     return Date.now() - state.lastFetched > CACHE_DURATION;
   }, [state.lastFetched]);
 
-  // Fetch all connectors via Provider method
+  // Fetch all connector instances via Provider method
   const fetchAllConnectors = useCallback(async () => {
     await contextRefreshConnectors();
   }, [contextRefreshConnectors]);
@@ -35,9 +42,10 @@ export const useConnectors = () => {
   }, [fetchAllConnectors, isStale, state.activeConnectors.length, state.inactiveConnectors.length]);
 
   // Get all connectors combined
-  const allConnectors = useMemo(() => 
-    [...state.activeConnectors, ...state.inactiveConnectors]
-  , [state.activeConnectors, state.inactiveConnectors]);
+  const allConnectors = useMemo(
+    () => [...state.activeConnectors, ...state.inactiveConnectors],
+    [state.activeConnectors, state.inactiveConnectors]
+  );
 
   // Get connectors by status
   const getConnectorsByStatus = useCallback(
@@ -45,28 +53,40 @@ export const useConnectors = () => {
     [state.activeConnectors, state.inactiveConnectors]
   );
 
-  // Get connector by name
+  // Get connector by connectorId
+  const getConnectorByKey = useCallback(
+    (connectorId: string) => allConnectors.find((connector) => connector._key === connectorId),
+    [allConnectors]
+  );
+
+  // Get connector by name (for backward compatibility)
   const getConnectorByName = useCallback(
     (name: string) => allConnectors.find((connector) => connector.name === name),
     [allConnectors]
   );
 
-  // Check if connector is active
-  const isConnectorActive = useCallback(
-    (name: string) => {
-      const connector = getConnectorByName(name);
-      return connector?.isActive || false;
-    },
-    [getConnectorByName]
+  // Get connector by type
+  const getConnectorByType = useCallback(
+    (type: string) => allConnectors.find((connector) => connector.type === type),
+    [allConnectors]
   );
 
-  // Check if connector is configured
+  // Check if connector is active by key
+  const isConnectorActive = useCallback(
+    (connectorId: string) => {
+      const connector = getConnectorByKey(connectorId);
+      return connector?.isActive || false;
+    },
+    [getConnectorByKey]
+  );
+
+  // Check if connector is configured by key
   const isConnectorConfigured = useCallback(
-    (name: string) => {
-      const connector = getConnectorByName(name);
+    (connectorId: string) => {
+      const connector = getConnectorByKey(connectorId);
       return connector?.isConfigured || false;
     },
-    [getConnectorByName]
+    [getConnectorByKey]
   );
 
   return {
@@ -84,7 +104,9 @@ export const useConnectors = () => {
 
     // Utilities
     getConnectorsByStatus,
+    getConnectorByKey,
     getConnectorByName,
+    getConnectorByType,
     isConnectorActive,
     isConnectorConfigured,
   };

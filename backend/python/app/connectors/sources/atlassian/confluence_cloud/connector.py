@@ -19,7 +19,12 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+from app.config.constants.arangodb import (
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+)
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -33,7 +38,21 @@ from app.connectors.core.base.sync_point.sync_point import (
 from app.connectors.core.registry.connector_builder import (
     CommonFields,
     ConnectorBuilder,
+    ConnectorScope,
     DocumentationLink,
+)
+from app.connectors.core.registry.filters import (
+    FilterCategory,
+    FilterCollection,
+    FilterField,
+    FilterOperator,
+    FilterOption,
+    FilterOptionsResponse,
+    FilterType,
+    IndexingFilterKey,
+    OptionSourceType,
+    SyncFilterKey,
+    load_connector_filters,
 )
 from app.connectors.sources.atlassian.core.apps import ConfluenceApp
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
@@ -42,6 +61,7 @@ from app.models.entities import (
     AppUserGroup,
     CommentRecord,
     FileRecord,
+    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -53,18 +73,37 @@ from app.sources.client.confluence.confluence import (
     ConfluenceClient as ExternalConfluenceClient,
 )
 from app.sources.external.confluence.confluence import ConfluenceDataSource
+from app.utils.streaming import create_stream_record_response
 
 # Confluence Cloud OAuth URLs
 AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
 TOKEN_URL = "https://auth.atlassian.com/oauth/token"
-HTTP_STATUS_200 = 200
 
+# Time offset (in hours) applied to date filters to handle timezone differences
+# between the application and Confluence server, ensuring no data is missed during sync
+TIME_OFFSET_HOURS = 24
+
+# Expand parameters for fetching pages and blogposts with required metadata
+# Includes: ancestors, history, space, attachments, and comments
+CONTENT_EXPAND_PARAMS = (
+    "ancestors,"
+    "history.lastUpdated,"
+    "space,"
+    "children.attachment,"
+    "children.attachment.history.lastUpdated,"
+    "children.attachment.version,"
+    "childTypes.comment"
+)
+
+# Constant for pseudo-user group prefix
+PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 
 @ConnectorBuilder("Confluence")\
     .in_group("Atlassian")\
     .with_auth_type("OAUTH")\
     .with_description("Sync pages, spaces, and users from Confluence Cloud")\
     .with_categories(["Knowledge Management", "Collaboration"])\
+    .with_scopes([ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/confluence.svg")
         .with_realtime_support(False)
@@ -75,7 +114,7 @@ HTTP_STATUS_200 = 200
         ))
         .add_documentation_link(DocumentationLink(
             'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/atlassian/confluence',
+            'https://docs.pipeshub.com/connectors/confluence/confluence',
             'pipeshub'
         ))
         .with_redirect_uri("connectors/oauth/callback/Confluence", True)
@@ -84,6 +123,88 @@ HTTP_STATUS_200 = 200
         .add_auth_field(CommonFields.client_secret("Atlassian OAuth App"))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
+        .add_filter_field(FilterField(
+            name="space_keys",
+            display_name="Space Name",
+            description="Filter pages and blogposts by space name",
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            default_value=[],
+            option_source_type=OptionSourceType.DYNAMIC
+        ))
+        .add_filter_field(FilterField(
+            name="page_ids",
+            display_name="Page Name",
+            description="Filter specific pages by their name.",
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            default_value=[],
+            option_source_type=OptionSourceType.DYNAMIC
+        ))
+        .add_filter_field(FilterField(
+            name="blogpost_ids",
+            display_name="Blogpost Name",
+            description="Filter specific blogposts by their name.",
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            default_value=[],
+            option_source_type=OptionSourceType.DYNAMIC
+        ))
+        .add_filter_field(CommonFields.modified_date_filter("Filter pages and blogposts by modification date."))
+        .add_filter_field(CommonFields.created_date_filter("Filter pages and blogposts by creation date."))
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
+        # Indexing filters - Pages
+        .add_filter_field(FilterField(
+            name="pages",
+            display_name="Index Pages",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of pages",
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name="page_attachments",
+            display_name="Index Page Attachments",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of page attachments",
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name="page_comments",
+            display_name="Index Page Comments",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of page comments",
+            default_value=True
+        ))
+        # Indexing filters - Blogposts
+        .add_filter_field(FilterField(
+            name="blogposts",
+            display_name="Index Blogposts",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of blogposts",
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name="blogpost_attachments",
+            display_name="Index Blogpost Attachments",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of blogpost attachments",
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name="blogpost_comments",
+            display_name="Index Blogpost Comments",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of blogpost comments",
+            default_value=True
+        ))
     )\
     .build_decorator()
 class ConfluenceConnector(BaseConnector):
@@ -104,30 +225,37 @@ class ConfluenceConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
+        connector_id: str
     ) -> None:
         """Initialize the Confluence connector."""
         super().__init__(
-            ConfluenceApp(),
+            ConfluenceApp(connector_id),
             logger,
             data_entities_processor,
             data_store_provider,
-            config_service
+            config_service,
+            connector_id
         )
 
         # Client instances
         self.external_client: Optional[ExternalConfluenceClient] = None
         self.data_source: Optional[ConfluenceDataSource] = None
+        self.connector_id: str = connector_id
 
         # Initialize sync points for incremental sync
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
             return SyncPoint(
-                connector_name=self.connector_name,
+                connector_id=self.connector_id,
                 org_id=self.data_entities_processor.org_id,
                 sync_data_point_type=sync_data_point_type,
                 data_store_provider=self.data_store_provider,
             )
 
         self.pages_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
+        self.audit_log_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
+
+        self.sync_filters: FilterCollection = FilterCollection()
+        self.indexing_filters: FilterCollection = FilterCollection()
 
     async def init(self) -> bool:
         """Initialize the Confluence connector with credentials and client."""
@@ -138,15 +266,11 @@ class ConfluenceConnector(BaseConnector):
             self.external_client = await ExternalConfluenceClient.build_from_services(
                 logger=self.logger,
                 config_service=self.config_service,
+                connector_instance_id=self.connector_id
             )
 
             # Initialize data source
             self.data_source = ConfluenceDataSource(self.external_client)
-
-            # Test connection
-            if not await self.test_connection_and_access():
-                self.logger.error("❌ Confluence connector connection test failed")
-                return False
 
             self.logger.info("✅ Confluence connector initialized successfully")
             return True
@@ -172,7 +296,7 @@ class ConfluenceConnector(BaseConnector):
             raise Exception("Confluence client not initialized. Call init() first.")
 
         # Fetch current config from etcd (async I/O)
-        config = await self.config_service.get_config("/services/connectors/confluence/config")
+        config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
 
         if not config:
             raise Exception("Confluence configuration not found")
@@ -209,7 +333,7 @@ class ConfluenceConnector(BaseConnector):
                 limit=1
             )
 
-            if not response or response.status != HTTP_STATUS_200:
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
                 self.logger.error(f"Connection test failed with status: {response.status if response else 'No response'}")
                 return False
 
@@ -245,6 +369,11 @@ class ConfluenceConnector(BaseConnector):
             if not self.external_client or not self.data_source:
                 raise Exception("Confluence client not initialized. Call init() first.")
 
+            # Load sync and indexing filters
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "confluence", self.connector_id, self.logger
+            )
+
             # Step 1: Sync users
             await self._sync_users()
 
@@ -260,11 +389,15 @@ class ConfluenceConnector(BaseConnector):
 
                 # Sync pages (with attachments, comments, permissions)
                 self.logger.info(f"Syncing pages for space: {space.name} ({space_key})")
-                await self._sync_pages(space_key)
+                await self._sync_content(space_key, RecordType.CONFLUENCE_PAGE)
 
                 # Sync blogposts (with attachments, comments, permissions)
                 self.logger.info(f"Syncing blogposts for space: {space.name} ({space_key})")
-                await self._sync_blogposts(space_key)
+                await self._sync_content(space_key, RecordType.CONFLUENCE_BLOGPOST)
+
+            # Step 5: Sync permission changes from audit log
+            # This catches permission changes that don't update content's lastModified
+            await self._sync_permission_changes_from_audit_log()
 
             self.logger.info("✅ Confluence sync completed successfully")
 
@@ -298,7 +431,7 @@ class ConfluenceConnector(BaseConnector):
                 )
 
                 # Check response
-                if not response or response.status != HTTP_STATUS_200:
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch users: {response.status if response else 'No response'}")
                     break
 
@@ -317,6 +450,7 @@ class ConfluenceConnector(BaseConnector):
                     # Skip if no email
                     email = user_data.get("email", "").strip()
                     if not email:
+                        self.logger.warning(f"Skipping user creation with name : {user_data.get('displayName')}, Reason: No email found for the user")
                         total_skipped += 1
                         continue
 
@@ -330,12 +464,26 @@ class ConfluenceConnector(BaseConnector):
                     total_synced += len(app_users)
                     self.logger.info(f"Synced {len(app_users)} users (batch starting at {start})")
 
+                    # For each user with email, migrate pseudo-group permissions (Confluence-specific)
+                    for user in app_users:
+                        if user.email and "@" in user.email and user.source_user_id:
+                            try:
+                                await self._migrate_pseudo_group_permissions_to_user(user)
+                            except Exception as e:
+                                # Log error but continue with other users
+                                self.logger.warning(
+                                    f"Failed to migrate pseudo-group permissions for user {user.email}: {e}",
+                                    exc_info=True
+                                )
+                                continue
+
                 # Move to next page
                 start += batch_size
 
                 # Check if we've reached the end
-                total_size = response_data.get("totalSize", 0)
-                if start >= total_size:
+                # FIX: Do not rely on totalSize as it returns incorrect values (e.g. 100) for /search/user
+                # Instead, stop if we received fewer results than requested
+                if len(users_data) < batch_size:
                     break
 
             self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email): {total_skipped}")
@@ -371,7 +519,7 @@ class ConfluenceConnector(BaseConnector):
                 )
 
                 # Check response
-                if not response or response.status != HTTP_STATUS_200:
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch groups: {response.status if response else 'No response'}")
                     break
 
@@ -396,7 +544,7 @@ class ConfluenceConnector(BaseConnector):
                         member_emails = await self._fetch_group_members(group_id, group_name)
 
                         # Create user group
-                        user_group = self._transform_to_user_group(group_data, member_emails)
+                        user_group = self._transform_to_user_group(group_data)
                         if not user_group:
                             continue
 
@@ -433,11 +581,27 @@ class ConfluenceConnector(BaseConnector):
 
         Steps:
         1. Fetch all spaces with cursor pagination
-        2. For each space, fetch permissions
-        3. Create RecordGroup with Permission objects
+        2. Apply exclusion filters if NOT_IN operator is used
+        3. For each space, fetch permissions
+        4. Create RecordGroup with Permission objects
         """
         try:
             self.logger.info("Starting space synchronization...")
+
+            # Get sync filter values for API
+            space_keys_filter = self.sync_filters.get(SyncFilterKey.SPACE_KEYS)
+            included_space_keys = None
+            excluded_space_keys = None
+
+            # Determine filter mode
+            if space_keys_filter is not None:
+                filter_operator = space_keys_filter.get_operator()
+                if filter_operator == FilterOperator.IN:
+                    included_space_keys = space_keys_filter.get_value()
+                    self.logger.info(f"Filtering to include space keys: {included_space_keys}")
+                elif filter_operator == FilterOperator.NOT_IN:
+                    excluded_space_keys = space_keys_filter.get_value()
+                    self.logger.info(f"Filtering to exclude space keys: {excluded_space_keys}")
 
             # Pagination variables
             batch_size = 20
@@ -452,11 +616,12 @@ class ConfluenceConnector(BaseConnector):
                 datasource = await self._get_fresh_datasource()
                 response = await datasource.get_spaces(
                     limit=batch_size,
-                    cursor=cursor
+                    cursor=cursor,
+                    keys=included_space_keys  # None for NOT_IN (fetch all then filter), list for IN
                 )
 
                 # Check response
-                if not response or response.status != HTTP_STATUS_200:
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch spaces: {response.status if response else 'No response'}")
                     break
 
@@ -470,6 +635,17 @@ class ConfluenceConnector(BaseConnector):
 
                 if not spaces_data:
                     break
+
+                # Apply client-side exclusion filter if NOT_IN
+                if excluded_space_keys:
+                    original_count = len(spaces_data)
+                    spaces_data = [
+                        space for space in spaces_data
+                        if space.get("key") not in excluded_space_keys
+                    ]
+                    filtered_count = original_count - len(spaces_data)
+                    if filtered_count > 0:
+                        self.logger.debug(f"Filtered out {filtered_count} excluded spaces from batch")
 
                 # Process each space
                 record_groups_with_permissions = []
@@ -524,329 +700,239 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Space sync failed: {e}", exc_info=True)
             raise
 
-    async def _sync_pages(self, space_key: str) -> None:
+    async def _sync_content(self, space_key: str, record_type: RecordType) -> None:
         """
-        Sync pages from Confluence using v1 API with CQL search.
+        Unified sync for pages and blogposts from Confluence using v1 API.
 
-        Uses offset-based pagination with modification time filtering for incremental sync.
-        Creates WebpageRecord for each page with proper hierarchy (parent page) and space assignment.
+        Uses cursor-based pagination with modification time filtering for incremental sync.
+        Creates WebpageRecord for each content item with attachments, comments, and permissions.
+
+        Args:
+            space_key: The space key to sync content from
+            record_type: RecordType.CONFLUENCE_PAGE or RecordType.CONFLUENCE_BLOGPOST
         """
+        # Derive content_type from record_type for logging and sync point
+        content_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
+
         try:
-            self.logger.info("Starting page synchronization...")
+            self.logger.info(f"Starting {content_type} synchronization for space {space_key}...")
+            # Get indexing filter settings based on content type (default=True means index if not configured)
+            content_ids_filter = None
+            if record_type == RecordType.CONFLUENCE_PAGE:
+                content_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.PAGES)
+                content_comments_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.PAGE_COMMENTS)
+                content_attachments_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.PAGE_ATTACHMENTS)
+                content_ids_filter = self.sync_filters.get(SyncFilterKey.PAGE_IDS)
+            else:  # CONFLUENCE_BLOGPOST
+                content_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.BLOGPOSTS)
+                content_comments_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.BLOGPOST_COMMENTS)
+                content_attachments_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.BLOGPOST_ATTACHMENTS)
+                content_ids_filter = self.sync_filters.get(SyncFilterKey.BLOGPOST_IDS)
 
-            # Get last sync checkpoint
+            # Get content IDs filter based on content type
+            content_ids = None
+            content_ids_operator_str = None
+            if content_ids_filter is not None:
+                content_ids = content_ids_filter.get_value()
+                content_ids_operator = content_ids_filter.get_operator()
+                # Extract operator value string for datasource
+                content_ids_operator_str = content_ids_operator.value if hasattr(content_ids_operator, 'value') else str(content_ids_operator)
+                if content_ids:
+                    action = "Excluding" if content_ids_operator_str == "not_in" else "Including"
+                    self.logger.info(f"🔍 Filter: {action} {content_type}s by IDs: {content_ids}")
+
+            # Get last sync checkpoint (use content_type as suffix)
             sync_point_key = generate_record_sync_point_key(
-                RecordType.WEBPAGE.value, "confluence_pages", space_key
+                RecordType.WEBPAGE.value, f"confluence_{content_type}s", space_key
             )
             last_sync_data = await self.pages_sync_point.read_sync_point(sync_point_key)
             last_sync_time = last_sync_data.get("last_sync_time") if last_sync_data else None
-
-            # Build modified_after parameter for incremental sync
-            modified_after = None
             if last_sync_time:
-                self.logger.info(f"🔄 Incremental sync: Fetching pages modified after {last_sync_time}")
+                self.logger.info(f"🔄 Incremental sync: Fetching {content_type}s modified after {last_sync_time}")
+
+            # Build date filter parameters from sync filters
+            # Get modified filter
+            modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
+            modified_after = None
+            modified_before = None
+
+            if modified_filter:
+                modified_after, modified_before = modified_filter.get_datetime_iso()
+
+            # Get created filter
+            created_filter = self.sync_filters.get(SyncFilterKey.CREATED)
+            created_after = None
+            created_before = None
+
+            if created_filter:
+                created_after, created_before = created_filter.get_datetime_iso()
+
+            # Merge modified_after with checkpoint (use the latest)
+            if modified_after and last_sync_time:
+                modified_after = max(modified_after, last_sync_time)
+                self.logger.info(f"🔄 Using latest modified_after: {modified_after} (filter: {modified_after}, checkpoint: {last_sync_time})")
+            elif modified_after:
+                self.logger.info(f"🔍 Using filter: Fetching {content_type}s modified after {modified_after}")
+            elif last_sync_time:
                 modified_after = last_sync_time
+                self.logger.info(f"🔄 Incremental sync: Fetching {content_type}s modified after {modified_after}")
             else:
-                self.logger.info("🆕 Full sync: Fetching all pages (first time)")
+                self.logger.info(f"🆕 Full sync: Fetching all {content_type}s (first time)")
+
+            # Log other filters if set
+            if modified_before:
+                self.logger.info(f"🔍 Filter: Fetching {content_type}s modified before {modified_before}")
+            if created_after:
+                self.logger.info(f"🔍 Filter: Fetching {content_type}s created after {created_after}")
+            if created_before:
+                self.logger.info(f"🔍 Filter: Fetching {content_type}s created before {created_before}")
 
             # Pagination variables
             batch_size = 50
             cursor = None
-            total_pages_synced = 0
+            total_synced = 0
             total_attachments_synced = 0
             total_comments_synced = 0
             total_permissions_synced = 0
             latest_update_time = None
 
-            # Paginate through all pages
+            # Paginate through all content items
             while True:
                 datasource = await self._get_fresh_datasource()
-                response = await datasource.get_pages_v1(
-                    modified_after=modified_after,
-                    cursor=cursor,
-                    limit=batch_size,
-                    space_key=space_key,
-                    order_by="lastModified",
-                    sort_order="asc",
-                    expand="ancestors,history.lastUpdated,space,children.attachment,children.attachment.history.lastUpdated,children.attachment.version,childTypes.comment"
-                )
+
+                if record_type == RecordType.CONFLUENCE_PAGE:
+                    response = await datasource.get_pages_v1(
+                        modified_after=modified_after,
+                        modified_before=modified_before,
+                        created_after=created_after,
+                        created_before=created_before,
+                        cursor=cursor,
+                        limit=batch_size,
+                        space_key=space_key,
+                        page_ids=content_ids,
+                        page_ids_operator=content_ids_operator_str,
+                        include_children=True,
+                        order_by="lastModified",
+                        sort_order="asc",
+                        expand=CONTENT_EXPAND_PARAMS,
+                        time_offset_hours=TIME_OFFSET_HOURS
+                    )
+                else:  # CONFLUENCE_BLOGPOST
+                    response = await datasource.get_blogposts_v1(
+                        modified_after=modified_after,
+                        modified_before=modified_before,
+                        created_after=created_after,
+                        created_before=created_before,
+                        cursor=cursor,
+                        limit=batch_size,
+                        space_key=space_key,
+                        blogpost_ids=content_ids,
+                        blogpost_ids_operator=content_ids_operator_str,
+                        order_by="lastModified",
+                        sort_order="asc",
+                        expand=CONTENT_EXPAND_PARAMS,
+                        time_offset_hours=TIME_OFFSET_HOURS
+                    )
 
                 # Check response
-                if not response or response.status != HTTP_STATUS_200:
-                    self.logger.error(f"❌ Failed to fetch pages: {response.status if response else 'No response'}")
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
+                    self.logger.error(f"❌ Failed to fetch {content_type}s: {response.status if response else 'No response'}")
                     break
 
                 response_data = response.json()
-                pages_data = response_data.get("results", [])
+                items_data = response_data.get("results", [])
 
-                if not pages_data:
+                if not items_data:
                     break
 
-                # Track the latest update timestamp for checkpoint (pages are in ascending order)
-                if pages_data:
-                    last_page = pages_data[-1]
-                    last_updated_when = last_page.get("history", {}).get("lastUpdated", {}).get("when")
-                    if last_updated_when:
-                        latest_update_time = last_updated_when
+                # Track the latest update timestamp for checkpoint (items are in ascending order)
+                last_item = items_data[-1]
+                last_updated_when = last_item.get("history", {}).get("lastUpdated", {}).get("when")
+                if last_updated_when:
+                    latest_update_time = last_updated_when
 
-                # Transform pages to WebpageRecords with permissions
+                # Transform items to WebpageRecords with permissions
                 records_with_permissions = []
-                for page_data in pages_data:
+                for item_data in items_data:
                     try:
-                        page_id = page_data.get("id")
-                        page_title = page_data.get("title")
+                        item_id = item_data.get("id")
+                        item_title = item_data.get("title")
 
-                        if not page_id or not page_title:
+                        if not item_id or not item_title:
                             continue
 
-                        self.logger.debug(f"Processing page: {page_title} ({page_id})")
+                        self.logger.debug(f"Processing {content_type}: {item_title} ({item_id})")
 
-                        # Transform page to WebpageRecord
-                        webpage_record = self._transform_to_page_webpage_record(page_data)
+                        # Transform to WebpageRecord
+                        webpage_record = self._transform_to_webpage_record(item_data, record_type)
                         if not webpage_record:
                             continue
 
+                        # Set indexing status based on filter
+                        if not content_indexing_enabled:
+                            webpage_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
                         # Fetch page permissions
-                        permissions = await self._fetch_page_permissions(page_id)
+                        permissions = await self._fetch_page_permissions(item_id)
                         total_permissions_synced += len(permissions)
+                        if len(permissions) > 0:
+                            webpage_record.inherit_permissions = False
 
-                        # Add page to batch
+                        # Add item to batch
                         records_with_permissions.append((webpage_record, permissions))
-                        total_pages_synced += 1
-                        self.logger.debug(f"Page {page_title}: {len(permissions)} permissions")
+                        total_synced += 1
+                        self.logger.debug(f"{content_type.capitalize()} {item_title}: {len(permissions)} permissions")
 
-                        # Process attachments for this page
-                        space_data = page_data.get("space", {})
+                        # Extract space_id for children
+                        space_data = item_data.get("space", {})
                         space_id = str(space_data.get("id")) if space_data.get("id") else None
 
-                        children = page_data.get("children", {})
-                        attachment_data = children.get("attachment", {})
-                        attachments = attachment_data.get("results", [])
-
-                        if attachments:
-                            self.logger.debug(f"Found {len(attachments)} attachments for page {page_title}")
-
-                            for attachment in attachments:
-                                try:
-                                    attachment_record = self._transform_to_attachment_file_record(
-                                        attachment,
-                                        page_id,
-                                        space_id
-                                    )
-
-                                    if attachment_record:
-                                        # Attachments inherit permissions from parent page
-                                        records_with_permissions.append((attachment_record, permissions))
-                                        total_attachments_synced += 1
-                                        self.logger.debug(f"Attachment: {attachment_record.record_name}")
-
-                                except Exception as att_error:
-                                    self.logger.error(f"❌ Failed to process attachment: {att_error}")
-                                    continue
-
-                        # Process comments for this page (if enabled)
-                        child_types = page_data.get("childTypes", {})
+                        # Process comments
+                        child_types = item_data.get("childTypes", {})
                         comment_info = child_types.get("comment", {})
                         has_comments = comment_info.get("value", False)
 
                         if has_comments:
-                            self.logger.debug(f"Page {page_title} has comments, fetching...")
+                            self.logger.debug(f"{content_type.capitalize()} {item_title} has comments, fetching...")
 
-                            # Fetch footer comments
-                            footer_comments = await self._fetch_comments_recursive(
-                                page_id,
-                                page_title,
-                                "footer",
-                                permissions,
-                                space_id
-                            )
-                            records_with_permissions.extend(footer_comments)
+                            # Fetch comments (footer and inline)
+                            for comment_type in ["footer", "inline"]:
+                                comments = await self._fetch_comments_recursive(
+                                    item_id,
+                                    item_title,
+                                    comment_type,
+                                    permissions,
+                                    space_id,
+                                    content_type
+                                )
+                                # Set indexing status for comments if disabled
+                                for comment_record, comment_permissions in comments:
+                                    if not content_comments_indexing_enabled:
+                                        comment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                                records_with_permissions.extend(comments)
+                                total_comments_synced += len(comments)
 
-                            # Fetch inline comments
-                            inline_comments = await self._fetch_comments_recursive(
-                                page_id,
-                                page_title,
-                                "inline",
-                                permissions,
-                                space_id
-                            )
-                            records_with_permissions.extend(inline_comments)
-
-                            total_comments = len(footer_comments) + len(inline_comments)
-                            total_comments_synced += total_comments
-                            self.logger.debug(f"Fetched {total_comments} comments ({len(footer_comments)} footer, {len(inline_comments)} inline)")
-
-                    except Exception as page_error:
-                        self.logger.error(f"❌ Failed to process page {page_data.get('title')}: {page_error}")
-                        continue
-
-                # Save batch to database
-                if records_with_permissions:
-                    await self.data_entities_processor.on_new_records(records_with_permissions)
-                    self.logger.info(f"Synced batch of {len(records_with_permissions)} items (pages + attachments + comments)")
-
-                # Extract next cursor from response
-                cursor_url = response_data.get("_links", {}).get("next")
-                if not cursor_url:
-                    break
-
-                cursor = self._extract_cursor_from_next_link(cursor_url)
-                if not cursor:
-                    break
-
-            # Update sync checkpoint with latest modification time
-            if latest_update_time:
-                await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": latest_update_time})
-                self.logger.info(f"Updated pages sync checkpoint to {latest_update_time}")
-
-            self.logger.info(f"✅ Page sync complete. Pages: {total_pages_synced}, Attachments: {total_attachments_synced}, Comments: {total_comments_synced}, Permissions: {total_permissions_synced}")
-
-        except Exception as e:
-            self.logger.error(f"❌ Page sync failed: {e}", exc_info=True)
-            raise
-
-    async def _sync_blogposts(self, space_key: str) -> None:
-        """
-        Sync blogposts from Confluence using v1 API with CQL search.
-
-        Uses cursor-based pagination with modification time filtering for incremental sync.
-        Creates WebpageRecord for each blogpost with attachments.
-        Blogposts are flat (no parent hierarchy) and connected directly to space.
-        """
-        try:
-            self.logger.info(f"Starting blogpost synchronization for space {space_key}...")
-
-            # Get last sync checkpoint
-            sync_point_key = generate_record_sync_point_key(
-                RecordType.WEBPAGE.value, "confluence_blogposts", space_key
-            )
-            last_sync_data = await self.pages_sync_point.read_sync_point(sync_point_key)
-            last_sync_time = last_sync_data.get("last_sync_time") if last_sync_data else None
-
-            # Build modified_after parameter for incremental sync
-            modified_after = None
-            if last_sync_time:
-                self.logger.info(f"🔄 Incremental sync: Fetching blogposts modified after {last_sync_time}")
-                modified_after = last_sync_time
-            else:
-                self.logger.info("🆕 Full sync: Fetching all blogposts (first time)")
-
-            # Pagination variables
-            batch_size = 50
-            cursor = None
-            total_blogposts_synced = 0
-            total_attachments_synced = 0
-            total_comments_synced = 0
-            total_permissions_synced = 0
-            latest_update_time = None
-
-            # Paginate through all blogposts
-            while True:
-                datasource = await self._get_fresh_datasource()
-                response = await datasource.get_blogposts_v1(
-                    modified_after=modified_after,
-                    cursor=cursor,
-                    limit=batch_size,
-                    space_key=space_key,
-                    order_by="lastModified",
-                    sort_order="asc",
-                    expand="history.lastUpdated,space,children.attachment,children.attachment.history.lastUpdated,children.attachment.version"
-                )
-
-                # Check response
-                if not response or response.status != HTTP_STATUS_200:
-                    self.logger.error(f"❌ Failed to fetch blogposts: {response.status if response else 'No response'}")
-                    break
-
-                response_data = response.json()
-                blogposts_data = response_data.get("results", [])
-
-                if not blogposts_data:
-                    break
-
-                # Track the latest update timestamp for checkpoint (blogposts are in ascending order)
-                if blogposts_data:
-                    last_blogpost = blogposts_data[-1]
-                    last_updated_when = last_blogpost.get("history", {}).get("lastUpdated", {}).get("when")
-                    if last_updated_when:
-                        latest_update_time = last_updated_when
-
-                # Transform blogposts to WebpageRecords with permissions
-                records_with_permissions = []
-                for blogpost_data in blogposts_data:
-                    try:
-                        blogpost_id = blogpost_data.get("id")
-                        blogpost_title = blogpost_data.get("title")
-
-                        if not blogpost_id or not blogpost_title:
-                            continue
-
-                        self.logger.debug(f"Processing blogpost: {blogpost_title} ({blogpost_id})")
-
-                        # Transform blogpost to WebpageRecord
-                        webpage_record = self._transform_to_blogpost_webpage_record(blogpost_data)
-                        if not webpage_record:
-                            continue
-
-                        # Fetch blogpost permissions using same method as pages
-                        permissions = await self._fetch_page_permissions(blogpost_id)
-                        total_permissions_synced += len(permissions)
-
-                        # Add blogpost to batch
-                        records_with_permissions.append((webpage_record, permissions))
-                        total_blogposts_synced += 1
-                        self.logger.debug(f"Blogpost {blogpost_title}: {len(permissions)} permissions")
-
-                        # Extract space_id for use with attachments and comments
-                        space_data = blogpost_data.get("space", {})
-                        space_id = str(space_data.get("id")) if space_data.get("id") else None
-
-                        # Fetch and sync inline comments
-                        inline_comments = await self._fetch_comments_recursive(
-                            page_id=blogpost_id,
-                            page_title=blogpost_title,
-                            comment_type="inline",
-                            page_permissions=permissions,
-                            parent_space_id=space_id,
-                            parent_type="blogpost"
-                        )
-
-                        for comment_record, comment_permissions in inline_comments:
-                            records_with_permissions.append((comment_record, comment_permissions))
-                            total_comments_synced += 1
-
-                        # Fetch and sync footer comments
-                        footer_comments = await self._fetch_comments_recursive(
-                            page_id=blogpost_id,
-                            page_title=blogpost_title,
-                            comment_type="footer",
-                            page_permissions=permissions,
-                            parent_space_id=space_id,
-                            parent_type="blogpost"
-                        )
-
-                        for comment_record, comment_permissions in footer_comments:
-                            records_with_permissions.append((comment_record, comment_permissions))
-                            total_comments_synced += 1
-
-                        # Process attachments for this blogpost
-                        children = blogpost_data.get("children", {})
+                        # Process attachments
+                        children = item_data.get("children", {})
                         attachment_data = children.get("attachment", {})
                         attachments = attachment_data.get("results", [])
 
                         if attachments:
-                            self.logger.debug(f"Found {len(attachments)} attachments for blogpost {blogpost_title}")
+                            self.logger.debug(f"Found {len(attachments)} attachments for {content_type} {item_title}")
 
                             for attachment in attachments:
                                 try:
                                     attachment_record = self._transform_to_attachment_file_record(
                                         attachment,
-                                        blogpost_id,
+                                        item_id,
                                         space_id
                                     )
 
                                     if attachment_record:
-                                        # Attachments inherit permissions from parent blogpost
+                                        # Set indexing status based on filter
+                                        if not content_attachments_indexing_enabled:
+                                            attachment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                                        # Attachments inherit permissions from parent
                                         records_with_permissions.append((attachment_record, permissions))
                                         total_attachments_synced += 1
                                         self.logger.debug(f"Attachment: {attachment_record.record_name}")
@@ -855,14 +941,14 @@ class ConfluenceConnector(BaseConnector):
                                     self.logger.error(f"❌ Failed to process attachment: {att_error}")
                                     continue
 
-                    except Exception as blogpost_error:
-                        self.logger.error(f"❌ Failed to process blogpost {blogpost_data.get('title')}: {blogpost_error}")
+                    except Exception as item_error:
+                        self.logger.error(f"❌ Failed to process {content_type} {item_data.get('title')}: {item_error}")
                         continue
 
                 # Save batch to database
                 if records_with_permissions:
                     await self.data_entities_processor.on_new_records(records_with_permissions)
-                    self.logger.info(f"Synced batch of {len(records_with_permissions)} items (blogposts + attachments)")
+                    self.logger.info(f"Synced batch of {len(records_with_permissions)} items ({content_type}s + attachments + comments)")
 
                 # Extract next cursor from response
                 cursor_url = response_data.get("_links", {}).get("next")
@@ -876,13 +962,306 @@ class ConfluenceConnector(BaseConnector):
             # Update sync checkpoint with latest modification time
             if latest_update_time:
                 await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": latest_update_time})
-                self.logger.info(f"Updated blogposts sync checkpoint to {latest_update_time}")
+                self.logger.info(f"Updated {content_type}s sync checkpoint to {latest_update_time}")
 
-            self.logger.info(f"✅ Blogpost sync complete. Blogposts: {total_blogposts_synced}, Attachments: {total_attachments_synced}, Comments: {total_comments_synced}, Permissions: {total_permissions_synced}")
+            self.logger.info(f"✅ {content_type.capitalize()} sync complete. {content_type.capitalize()}s: {total_synced}, Attachments: {total_attachments_synced}, Comments: {total_comments_synced}, Permissions: {total_permissions_synced}")
 
         except Exception as e:
-            self.logger.error(f"❌ Blogpost sync failed: {e}", exc_info=True)
+            self.logger.error(f"❌ {content_type.capitalize()} sync failed: {e}", exc_info=True)
             raise
+
+    async def _sync_permission_changes_from_audit_log(self) -> None:
+        """
+        Sync permission changes for pages/blogs using Confluence Audit Log API.
+
+        This method tracks permission changes that don't update the content's
+        lastModified timestamp, ensuring we capture:
+        - Content restriction added (user/group gets access)
+        - Content restriction removed (user/group loses access)
+
+        Flow:
+        1. Get last audit sync time
+        2. If first run (no checkpoint): Initialize with current time and skip (permissions already synced)
+        3. If subsequent run: Fetch audit logs since last sync
+        4. Extract unique content titles from audit records
+        5. Search content by titles and check if exists in DB
+        6. For each existing content: Fetch current permissions and update
+        7. Update audit log sync point with current timestamp
+
+        Note: First run initializes checkpoint but skips permission sync because
+        the initial content sync (_sync_content) already synced all permissions.
+        """
+        try:
+            self.logger.info("🔍 Starting permission sync from audit log...")
+
+            # Sync point key for audit log
+            audit_sync_key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "permissions", "audit_log")
+
+            # Get last audit sync timestamp
+            last_audit_sync = await self.audit_log_sync_point.read_sync_point(audit_sync_key)
+            last_sync_time_ms = last_audit_sync.get("last_sync_time_ms") if last_audit_sync else None
+
+            # Current time as checkpoint
+            current_time_ms = int(datetime.now().timestamp() * 1000)
+
+            # First run: Initialize checkpoint and skip (permissions already synced during content sync)
+            if last_sync_time_ms is None:
+                self.logger.info(
+                    "🆕 First audit log sync - initializing checkpoint to current time and skipping. "
+                    "Permissions already synced during content sync."
+                )
+
+                # Save initial checkpoint
+                await self.audit_log_sync_point.update_sync_point(
+                    audit_sync_key,
+                    {"last_sync_time_ms": current_time_ms}
+                )
+                return
+
+            self.logger.info(f"🔄 Fetching audit logs from {last_sync_time_ms} to {current_time_ms}")
+
+            # Fetch audit logs and extract content titles that had permission changes
+            content_titles = await self._fetch_permission_audit_logs(last_sync_time_ms, current_time_ms)
+
+            if not content_titles:
+                self.logger.info("✅ No permission changes found in audit log")
+                # Update sync point even if no changes
+                await self.audit_log_sync_point.update_sync_point(
+                    audit_sync_key,
+                    {"last_sync_time_ms": current_time_ms}
+                )
+                return
+
+            self.logger.info(f"📋 Found {len(content_titles)} content items with permission changes")
+
+            # Search for content by titles and sync their permissions (only if exists in DB)
+            await self._sync_content_permissions_by_titles(content_titles)
+
+            # Update audit log sync point with current time
+            await self.audit_log_sync_point.update_sync_point(
+                audit_sync_key,
+                {"last_sync_time_ms": current_time_ms}
+            )
+
+            self.logger.info("✅ Permission sync from audit log completed")
+
+        except Exception as e:
+            self.logger.error(f"❌ Permission sync from audit log failed: {e}", exc_info=True)
+            raise
+
+    async def _fetch_permission_audit_logs(
+        self,
+        start_date_ms: int,
+        end_date_ms: int
+    ) -> List[str]:
+        """
+        Fetch audit logs and extract content titles that had permission changes.
+
+        Filters for:
+        - category = "Permissions"
+        - scope = content (pages/blogs, not global or space-level)
+
+        Args:
+            start_date_ms: Start timestamp in milliseconds
+            end_date_ms: End timestamp in milliseconds
+
+        Returns:
+            List of unique content titles (pages/blogs) that had permission changes
+        """
+        content_titles_set: set[str] = set()
+        batch_size = 100
+        start = 0
+
+        while True:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_audit_logs(
+                start_date=start_date_ms,
+                end_date=end_date_ms,
+                start=start,
+                limit=batch_size
+            )
+
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
+                self.logger.warning(f"⚠️ Failed to fetch audit logs: {response.status if response else 'No response'}")
+                break
+
+            response_data = response.json()
+            audit_records = response_data.get("results", [])
+
+            if not audit_records:
+                break
+
+            # Process each audit record
+            for record in audit_records:
+                content_title = self._extract_content_title_from_audit_record(record)
+                if content_title:
+                    content_titles_set.add(content_title)
+
+            # Check for more pages
+            size = response_data.get("size", 0)
+            if size < batch_size:
+                break
+
+            start += batch_size
+
+        return list(content_titles_set)
+
+    def _extract_content_title_from_audit_record(self, record: Dict[str, Any]) -> Optional[str]:
+        """
+        Extract content title from an audit record if it's a content permission change.
+
+        Filters for:
+        - category = "Permissions"
+        - Has a Page or Blog in associatedObjects (content-level permission)
+        - Has a Space in associatedObjects (confirms it's content, not global)
+
+        Args:
+            record: Raw audit log record
+
+        Returns:
+            Content title (page/blog) or None if not a content permission change
+        """
+        # Must be a permission-related event
+        if record.get("category") != "Permissions":
+            return None
+
+        associated_objects = record.get("associatedObjects", [])
+
+        # Check for content-level permission (must have both content AND space)
+        has_space = any(obj.get("objectType") == "Space" for obj in associated_objects)
+        content_obj = next(
+            (obj for obj in associated_objects if obj.get("objectType") in ["Page", "Blog"]),
+            None
+        )
+
+        # Content restriction must have both page/blog AND space
+        if not has_space or not content_obj:
+            return None
+
+        return content_obj.get("name")
+
+
+    async def _sync_content_permissions_by_titles(self, titles: List[str]) -> None:
+        """
+        Search for content by titles and sync their current permissions.
+
+        IMPORTANT: This method ONLY updates permissions for records that already exist in the database.
+        It will NOT create new records, ensuring sync filters are respected.
+
+        For each found content item:
+        1. Check if record exists in DB (by external_record_id)
+        2. If exists: Fetch current permissions and update
+        3. If not exists: Skip (record was filtered out during initial sync)
+
+        Args:
+            titles: List of content titles to search for
+        """
+        if not titles:
+            return
+
+        # Batch titles to avoid CQL query size limits (process 50 at a time)
+        batch_size = 50
+        total_synced = 0
+        total_skipped = 0
+        total_permissions = 0
+        has_failures = False
+
+        for i in range(0, len(titles), batch_size):
+            batch_titles = titles[i:i + batch_size]
+
+            try:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.search_content_by_titles(
+                    titles=batch_titles,
+                    expand="version,space,history.lastUpdated,ancestors"
+                )
+
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
+                    self.logger.warning(f"⚠️ Failed to search content by titles: {response.status if response else 'No response'}")
+                    continue
+
+                response_data = response.json()
+                content_items = response_data.get("results", [])
+
+                if not content_items:
+                    self.logger.debug(f"No content found for titles batch {i // batch_size + 1}")
+                    continue
+
+                # Process each content item
+                records_with_permissions = []
+                for item_data in content_items:
+                    try:
+                        item_id = item_data.get("id")
+                        item_title = item_data.get("title")
+                        item_type = item_data.get("type", "").lower()
+
+                        if not item_id or not item_title:
+                            continue
+
+                        # Determine record type
+                        if item_type == "page":
+                            record_type = RecordType.CONFLUENCE_PAGE
+                        elif item_type == "blogpost":
+                            record_type = RecordType.CONFLUENCE_BLOGPOST
+                        else:
+                            self.logger.debug(f"Skipping unknown content type: {item_type}")
+                            continue
+
+                        # Check if record exists in database (respects sync filters)
+                        existing_record = await self.data_entities_processor.get_record_by_external_id(
+                            connector_id=self.connector_id,
+                            external_record_id=item_id
+                        )
+
+                        if not existing_record:
+                            # Record doesn't exist - it was filtered out during initial sync
+                            self.logger.debug(
+                                f"Skipping {item_type} '{item_title}' ({item_id}) - "
+                                f"not in database (filtered out during sync)"
+                            )
+                            total_skipped += 1
+                            continue
+
+                        self.logger.debug(f"Updating permissions for {item_type}: {item_title} ({item_id})")
+
+                        # Transform to WebpageRecord
+                        webpage_record = self._transform_to_webpage_record(item_data, record_type)
+                        if not webpage_record:
+                            continue
+
+                        # Fetch current permissions
+                        permissions = await self._fetch_page_permissions(item_id)
+                        total_permissions += len(permissions)
+
+                        if len(permissions) > 0:
+                            webpage_record.inherit_permissions = False
+
+                        # Add to batch for update
+                        records_with_permissions.append((webpage_record, permissions))
+                        total_synced += 1
+
+                    except Exception as item_error:
+                        self.logger.error(f"❌ Failed to sync permissions for {item_data.get('title')}: {item_error}")
+                        has_failures = True
+                        continue
+
+                # Update batch in database
+                if records_with_permissions:
+                    await self.data_entities_processor.on_new_records(records_with_permissions)
+                    self.logger.info(f"Updated permissions for {len(records_with_permissions)} content items")
+
+            except Exception as batch_error:
+                self.logger.error(f"❌ Failed to process titles batch: {batch_error}")
+                has_failures = True
+                continue
+
+        if has_failures:
+            raise ValueError("Failed to sync permissions for some content items")
+
+        if total_skipped > 0:
+            self.logger.info(f"🔍 Skipped {total_skipped} items not in database (filtered during sync)")
+
+        self.logger.info(f"✅ Permission sync complete. Items updated: {total_synced}, Permissions: {total_permissions}")
 
     async def _fetch_space_permissions(self, space_id: str, space_name: str) -> List[Permission]:
         """
@@ -910,7 +1289,7 @@ class ConfluenceConnector(BaseConnector):
                 )
 
                 # Check response
-                if not response or response.status != HTTP_STATUS_200:
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.warning(f"⚠️ Failed to fetch permissions for space {space_name}: {response.status if response else 'No response'}")
                     break
 
@@ -959,12 +1338,11 @@ class ConfluenceConnector(BaseConnector):
             # Fetch page restrictions using v1 API
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_page_permissions_v1(
-                page_id=page_id,
-                expand="restrictions.user,restrictions.group"
+                page_id=page_id
             )
 
             # Check response
-            if not response or response.status != HTTP_STATUS_200:
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
                 self.logger.warning(f"⚠️ Failed to fetch permissions for page {page_id}: {response.status if response else 'No response'}")
                 return []
 
@@ -1056,7 +1434,7 @@ class ConfluenceConnector(BaseConnector):
                     break
 
                 # Check response
-                if not response or response.status != HTTP_STATUS_200:
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.warning(f"⚠️ Failed to fetch {comment_type} comments for page {page_title}: {response.status if response else 'No response'}")
                     break
 
@@ -1161,7 +1539,7 @@ class ConfluenceConnector(BaseConnector):
                     )
 
                 # Check response
-                if not response or response.status != HTTP_STATUS_200:
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
                     break
 
                 response_data = response.json()
@@ -1292,6 +1670,7 @@ class ConfluenceConnector(BaseConnector):
                 version=0,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.CONFLUENCE,
+                connector_id=self.connector_id,
                 mime_type=MimeTypes.HTML.value,
                 parent_external_record_id=parent_external_record_id,
                 parent_record_type=parent_record_type,
@@ -1341,7 +1720,8 @@ class ConfluenceConnector(BaseConnector):
         self,
         principal_type: str,
         principal_id: str,
-        permission_type: PermissionType
+        permission_type: PermissionType,
+        create_pseudo_group_if_missing: bool = False
     ) -> Optional[Permission]:
         """
         Create Permission object from principal data (user or group).
@@ -1352,6 +1732,8 @@ class ConfluenceConnector(BaseConnector):
             principal_type: "user" or "group"
             principal_id: accountId for users, groupId for groups
             permission_type: Mapped PermissionType enum
+            create_pseudo_group_if_missing: If True and user not found, create a
+                pseudo-group to preserve the permission. Used for record-level
 
         Returns:
             Permission object or None if principal not found in DB
@@ -1362,26 +1744,48 @@ class ConfluenceConnector(BaseConnector):
                 # Lookup user by source_user_id (accountId) using transaction store
                 async with self.data_store_provider.transaction() as tx_store:
                     user = await tx_store.get_user_by_source_id(
-                        principal_id,
-                        Connectors.CONFLUENCE,
+                        source_user_id=principal_id,
+                        connector_id=self.connector_id,
                     )
-                    if not user:
-                        self.logger.debug(f"  ⚠️ User {principal_id} not found in DB, skipping permission")
-                        return None
+                    if user:
+                        return Permission(
+                            email=user.email,
+                            type=permission_type,
+                            entity_type=entity_type
+                        )
 
-                    return Permission(
-                        email=user.email,
-                        type=permission_type,
-                        entity_type=entity_type
-                    )
+                    # User not found - check if pseudo-group exists or should be created
+                    if create_pseudo_group_if_missing:
+                        # Check for existing pseudo-group
+                        pseudo_group = await tx_store.get_user_group_by_external_id(
+                            connector_id=self.connector_id,
+                            external_id=principal_id,
+                        )
+
+                        if not pseudo_group:
+                            # Create pseudo-group on-the-fly
+                            pseudo_group = await self._create_pseudo_group(principal_id)
+
+                        if pseudo_group:
+                            self.logger.debug(
+                                f"Using pseudo-group for user {principal_id} (no email available)"
+                            )
+                            return Permission(
+                                external_id=pseudo_group.source_user_group_id,
+                                type=permission_type,
+                                entity_type=EntityType.GROUP
+                            )
+
+                    self.logger.debug(f"  ⚠️ User {principal_id} not found in DB, skipping permission")
+                    return None
 
             elif principal_type == "group":
                 entity_type = EntityType.GROUP
                 # Lookup group by source_user_group_id using transaction store
                 async with self.data_store_provider.transaction() as tx_store:
                     group = await tx_store.get_user_group_by_external_id(
-                        Connectors.CONFLUENCE,
-                        principal_id,
+                        connector_id=self.connector_id,
+                        external_id=principal_id,
                     )
                     if not group:
                         self.logger.debug(f"  ⚠️ Group {principal_id} not found in DB, skipping permission")
@@ -1397,6 +1801,38 @@ class ConfluenceConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to create permission from principal: {e}")
+            return None
+
+    async def _create_pseudo_group(self, account_id: str) -> Optional[AppUserGroup]:
+        """
+        Create a pseudo-group for a user without email.
+
+        This preserves permissions for users who don't have email addresses yet.
+        The pseudo-group uses the user's accountId as source_user_group_id.
+
+        Args:
+            account_id: Confluence user accountId
+
+        Returns:
+            Created AppUserGroup or None if creation fails
+        """
+        try:
+            pseudo_group = AppUserGroup(
+                app_name=Connectors.CONFLUENCE,
+                connector_id=self.connector_id,
+                source_user_group_id=account_id,
+                name=f"{PSEUDO_USER_GROUP_PREFIX} {account_id}",
+                org_id=self.data_entities_processor.org_id,
+            )
+
+            # Save to database (empty members list)
+            await self.data_entities_processor.on_new_user_groups([(pseudo_group, [])])
+            self.logger.info(f"Created pseudo-group for user without email: {account_id}")
+
+            return pseudo_group
+
+        except Exception as e:
+            self.logger.error(f"Failed to create pseudo-group for {account_id}: {e}")
             return None
 
     async def _transform_space_permission(self, perm_data: Dict[str, Any]) -> Optional[Permission]:
@@ -1513,6 +1949,7 @@ class ConfluenceConnector(BaseConnector):
     ) -> List[Permission]:
         """
         Transform page restriction data (from v1 API) to Permission objects.
+        Creates pseudo-groups for users without email to preserve permissions.
 
         The v1 API returns restrictions in this format:
         {
@@ -1545,7 +1982,7 @@ class ConfluenceConnector(BaseConnector):
 
             restrictions = restriction_data.get("restrictions", {})
 
-            # Process user restrictions
+            # Process user restrictions - create pseudo-group if user not found
             user_restrictions = restrictions.get("user", {})
             user_results = user_restrictions.get("results", [])
 
@@ -1556,7 +1993,8 @@ class ConfluenceConnector(BaseConnector):
                     permission = await self._create_permission_from_principal(
                         "user",
                         principal_id,
-                        permission_type
+                        permission_type,
+                        create_pseudo_group_if_missing=True  # Enable pseudo-group creation for record-level permissions
                     )
                     if permission:
                         permissions.append(permission)
@@ -1571,7 +2009,8 @@ class ConfluenceConnector(BaseConnector):
                     permission = await self._create_permission_from_principal(
                         "group",
                         principal_id,
-                        permission_type
+                        permission_type,
+                        create_pseudo_group_if_missing=False  # Groups don't need pseudo-groups
                     )
                     if permission:
                         permissions.append(permission)
@@ -1625,6 +2064,7 @@ class ConfluenceConnector(BaseConnector):
                 description=space_description,
                 external_group_id=space_id,
                 connector_name=Connectors.CONFLUENCE,
+                connector_id=self.connector_id,
                 group_type=RecordGroupType.CONFLUENCE_SPACES,
                 web_url=web_url,
                 source_created_at=source_created_at,
@@ -1635,25 +2075,29 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to transform space: {e}")
             return None
 
-    def _transform_to_page_webpage_record(
+    def _transform_to_webpage_record(
         self,
-        page_data: Dict[str, Any]
+        data: Dict[str, Any],
+        record_type: RecordType
     ) -> Optional[WebpageRecord]:
         """
-        Transform Confluence page data to WebpageRecord entity.
-        Supports both v1 and v2 API response formats.
+        Unified transform for page/blogpost data to WebpageRecord.
 
         Args:
-            page_data: Raw page data from v1 or v2 Confluence API
+            data: Raw data from Confluence API
+            record_type: RecordType.CONFLUENCE_PAGE or RecordType.CONFLUENCE_BLOGPOST
 
         Returns:
             WebpageRecord object or None if transformation fails
         """
-        try:
-            page_id = page_data.get("id")
-            page_title = page_data.get("title")
+        # Derive content_type for logging
+        content_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
 
-            if not page_id or not page_title:
+        try:
+            item_id = data.get("id")
+            item_title = data.get("title")
+
+            if not item_id or not item_title:
                 return None
 
             # Parse timestamps - v1 vs v2 have different structures
@@ -1662,18 +2106,18 @@ class ConfluenceConnector(BaseConnector):
             version_number = 0
 
             # Try v2 format first (createdAt at top level)
-            created_at_v2 = page_data.get("createdAt")
+            created_at_v2 = data.get("createdAt")
             if created_at_v2:
                 source_created_at = self._parse_confluence_datetime(created_at_v2)
             else:
                 # Fall back to v1 format (history.createdDate)
-                history = page_data.get("history", {})
+                history = data.get("history", {})
                 created_date = history.get("createdDate")
                 if created_date:
                     source_created_at = self._parse_confluence_datetime(created_date)
 
             # Try v2 format for updated date and version (version.createdAt, version.number)
-            version_data = page_data.get("version", {})
+            version_data = data.get("version", {})
             if isinstance(version_data, dict):
                 version_created_at = version_data.get("createdAt")
                 if version_created_at:
@@ -1682,7 +2126,7 @@ class ConfluenceConnector(BaseConnector):
 
             # Fall back to v1 format (history.lastUpdated.when, history.lastUpdated.number)
             if not source_updated_at:
-                history = page_data.get("history", {})
+                history = data.get("history", {})
                 last_updated = history.get("lastUpdated", {})
                 if isinstance(last_updated, dict):
                     updated_when = last_updated.get("when")
@@ -1693,34 +2137,34 @@ class ConfluenceConnector(BaseConnector):
 
             # Extract space ID - v2 has spaceId at top level, v1 has space.id
             external_record_group_id = None
-            space_id_v2 = page_data.get("spaceId")  # v2 format
+            space_id_v2 = data.get("spaceId")  # v2 format
             if space_id_v2:
                 external_record_group_id = str(space_id_v2)
             else:
                 # v1 format
-                space_data = page_data.get("space", {})
+                space_data = data.get("space", {})
                 space_id = space_data.get("id")
                 external_record_group_id = str(space_id) if space_id else None
 
             if not external_record_group_id:
-                self.logger.warning(f"Page {page_id} has no space - skipping")
+                self.logger.warning(f"{content_type.capitalize()} {item_id} has no space - skipping")
                 return None
 
             # Extract parent page ID - v2 has parentId at top level, v1 uses ancestors
             parent_external_record_id = None
-            parent_id_v2 = page_data.get("parentId")  # v2 format
+            parent_id_v2 = data.get("parentId")  # v2 format
             if parent_id_v2:
                 parent_external_record_id = str(parent_id_v2)
             else:
                 # v1 format - last ancestor is direct parent
-                ancestors = page_data.get("ancestors", [])
+                ancestors = data.get("ancestors", [])
                 if ancestors and len(ancestors) > 0:
                     direct_parent = ancestors[-1]
                     parent_external_record_id = direct_parent.get("id")
 
             # Construct web URL - v1 vs v2 have different link structures
             web_url = None
-            links = page_data.get("_links", {})
+            links = data.get("_links", {})
             webui = links.get("webui")
 
             if webui:
@@ -1735,18 +2179,24 @@ class ConfluenceConnector(BaseConnector):
                         base_url = self_link.split("/wiki/")[0] + "/wiki"
                         web_url = f"{base_url}{webui}"
 
+            # Set parent_record_type to match record_type when parent exists
+            # This allows placeholder parent creation when parent doesn't exist yet
+            parent_record_type = record_type if parent_external_record_id else None
+
             return WebpageRecord(
                 org_id=self.data_entities_processor.org_id,
-                record_name=page_title,
-                record_type=RecordType.CONFLUENCE_PAGE,
-                external_record_id=page_id,
+                record_name=item_title,
+                record_type=record_type,
+                external_record_id=item_id,
                 external_revision_id=str(version_number) if version_number else None,
                 version=0,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.CONFLUENCE,
+                connector_id=self.connector_id,
                 record_group_type=RecordGroupType.CONFLUENCE_SPACES,
                 external_record_group_id=external_record_group_id,
                 parent_external_record_id=parent_external_record_id,
+                parent_record_type=parent_record_type,
                 weburl=web_url,
                 mime_type=MimeTypes.HTML.value,
                 source_created_at=source_created_at,
@@ -1754,127 +2204,15 @@ class ConfluenceConnector(BaseConnector):
             )
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to transform page: {e}")
+            self.logger.error(f"❌ Failed to transform {content_type}: {e}")
             return None
 
-    def _transform_to_blogpost_webpage_record(
-        self,
-        blogpost_data: Dict[str, Any]
-    ) -> Optional[WebpageRecord]:
-        """
-        Transform Confluence blogpost data to WebpageRecord entity.
-        Supports both v1 and v2 API response formats.
-
-        Args:
-            blogpost_data: Raw blogpost data from v1 or v2 Confluence API
-
-        Returns:
-            WebpageRecord object or None if transformation fails
-        """
-        try:
-            blogpost_id = blogpost_data.get("id")
-            blogpost_title = blogpost_data.get("title")
-
-            if not blogpost_id or not blogpost_title:
-                return None
-
-            # Parse timestamps - v1 vs v2 have different structures
-            source_created_at = None
-            source_updated_at = None
-            version_number = 0
-
-            # Try v2 format first (createdAt at top level)
-            created_at_v2 = blogpost_data.get("createdAt")
-            if created_at_v2:
-                source_created_at = self._parse_confluence_datetime(created_at_v2)
-            else:
-                # Fall back to v1 format (history.createdDate)
-                history = blogpost_data.get("history", {})
-                created_date = history.get("createdDate")
-                if created_date:
-                    source_created_at = self._parse_confluence_datetime(created_date)
-
-            # Try v2 format for updated date and version (version.createdAt, version.number)
-            version_data = blogpost_data.get("version", {})
-            if isinstance(version_data, dict):
-                version_created_at = version_data.get("createdAt")
-                if version_created_at:
-                    source_updated_at = self._parse_confluence_datetime(version_created_at)
-                version_number = version_data.get("number", 0)
-
-            # Fall back to v1 format (history.lastUpdated.when, history.lastUpdated.number)
-            if not source_updated_at:
-                history = blogpost_data.get("history", {})
-                last_updated = history.get("lastUpdated", {})
-                if isinstance(last_updated, dict):
-                    updated_when = last_updated.get("when")
-                    if updated_when:
-                        source_updated_at = self._parse_confluence_datetime(updated_when)
-                    if not version_number:
-                        version_number = last_updated.get("number", 0)
-
-            # Extract space ID - v2 has spaceId at top level, v1 has space.id
-            external_record_group_id = None
-            space_id_v2 = blogpost_data.get("spaceId")  # v2 format
-            if space_id_v2:
-                external_record_group_id = str(space_id_v2)
-            else:
-                # v1 format
-                space_data = blogpost_data.get("space", {})
-                space_id = space_data.get("id")
-                external_record_group_id = str(space_id) if space_id else None
-
-            if not external_record_group_id:
-                self.logger.warning(f"Blogpost {blogpost_id} has no space - skipping")
-                return None
-
-            # Blogposts have no parent hierarchy - they are flat and connected directly to space
-            parent_external_record_id = None
-
-            # Construct web URL - v1 vs v2 have different link structures
-            web_url = None
-            links = blogpost_data.get("_links", {})
-            webui = links.get("webui")
-
-            if webui:
-                # Try v2 format first (_links.base)
-                base_url = links.get("base")
-                if base_url:
-                    web_url = f"{base_url}{webui}"
-                else:
-                    # Fall back to v1 format (extract from _links.self)
-                    self_link = links.get("self")
-                    if self_link and "/wiki/" in self_link:
-                        base_url = self_link.split("/wiki/")[0] + "/wiki"
-                        web_url = f"{base_url}{webui}"
-
-            return WebpageRecord(
-                org_id=self.data_entities_processor.org_id,
-                record_name=blogpost_title,
-                record_type=RecordType.CONFLUENCE_BLOGPOST,
-                external_record_id=blogpost_id,
-                external_revision_id=str(version_number) if version_number else None,
-                version=0,
-                origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.CONFLUENCE,
-                record_group_type=RecordGroupType.CONFLUENCE_SPACES,
-                external_record_group_id=external_record_group_id,
-                parent_external_record_id=parent_external_record_id,
-                weburl=web_url,
-                mime_type=MimeTypes.HTML.value,
-                source_created_at=source_created_at,
-                source_updated_at=source_updated_at,
-            )
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to transform blogpost: {e}")
-            return None
 
     def _transform_to_attachment_file_record(
         self,
         attachment_data: Dict[str, Any],
-        page_id: str,
-        parent_space_id: Optional[str]
+        parent_external_record_id: str,
+        parent_external_record_group_id: Optional[str]
     ) -> Optional[FileRecord]:
         """
         Transform Confluence attachment to FileRecord entity.
@@ -1882,8 +2220,8 @@ class ConfluenceConnector(BaseConnector):
 
         Args:
             attachment_data: Raw attachment data from v1 (children.attachment.results) or v2 API
-            page_id: Parent page external_record_id
-            parent_space_id: Space ID from parent page
+            parent_external_record_id: Parent page external_record_id
+            parent_external_record_group_id: Space ID from parent page
 
         Returns:
             FileRecord object or None if transformation fails
@@ -1893,15 +2231,19 @@ class ConfluenceConnector(BaseConnector):
             attachment_id = attachment_data.get("id")
             if not attachment_id:
                 return None
-
             # Get filename - same field in both v1 and v2
             file_name = attachment_data.get("title")
             if not file_name:
                 return None
 
+            # Clean query params from filename if present
+            if '?' in file_name:
+                file_name = file_name.split('?')[0]
+
             # Parse timestamps - v1 vs v2 have different structures
             source_created_at = None
             source_updated_at = None
+            version_number = 0
 
             # Try v2 format first (createdAt at top level)
             created_at_v2 = attachment_data.get("createdAt")
@@ -1914,21 +2256,25 @@ class ConfluenceConnector(BaseConnector):
                 if created_date:
                     source_created_at = self._parse_confluence_datetime(created_date)
 
-            # Try v2 format for updated date (version.createdAt)
+            # Try v2 format for updated date and version (version.createdAt, version.number)
             version_data = attachment_data.get("version", {})
             if isinstance(version_data, dict):
                 version_created_at = version_data.get("createdAt")
                 if version_created_at:
                     source_updated_at = self._parse_confluence_datetime(version_created_at)
+                version_number = version_data.get("number", 0)
 
-            # Fall back to v1 format (history.lastUpdated.when)
-            if not source_updated_at:
+            # Fall back to v1 format (history.lastUpdated.when, history.lastUpdated.number)
+            if not source_updated_at or not version_number:
                 history = attachment_data.get("history", {})
                 last_updated = history.get("lastUpdated", {})
                 if isinstance(last_updated, dict):
-                    updated_when = last_updated.get("when")
-                    if updated_when:
-                        source_updated_at = self._parse_confluence_datetime(updated_when)
+                    if not source_updated_at:
+                        updated_when = last_updated.get("when")
+                        if updated_when:
+                            source_updated_at = self._parse_confluence_datetime(updated_when)
+                    if not version_number:
+                        version_number = last_updated.get("number", 0)
 
             # Extract file size - v2 has it at top level, v1 in extensions
             file_size = attachment_data.get("fileSize")  # v2 format
@@ -1936,11 +2282,14 @@ class ConfluenceConnector(BaseConnector):
                 extensions = attachment_data.get("extensions", {})
                 file_size = extensions.get("fileSize")  # v1 format
 
-            # Extract mime type - v2 has it at top level (mediaType), v1 in extensions
+            # Extract mime type - v2 has it at top level (mediaType), v1 in extensions or metadata
             media_type = attachment_data.get("mediaType")  # v2 format
             if not media_type:
                 extensions = attachment_data.get("extensions", {})
-                media_type = extensions.get("mediaType")  # v1 format
+                media_type = extensions.get("mediaType")  # v1 format (extensions)
+            if not media_type:
+                metadata = attachment_data.get("metadata", {})
+                media_type = metadata.get("mediaType")  # v1 format (metadata)
 
             mime_type = None
             if media_type:
@@ -1977,11 +2326,6 @@ class ConfluenceConnector(BaseConnector):
                             base_url = self_link.split("/wiki/")[0] + "/wiki"
                             web_url = f"{base_url}{web_path}"
 
-            # Extract version number
-            version_number = 0
-            if isinstance(version_data, dict):
-                version_number = version_data.get("number", 0)
-
             # Generate unique ID for attachment
             attachment_record_id = str(uuid.uuid4())
 
@@ -1995,10 +2339,11 @@ class ConfluenceConnector(BaseConnector):
                 version=0,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.CONFLUENCE,
+                connector_id=self.connector_id,
                 mime_type=mime_type,
-                parent_external_record_id=page_id,
+                parent_external_record_id=parent_external_record_id,
                 parent_record_type=RecordType.WEBPAGE,
-                external_record_group_id=parent_space_id,
+                external_record_group_id=parent_external_record_group_id,
                 record_group_type=RecordGroupType.CONFLUENCE_SPACES,
                 weburl=web_url,
                 is_file=True,
@@ -2025,7 +2370,7 @@ class ConfluenceConnector(BaseConnector):
         """
         try:
             member_emails = []
-            batch_size = HTTP_STATUS_200
+            batch_size = 100
             start = 0
 
             # Paginate through group members
@@ -2038,7 +2383,7 @@ class ConfluenceConnector(BaseConnector):
                 )
 
                 # Check response
-                if not response or response.status != HTTP_STATUS_200:
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.warning(f"⚠️ Failed to fetch members for group {group_name}: {response.status if response else 'No response'}")
                     break
 
@@ -2053,6 +2398,8 @@ class ConfluenceConnector(BaseConnector):
                     email = member_data.get("email", "").strip()
                     if email:
                         member_emails.append(email)
+                    else:
+                        self.logger.warning(f"Skipping member creation with name : {member_data.get('displayName')}, Reason: No email found for the member")
 
                 # Move to next page
                 start += batch_size
@@ -2084,10 +2431,10 @@ class ConfluenceConnector(BaseConnector):
         try:
             # Fetch all users from database
             all_app_users = await self.data_entities_processor.get_all_app_users(
-                app_name=Connectors.CONFLUENCE
+                connector_id=self.connector_id
             )
 
-            self.logger.debug(f"Fetched {len(all_app_users)} total users from database for email lookup : {all_app_users}")
+            self.logger.debug(f"Fetched {len(all_app_users)} total users from database for email lookup")
 
             # Create email lookup map
             email_set = set(emails)
@@ -2130,6 +2477,7 @@ class ConfluenceConnector(BaseConnector):
 
             return AppUser(
                 app_name=Connectors.CONFLUENCE,
+                connector_id=self.connector_id,
                 source_user_id=account_id,
                 org_id=self.data_entities_processor.org_id,
                 email=email,
@@ -2144,15 +2492,13 @@ class ConfluenceConnector(BaseConnector):
 
     def _transform_to_user_group(
         self,
-        group_data: Dict[str, Any],
-        member_emails: List[str]
+        group_data: Dict[str, Any]
     ) -> Optional[AppUserGroup]:
         """
         Transform Confluence group data to AppUserGroup entity.
 
         Args:
             group_data: Raw group data from Confluence API
-            member_emails: List of member email addresses
 
         Returns:
             AppUserGroup object or None if transformation fails
@@ -2166,6 +2512,7 @@ class ConfluenceConnector(BaseConnector):
 
             return AppUserGroup(
                 app_name=Connectors.CONFLUENCE,
+                connector_id=self.connector_id,
                 source_user_group_id=group_id,
                 name=group_name,
                 org_id=self.data_entities_processor.org_id,
@@ -2245,13 +2592,12 @@ class ConfluenceConnector(BaseConnector):
                 )
 
             elif record.record_type == RecordType.FILE:
-                media_type = record.mime_type or 'application/octet-stream'
                 filename = record.record_name or f"{record.external_record_id}"
-
-                return StreamingResponse(
+                return create_stream_record_response(
                     self._fetch_attachment_content(record),
-                    media_type=media_type,
-                    headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+                    filename=filename,
+                    mime_type=record.mime_type,
+                    fallback_filename=f"record_{record.id}"
                 )
 
             else:
@@ -2305,7 +2651,7 @@ class ConfluenceConnector(BaseConnector):
                 )
 
             # Check response
-            if not response or response.status != HTTP_STATUS_200:
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Content not found: {page_id}"
@@ -2373,7 +2719,7 @@ class ConfluenceConnector(BaseConnector):
                 )
 
             # Check response
-            if not response or response.status != HTTP_STATUS_200:
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Comment not found: {comment_id}"
@@ -2540,14 +2886,14 @@ class ConfluenceConnector(BaseConnector):
         try:
             page_id = record.external_record_id
 
-            # Fetch page from source using v1 API
+            # Fetch page from source using v2 API
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_page_content_v2(
                 page_id=page_id,
                 body_format="storage"
             )
 
-            if not response or response.status != HTTP_STATUS_200:
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
                 self.logger.warning(f"Page {page_id} not found at source, may have been deleted")
                 return None
 
@@ -2567,7 +2913,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.info(f"Page {page_id} has changed at source (version {record.external_revision_id} -> {current_version})")
 
             # Transform page to WebpageRecord
-            webpage_record = self._transform_to_page_webpage_record(page_data)
+            webpage_record = self._transform_to_webpage_record(page_data, RecordType.CONFLUENCE_PAGE)
             if not webpage_record:
                 return None
 
@@ -2576,6 +2922,8 @@ class ConfluenceConnector(BaseConnector):
 
             # Fetch fresh permissions
             permissions = await self._fetch_page_permissions(page_id)
+            if len(permissions) > 0:
+                webpage_record.inherit_permissions = False
 
             return (webpage_record, permissions)
 
@@ -2592,11 +2940,11 @@ class ConfluenceConnector(BaseConnector):
 
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_blog_post_by_id(
-                id=blogpost_id,
+                id=int(blogpost_id),
                 body_format="storage"
             )
 
-            if not response or response.status != HTTP_STATUS_200:
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
                 self.logger.warning(f"Blogpost {blogpost_id} not found at source, may have been deleted")
                 return None
 
@@ -2616,7 +2964,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.info(f"Blogpost {blogpost_id} has changed at source (version {record.external_revision_id} -> {current_version})")
 
             # Transform blogpost to WebpageRecord
-            webpage_record = self._transform_to_blogpost_webpage_record(blogpost_data)
+            webpage_record = self._transform_to_webpage_record(blogpost_data, RecordType.CONFLUENCE_BLOGPOST)
             if not webpage_record:
                 return None
 
@@ -2625,6 +2973,8 @@ class ConfluenceConnector(BaseConnector):
 
             # Fetch fresh permissions
             permissions = await self._fetch_page_permissions(blogpost_id)
+            if len(permissions) > 0:
+                webpage_record.inherit_permissions = False
 
             return (webpage_record, permissions)
 
@@ -2654,7 +3004,7 @@ class ConfluenceConnector(BaseConnector):
                     body_format="storage"
                 )
 
-            if not response or response.status != HTTP_STATUS_200:
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
                 self.logger.warning(f"Comment {comment_id} not found at source, may have been deleted")
                 return None
 
@@ -2694,7 +3044,7 @@ class ConfluenceConnector(BaseConnector):
             parent_page_id = record.parent_external_record_id
             permissions = []
             if parent_page_id:
-                permissions = await self._fetch_page_permissions(parent_page_id, f"parent of comment {comment_id}")
+                permissions = await self._fetch_page_permissions(parent_page_id)
 
             return (comment_record, permissions)
 
@@ -2721,7 +3071,7 @@ class ConfluenceConnector(BaseConnector):
                 include_version=True
             )
 
-            if not response or response.status != HTTP_STATUS_200:
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
                 self.logger.warning(f"Attachment {attachment_id} not found at source, may have been deleted")
                 return None
 
@@ -2770,6 +3120,383 @@ class ConfluenceConnector(BaseConnector):
         self.logger.info("Cleaning up Confluence connector resources")
         # Add cleanup logic if needed
 
+    async def _migrate_pseudo_group_permissions_to_user(self, user: AppUser) -> None:
+        """
+        Migrate permissions from a user's pseudo-group to the user directly.
+
+        When a user is synced with an email, if they have a pseudo-group, this method:
+        1. Finds the pseudo-group
+        2. Delegates to data_entities_processor to migrate permissions
+        3. Deletes the pseudo-group
+
+        Args:
+            user: The user with email
+        """
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                # Check if pseudo-group exists for this user's source_user_id
+                pseudo_group = await tx_store.get_user_group_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=user.source_user_id,
+                )
+
+                # Only process if it's a pseudo-group (not a real group)
+                if not pseudo_group or not pseudo_group.name.startswith(PSEUDO_USER_GROUP_PREFIX):
+                    return
+
+                self.logger.info(
+                    f"Migrating pseudo-group '{pseudo_group.name}' ({pseudo_group.id}) "
+                    f"to user '{user.email}'"
+                )
+
+                # Use generic migration method from data_entities_processor
+                migrated_count, skipped_count = await self.data_entities_processor.migrate_group_permissions_to_user(
+                    group_id=pseudo_group.id,
+                    user_email=user.email,
+                    connector_id=self.connector_id
+                )
+
+                # Delete the pseudo-group (this will also delete all its edges)
+                await tx_store.delete_user_group_by_id(pseudo_group.id)
+
+                self.logger.info(
+                    f"✅ Migrated {migrated_count} permissions from pseudo-group '{pseudo_group.name}' "
+                    f"to user {user.email} (skipped {skipped_count} duplicates), deleted pseudo-group"
+                )
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to migrate pseudo-group permissions for user {user.email}: {e}",
+                exc_info=True
+            )
+            raise  # Re-raise to trigger transaction rollback
+
+
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None
+    ) -> FilterOptionsResponse:
+        """
+        Get dynamic filter options for Confluence filters with cursor-based pagination.
+
+        Supports:
+        - space_keys: All available Confluence spaces
+        - page_ids: Pages (with CQL fuzzy search when search term provided)
+        - blogpost_ids: Blogposts (with CQL fuzzy search when search term provided)
+
+        Args:
+            filter_key: Filter field name
+            page: Page number (for API compatibility, not used with cursor)
+            limit: Items per page
+            search: Search text to filter options (uses CQL fuzzy matching)
+            cursor: Cursor for pagination (Confluence uses cursor-based pagination)
+
+        Returns:
+            FilterOptionsResponse with options and pagination metadata
+        """
+        if filter_key == "space_keys":
+            return await self._get_space_options(page, limit, search, cursor)
+        elif filter_key == "page_ids":
+            return await self._get_page_options(page, limit, search, cursor)
+        elif filter_key == "blogpost_ids":
+            return await self._get_blogpost_options(page, limit, search, cursor)
+        else:
+            raise ValueError(f"Unsupported filter key: {filter_key}")
+
+    async def _get_space_options(
+        self,
+        page: int,
+        limit: int,
+        search: Optional[str],
+        cursor: Optional[str]
+    ) -> FilterOptionsResponse:
+        """Fetch available Confluence spaces with cursor-based pagination.
+
+        Uses CQL search for fuzzy matching when search term is provided,
+        otherwise uses v2 API for listing all spaces.
+        """
+        # Get fresh datasource with refreshed OAuth token
+        datasource = await self._get_fresh_datasource()
+
+        spaces_list = []
+        next_cursor = None
+
+        if search:
+            # Use CQL search for fuzzy matching on space name/key
+            spaces_response = await datasource.search_spaces_cql(
+                search_term=search,
+                limit=limit,
+                cursor=cursor
+            )
+
+            if not spaces_response or spaces_response.status != HttpStatusCode.SUCCESS.value:
+                raise RuntimeError(
+                    f"Failed to search spaces: HTTP {spaces_response.status if spaces_response else 'No response'}"
+                )
+
+            response_data = spaces_response.json()
+
+            # CQL search returns results with nested 'space' object
+            # Note: CQL response space object has key and name but NOT id
+            for result in response_data.get("results", []):
+                space = result.get("space", {})
+                space_key = space.get("key")
+                space_name = space.get("name") or space.get("title")
+
+                # CQL response doesn't include space id, so we use key as identifier
+                if space_key and space_name:
+                    spaces_list.append({
+                        "id": space_key,  # Use key as id since CQL doesn't return id
+                        "key": space_key,
+                        "name": space_name
+                    })
+
+            # Extract cursor from next link
+            next_cursor_link = response_data.get("_links", {}).get("next")
+            if next_cursor_link:
+                try:
+                    parsed = urlparse(next_cursor_link)
+                    query_params = parse_qs(parsed.query)
+                    next_cursor = query_params.get("cursor", [None])[0]
+                except Exception as e:
+                    self.logger.warning(f"Failed to extract cursor from next link: {e}")
+        else:
+            # Use v2 API to list all spaces (no search term)
+            spaces_response = await datasource.get_spaces(
+                cursor=cursor,
+                limit=limit,
+                status="current"
+            )
+
+            if not spaces_response or spaces_response.status != HttpStatusCode.SUCCESS.value:
+                raise RuntimeError(
+                    f"Failed to fetch spaces: HTTP {spaces_response.status if spaces_response else 'No response'}"
+                )
+
+            response_data = spaces_response.json()
+            spaces_list = response_data.get("results", [])
+
+            # Extract cursor from next link
+            next_cursor_link = response_data.get("_links", {}).get("next")
+            if next_cursor_link:
+                try:
+                    parsed = urlparse(next_cursor_link)
+                    query_params = parse_qs(parsed.query)
+                    next_cursor = query_params.get("cursor", [None])[0]
+                except Exception as e:
+                    self.logger.warning(f"Failed to extract cursor from next link: {e}")
+
+        # Convert to FilterOption objects
+        # Use key as id since the filter is "space_keys" and backend expects keys
+        options = [
+            FilterOption(
+                id=space.get("key"),  # Frontend will use this value, backend expects keys
+                label=space.get("name")
+            )
+            for space in spaces_list
+            if space.get("key") and space.get("name")
+        ]
+
+        # Return success response
+        return FilterOptionsResponse(
+            success=True,
+            options=options,
+            page=page,
+            limit=limit,
+            has_more=next_cursor is not None,
+            cursor=next_cursor
+        )
+
+    async def _get_page_options(
+        self,
+        page: int,
+        limit: int,
+        search: Optional[str],
+        cursor: Optional[str]
+    ) -> FilterOptionsResponse:
+        """Fetch pages with cursor-based pagination.
+
+        Uses CQL search for fuzzy title matching when search term is provided,
+        otherwise uses v2 API for listing all pages.
+        """
+        # Get fresh datasource with refreshed OAuth token
+        datasource = await self._get_fresh_datasource()
+
+        pages_list = []
+        next_cursor = None
+
+        if search:
+            # Use CQL search for fuzzy title matching
+            pages_response = await datasource.search_pages_cql(
+                search_term=search,
+                limit=limit,
+                cursor=cursor
+            )
+
+            if not pages_response or pages_response.status != HttpStatusCode.SUCCESS.value:
+                raise RuntimeError(
+                    f"Failed to search pages: HTTP {pages_response.status if pages_response else 'No response'}"
+                )
+
+            response_data = pages_response.json()
+
+            # CQL search returns results with nested 'content' object
+            for result in response_data.get("results", []):
+                content = result.get("content", {})
+                if content.get("id") and content.get("title") and content.get("type") == "page":
+                    pages_list.append(content)
+
+            # Extract cursor from next link
+            next_cursor_link = response_data.get("_links", {}).get("next")
+            if next_cursor_link:
+                try:
+                    parsed = urlparse(next_cursor_link)
+                    query_params = parse_qs(parsed.query)
+                    next_cursor = query_params.get("cursor", [None])[0]
+                except Exception as e:
+                    self.logger.warning(f"Failed to extract cursor from next link: {e}")
+        else:
+            # Use v2 API to list all pages (no search term)
+            pages_response = await datasource.get_pages(
+                cursor=cursor,
+                limit=limit,
+                status=["current"]
+            )
+
+            if not pages_response or pages_response.status != HttpStatusCode.SUCCESS.value:
+                raise RuntimeError(
+                    f"Failed to fetch pages: HTTP {pages_response.status if pages_response else 'No response'}"
+                )
+
+            response_data = pages_response.json()
+            pages_list = response_data.get("results", [])
+
+            # Extract cursor from next link
+            next_cursor_link = response_data.get("_links", {}).get("next")
+            if next_cursor_link:
+                try:
+                    parsed = urlparse(next_cursor_link)
+                    query_params = parse_qs(parsed.query)
+                    next_cursor = query_params.get("cursor", [None])[0]
+                except Exception as e:
+                    self.logger.warning(f"Failed to extract cursor from next link: {e}")
+
+        # Convert to FilterOption objects
+        options = [
+            FilterOption(
+                id=p.get("id"),
+                label=p.get('title')
+            )
+            for p in pages_list
+            if p.get("id") and p.get("title")
+        ]
+
+        return FilterOptionsResponse(
+            success=True,
+            options=options,
+            page=page,
+            limit=limit,
+            has_more=next_cursor is not None,
+            cursor=next_cursor
+        )
+
+    async def _get_blogpost_options(
+        self,
+        page: int,
+        limit: int,
+        search: Optional[str],
+        cursor: Optional[str]
+    ) -> FilterOptionsResponse:
+        """Fetch blogposts with cursor-based pagination.
+
+        Uses CQL search for fuzzy title matching when search term is provided,
+        otherwise uses v2 API for listing all blogposts.
+        """
+        # Get fresh datasource with refreshed OAuth token
+        datasource = await self._get_fresh_datasource()
+
+        blogposts_list = []
+        next_cursor = None
+
+        if search:
+            # Use CQL search for fuzzy title matching
+            blogposts_response = await datasource.search_blogposts_cql(
+                search_term=search,
+                limit=limit,
+                cursor=cursor
+            )
+
+            if not blogposts_response or blogposts_response.status != HttpStatusCode.SUCCESS.value:
+                raise RuntimeError(
+                    f"Failed to search blogposts: HTTP {blogposts_response.status if blogposts_response else 'No response'}"
+                )
+
+            response_data = blogposts_response.json()
+
+            # CQL search returns results with nested 'content' object
+            for result in response_data.get("results", []):
+                content = result.get("content", {})
+                if content.get("id") and content.get("title") and content.get("type") == "blogpost":
+                    blogposts_list.append(content)
+
+            # Extract cursor from next link
+            next_cursor_link = response_data.get("_links", {}).get("next")
+            if next_cursor_link:
+                try:
+                    parsed = urlparse(next_cursor_link)
+                    query_params = parse_qs(parsed.query)
+                    next_cursor = query_params.get("cursor", [None])[0]
+                except Exception as e:
+                    self.logger.warning(f"Failed to extract cursor from next link: {e}")
+        else:
+            # Use v2 API to list all blogposts (no search term)
+            blogposts_response = await datasource.get_blog_posts(
+                cursor=cursor,
+                limit=limit,
+                status=["current"]
+            )
+
+            if not blogposts_response or blogposts_response.status != HttpStatusCode.SUCCESS.value:
+                raise RuntimeError(
+                    f"Failed to fetch blogposts: HTTP {blogposts_response.status if blogposts_response else 'No response'}"
+                )
+
+            response_data = blogposts_response.json()
+            blogposts_list = response_data.get("results", [])
+
+            # Extract cursor from next link
+            next_cursor_link = response_data.get("_links", {}).get("next")
+            if next_cursor_link:
+                try:
+                    parsed = urlparse(next_cursor_link)
+                    query_params = parse_qs(parsed.query)
+                    next_cursor = query_params.get("cursor", [None])[0]
+                except Exception as e:
+                    self.logger.warning(f"Failed to extract cursor from next link: {e}")
+
+        # Convert to FilterOption objects
+        options = [
+            FilterOption(
+                id=bp.get("id"),
+                label=bp.get('title')
+            )
+            for bp in blogposts_list
+            if bp.get("id") and bp.get("title")
+        ]
+
+        return FilterOptionsResponse(
+            success=True,
+            options=options,
+            page=page,
+            limit=limit,
+            has_more=next_cursor is not None,
+            cursor=next_cursor
+        )
+
     async def handle_webhook_notification(self, notification: Dict) -> None:
         """Handle webhook notifications (not implemented)."""
         self.logger.warning("Webhook notifications not yet supported for Confluence")
@@ -2780,7 +3507,8 @@ class ConfluenceConnector(BaseConnector):
         cls,
         logger: Logger,
         data_store_provider: DataStoreProvider,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
+        connector_id: str
     ) -> "ConfluenceConnector":
         """Factory method to create a Confluence connector instance."""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -2795,5 +3523,6 @@ class ConfluenceConnector(BaseConnector):
             logger,
             data_entities_processor,
             data_store_provider,
-            config_service
+            config_service,
+            connector_id
         )

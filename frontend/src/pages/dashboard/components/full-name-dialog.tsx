@@ -24,7 +24,7 @@ import axios from 'src/utils/axios';
 
 import { Iconify } from 'src/components/iconify';
 
-import { updateUser, getUserIdFromToken } from 'src/sections/accountdetails/utils';
+import { updateUser, getUserIdFromToken, getUserEmailFromToken } from 'src/sections/accountdetails/utils';
 
 import { useAuthContext } from 'src/auth/hooks';
 import { STORAGE_KEY, STORAGE_KEY_REFRESH } from 'src/auth/context/jwt/constant';
@@ -163,11 +163,12 @@ export default function FullNameDialog({ open, onClose, onSuccess, onError }: Fu
       // Remove beforeunload event handler immediately
       window.onbeforeunload = null;
 
-      const userId = await getUserIdFromToken();
+      const userId = getUserIdFromToken();
+      const email  = getUserEmailFromToken();
 
       const userData = {
         fullName: data.fullName.trim(),
-        email: user?.email || '', // Include email from auth context
+        email: user?.email || email || '', // Include email from auth context
       };
 
       // Update user with both fullName and email

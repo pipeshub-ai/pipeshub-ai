@@ -25,7 +25,7 @@ type HtmlViewerProps = {
   buffer?: ArrayBuffer | null;
   sx?: Record<string, unknown>;
   highlightCitation?: SearchResult | CustomCitation | null;
-  onClosePdf :() => void;
+  onClosePdf: () => void;
 };
 
 const SIMILARITY_THRESHOLD = 0.6;
@@ -102,15 +102,16 @@ const HtmlContentContainer = styled(Box)({
     '& table': {
       borderCollapse: 'collapse',
       marginBottom: '1em',
+      border: 'none !important',
       width: 'auto',
     },
-    '& th, & td': {
-      border: '1px solid #ddd',
+    '& td, & th': {
+      border: 'none !important',
       padding: '0.5em',
       textAlign: 'left',
     },
     '& th': {
-      backgroundColor: '#f2f2f2',
+      backgroundColor: 'transparent !important',
     },
     '& a': {
       color: '#007bff',
@@ -184,7 +185,7 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
   sx = {},
   citations = [],
   highlightCitation = null,
-  onClosePdf
+  onClosePdf,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const contentWrapperRef = useRef<HTMLDivElement | null>(null);

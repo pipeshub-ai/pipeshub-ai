@@ -1,5 +1,6 @@
 // src/sections/qna/agents/utils/flow-builder-types.ts
 import type { Agent } from 'src/types/agent';
+import { Connector } from 'src/sections/accountdetails/connectors/types/types';
 
 // Core data interfaces
 export interface NodeData extends Record<string, unknown> {
@@ -22,7 +23,7 @@ export interface NodeTemplate {
   defaultConfig: Record<string, any>;
   inputs: string[];
   outputs: string[];
-  category: 'inputs' | 'llm' | 'tools' | 'knowledge' | 'outputs' | 'agent';
+  category: 'inputs' | 'llm' | 'tools' | 'knowledge' | 'connectors' | 'outputs' | 'agent';
 }
 
 // Component props interfaces
@@ -53,6 +54,10 @@ export interface AgentBuilderCanvasWrapperProps {
   sidebarWidth: number;
   nodeTemplates: NodeTemplate[];
   loading: boolean;
+  activeAgentConnectors: Connector[];
+  configuredConnectors: Connector[];
+  connectorRegistry: any[];
+  isBusiness: boolean;
   nodes: any[];
   edges: any[];
   onNodesChange: (changes: any) => void;
@@ -65,10 +70,18 @@ export interface AgentBuilderCanvasWrapperProps {
   setNodes: React.Dispatch<React.SetStateAction<any[]>>;
   onNodeEdit?: (nodeId: string, data: any) => void;
   onNodeDelete?: (nodeId: string) => void;
+  onError?: (error: string | AgentBuilderError) => void;
+}
+
+export interface AgentBuilderError {
+  message: string;
+  connectorId?: string;
+  connectorName?: string;
+  actionLink?: string;
 }
 
 export interface AgentBuilderNotificationPanelProps {
-  error: string | null;
+  error: string | AgentBuilderError | null;
   success: string | null;
   onErrorClose: () => void;
   onSuccessClose: () => void;
@@ -97,10 +110,13 @@ export interface UseAgentBuilderDataReturn {
   availableTools: any[];
   availableModels: any[];
   availableKnowledgeBases: any[];
+  activeAgentConnectors: Connector[];
+  configuredConnectors: Connector[];
+  connectorRegistry: any[];
   loading: boolean;
   loadedAgent: Agent | null;
-  error: string | null;
-  setError: (error: string | null) => void;
+  error: string | AgentBuilderError | null;
+  setError: (error: string | AgentBuilderError | null) => void;
 }
 
 export interface UseAgentBuilderStateReturn {

@@ -90,7 +90,7 @@ class DoclingDocToBlocksConverter():
     # }
     #
     # Todo: Handle Bounding Boxes, PPTX, CSV, Excel, Docx, markdown, html etc.
-    async def _process_content_in_order(self, doc: DoclingDocument) -> BlocksContainer|bool:
+    async def _process_content_in_order(self, doc: DoclingDocument, page_number: int = None) -> BlocksContainer|bool:
         """
         Process document content in proper reading order by following references.
 
@@ -104,7 +104,7 @@ class DoclingDocToBlocksConverter():
         blocks = []
         processed_refs = set() # check by block_source_id
 
-        def _enrich_metadata(block: Block|BlockGroup, item: dict, doc_dict: dict) -> None:
+        def _enrich_metadata(block: Block|BlockGroup, item: dict, doc_dict: dict, default_page_number: int = None) -> None:
             page_metadata = doc_dict.get("pages", {})
             # self.logger.debug(f"Page metadata: {json.dumps(page_metadata, indent=4)}")
             # self.logger.debug(f"Item: {json.dumps(item, indent=4)}")
@@ -130,8 +130,6 @@ class DoclingDocToBlocksConverter():
                             except Exception as e:
                                 self.logger.warning(f"Failed to process bounding boxes: {e}")
                                 # Don't set bounding_boxes if processing fails
-
-
                 elif isinstance(prov, dict) and DOCLING_REF_NODE in prov:
                     # Handle legacy reference format if needed
                     page_path = prov[DOCLING_REF_NODE]
@@ -142,6 +140,12 @@ class DoclingDocToBlocksConverter():
                         if page_no:
                                 block.citation_metadata = CitationMetadata(page_number=page_no)
 
+            # Fallback: use default_page_number if no citation_metadata was set from prov
+            if default_page_number is not None:
+                if block.citation_metadata is None:
+                    block.citation_metadata = CitationMetadata(page_number=default_page_number)
+                else:
+                    block.citation_metadata.page_number = default_page_number
 
         async def _handle_text_block(item: dict, doc_dict: dict, parent_index: int, ref_path: str,level: int,doc: DoclingDocument) -> Optional[Block]:
             block = None
@@ -160,7 +164,7 @@ class DoclingDocToBlocksConverter():
                         source_type=None,
                         parent_index=parent_index,
                     )
-                _enrich_metadata(block, item, doc_dict)
+                _enrich_metadata(block, item, doc_dict, default_page_number=page_number)
                 blocks.append(block)
             children = item.get("children", [])
             for child in children:
@@ -243,7 +247,7 @@ class DoclingDocToBlocksConverter():
                         # annotations=item.get("annotations", []),
                     ),
                 )
-            _enrich_metadata(block, item, doc_dict)
+            _enrich_metadata(block, item, doc_dict, default_page_number=page_number)
             blocks.append(block)
             children = item.get("children", [])
             for child in children:
@@ -258,8 +262,8 @@ class DoclingDocToBlocksConverter():
                 self.logger.warning(f"No table cells found in the table data: {table_data}")
                 return None
             response = await get_table_summary_n_headers(self.config, table_markdown)
-            table_summary = response.summary
-            column_headers = response.headers
+            table_summary = response.summary if response else ""
+            column_headers = response.headers if response else []
 
             table_rows_text,table_rows = await get_rows_text(self.config, table_data, table_summary, column_headers)
 
@@ -288,7 +292,7 @@ class DoclingDocToBlocksConverter():
                 },
                 format=DataFormat.JSON,
             )
-            _enrich_metadata(block_group, item, doc_dict)
+            _enrich_metadata(block_group, item, doc_dict, default_page_number=page_number)
 
             childBlocks = []
             for i,row in enumerate(table_rows):
@@ -386,18 +390,14 @@ class DoclingDocToBlocksConverter():
         # Start processing from body
         doc_dict = doc.export_to_dict()
         body = doc_dict.get("body", {})
-        texts = doc_dict.get("texts", [])
-        if texts == []:
-            self.logger.info("No text blocks found in the document")
-            return False
         for child in body.get("children", []):
             await _process_item(child,doc)
 
         self.logger.debug(f"Processed {len(blocks)} items in order")
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
-    async def convert(self, doc: DoclingDocument) -> BlocksContainer|bool:
-        block_containers = await self._process_content_in_order(doc)
+    async def convert(self, doc: DoclingDocument, page_number: int = None) -> BlocksContainer|bool:
+        block_containers = await self._process_content_in_order(doc, page_number=page_number)
         return block_containers
 
 

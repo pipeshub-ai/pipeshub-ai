@@ -1,7 +1,22 @@
 from copy import deepcopy
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Type, Union
 
+from app.config.constants.arangodb import ExtensionTypes
+from app.connectors.core.registry.filters import (
+    FilterCategory,
+    FilterField,
+    FilterOption,
+    FilterType,
+    OptionSourceType,
+)
+
+
+class ConnectorScope(str, Enum):
+    """Connector scope types."""
+    PERSONAL = "personal"
+    TEAM = "team"
 
 @dataclass
 class AuthField:
@@ -13,22 +28,9 @@ class AuthField:
     description: str = ""
     required: bool = True
     default_value: Any = ""
-    min_length: int = 10
+    min_length: int = 1
     max_length: int = 1000
     is_secret: bool = False
-
-
-@dataclass
-class FilterField:
-    """Represents a filter field"""
-    name: str
-    display_name: str
-    field_type: str = "MULTISELECT"
-    description: str = ""
-    required: bool = False
-    default_value: Any = field(default_factory=list)
-    options: List[str] = field(default_factory=list)
-    operators: List[str] = field(default_factory=lambda: ["IN", "NOT_IN"])
 
 
 @dataclass
@@ -66,6 +68,7 @@ class ConnectorConfigBuilder:
             "iconPath": "/assets/icons/connectors/default.svg",
             "supportsRealtime": False,
             "supportsSync": True,
+            "supportsAgent": True,
             "documentationLinks": [],
             "auth": {
                 "type": "OAUTH",
@@ -106,11 +109,14 @@ class ConnectorConfigBuilder:
                 "values": {}
             },
             "filters": {
-                "schema": {"fields": []},
-                "values": {},
-                "customFields": [],
-                "customValues": {},
-                "endpoints": {}
+                "sync": {
+                    "schema": {"fields": []},
+                    "values": {}
+                },
+                "indexing": {
+                    "schema": {"fields": []},
+                    "values": {}
+                }
             }
         }
         return self
@@ -130,6 +136,11 @@ class ConnectorConfigBuilder:
     def with_sync_support(self, supported: bool = True) -> 'ConnectorConfigBuilder':
         """Enable or disable sync support"""
         self.config["supportsSync"] = supported
+        return self
+
+    def with_agent_support(self, supported: bool = True) -> 'ConnectorConfigBuilder':
+        """Enable or disable agent support"""
+        self.config["supportsAgent"] = supported
         return self
 
     def add_documentation_link(self, link: DocumentationLink) -> 'ConnectorConfigBuilder':
@@ -230,21 +241,22 @@ class ConnectorConfigBuilder:
         self.config["sync"]["customFields"].append(field_config)
         return self
 
-    def add_filter_field(self, field: FilterField, endpoint: str = "static") -> 'ConnectorConfigBuilder':
-        """Add a filter field"""
-        field_config = {
-            "name": field.name,
-            "displayName": field.display_name,
-            "description": field.description,
-            "fieldType": field.field_type,
-            "required": field.required,
-            "defaultValue": field.default_value,
-            "options": field.options,
-            "operators": field.operators
-        }
+    def add_filter_field(self, field: FilterField) -> 'ConnectorConfigBuilder':
+        """
+        Add a filter field to the connector schema.
 
-        self.config["filters"]["schema"]["fields"].append(field_config)
-        self.config["filters"]["endpoints"][field.name] = endpoint
+        The field will be added to either sync or indexing category
+        based on field.category.
+
+        Args:
+            field: FilterField definition with type, operators, category
+        """
+        schema_dict = field.to_schema_dict()
+        category = field.category.value  # "sync" or "indexing"
+
+        # Add to appropriate category schema
+        self.config["filters"][category]["schema"]["fields"].append(schema_dict)
+
         return self
 
     def add_conditional_display(self, field_name: str, show_when_field: str, operator: str, value: Union[str, bool, int, float]) -> 'ConnectorConfigBuilder':
@@ -275,10 +287,16 @@ class ConnectorBuilder:
         self.app_description = ""
         self.app_categories = []
         self.config_builder = ConnectorConfigBuilder()
+        self.connector_scopes: List[ConnectorScope] = []
 
     def in_group(self, app_group: str) -> 'ConnectorBuilder':
         """Set the app group"""
         self.app_group = app_group
+        return self
+
+    def with_scopes(self, scopes: List[ConnectorScope]) -> 'ConnectorBuilder':
+        """Set the connector scopes"""
+        self.connector_scopes = scopes
         return self
 
     def with_auth_type(self, auth_type: str) -> 'ConnectorBuilder':
@@ -317,7 +335,8 @@ class ConnectorBuilder:
             auth_type=self.auth_type,
             app_description=self.app_description,
             app_categories=self.app_categories,
-            config=config
+            config=config,
+            connector_scopes=self.connector_scopes
         )
 
     def _validate_oauth_requirements(self, config: Dict[str, Any]) -> None:
@@ -448,31 +467,76 @@ class CommonFields:
         )
 
     @staticmethod
-    def file_types_filter() -> FilterField:
-        """Standard file types filter"""
+    def file_extension_filter(options_endpoint: Optional[str] = None) -> FilterField:
+        """Standard file extension filter"""
         return FilterField(
-            name="fileTypes",
-            display_name="File Types",
-            description="Select the types of files to sync",
-            options=["document", "spreadsheet", "presentation", "pdf", "image", "video"]
+            name="file_extensions",
+            display_name="Sync Files with Extensions",
+            filter_type=FilterType.MULTISELECT,
+            category=FilterCategory.SYNC,
+            description="Sync files with specific extensions",
+            default_value=True,
+            option_source_type=OptionSourceType.STATIC,
+            options=[
+                FilterOption(id=ext.value, label=f".{ext.value}")
+                for ext in ExtensionTypes
+            ]
         )
 
     @staticmethod
-    def folders_filter() -> FilterField:
+    def folders_filter(options_endpoint: Optional[str] = None) -> FilterField:
         """Standard folders filter"""
         return FilterField(
             name="folders",
             display_name="Folders",
-            description="Select folders to sync from"
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            description="Select folders to sync from",
         )
 
     @staticmethod
-    def channels_filter() -> FilterField:
+    def channels_filter(options_endpoint: Optional[str] = None) -> FilterField:
         """Standard channels filter"""
         return FilterField(
             name="channels",
             display_name="Channels",
-            description="Select channels to sync messages from"
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            description="Select channels to sync messages from",
+        )
+
+    @staticmethod
+    def modified_date_filter(description: Optional[str] = None) -> FilterField:
+        """Standard modified date filter with operator selection"""
+        return FilterField(
+            name="modified",
+            display_name="Modified Date",
+            filter_type=FilterType.DATETIME,
+            category=FilterCategory.SYNC,
+            description=description or "Filter content by modification date."
+        )
+
+    @staticmethod
+    def created_date_filter(description: Optional[str] = None) -> FilterField:
+        """Standard created date filter with operator selection"""
+        return FilterField(
+            name="created",
+            display_name="Created Date",
+            filter_type=FilterType.DATETIME,
+            category=FilterCategory.SYNC,
+            description=description or "Filter content by creation date."
+        )
+
+    @staticmethod
+    def enable_manual_sync_filter() -> FilterField:
+        """Standard manual sync control filter (master switch for indexing)"""
+        return FilterField(
+            name="enable_manual_sync",
+            display_name="Enable Manual Sync",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Disable automatic indexing for all synced records.",
+            default_value=False
         )
 
     @staticmethod
