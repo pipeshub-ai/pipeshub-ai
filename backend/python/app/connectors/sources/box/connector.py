@@ -1,6 +1,7 @@
 import asyncio
 import mimetypes
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
@@ -758,13 +759,13 @@ class BoxConnector(BaseConnector):
             self.logger.info(f"📁 Removing user {user_id} access from folder {folder_external_id} and descendants")
 
             # Track all items to remove access from
-            items_to_process = [folder_external_id]
+            items_to_process = deque([folder_external_id])
             processed_items = set()
 
             async with self.data_store_provider.transaction() as tx_store:
-                # Process items recursively
+                # Process items recursively (BFS approach)
                 while items_to_process:
-                    current_external_id = items_to_process.pop(0)
+                    current_external_id = items_to_process.popleft()
 
                     if current_external_id in processed_items:
                         continue
@@ -1432,16 +1433,6 @@ class BoxConnector(BaseConnector):
                             granted_email = user_data.get('login')
                         else:
                             self.logger.warning(f"⚠️ Failed to fetch user details for ID {granted_user_box_id}: {user_response.error}")
-
-                    except AttributeError:
-                        try:
-                            user_response = await self.data_source.users_get_user(granted_user_box_id)
-                            if user_response.success:
-                                user_data = self._to_dict(user_response.data)
-                                granted_email = user_data.get('login')
-                        except Exception as e:
-                            self.logger.error(f"❌ Failed to resolve Box ID {granted_user_box_id} (Fallback): {e}")
-
                     except Exception as e:
                         self.logger.error(f"❌ Failed to resolve Box ID {granted_user_box_id}: {e}")
 
@@ -1536,17 +1527,6 @@ class BoxConnector(BaseConnector):
                             removed_email = user_data.get('login')
                         else:
                             self.logger.warning(f"⚠️ Failed to fetch user details for ID {removed_user_box_id}: {user_response.error}")
-
-                    except AttributeError:
-                        try:
-                            # Fallback attempt
-                            user_response = await self.data_source.users_get_user(removed_user_box_id)
-                            if user_response.success:
-                                user_data = self._to_dict(user_response.data)
-                                removed_email = user_data.get('login')
-                        except Exception as e:
-                             self.logger.error(f"❌ Failed to resolve Box ID {removed_user_box_id} (Fallback): {e}")
-
                     except Exception as e:
                         self.logger.error(f"❌ Failed to resolve Box ID {removed_user_box_id}: {e}")
 
@@ -1580,12 +1560,11 @@ class BoxConnector(BaseConnector):
                                     )
                                 else:
                                     # File - remove direct access
-                                    async with self.data_store_provider.transaction() as tx_store:
-                                        await tx_store.remove_user_access_to_record(
-                                            connector_id=self.connector_id,
-                                            external_id=file_id,
-                                            user_id=user_id
-                                        )
+                                    await tx_store.remove_user_access_to_record(
+                                        connector_id=self.connector_id,
+                                        external_id=file_id,
+                                        user_id=user_id
+                                    )
                         else:
                             self.logger.warning("⚠️ User found but has no Internal ID")
                     else:
