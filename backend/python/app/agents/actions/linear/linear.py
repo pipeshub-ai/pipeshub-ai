@@ -1,12 +1,12 @@
-import asyncio
+
 import json
 import logging
 from typing import Optional, Tuple
 
+from app.agents.actions.utils import run_async
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
-from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.linear.linear import LinearClient
 from app.sources.external.linear.linear import LinearDataSource
 
@@ -25,36 +25,6 @@ class Linear:
         """
         self.client = LinearDataSource(client)
 
-    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
-        """Helper method to run async operations in sync context"""
-        try:
-            # Try to get or create an event loop for this thread
-            try:
-                loop = asyncio.get_running_loop()
-                # We're in an async context - cannot use run_until_complete
-                # This shouldn't happen since tools are sync, but handle it
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, coro)
-                    return future.result()
-            except RuntimeError:
-                # No running loop - we can safely use get_event_loop or create one
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_closed():
-                        # Loop is closed, create a new one
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                except RuntimeError:
-                    # No event loop at all - create a new one
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-
-                return loop.run_until_complete(coro)
-        except Exception as e:
-            logger.error(f"Error running async operation: {e}")
-            raise
-
     @tool(
         app_name="linear",
         tool_name="get_viewer",
@@ -69,7 +39,7 @@ class Linear:
         """
         try:
             # Use LinearDataSource method
-            response = self._run_async(self.client.viewer())
+            response = run_async(self.client.viewer())
 
             if response.success:
                 return True, json.dumps({"data": response.data})
@@ -102,7 +72,7 @@ class Linear:
         """
         try:
             # Use LinearDataSource method
-            response = self._run_async(self.client.user(id=user_id))
+            response = run_async(self.client.user(id=user_id))
 
             if response.success:
                 return True, json.dumps({"data": response.data})
@@ -146,7 +116,7 @@ class Linear:
         """
         try:
             # Use LinearDataSource method
-            response = self._run_async(self.client.teams(first=first, after=after))
+            response = run_async(self.client.teams(first=first, after=after))
 
             if response.success:
                 return True, json.dumps({"data": response.data})
@@ -179,7 +149,7 @@ class Linear:
         """
         try:
             # Use LinearDataSource method
-            response = self._run_async(self.client.team(id=team_id))
+            response = run_async(self.client.team(id=team_id))
 
             if response.success:
                 return True, json.dumps({"data": response.data})
@@ -241,7 +211,7 @@ class Linear:
                     filter_dict = None
 
             # Use LinearDataSource method
-            response = self._run_async(self.client.issues(first=first, after=after, filter=filter_dict))
+            response = run_async(self.client.issues(first=first, after=after, filter=filter_dict))
 
             if response.success:
                 return True, json.dumps({"data": response.data})
@@ -274,7 +244,7 @@ class Linear:
         """
         try:
             # Use LinearDataSource method
-            response = self._run_async(self.client.issue(id=issue_id))
+            response = run_async(self.client.issue(id=issue_id))
 
             if response.success:
                 return True, json.dumps({"data": response.data})
@@ -361,7 +331,7 @@ class Linear:
                 issue_input["priority"] = priority
 
             # Call the correct LinearDataSource method
-            response = self._run_async(self.client.issueCreate(input=issue_input))
+            response = run_async(self.client.issueCreate(input=issue_input))
 
             if response.success:
                 return True, json.dumps({"data": response.data})
@@ -440,7 +410,7 @@ class Linear:
                 update_input["assigneeId"] = assignee_id
 
             # Call the correct LinearDataSource method
-            response = self._run_async(self.client.issueUpdate(id=issue_id, input=update_input))
+            response = run_async(self.client.issueUpdate(id=issue_id, input=update_input))
 
             if response.success:
                 return True, json.dumps({"data": response.data})
@@ -473,7 +443,7 @@ class Linear:
         """
         try:
             # Use LinearDataSource method with correct name
-            response = self._run_async(self.client.issueDelete(id=issue_id))
+            response = run_async(self.client.issueDelete(id=issue_id))
 
             if response.success:
                 return True, json.dumps({"data": response.data})

@@ -374,7 +374,7 @@ class Jira:
             r'\bstatus\s*=\s*([a-zA-Z][a-zA-Z0-9\s]+?)(?:\s+AND|\s+OR|\s+ORDER|\s*$)',
             re.IGNORECASE
         )
-        def quote_status(match):
+        def quote_status(match: re.Match[str]) -> str:
             status_value = match.group(1).strip()
             # Don't quote if it already has quotes or is a function call
             if '"' in status_value or "'" in status_value or '(' in status_value:
@@ -382,9 +382,21 @@ class Jira:
             return f'status = "{status_value}"'
 
         # Check if we need to fix status
-        if status_unquoted_pattern.search(fixed_jql) and '"' not in fixed_jql.split('status')[1].split('=')[1].split()[0] if 'status' in fixed_jql else '':
-            # Only log a warning, don't auto-fix as it might be intentional
-            pass
+        # Note: We don't auto-fix status quotes as it might be intentional
+        # The API will handle validation and return appropriate errors
+        if 'status' in fixed_jql and status_unquoted_pattern.search(fixed_jql):
+            try:
+                # Check if the status value is already quoted
+                # This is a bit brittle, but we're just checking, not fixing
+                parts = fixed_jql.split('status', 1)[1].split('=', 1)[1].split()
+                if parts and not (parts[0].startswith('"') or parts[0].startswith("'")):
+                    # It's likely an unquoted status, but we'll let the API handle it
+                    # The API will return an error if the JQL is invalid
+                    pass
+            except (IndexError, ValueError):
+                # This can happen if the JQL is malformed
+                # The API call will fail and return an appropriate error
+                pass
 
         # 3. Fix common typos: assignee = currentUser -> assignee = currentUser()
         current_user_pattern = re.compile(
@@ -851,10 +863,16 @@ class Jira:
                 ),
                 required=True
             ),
+            ToolParameter(
+                name="maxResults",
+                type=ParameterType.INTEGER,
+                description="Maximum number of results to return (optional, default is API default)",
+                required=False
+            ),
         ],
         returns="List of matching issues"
     )
-    def search_issues(self, jql: str) -> Tuple[bool, str]:
+    def search_issues(self, jql: str, maxResults: Optional[int] = None) -> Tuple[bool, str]:
         """Search for JIRA issues"""
         try:
             # Validate and fix JQL query
@@ -866,6 +884,7 @@ class Jira:
             response = self._run_async(
                 self.client.search_and_reconsile_issues_using_jql(
                     jql=fixed_jql,
+                    maxResults=maxResults,
                     # Explicitly request key field to ensure issue keys are returned
                     fields=["key", "summary", "status", "assignee", "reporter", "created", "updated", "priority", "issuetype"]
                 )

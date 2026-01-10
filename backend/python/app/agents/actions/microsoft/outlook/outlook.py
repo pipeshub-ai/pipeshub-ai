@@ -1,12 +1,12 @@
-import asyncio
+
 import json
 import logging
 from typing import Optional, Tuple
 
+from app.agents.actions.utils import run_async
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
-from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.outlook.outlook import (
     OutlookCalendarContactsDataSource,
@@ -26,36 +26,6 @@ class Outlook:
             None
         """
         self.client = OutlookCalendarContactsDataSource(client)
-
-    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
-        """Helper method to run async operations in sync context"""
-        try:
-            # Try to get or create an event loop for this thread
-            try:
-                loop = asyncio.get_running_loop()
-                # We're in an async context - cannot use run_until_complete
-                # This shouldn't happen since tools are sync, but handle it
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, coro)
-                    return future.result()
-            except RuntimeError:
-                # No running loop - we can safely use get_event_loop or create one
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_closed():
-                        # Loop is closed, create a new one
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                except RuntimeError:
-                    # No event loop at all - create a new one
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-
-                return loop.run_until_complete(coro)
-        except Exception as e:
-            logger.error(f"Error running async operation: {e}")
-            raise
 
     @tool(
         app_name="outlook",
@@ -137,7 +107,7 @@ class Outlook:
                     for addr in bcc_recipients.split(',') if addr.strip()
                 ]
 
-            create_resp = self._run_async(self.client.me_create_messages(request_body=message_body))
+            create_resp = run_async(self.client.me_create_messages(request_body=message_body))
             if not getattr(create_resp, 'success', False):
                 return False, create_resp.to_json()
 
@@ -146,7 +116,7 @@ class Outlook:
             if not message_id:
                 return False, json.dumps({"error": "Failed to create message draft"})
 
-            response = self._run_async(self.client.me_messages_message_send(message_id=message_id))
+            response = run_async(self.client.me_messages_message_send(message_id=message_id))
 
             if response.success:
                 return True, response.to_json()
@@ -199,7 +169,7 @@ class Outlook:
         try:
             # Use appropriate listing depending on folder
             if folder_id:
-                response = self._run_async(self.client.me_mail_folders_get_messages(
+                response = run_async(self.client.me_mail_folders_get_messages(
                     mailFolder_id=folder_id,
                     message_id="",
                     top=top,
@@ -207,7 +177,7 @@ class Outlook:
                 ))
             else:
                 # Fallback: use delta to fetch recent messages when root listing is not direct
-                response = self._run_async(self.client.me_messages_delta(top=top, search=None, filter=filter))
+                response = run_async(self.client.me_messages_delta(top=top, search=None, filter=filter))
 
             if response.success:
                 return True, response.to_json()
@@ -240,7 +210,7 @@ class Outlook:
         """
         try:
             # Use OutlookDataSource method for single message
-            response = self._run_async(self.client.users_get_messages(
+            response = run_async(self.client.users_get_messages(
                 user_id="me",
                 message_id=message_id
             ))
@@ -287,7 +257,7 @@ class Outlook:
         """
         try:
             # Create reply draft then send reply: POST /me/messages/{id}/reply
-            response = self._run_async(self.client.me_messages_message_reply(
+            response = run_async(self.client.me_messages_message_reply(
                 message_id=message_id,
                 request_body={
                     "comment": comment
@@ -326,13 +296,13 @@ class Outlook:
         try:
             # List mail folders: GET /me/mailFolders or /me/mailFolders/{id}/childFolders
             if folder_id:
-                response = self._run_async(self.client.me_mail_folders_child_folders_get_messages(
+                response = run_async(self.client.me_mail_folders_child_folders_get_messages(
                     mailFolder_id=folder_id,
                     message_id=""
                 ))
             else:
                 # Use root default folders listing via messages delta as a pragmatic fallback
-                response = self._run_async(self.client.me_messages_delta())
+                response = run_async(self.client.me_messages_delta())
 
             if response.success:
                 return True, response.to_json()
@@ -376,7 +346,7 @@ class Outlook:
         """
         try:
             # Use contacts listing: GET /me/contacts with OData
-            response = self._run_async(self.client.me_contacts_list(
+            response = run_async(self.client.me_contacts_list(
                 top=top,
                 filter=filter
             ))
@@ -431,7 +401,7 @@ class Outlook:
         """
         try:
             # Use calendarView for time window; default to primary calendar
-            response = self._run_async(self.client.me_calendar_view_list(
+            response = run_async(self.client.me_calendar_view_list(
                 startDateTime=start_datetime,
                 endDateTime=end_datetime,
                 calendar_id=calendar_id

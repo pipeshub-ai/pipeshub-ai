@@ -6,13 +6,13 @@ knowledge bases, documents, and connectors. It's an essential tool that's
 always available to the agent.
 """
 
-import asyncio
 import json
 import logging
 from typing import Any, Dict, Optional
 
 from langgraph.types import StreamWriter
 
+from app.agents.actions.utils import run_async
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -47,46 +47,6 @@ class Retrieval:
             state: Chat state containing services and configuration
         """
         self.state = state
-
-    def _run_async(self, coro: Any) -> Any:  # noqa: ANN401
-        """Helper method to run async operations in sync context.
-
-        This handles running async operations from a synchronous tool function,
-        similar to how other tools like GoogleForms handle it.
-
-        Args:
-            coro: Coroutine to run
-
-        Returns:
-            Result of the coroutine
-        """
-        try:
-            # Try to get or create an event loop for this thread
-            try:
-                loop = asyncio.get_running_loop()
-                # We're in an async context - cannot use run_until_complete
-                # This shouldn't happen since tools are sync, but handle it
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, coro)
-                    return future.result()
-            except RuntimeError:
-                # No running loop - we can safely use get_event_loop or create one
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_closed():
-                        # Loop is closed, create a new one
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                except RuntimeError:
-                    # No event loop at all - create a new one
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-
-                return loop.run_until_complete(coro)
-        except Exception as e:
-            logger.error(f"Error running async operation: {e}")
-            raise
 
     @tool(
         app_name="retrieval",
@@ -173,7 +133,7 @@ class Retrieval:
 
             # Execute retrieval (run async operation synchronously)
             logger_instance.debug(f"Executing retrieval with limit: {adjusted_limit}")
-            results = self._run_async(retrieval_service.search_with_filters(
+            results = run_async(retrieval_service.search_with_filters(
                 queries=[query],
                 org_id=org_id,
                 user_id=user_id,
@@ -238,7 +198,7 @@ class Retrieval:
             # Process results (run async operations synchronously)
             flattened_results = []
             # if search_results and chat_mode != "quick":
-            flattened_results = self._run_async(get_flattened_results(
+            flattened_results = run_async(get_flattened_results(
                 search_results,
                 blob_store,
                 org_id,
@@ -255,7 +215,7 @@ class Retrieval:
 
             if should_rerank and reranker_service:
                 logger_instance.debug("Re-ranking results")
-                final_results = self._run_async(reranker_service.rerank(
+                final_results = run_async(reranker_service.rerank(
                     query=query,
                     documents=flattened_results,
                     top_k=adjusted_limit,

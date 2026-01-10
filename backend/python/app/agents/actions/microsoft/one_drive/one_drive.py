@@ -1,13 +1,13 @@
-import asyncio
+
 import base64
 import json
 import logging
 from typing import Optional, Tuple
 
+from app.agents.actions.utils import run_async
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
-from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.one_drive.one_drive import OneDriveDataSource
 
@@ -25,36 +25,6 @@ class OneDrive:
             None
         """
         self.client = OneDriveDataSource(client)
-
-    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
-        """Helper method to run async operations in sync context"""
-        try:
-            # Try to get or create an event loop for this thread
-            try:
-                loop = asyncio.get_running_loop()
-                # We're in an async context - cannot use run_until_complete
-                # This shouldn't happen since tools are sync, but handle it
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, coro)
-                    return future.result()
-            except RuntimeError:
-                # No running loop - we can safely use get_event_loop or create one
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_closed():
-                        # Loop is closed, create a new one
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                except RuntimeError:
-                    # No event loop at all - create a new one
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-
-                return loop.run_until_complete(coro)
-        except Exception as e:
-            logger.error(f"Error running async operation: {e}")
-            raise
 
     @tool(
         app_name="onedrive",
@@ -130,7 +100,7 @@ class OneDrive:
         """
         try:
             # Use OneDriveDataSource method
-            response = self._run_async(self.client.me_list_drives(
+            response = run_async(self.client.me_list_drives(
                 search=search,
                 filter=filter,
                 orderby=orderby,
@@ -190,7 +160,7 @@ class OneDrive:
         """
         try:
             # Use OneDriveDataSource method
-            response = self._run_async(self.client.drives_drive_get_drive(
+            response = run_async(self.client.drives_drive_get_drive(
                 drive_id=drive_id,
                 select=select,
                 expand=expand
@@ -287,7 +257,7 @@ class OneDrive:
         try:
             # Use OneDriveDataSource method to get root children
             # In Microsoft Graph, "root" is the special identifier for the root item
-            response = self._run_async(self.client.drives_items_list_children(
+            response = run_async(self.client.drives_items_list_children(
                 drive_id=drive_id,
                 driveItem_id="root",
                 search=search,
@@ -357,7 +327,7 @@ class OneDrive:
         """
         try:
             # Use OneDriveDataSource method
-            response = self._run_async(self.client.drives_get_items(
+            response = run_async(self.client.drives_get_items(
                 drive_id=drive_id,
                 driveItem_id=item_id,
                 select=select,
@@ -423,7 +393,7 @@ class OneDrive:
         try:
             # Use OneDriveDataSource method to create a file in the root folder
             parent_id = parent_folder_id or "root"  # Default to root if no parent specified
-            response = self._run_async(self.client.drives_items_create_children(
+            response = run_async(self.client.drives_items_create_children(
                 drive_id=drive_id,
                 driveItem_id=parent_id,
                 request_body={
@@ -475,7 +445,7 @@ class OneDrive:
         """
         try:
             # Use OneDriveDataSource method
-            response = self._run_async(self.client.drives_delete_items(
+            response = run_async(self.client.drives_delete_items(
                 drive_id=drive_id,
                 driveItem_id=item_id
             ))
