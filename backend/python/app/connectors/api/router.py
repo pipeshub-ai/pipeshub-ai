@@ -77,7 +77,7 @@ from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import get_oauth_config
-from app.utils.streaming import create_file_download_response
+from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = create_logger("connector_service")
@@ -744,7 +744,7 @@ async def download_file(
                             )
                         finally:
                             file_buffer.close()
-                    return create_file_download_response(
+                    return create_stream_record_response(
                         file_stream(google_workspace_export_formats[mime_type]),
                         filename=record.record_name,
                         mime_type=google_workspace_export_formats[mime_type],
@@ -790,7 +790,7 @@ async def download_file(
                         file_buffer.close()
 
                 # Return streaming response with proper headers
-                return create_file_download_response(
+                return create_stream_record_response(
                     file_stream(),
                     filename=record.record_name,
                     mime_type=mime_type,
@@ -1150,7 +1150,7 @@ async def stream_record(
 
                     file_name_with_ext = file_name if file_name.endswith(file_ext) else f"{file_name}{file_ext}"
 
-                    return create_file_download_response(
+                    return create_stream_record_response(
                         _stream_google_api_request(request, error_context="Google Workspace file export"),
                         filename=file_name_with_ext,
                         mime_type=response_media_type,
@@ -1283,7 +1283,7 @@ async def stream_record(
 
 
                 # Return streaming response with proper headers
-                return create_file_download_response(
+                return create_stream_record_response(
                     file_stream(),
                     filename=file_name,
                     mime_type=mime_type,
@@ -1677,7 +1677,7 @@ async def stream_record(
                             finally:
                                 buffer.close()
 
-                        return create_file_download_response(
+                        return create_stream_record_response(
                             file_stream(),
                             filename=file_name,
                             mime_type=mime_type,
@@ -1786,7 +1786,7 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
                                 detail="Error reading converted PDF file",
                             )
 
-                    return create_file_download_response(
+                    return create_stream_record_response(
                         file_iterator(),
                         filename=pdf_filename,
                         mime_type="application/pdf",

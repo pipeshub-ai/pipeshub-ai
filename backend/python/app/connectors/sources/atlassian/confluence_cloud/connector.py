@@ -69,7 +69,7 @@ from app.sources.client.confluence.confluence import (
     ConfluenceClient as ExternalConfluenceClient,
 )
 from app.sources.external.confluence.confluence import ConfluenceDataSource
-from app.utils.streaming import create_file_download_response
+from app.utils.streaming import create_stream_record_response
 
 # Confluence Cloud OAuth URLs
 AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
@@ -2499,7 +2499,7 @@ class ConfluenceConnector(BaseConnector):
 
             elif record.record_type == RecordType.FILE:
                 filename = record.record_name or f"{record.external_record_id}"
-                return create_file_download_response(
+                return create_stream_record_response(
                     self._fetch_attachment_content(record),
                     filename=filename,
                     mime_type=record.mime_type,

@@ -55,7 +55,7 @@ from app.sources.client.box.box import (
     BoxTokenConfig,
 )
 from app.sources.external.box.box import BoxDataSource
-from app.utils.streaming import create_file_download_response, stream_content
+from app.utils.streaming import create_stream_record_response, stream_content
 
 
 # Helper functions
@@ -1560,7 +1560,7 @@ class BoxConnector(BaseConnector):
                 detail="File not found or access denied"
             )
 
-        return create_file_download_response(
+        return create_stream_record_response(
             stream_content(signed_url),
             filename=record.record_name,
             mime_type=record.mime_type,

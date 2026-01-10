@@ -73,7 +73,7 @@ from app.sources.client.bookstack.bookstack import (
     BookStackTokenConfig,
 )
 from app.sources.external.bookstack.bookstack import BookStackDataSource
-from app.utils.streaming import create_file_download_response
+from app.utils.streaming import create_stream_record_response
 
 
 @dataclass
@@ -325,7 +325,7 @@ class BookStackConnector(BaseConnector):
             )
         raw_markdown = markdown_response.data.get("markdown")
 
-        return create_file_download_response(
+        return create_stream_record_response(
             raw_markdown,
             filename=record.record_name,
             mime_type=record.mime_type,

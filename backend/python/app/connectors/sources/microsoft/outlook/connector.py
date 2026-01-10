@@ -71,7 +71,7 @@ from app.sources.external.microsoft.users_groups.users_groups import (
     UsersGroupsDataSource,
     UsersGroupsResponse,
 )
-from app.utils.streaming import create_file_download_response
+from app.utils.streaming import create_stream_record_response
 
 # Thread detection constants
 THREAD_ROOT_EMAIL_CONVERSATION_INDEX_LENGTH = 22  # Length (in bytes) of conversation_index for root email in a thread
@@ -1375,7 +1375,7 @@ class OutlookConnector(BaseConnector):
                     yield attachment_data
 
                 filename = record.record_name or "attachment"
-                return create_file_download_response(
+                return create_stream_record_response(
                     generate_attachment(),
                     filename=filename,
                     mime_type=record.mime_type,

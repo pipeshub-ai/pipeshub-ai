@@ -117,9 +117,9 @@ async def stream_content(signed_url: str) -> AsyncGenerator[bytes, None]:
         )
 
 
-def create_file_download_response(
+def create_stream_record_response(
     content_stream: AsyncGenerator[bytes, None],
-    filename: str,
+    filename: Optional[str],
     mime_type: Optional[str] = None,
     fallback_filename: Optional[str] = None,
     additional_headers: Optional[Dict[str, str]] = None
@@ -141,7 +141,7 @@ def create_file_download_response(
         StreamingResponse configured for file download with proper headers
     """
     safe_filename = sanitize_filename_for_content_disposition(
-        filename,
+        filename or "",
         fallback=fallback_filename or "file"
     )
 
