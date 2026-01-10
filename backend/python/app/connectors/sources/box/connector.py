@@ -750,28 +750,27 @@ class BoxConnector(BaseConnector):
         Remove user access from a folder and all its descendant files and folders.
         This ensures that when folder collaboration is revoked, all items inside
         also have the user's permissions removed.
-        
         Args:
             folder_external_id: External ID of the folder
             user_id: Internal user ID whose access should be removed
         """
         try:
             self.logger.info(f"📁 Removing user {user_id} access from folder {folder_external_id} and descendants")
-            
+
             # Track all items to remove access from
             items_to_process = [folder_external_id]
             processed_items = set()
-            
+
             async with self.data_store_provider.transaction() as tx_store:
                 # Process items recursively
                 while items_to_process:
                     current_external_id = items_to_process.pop(0)
-                    
+
                     if current_external_id in processed_items:
                         continue
-                    
+
                     processed_items.add(current_external_id)
-                    
+
                     # Remove user access from this item
                     try:
                         await tx_store.remove_user_access_to_record(
@@ -781,14 +780,14 @@ class BoxConnector(BaseConnector):
                         )
                     except Exception as e:
                         self.logger.warning(f"⚠️ Failed to remove access from {current_external_id}: {e}")
-                    
+
                     # Get children of this item
                     try:
                         children = await tx_store.get_records_by_parent(
                             connector_id=self.connector_id,
                             parent_external_record_id=current_external_id
                         )
-                        
+
                         if children:
                             # Add children to the processing queue
                             for child in children:
@@ -796,9 +795,9 @@ class BoxConnector(BaseConnector):
                                     items_to_process.append(child.external_record_id)
                     except Exception as e:
                         self.logger.debug(f"No children found for {current_external_id} or error: {e}")
-                        
+
                 self.logger.info(f"✅ Removed user access from folder and {len(processed_items) - 1} descendants")
-                
+
         except Exception as e:
             self.logger.error(f"❌ Failed to remove folder access recursively: {e}", exc_info=True)
 
@@ -1383,7 +1382,7 @@ class BoxConnector(BaseConnector):
             source = get_val(event, 'source')
 
             self.logger.debug(f"🔍 Processing event: type={event_type}, source_type={get_val(source, 'type')}, source_id={get_val(source, 'id')}")
-            
+
             if event_type and ('COLLABORATION' in event_type.upper() or 'COLLAB' in event_type.upper()):
                 self.logger.debug(f"📋 Full collaboration event: {event}")
 
@@ -1449,11 +1448,11 @@ class BoxConnector(BaseConnector):
                 # EXECUTE GRANT - Queue item for sync to update permissions
                 if item_id:
                     self.logger.info(f"✅ Collaboration granted on {item_type} {item_id}" + (f" to {granted_email}" if granted_email else ""))
-                    
+
                     # Get owner information
                     owner = get_val(source, 'owned_by') or get_val(event, 'created_by')
                     owner_id = get_val(owner, 'id') if owner else None
-                    
+
                     # If no owner found, try to fetch the item to get owner info
                     if not owner_id:
                         try:
@@ -1461,21 +1460,21 @@ class BoxConnector(BaseConnector):
                                 item_response = await self.data_source.folders_get_folder_by_id(item_id)
                             else:
                                 item_response = await self.data_source.files_get_file_by_id(item_id)
-                            
+
                             if item_response.success:
                                 item_data = self._to_dict(item_response.data)
                                 owned_by = item_data.get('owned_by', {})
                                 owner_id = owned_by.get('id')
                         except Exception as e:
                             self.logger.warning(f"⚠️ Failed to fetch owner for {item_type} {item_id}: {e}")
-                    
+
                     if owner_id:
                         # Queue for sync to refresh permissions
                         items_to_sync[item_id] = (owner_id, item_type)
                     else:
                         self.logger.warning(f"⚠️ Cannot sync {item_type} {item_id} - no owner found")
                 else:
-                    self.logger.warning(f"⚠️ Collaboration grant skipped. Missing item ID")
+                    self.logger.warning("⚠️ Collaboration grant skipped. Missing item ID")
 
                 continue
 
@@ -1571,7 +1570,7 @@ class BoxConnector(BaseConnector):
                                     external_id=file_id,
                                     connector_id=self.connector_id
                                 )
-                                
+
                                 if record and record.mime_type == MimeTypes.FOLDER.value:
                                     # Folder - remove access from folder and all descendants
                                     self.logger.info(f"📁 Removing folder access recursively for {file_id}")
