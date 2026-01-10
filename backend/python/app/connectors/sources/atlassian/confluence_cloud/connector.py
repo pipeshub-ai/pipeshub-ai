@@ -19,11 +19,7 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import (
-    Connectors,
-    MimeTypes,
-    OriginTypes,
-)
+from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -61,6 +57,7 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.atlassian.core.apps import ConfluenceApp
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
+from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -132,6 +129,7 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
         #     CommonFields.api_token("Atlassian API Token")
         # ])
     ])\
+    .with_info("⚠️ Important: In order for users to get access to Confluence data, each user needs to make their email visible in their Confluence account settings. Users can do this by going to their Confluence profile settings and switching email visibility to Public.")\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/confluence.svg")
         .with_realtime_support(False)
@@ -492,7 +490,11 @@ class ConfluenceConnector(BaseConnector):
                     for user in app_users:
                         if user.email and "@" in user.email and user.source_user_id:
                             try:
-                                await self._migrate_pseudo_group_permissions_to_user(user)
+                                await self.data_entities_processor.migrate_group_to_user_by_external_id(
+                                    group_external_id=user.source_user_id,
+                                    user_email=user.email,
+                                    connector_id=self.connector_id
+                                )
                             except Exception as e:
                                 # Log error but continue with other users
                                 self.logger.warning(
@@ -818,7 +820,6 @@ class ConfluenceConnector(BaseConnector):
             total_attachments_synced = 0
             total_comments_synced = 0
             total_permissions_synced = 0
-            latest_update_time = None
 
             # Paginate through all content items
             while True:
@@ -869,11 +870,6 @@ class ConfluenceConnector(BaseConnector):
                 if not items_data:
                     break
 
-                # Track the latest update timestamp for checkpoint (items are in ascending order)
-                last_item = items_data[-1]
-                last_updated_when = last_item.get("history", {}).get("lastUpdated", {}).get("when")
-                if last_updated_when:
-                    latest_update_time = last_updated_when
 
                 # Transform items to WebpageRecords with permissions
                 records_with_permissions = []
@@ -887,18 +883,30 @@ class ConfluenceConnector(BaseConnector):
 
                         self.logger.debug(f"Processing {content_type}: {item_title} ({item_id})")
 
-                        # Transform to WebpageRecord
-                        webpage_record = self._transform_to_webpage_record(item_data, record_type)
-                        if not webpage_record:
+                        # Check if record exists in DB
+                        existing_record = await self.data_entities_processor.get_record_by_external_id(
+                            connector_id=self.connector_id,
+                            external_record_id=item_id
+                        )
+
+                        # Fetch page permissions
+                        permissions = await self._fetch_page_permissions(item_id)
+                        total_permissions_synced += len(permissions)
+
+                        # Transform to WebpageRecord with update tracking
+                        webpage_record_update = await self._process_webpage_with_update(
+                            item_data, record_type, existing_record, permissions
+                        )
+
+                        if not webpage_record_update.record:
                             continue
+
+                        webpage_record = webpage_record_update.record
 
                         # Set indexing status based on filter
                         if not content_indexing_enabled:
                             webpage_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
-                        # Fetch page permissions
-                        permissions = await self._fetch_page_permissions(item_id)
-                        total_permissions_synced += len(permissions)
                         if len(permissions) > 0:
                             webpage_record.inherit_permissions = False
 
@@ -910,6 +918,9 @@ class ConfluenceConnector(BaseConnector):
                         # Extract space_id for children
                         space_data = item_data.get("space", {})
                         space_id = str(space_data.get("id")) if space_data.get("id") else None
+
+                        # Get parent_node_id for dependent nodes (comments and attachments)
+                        parent_node_id = webpage_record.id
 
                         # Process comments
                         child_types = item_data.get("childTypes", {})
@@ -927,7 +938,8 @@ class ConfluenceConnector(BaseConnector):
                                     comment_type,
                                     permissions,
                                     space_id,
-                                    content_type
+                                    content_type,
+                                    parent_node_id=parent_node_id
                                 )
                                 # Set indexing status for comments if disabled
                                 for comment_record, comment_permissions in comments:
@@ -946,10 +958,22 @@ class ConfluenceConnector(BaseConnector):
 
                             for attachment in attachments:
                                 try:
+                                    attachment_id = attachment.get("id")
+                                    if not attachment_id:
+                                        continue
+
+                                    # Check if attachment exists in DB
+                                    existing_attachment = await self.data_entities_processor.get_record_by_external_id(
+                                        connector_id=self.connector_id,
+                                        external_record_id=attachment_id
+                                    )
+
                                     attachment_record = self._transform_to_attachment_file_record(
                                         attachment,
                                         item_id,
-                                        space_id
+                                        space_id,
+                                        existing_record=existing_attachment,
+                                        parent_node_id=parent_node_id
                                     )
 
                                     if attachment_record:
@@ -983,10 +1007,12 @@ class ConfluenceConnector(BaseConnector):
                 if not cursor:
                     break
 
-            # Update sync checkpoint with latest modification time
-            if latest_update_time:
-                await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": latest_update_time})
-                self.logger.info(f"Updated {content_type}s sync checkpoint to {latest_update_time}")
+            # Update sync checkpoint with current time (only if we synced something)
+            # Using current time instead of last item's time avoids re-fetching due to the 24-hour offset
+            if total_synced > 0:
+                current_sync_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": current_sync_time})
+                self.logger.info(f"Updated {content_type}s sync checkpoint to {current_sync_time}")
 
             self.logger.info(f"✅ {content_type.capitalize()} sync complete. {content_type.capitalize()}s: {total_synced}, Attachments: {total_attachments_synced}, Comments: {total_comments_synced}, Permissions: {total_permissions_synced}")
 
@@ -1392,7 +1418,8 @@ class ConfluenceConnector(BaseConnector):
         comment_type: str,
         page_permissions: List[Permission],
         parent_space_id: Optional[str],
-        parent_type: str = "page"
+        parent_type: str = "page",
+        parent_node_id: Optional[str] = None
     ) -> List[tuple[CommentRecord, List[Permission]]]:
         """
         Recursively fetch all comments (footer or inline) for a page or blogpost.
@@ -1407,6 +1434,7 @@ class ConfluenceConnector(BaseConnector):
             page_permissions: Permissions inherited from parent
             parent_space_id: Space ID for external_record_group_id
             parent_type: "page" or "blogpost" (determines which API to call)
+            parent_node_id: Internal record ID of parent page
 
         Returns:
             List of tuples (CommentRecord, permissions list)
@@ -1468,6 +1496,10 @@ class ConfluenceConnector(BaseConnector):
                 if not comments_data:
                     break
 
+                # Extract base URL from response level (v2 API) - available in response_data._links.base
+                response_links = response_data.get("_links", {})
+                base_url = response_links.get("base")  # v2 format: base URL at response level
+
                 # Process each comment
                 for comment_data in comments_data:
                     try:
@@ -1476,13 +1508,22 @@ class ConfluenceConnector(BaseConnector):
                         if not comment_id:
                             continue
 
+                        # Check if comment exists in DB
+                        existing_comment = await self.data_entities_processor.get_record_by_external_id(
+                            connector_id=self.connector_id,
+                            external_record_id=comment_id
+                        )
+
                         # Transform comment to CommentRecord
                         comment_record = self._transform_to_comment_record(
                             comment_data,
                             page_id,
                             parent_space_id,
                             comment_type,
-                            None  # No parent comment for top-level
+                            None,  # No parent comment for top-level
+                            base_url=base_url,  # Pass base URL from response level
+                            existing_record=existing_comment,
+                            parent_node_id=parent_node_id
                         )
 
                         if comment_record:
@@ -1494,7 +1535,8 @@ class ConfluenceConnector(BaseConnector):
                             comment_type,
                             page_id,
                             parent_space_id,
-                            page_permissions
+                            page_permissions,
+                            parent_node_id=parent_node_id
                         )
                         all_comments.extend(children)
 
@@ -1524,7 +1566,8 @@ class ConfluenceConnector(BaseConnector):
         comment_type: str,
         page_id: str,
         parent_space_id: Optional[str],
-        page_permissions: List[Permission]
+        page_permissions: List[Permission],
+        parent_node_id: Optional[str] = None
     ) -> List[tuple[CommentRecord, List[Permission]]]:
         """
         Recursively fetch all children (replies) of a comment.
@@ -1535,6 +1578,7 @@ class ConfluenceConnector(BaseConnector):
             page_id: The parent page ID
             parent_space_id: Space ID for external_record_group_id
             page_permissions: Permissions inherited from parent page
+            parent_node_id: Internal record ID of parent page
 
         Returns:
             List of tuples (CommentRecord, permissions list)
@@ -1572,6 +1616,10 @@ class ConfluenceConnector(BaseConnector):
                 if not children_data:
                     break
 
+                # Extract base URL from response level (v2 API) - available in response_data._links.base
+                response_links = response_data.get("_links", {})
+                base_url = response_links.get("base")  # v2 format: base URL at response level
+
                 # Process each child comment
                 for child_data in children_data:
                     try:
@@ -1580,13 +1628,22 @@ class ConfluenceConnector(BaseConnector):
                         if not child_id:
                             continue
 
+                        # Check if child comment exists in DB
+                        existing_child = await self.data_entities_processor.get_record_by_external_id(
+                            connector_id=self.connector_id,
+                            external_record_id=child_id
+                        )
+
                         # Transform child to CommentRecord
                         child_record = self._transform_to_comment_record(
                             child_data,
                             page_id,
                             parent_space_id,
                             comment_type,
-                            comment_id  # Parent comment ID
+                            comment_id,  # Parent comment ID
+                            base_url=base_url,  # Pass base URL from response level
+                            existing_record=existing_child,
+                            parent_node_id=parent_node_id
                         )
 
                         if child_record:
@@ -1598,7 +1655,8 @@ class ConfluenceConnector(BaseConnector):
                             comment_type,
                             page_id,
                             parent_space_id,
-                            page_permissions
+                            page_permissions,
+                            parent_node_id=parent_node_id
                         )
                         all_children.extend(grandchildren)
 
@@ -1627,7 +1685,10 @@ class ConfluenceConnector(BaseConnector):
         page_id: str,
         parent_space_id: Optional[str],
         comment_type: str,
-        parent_comment_id: Optional[str]
+        parent_comment_id: Optional[str],
+        base_url: Optional[str] = None,
+        existing_record: Optional[Record] = None,
+        parent_node_id: Optional[str] = None
     ) -> Optional[CommentRecord]:
         """
         Transform Confluence comment data to CommentRecord entity.
@@ -1638,6 +1699,9 @@ class ConfluenceConnector(BaseConnector):
             parent_space_id: Space ID from parent page
             comment_type: "footer" or "inline"
             parent_comment_id: Parent comment ID (None for top-level comments)
+            base_url: Base URL from response level (v2 API) - if None, will extract from _links.self (v1 API)
+            existing_record: Optional existing record to check for updates
+            parent_node_id: Internal record ID of parent page
 
         Returns:
             CommentRecord object or None if transformation fails
@@ -1679,10 +1743,39 @@ class ConfluenceConnector(BaseConnector):
             parent_external_record_id = parent_comment_id if parent_comment_id else page_id
             parent_record_type = RecordType.COMMENT if parent_comment_id else RecordType.WEBPAGE
 
-            # Generate unique ID for comment
-            comment_record_id = str(uuid.uuid4())
+            # Determine record ID and version
+            is_new = existing_record is None
+            comment_record_id = str(uuid.uuid4()) if is_new else existing_record.id
 
             version_number = comment_data.get("version", {}).get("number", 0)
+
+            # Calculate version based on changes
+            record_version = 0
+            if not is_new:
+                # Check if content changed (version number changed)
+                if str(version_number) != existing_record.external_revision_id:
+                    record_version = existing_record.version + 1
+                else:
+                    record_version = existing_record.version
+
+            # Construct web URL for comment
+            # v2 API: base_url is at response level (passed as parameter)
+            # v1 API: base_url needs to be extracted from comment's _links.self
+            web_url = None
+            links = comment_data.get("_links", {})
+            web_path = links.get("webui")
+
+            if web_path:
+                # Use base_url from parameter (v2 API - from response level)
+                if base_url:
+                    web_url = f"{base_url}{web_path}"
+                else:
+                    # Fall back to v1 format (extract from comment's _links.self)
+                    self_link = links.get("self")
+                    if self_link and "https://" in self_link:
+                        if "/wiki/" in self_link:
+                            extracted_base_url = self_link.split("/wiki/")[0] + "/wiki"
+                            web_url = f"{extracted_base_url}{web_path}"
 
             return CommentRecord(
                 id=comment_record_id,
@@ -1691,7 +1784,7 @@ class ConfluenceConnector(BaseConnector):
                 record_type=RecordType.INLINE_COMMENT if comment_type == "inline" else RecordType.COMMENT,
                 external_record_id=comment_id,
                 external_revision_id=str(version_number) if version_number else None,
-                version=0,
+                version=record_version,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.CONFLUENCE,
                 connector_id=self.connector_id,
@@ -1702,9 +1795,12 @@ class ConfluenceConnector(BaseConnector):
                 record_group_type=RecordGroupType.CONFLUENCE_SPACES,
                 source_created_at=source_created_at,
                 source_updated_at=source_created_at,
+                weburl=web_url,
                 author_source_id=author,
                 resolution_status=resolution_status,
-                comment_selection=inline_original_selection,
+                inline_original_selection=inline_original_selection,
+                is_dependent_node=True,  # Comments are dependent nodes
+                parent_node_id=parent_node_id,  # Internal record ID of parent page
             )
 
         except Exception as e:
@@ -2102,7 +2198,8 @@ class ConfluenceConnector(BaseConnector):
     def _transform_to_webpage_record(
         self,
         data: Dict[str, Any],
-        record_type: RecordType
+        record_type: RecordType,
+        existing_record: Optional[Record] = None
     ) -> Optional[WebpageRecord]:
         """
         Unified transform for page/blogpost data to WebpageRecord.
@@ -2110,6 +2207,7 @@ class ConfluenceConnector(BaseConnector):
         Args:
             data: Raw data from Confluence API
             record_type: RecordType.CONFLUENCE_PAGE or RecordType.CONFLUENCE_BLOGPOST
+            existing_record: Optional existing record to check for updates
 
         Returns:
             WebpageRecord object or None if transformation fails
@@ -2207,13 +2305,27 @@ class ConfluenceConnector(BaseConnector):
             # This allows placeholder parent creation when parent doesn't exist yet
             parent_record_type = record_type if parent_external_record_id else None
 
+            # Determine record ID and version
+            is_new = existing_record is None
+            record_id = str(uuid.uuid4()) if is_new else existing_record.id
+
+            # Calculate version based on changes
+            record_version = 0
+            if not is_new:
+                # Check if content changed (version number changed)
+                if str(version_number) != existing_record.external_revision_id:
+                    record_version = existing_record.version + 1
+                else:
+                    record_version = existing_record.version
+
             return WebpageRecord(
+                id=record_id,
                 org_id=self.data_entities_processor.org_id,
                 record_name=item_title,
                 record_type=record_type,
                 external_record_id=item_id,
                 external_revision_id=str(version_number) if version_number else None,
-                version=0,
+                version=record_version,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.CONFLUENCE,
                 connector_id=self.connector_id,
@@ -2225,6 +2337,8 @@ class ConfluenceConnector(BaseConnector):
                 mime_type=MimeTypes.HTML.value,
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
+                is_dependent_node=False,  # Pages are root nodes
+                parent_node_id=None,  # Pages have no parent node
             )
 
         except Exception as e:
@@ -2236,7 +2350,9 @@ class ConfluenceConnector(BaseConnector):
         self,
         attachment_data: Dict[str, Any],
         parent_external_record_id: str,
-        parent_external_record_group_id: Optional[str]
+        parent_external_record_group_id: Optional[str],
+        existing_record: Optional[Record] = None,
+        parent_node_id: Optional[str] = None
     ) -> Optional[FileRecord]:
         """
         Transform Confluence attachment to FileRecord entity.
@@ -2246,6 +2362,8 @@ class ConfluenceConnector(BaseConnector):
             attachment_data: Raw attachment data from v1 (children.attachment.results) or v2 API
             parent_external_record_id: Parent page external_record_id
             parent_external_record_group_id: Space ID from parent page
+            existing_record: Optional existing record to check for updates
+            parent_node_id: Internal record ID of parent page
 
         Returns:
             FileRecord object or None if transformation fails
@@ -2350,8 +2468,18 @@ class ConfluenceConnector(BaseConnector):
                             base_url = self_link.split("/wiki/")[0] + "/wiki"
                             web_url = f"{base_url}{web_path}"
 
-            # Generate unique ID for attachment
-            attachment_record_id = str(uuid.uuid4())
+            # Determine record ID and version
+            is_new = existing_record is None
+            attachment_record_id = str(uuid.uuid4()) if is_new else existing_record.id
+
+            # Calculate version based on changes
+            record_version = 0
+            if not is_new:
+                # Check if content changed (version number changed)
+                if str(version_number) != existing_record.external_revision_id:
+                    record_version = existing_record.version + 1
+                else:
+                    record_version = existing_record.version
 
             return FileRecord(
                 id=attachment_record_id,
@@ -2360,7 +2488,7 @@ class ConfluenceConnector(BaseConnector):
                 record_type=RecordType.FILE,
                 external_record_id=attachment_id,
                 external_revision_id=str(version_number) if version_number else None,
-                version=0,
+                version=record_version,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.CONFLUENCE,
                 connector_id=self.connector_id,
@@ -2375,11 +2503,83 @@ class ConfluenceConnector(BaseConnector):
                 extension=extension,
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
+                is_dependent_node=True,  # Attachments are dependent nodes
+                parent_node_id=parent_node_id,  # Internal record ID of parent page
             )
 
         except Exception as e:
             self.logger.error(f"❌ Failed to transform attachment: {e}")
             return None
+
+    async def _process_webpage_with_update(
+        self,
+        data: Dict[str, Any],
+        record_type: RecordType,
+        existing_record: Optional[Record],
+        permissions: List[Permission]
+    ) -> RecordUpdate:
+        """Process webpage with change detection.
+
+        Args:
+            data: Raw data from Confluence API
+            record_type: RecordType.CONFLUENCE_PAGE or RecordType.CONFLUENCE_BLOGPOST
+            existing_record: Existing record from database (if any)
+            permissions: Permissions for the record
+
+        Returns:
+            RecordUpdate object with change tracking
+        """
+        # Transform with existing record context
+        webpage_record = self._transform_to_webpage_record(
+            data, record_type, existing_record
+        )
+
+        if not webpage_record:
+            return RecordUpdate(
+                record=None,
+                is_new=False,
+                is_updated=False,
+                is_deleted=False,
+                content_changed=False,
+                metadata_changed=False,
+                permissions_changed=False,
+                new_permissions=None,
+                external_record_id=None
+            )
+
+        # Detect changes
+        is_new = existing_record is None
+        content_changed = False
+        metadata_changed = False
+
+        if not is_new:
+            # Check if version changed (content update)
+            current_version = data.get("version", {}).get("number")
+            if str(current_version) != existing_record.external_revision_id:
+                content_changed = True
+
+            # Check if parent changed (moved between pages)
+            current_parent_v2 = data.get("parentId")
+            current_parent_v1 = None
+            ancestors = data.get("ancestors", [])
+            if ancestors and len(ancestors) > 0:
+                current_parent_v1 = ancestors[-1].get("id")
+            current_parent = current_parent_v2 or current_parent_v1
+
+            if current_parent != existing_record.parent_external_record_id:
+                metadata_changed = True
+
+        return RecordUpdate(
+            record=webpage_record,
+            is_new=is_new,
+            is_updated=content_changed or metadata_changed,
+            is_deleted=False,
+            content_changed=content_changed,
+            metadata_changed=metadata_changed,
+            permissions_changed=bool(permissions),
+            new_permissions=permissions,
+            external_record_id=webpage_record.external_record_id
+        )
 
     async def _fetch_group_members(self, group_id: str, group_name: str) -> List[str]:
         """
@@ -2861,15 +3061,22 @@ class ConfluenceConnector(BaseConnector):
                     self.logger.error(f"Error checking record {record.id} at source: {e}")
                     continue
 
-            # Update DB only for records that changed at source
+            # Update DB and publish updateRecord events for records that changed at source
             if updated_records:
-                await self.data_entities_processor.on_new_records(updated_records)
-                self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
+                for updated_record, permissions in updated_records:
+                    # Update record content and publish updateRecord event
+                    await self.data_entities_processor.on_record_content_update(updated_record)
 
-            # Publish reindex events for non updated records
+                    # Update permissions if they exist
+                    if permissions:
+                        await self.data_entities_processor.on_updated_record_permissions(updated_record, permissions)
+
+                self.logger.info(f"Published update events for {len(updated_records)} records that changed at source")
+
+            # Publish reindex events for non-updated records
             if non_updated_records:
                 await self.data_entities_processor.reindex_existing_records(non_updated_records)
-                self.logger.info(f"Published reindex events for {len(non_updated_records)} non updated records")
+                self.logger.info(f"Published reindex events for {len(non_updated_records)} non-updated records")
         except Exception as e:
             self.logger.error(f"Error during Confluence reindex: {e}", exc_info=True)
             raise
@@ -2936,13 +3143,14 @@ class ConfluenceConnector(BaseConnector):
 
             self.logger.info(f"Page {page_id} has changed at source (version {record.external_revision_id} -> {current_version})")
 
-            # Transform page to WebpageRecord
-            webpage_record = self._transform_to_webpage_record(page_data, RecordType.CONFLUENCE_PAGE)
+            # Transform page to WebpageRecord with existing record context
+            webpage_record = self._transform_to_webpage_record(
+                page_data,
+                RecordType.CONFLUENCE_PAGE,
+                existing_record=record
+            )
             if not webpage_record:
                 return None
-
-            # Preserve existing record ID
-            webpage_record.id = record.id
 
             # Fetch fresh permissions
             permissions = await self._fetch_page_permissions(page_id)
@@ -2987,13 +3195,14 @@ class ConfluenceConnector(BaseConnector):
 
             self.logger.info(f"Blogpost {blogpost_id} has changed at source (version {record.external_revision_id} -> {current_version})")
 
-            # Transform blogpost to WebpageRecord
-            webpage_record = self._transform_to_webpage_record(blogpost_data, RecordType.CONFLUENCE_BLOGPOST)
+            # Transform blogpost to WebpageRecord with existing record context
+            webpage_record = self._transform_to_webpage_record(
+                blogpost_data,
+                RecordType.CONFLUENCE_BLOGPOST,
+                existing_record=record
+            )
             if not webpage_record:
                 return None
-
-            # Preserve existing record ID
-            webpage_record.id = record.id
 
             # Fetch fresh permissions
             permissions = await self._fetch_page_permissions(blogpost_id)
@@ -3014,6 +3223,17 @@ class ConfluenceConnector(BaseConnector):
             comment_id = record.external_record_id
             is_inline = record.record_type == RecordType.INLINE_COMMENT
 
+            # Get parent page's internal record ID
+            parent_page_id = record.parent_external_record_id
+            parent_node_id = None
+            if parent_page_id:
+                parent_record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_record_id=parent_page_id
+                )
+                if parent_record:
+                    parent_node_id = parent_record.id
+
             # Fetch comment from source using v2 API
             datasource = await self._get_fresh_datasource()
 
@@ -3032,7 +3252,12 @@ class ConfluenceConnector(BaseConnector):
                 self.logger.warning(f"Comment {comment_id} not found at source, may have been deleted")
                 return None
 
-            comment_data = response.json()
+            response_data = response.json()
+            comment_data = response_data  # Single comment response is the comment data itself
+
+            # Extract base URL from response level (v2 API) - available in response_data._links.base
+            response_links = response_data.get("_links", {})
+            base_url = response_links.get("base")  # v2 format: base URL at response level
 
             # Check if version changed
             current_version = comment_data.get("version", {}).get("number")
@@ -3047,7 +3272,7 @@ class ConfluenceConnector(BaseConnector):
 
             self.logger.info(f"Comment {comment_id} has changed at source (version {record.external_revision_id} -> {current_version})")
 
-            # Transform comment to CommentRecord
+            # Transform comment to CommentRecord with existing record context
             comment_type = "inline" if is_inline else "footer"
 
             comment_record = self._transform_to_comment_record(
@@ -3055,17 +3280,16 @@ class ConfluenceConnector(BaseConnector):
                 record.parent_external_record_id,
                 record.external_record_group_id,
                 comment_type,
-                record.parent_external_record_id
+                record.parent_external_record_id,
+                base_url=base_url,  # Pass base URL from response level
+                existing_record=record,
+                parent_node_id=parent_node_id
             )
 
             if not comment_record:
                 return None
 
-            # Preserve existing record ID
-            comment_record.id = record.id
-
             # Comments inherit permissions from parent page - fetch page permissions
-            parent_page_id = record.parent_external_record_id
             permissions = []
             if parent_page_id:
                 permissions = await self._fetch_page_permissions(parent_page_id)
@@ -3087,6 +3311,15 @@ class ConfluenceConnector(BaseConnector):
             if not parent_page_id:
                 self.logger.warning(f"Attachment {attachment_id} has no parent page ID")
                 return None
+
+            # Get parent page's internal record ID
+            parent_node_id = None
+            parent_record = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id,
+                external_record_id=parent_page_id
+            )
+            if parent_record:
+                parent_node_id = parent_record.id
 
             # Fetch attachment metadata from source using v2 API
             datasource = await self._get_fresh_datasource()
@@ -3117,18 +3350,17 @@ class ConfluenceConnector(BaseConnector):
             # Get space_id from parent page or use existing
             parent_space_id = record.external_record_group_id
 
-            # Transform attachment to FileRecord using v1 data
+            # Transform attachment to FileRecord with existing record context
             attachment_record = self._transform_to_attachment_file_record(
                 attachment_data,
                 parent_page_id,
-                parent_space_id
+                parent_space_id,
+                existing_record=record,
+                parent_node_id=parent_node_id
             )
 
             if not attachment_record:
                 return None
-
-            # Preserve existing record ID
-            attachment_record.id = record.id
 
             # Attachments inherit permissions from parent page - fetch page permissions
             permissions = await self._fetch_page_permissions(parent_page_id)
@@ -3143,58 +3375,6 @@ class ConfluenceConnector(BaseConnector):
         """Cleanup resources."""
         self.logger.info("Cleaning up Confluence connector resources")
         # Add cleanup logic if needed
-
-    async def _migrate_pseudo_group_permissions_to_user(self, user: AppUser) -> None:
-        """
-        Migrate permissions from a user's pseudo-group to the user directly.
-
-        When a user is synced with an email, if they have a pseudo-group, this method:
-        1. Finds the pseudo-group
-        2. Delegates to data_entities_processor to migrate permissions
-        3. Deletes the pseudo-group
-
-        Args:
-            user: The user with email
-        """
-        try:
-            async with self.data_store_provider.transaction() as tx_store:
-                # Check if pseudo-group exists for this user's source_user_id
-                pseudo_group = await tx_store.get_user_group_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=user.source_user_id,
-                )
-
-                # Only process if it's a pseudo-group (not a real group)
-                if not pseudo_group or not pseudo_group.name.startswith(PSEUDO_USER_GROUP_PREFIX):
-                    return
-
-                self.logger.info(
-                    f"Migrating pseudo-group '{pseudo_group.name}' ({pseudo_group.id}) "
-                    f"to user '{user.email}'"
-                )
-
-                # Use generic migration method from data_entities_processor
-                migrated_count, skipped_count = await self.data_entities_processor.migrate_group_permissions_to_user(
-                    group_id=pseudo_group.id,
-                    user_email=user.email,
-                    connector_id=self.connector_id
-                )
-
-                # Delete the pseudo-group (this will also delete all its edges)
-                await tx_store.delete_user_group_by_id(pseudo_group.id)
-
-                self.logger.info(
-                    f"✅ Migrated {migrated_count} permissions from pseudo-group '{pseudo_group.name}' "
-                    f"to user {user.email} (skipped {skipped_count} duplicates), deleted pseudo-group"
-                )
-
-        except Exception as e:
-            self.logger.error(
-                f"Failed to migrate pseudo-group permissions for user {user.email}: {e}",
-                exc_info=True
-            )
-            raise  # Re-raise to trigger transaction rollback
-
 
     async def get_filter_options(
         self,
