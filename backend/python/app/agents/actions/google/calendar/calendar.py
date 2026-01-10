@@ -308,7 +308,7 @@ class GoogleCalendar:
             ToolParameter(
                 name="event_id",
                 type=ParameterType.STRING,
-                description="The ID of the event to update",
+                description="The actual event ID from Google Calendar (NOT a placeholder). This must be the real event ID returned when the event was created (e.g., 'abc123xyz'). If you don't have the event ID, you must first create or list events to get it.",
                 required=True
             ),
             ToolParameter(
@@ -451,6 +451,8 @@ class GoogleCalendar:
             ))
 
             return True, json.dumps({
+                "success": True,
+                "message": f"Event updated successfully! Event ID: {updated_event.get('id', '')}",
                 "event_id": updated_event.get("id", ""),
                 "event_title": updated_event.get("summary", ""),
                 "event_start_time": updated_event.get("start", {}).get("dateTime", ""),
@@ -473,7 +475,7 @@ class GoogleCalendar:
             ToolParameter(
                 name="event_id",
                 type=ParameterType.STRING,
-                description="The ID of the event to delete",
+                description="The actual event ID from Google Calendar (NOT a placeholder). This must be the real event ID (e.g., 'abc123xyz'). If you don't have the event ID, you must first list events to get it.",
                 required=True
             )
         ]

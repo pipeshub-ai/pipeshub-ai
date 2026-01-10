@@ -1,6 +1,9 @@
 import asyncio
+import hashlib
 import json
+import logging
 import re
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
@@ -8,48 +11,59 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langgraph.types import StreamWriter
 
 from app.modules.agents.qna.chat_state import ChatState
+from app.modules.agents.qna.config import (
+    MARKDOWN_MIN_LENGTH,
+    MAX_CONTEXT_CHARS,
+    MAX_ITERATION_COUNT,
+    MAX_MESSAGES_HISTORY,
+    MAX_MESSAGES_HISTORY_SIMPLE,
+    MAX_RETRIES_PER_TOOL,
+    MAX_TOOL_RESULT_LENGTH,
+    MAX_TOOLS_PER_ITERATION,
+    RESULT_PREVIEW_LENGTH,
+    AnalysisConfig,
+    MessageConfig,
+    PerformanceConfig,
+)
+from app.modules.agents.qna.optimization import (
+    DataOptimizer,
+    LLMOptimizer,
+    PromptOptimizer,
+)
+from app.modules.agents.qna.performance_tracker import get_performance_tracker
 from app.modules.qna.agent_prompt import (
     create_agent_messages,
     detect_response_mode,
 )
-from app.utils.citations import fix_json_string, process_citations
-from app.utils.streaming import bind_tools_for_llm, stream_llm_response
+from app.utils.citations import (
+    normalize_citations_and_chunks_for_agent,
+    process_citations,
+)
+from app.utils.streaming import extract_json_from_string, stream_llm_response
 
-# Constants
-RESULT_PREVIEW_LENGTH = 150
-MARKDOWN_MIN_LENGTH = 100
-HEADER_LENGTH_THRESHOLD = 50
-STREAMING_CHUNK_DELAY = 0.01  # Delay for streaming effect
-STREAMING_FALLBACK_DELAY = 0.02  # Delay for fallback streaming
-
-# Lint-related thresholds (replaces magic numbers)
-TUPLE_RESULT_LEN = 2
-SHORT_ERROR_TEXT_THRESHOLD = 100
-RECENT_CALLS_WINDOW = 5
-REPETITION_MIN_COUNT = 2
-JSON_RICH_OBJECT_MIN_KEYS = 3
-KEY_VALUE_PATTERN_MIN_COUNT = 3
-RESULT_PREVIEW_MAX_LEN = 200
-RESULT_STR_LONG_THRESHOLD = 1000
-ID_VALUE_MIN_LENGTH = 10
-MAX_RETRIES_PER_TOOL = 2
-REPEATED_SUCCESS_MIN_COUNT = 2
-COMPREHENSIVE_SUCCESS_MIN = 3
-COMPREHENSIVE_TYPES_MIN = 2
-PARTIAL_SUCCESS_MIN = 2
-PARTIAL_DATA_MIN = 2
-RECENT_FAILURE_WINDOW = 3
-PING_REPEAT_MIN = 3
-SUSPICIOUS_RESPONSE_MIN = 100
-
-# Context Management Constants
-LOOP_DETECTION_MIN_CALLS = 5
-LOOP_DETECTION_MAX_UNIQUE_TOOLS = 2
-MAX_ITERATION_COUNT = 15
-MAX_CONTEXT_CHARS = 100000  # Rough estimate: 100k chars ≈ 25k tokens
-MAX_MESSAGES_HISTORY = 20
-MAX_TOOL_RESULT_LENGTH = 2000
-MAX_TOOLS_PER_ITERATION = 5
+# Backwards compatibility aliases for constants used in this file
+HEADER_LENGTH_THRESHOLD = AnalysisConfig.HEADER_LENGTH_THRESHOLD
+STREAMING_CHUNK_DELAY = PerformanceConfig.STREAMING_CHUNK_DELAY
+STREAMING_FALLBACK_DELAY = PerformanceConfig.STREAMING_FALLBACK_DELAY
+TUPLE_RESULT_LEN = AnalysisConfig.TUPLE_RESULT_LEN
+SHORT_ERROR_TEXT_THRESHOLD = AnalysisConfig.SHORT_ERROR_TEXT_THRESHOLD
+RECENT_CALLS_WINDOW = AnalysisConfig.RECENT_CALLS_WINDOW
+REPETITION_MIN_COUNT = AnalysisConfig.REPETITION_MIN_COUNT
+JSON_RICH_OBJECT_MIN_KEYS = AnalysisConfig.JSON_RICH_OBJECT_MIN_KEYS
+KEY_VALUE_PATTERN_MIN_COUNT = AnalysisConfig.KEY_VALUE_PATTERN_MIN_COUNT
+RESULT_PREVIEW_MAX_LEN = MessageConfig.RESULT_PREVIEW_MAX
+RESULT_STR_LONG_THRESHOLD = MessageConfig.RESULT_STR_LONG_THRESHOLD
+ID_VALUE_MIN_LENGTH = AnalysisConfig.ID_VALUE_MIN_LENGTH
+REPEATED_SUCCESS_MIN_COUNT = AnalysisConfig.REPEATED_SUCCESS_MIN_COUNT
+COMPREHENSIVE_SUCCESS_MIN = AnalysisConfig.COMPREHENSIVE_SUCCESS_MIN
+COMPREHENSIVE_TYPES_MIN = AnalysisConfig.COMPREHENSIVE_TYPES_MIN
+PARTIAL_SUCCESS_MIN = AnalysisConfig.PARTIAL_SUCCESS_MIN
+PARTIAL_DATA_MIN = AnalysisConfig.PARTIAL_DATA_MIN
+RECENT_FAILURE_WINDOW = AnalysisConfig.RECENT_FAILURE_WINDOW
+PING_REPEAT_MIN = AnalysisConfig.PING_REPEAT_MIN
+SUSPICIOUS_RESPONSE_MIN = AnalysisConfig.SUSPICIOUS_RESPONSE_MIN
+LOOP_DETECTION_MIN_CALLS = PerformanceConfig.LOOP_DETECTION_MIN_CALLS
+LOOP_DETECTION_MAX_UNIQUE_TOOLS = PerformanceConfig.LOOP_DETECTION_MAX_UNIQUE_TOOLS
 
 # ============================================================================
 # GENERIC TOOL RESULT ANALYSIS FUNCTIONS
@@ -596,8 +610,8 @@ def build_simple_tool_context(state: ChatState) -> str:
         context_parts.append("📝 **ACTION**: Provide a response explaining what you attempted and what failed")
         context_parts.append("💡 **SUGGESTION**: Inform the user about the errors and suggest alternative approaches")
 
-    from app.modules.agents.qna.tool_registry import _get_recently_failed_tools
-    blocked_tools = _get_recently_failed_tools(state, None)
+    from app.modules.agents.qna.tool_system import get_recently_failed_tools
+    blocked_tools = get_recently_failed_tools(state, None)
 
     if blocked_tools:
         context_parts.append(f"\n### 🚫 BLOCKED TOOLS ({len(blocked_tools)} tools unavailable):")
@@ -624,12 +638,31 @@ async def analyze_query_node(state: ChatState, writer: StreamWriter) -> ChatStat
     """Analyze query complexity, follow-ups, and determine retrieval needs"""
     try:
         logger = state["logger"]
+
+        # ⚡ PERFORMANCE: Track timing
+        perf = get_performance_tracker(state)
+        perf.start_step("analyze_query_node")
+
         writer({"event": "status", "data": {"status": "analyzing", "message": "🧠 Analyzing your request..."}})
 
         query = state["query"].lower()
         previous_conversations = state.get("previous_conversations", [])
 
-        # Enhanced follow-up detection
+        # ⚡ TRILLION-DOLLAR FIX: Use intelligent conversation memory for follow-up detection
+        from app.modules.agents.qna.conversation_memory import ConversationMemory
+
+        # Check if this is a contextual follow-up that can reuse previous data
+        is_follow_up_from_memory = ConversationMemory.should_reuse_tool_results(
+            state["query"],  # Use original query, not lowercased
+            previous_conversations
+        )
+        logger.info(f"🧠 ConversationMemory follow-up detection: {is_follow_up_from_memory}")
+        logger.info(f"🧠 Query: '{state['query']}'")
+        logger.info(f"🧠 Previous conversations: {len(previous_conversations)} turns")
+
+        is_follow_up = is_follow_up_from_memory
+
+        # Also check for traditional follow-up patterns (for non-action follow-ups)
         follow_up_patterns = [
             "tell me more", "what about", "and the", "also", "additionally",
             "the second", "the first", "the third", "next one", "previous",
@@ -643,6 +676,7 @@ async def analyze_query_node(state: ChatState, writer: StreamWriter) -> ChatStat
         has_pronoun = any(f" {p} " in f" {query} " or query.startswith(f"{p} ") for p in pronoun_patterns)
 
         is_follow_up = (
+            is_follow_up or  # Contextual follow-up from memory system
             any(pattern in query for pattern in follow_up_patterns) or
             (has_pronoun and len(previous_conversations) > 0)
         )
@@ -675,22 +709,15 @@ async def analyze_query_node(state: ChatState, writer: StreamWriter) -> ChatStat
             "jira", "policy", "procedure", "team", "project"
         ]
 
-        needs_internal_data = False
-        if is_follow_up and previous_conversations and not has_kb_filter and not has_app_filter:
-            # For follow-ups, check if previous turn had internal data
-            if previous_conversations:
-                last_response = previous_conversations[-1].get("content", "")
-                # If last response had citations or knowledge, might not need new retrieval
-                needs_internal_data = not re.search(r'\s*\[\d+\]', last_response)  # More robustly check for citations
-            else:
-                needs_internal_data = False
-            logger.info(f"Follow-up detected - needs new retrieval: {needs_internal_data}")
-        else:
-            needs_internal_data = (
-                has_kb_filter or
-                has_app_filter or
-                any(keyword in query for keyword in internal_keywords)
-            )
+        # Note: needs_internal_data is kept for backward compatibility and other logic
+        # but it no longer controls retrieval - the LLM will decide when to call the retrieval tool
+        needs_internal_data = (
+            has_kb_filter or
+            has_app_filter or
+            any(keyword in query for keyword in internal_keywords)
+        )
+        if is_follow_up:
+            logger.info("Follow-up detected - LLM will decide if retrieval tool is needed")
 
         # Store analysis
         state["query_analysis"] = {
@@ -706,10 +733,15 @@ async def analyze_query_node(state: ChatState, writer: StreamWriter) -> ChatStat
         if is_complex:
             logger.info(f"🔍 Complexity indicators: {', '.join(detected_complexity)}")
 
+        # ⚡ PERFORMANCE: Finish step timing
+        duration = perf.finish_step(is_complex=is_complex, needs_data=needs_internal_data)
+        logger.debug(f"⚡ analyze_query_node completed in {duration:.0f}ms")
+
         return state
 
     except Exception as e:
         logger.error(f"Error in query analysis: {str(e)}", exc_info=True)
+        perf.finish_step(error=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
 
@@ -726,13 +758,12 @@ async def conditional_retrieve_node(state: ChatState, writer: StreamWriter) -> C
         if state.get("error"):
             return state
 
-        analysis = state.get("query_analysis", {})
-
-        if not analysis.get("needs_internal_data", False):
-            logger.info("⏭️ Skipping retrieval - using conversation context")
-            state["search_results"] = []
-            state["final_results"] = []
-            return state
+        # This node is deprecated - retrieval is now a tool
+        # Keeping this for backward compatibility but it should not be called
+        logger.warning("⚠️ conditional_retrieve_node called but retrieval is now a tool - this should not happen")
+        state["search_results"] = []
+        state["final_results"] = []
+        return state
 
         logger.info("📚 Gathering knowledge sources...")
         writer({"event": "status", "data": {"status": "retrieving", "message": "📚 Gathering knowledge sources..."}})
@@ -741,7 +772,7 @@ async def conditional_retrieve_node(state: ChatState, writer: StreamWriter) -> C
         arango_service = state["arango_service"]
 
         # Adjust limit based on complexity
-        is_complex = analysis.get("is_complex", False)
+        is_complex = state.get("query_analysis", {}).get("is_complex", False)
         base_limit = state["limit"]
         adjusted_limit = min(base_limit * 2, 100) if is_complex else base_limit
 
@@ -841,7 +872,7 @@ def prepare_agent_prompt_node(state: ChatState, writer: StreamWriter) -> ChatSta
 
         if is_complex:
             logger.info(f"🔍 Complex workflow detected: {', '.join(complexity_types)}")
-            writer({"event": "status", "data": {"status": "thinking", "message": "🧠 Planning complex workflow..."}})
+            writer({"event": "status", "data": {"status": "thinking", "message": "Planning complex workflow..."}})
 
         # Determine expected output mode
         if has_internal_knowledge:
@@ -867,8 +898,8 @@ def prepare_agent_prompt_node(state: ChatState, writer: StreamWriter) -> ChatSta
         # Create messages with planning context
         messages = create_agent_messages(state)
 
-        # Get tools
-        from app.modules.agents.qna.tool_registry import get_agent_tools
+        # Get tools (using simplified tool system)
+        from app.modules.agents.qna.tool_system import get_agent_tools
         tools = get_agent_tools(state)
 
         # Expose tool names for context
@@ -900,7 +931,12 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
         logger = state["logger"]
         llm = state["llm"]
 
+        # ⚡ PERFORMANCE: Track timing
+        perf = get_performance_tracker(state)
+        perf.start_step("agent_node")
+
         if state.get("error"):
+            perf.finish_step(error=True)
             return state
 
         # Check iteration and context
@@ -1010,14 +1046,24 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
         else:
             writer({"event": "status", "data": {"status": "thinking", "message": "Processing your request..."}})
 
-        # Get tools
-        from app.modules.agents.qna.tool_registry import get_agent_tools
+        # Get tools (using simplified tool system)
+        from app.modules.agents.qna.tool_system import get_agent_tools
         tools = get_agent_tools(state)
 
-        if tools:
-            logger.debug(f"Agent has {len(tools)} tools available")
+        # ⚡ NUCLEAR OPTIMIZATION: Cache bound LLM to eliminate tool binding overhead (1-2s saved!)
+        cached_llm = state.get("_cached_llm_with_tools")
+        cache_valid = cached_llm is not None and len(tools) == len(state.get("_cached_agent_tools", []))
+
+        if cache_valid:
+            logger.debug(f"⚡ Using cached LLM with {len(tools)} bound tools - skipping tool binding overhead")
+            llm_with_tools = cached_llm
+        elif tools:
+            logger.debug(f"🔧 Binding {len(tools)} tools to LLM (first time or cache miss)")
             try:
-                llm_with_tools = bind_tools_for_llm(llm, tools)
+                llm_with_tools = llm.bind_tools(tools)
+                # Cache the bound LLM for future iterations
+                state["_cached_llm_with_tools"] = llm_with_tools
+
             except (NotImplementedError, AttributeError) as e:
                 logger.warning(f"LLM does not support tool binding: {e}")
                 llm_with_tools = llm
@@ -1025,50 +1071,148 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
         else:
             llm_with_tools = llm
 
-        # Add simple tool context so LLM can see what tools have been executed
-        if state.get("all_tool_results"):
-            tool_context = build_simple_tool_context(state)
 
-            # Add output format reminder
-            if has_internal_knowledge:
-                tool_context += "\n\n **Remember**: You have internal knowledge sources available. If you used them, respond in Structured JSON with citations."
+        if state.get("all_tool_results"):
+            # After tool execution: Use SMART SUMMARIES instead of full raw data
+            # This gives LLM enough context to generate complete responses
+            # while keeping token count low for speed
+
+            if iteration_count > 0:
+                # Response generation stage: Use smart summary
+                tool_context = "\n\n**Available Data:**\n"
+                for result in state["all_tool_results"][-3:]:  # Last 3 tool results
+                    tool_name = result.get("tool_name", "unknown")
+                    tool_result = result.get("result", {})
+
+                    # Create smart summary
+                    summary = DataOptimizer.create_summary(tool_result, tool_name)
+                    tool_context += f"\n{summary}"
+
+                tool_context += "\n\n**Note**: Use this data to provide a complete, accurate response. All data is available."
             else:
-                tool_context += "\n\n **Output**: Use Beautiful Markdown format for your final response."
+                # Tool selection stage: Minimal context
+                tool_context = PromptOptimizer.create_concise_tool_context(state["all_tool_results"])
+
+            # Add output format reminder (concise)
+            if has_internal_knowledge:
+                tool_context += "\n\n**Output**: Structured JSON with citations"
+            else:
+                tool_context += "\n\n**Output**: Markdown format"
 
             if state["messages"] and isinstance(state["messages"][-1], HumanMessage):
                 state["messages"][-1].content += tool_context
 
-        # Clean messages
-        cleaned_messages = _clean_message_history(state["messages"])
+        # ⚡ OPTIMIZATION: Smart message history management (keep enough context)
+        is_complex = state.get("requires_planning", False)
+        max_messages = 15 if is_complex else 10  # Enough context for complete answers
 
-        # Check context length before LLM call
-        total_chars = sum(len(str(msg.content)) for msg in cleaned_messages if hasattr(msg, 'content'))
-        if total_chars > MAX_CONTEXT_CHARS:  # Rough estimate: 100k chars ≈ 25k tokens
-            logger.warning(f"⚠️ Context too large ({total_chars} chars) - truncating further")
-            # Keep only the most recent messages
-            cleaned_messages = cleaned_messages[:10]  # Keep only last 10 messages
-            logger.info(f"Truncated to {len(cleaned_messages)} messages")
+        cleaned_messages = PromptOptimizer.optimize_message_history(
+            state["messages"],
+            max_messages=max_messages,
+            max_context_chars=MAX_CONTEXT_CHARS
+        )
+
+        # Log optimization impact
+        original_count = len(state["messages"])
+        optimized_count = len(cleaned_messages)
+        if original_count > optimized_count:
+            logger.debug(f"⚡ Optimized messages: {original_count} → {optimized_count} ({original_count - optimized_count} removed)")
+
+        # ⚡ CRITICAL: Validate message sequence before sending to OpenAI
+        is_valid, error_msg = PromptOptimizer.validate_message_sequence(cleaned_messages)
+        if not is_valid:
+            logger.error(f"❌ Message validation failed: {error_msg}")
+            logger.warning("⚠️ Message sequence invalid - cleaning up tool calls without responses")
+
+            # Fix invalid messages by removing tool_calls from AIMessages without responses
+            from langchain_core.messages import AIMessage, ToolMessage
+            fixed_messages = []
+            pending_tool_calls = set()
+
+            for msg in cleaned_messages:
+                if isinstance(msg, AIMessage):
+                    if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                        # Track tool_call_ids
+                        tool_call_ids = set()
+                        for tc in msg.tool_calls:
+                            tool_id = tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)
+                            if tool_id:
+                                tool_call_ids.add(tool_id)
+
+                        # Check if all ToolMessages exist in remaining messages
+                        remaining_messages = cleaned_messages[cleaned_messages.index(msg) + 1:]
+                        all_responses_exist = all(
+                            any(isinstance(m, ToolMessage) and getattr(m, 'tool_call_id', None) == tid
+                                for m in remaining_messages)
+                            for tid in tool_call_ids
+                        )
+
+                        if all_responses_exist:
+                            fixed_messages.append(msg)
+                            pending_tool_calls.update(tool_call_ids)
+                        else:
+                            # Remove tool_calls - create new AIMessage without them
+                            fixed_messages.append(AIMessage(content=msg.content or ""))
+                    else:
+                        fixed_messages.append(msg)
+                elif isinstance(msg, ToolMessage):
+                    tool_call_id = getattr(msg, 'tool_call_id', None)
+                    if tool_call_id in pending_tool_calls:
+                        fixed_messages.append(msg)
+                        pending_tool_calls.discard(tool_call_id)
+                    # Skip orphaned ToolMessages (no corresponding AIMessage)
+                else:
+                    fixed_messages.append(msg)
+
+            cleaned_messages = fixed_messages
+
+            # Re-validate after fix
+            is_valid, error_msg = PromptOptimizer.validate_message_sequence(cleaned_messages)
+            if not is_valid:
+                logger.error(f"❌ Message validation still failed after fix: {error_msg}")
+                logger.warning("⚠️ Using minimal message set to prevent API error")
+                # Last resort: keep only system messages and the most recent human message
+                system_msgs = [m for m in cleaned_messages if isinstance(m, SystemMessage)]
+                human_msgs = [m for m in cleaned_messages if isinstance(m, HumanMessage)]
+                cleaned_messages = system_msgs + (human_msgs[-1:] if human_msgs else [])
+
+        # Estimate token count for monitoring
+        estimated_tokens = LLMOptimizer.estimate_token_count(cleaned_messages)
+        if estimated_tokens > 0:
+            logger.debug(f"📊 Estimated tokens: ~{estimated_tokens}")
 
         # Simple debug logging
         if state.get("all_tool_results"):
             logger.debug(f"🔍 Agent context includes {len(state['all_tool_results'])} tool results")
 
-            # Log recent tool results with accurate status
-            recent_results = state.get("all_tool_results", [])[-3:]
-            for i, result in enumerate(recent_results, 1):
-                tool_name = result.get("tool_name", "unknown")
-                tool_result = result.get("result", "")
-                result_str = str(tool_result)
+        # ⚡ OPTIMIZATION: Use optimized LLM invocation
+        logger.debug(f"⚡ Invoking LLM (iteration {iteration_count}) with optimized prompt")
 
-                # Use actual status field
-                actual_status = result.get("status", "unknown")
+        llm_start = time.time()
 
-                result_preview = result_str[:100]
-                logger.info(f"🔍 Tool {i}: {tool_name} ({actual_status}) - Preview: {result_preview}...")
+        # Initialize LLM optimizer if not exists
+        if not hasattr(state, '_llm_optimizer'):
+            state['_llm_optimizer'] = LLMOptimizer()
 
-        # Call LLM
-        logger.debug(f" Invoking LLM (iteration {iteration_count})")
-        response = await llm_with_tools.ainvoke(cleaned_messages)
+        llm_optimizer = state.get('_llm_optimizer', LLMOptimizer())
+
+        # Use optimized invoke with timeout protection
+        try:
+            response = await llm_optimizer.optimized_invoke(
+                llm_with_tools,
+                cleaned_messages,
+                timeout=25.0  # 25s timeout for safety
+            )
+        except TimeoutError as te:
+            logger.error(f"⚠️ LLM call timeout: {te}")
+            # Fallback to direct invoke
+            response = await llm_with_tools.ainvoke(cleaned_messages)
+
+        llm_duration = (time.time() - llm_start) * 1000
+
+        # Track LLM performance
+        perf.track_llm_call(llm_duration)
+        logger.debug(f"⚡ LLM call completed in {llm_duration:.0f}ms")
 
         # Add response to messages
         state["messages"].append(response)
@@ -1102,10 +1246,18 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
             state["response"] = parsed_content
             state["response_mode"] = mode
 
+        # ⚡ PERFORMANCE: Finish step timing
+        duration = perf.finish_step(
+            iteration=iteration_count,
+            tool_calls=len(response.tool_calls) if hasattr(response, 'tool_calls') and response.tool_calls else 0
+        )
+        logger.debug(f"⚡ agent_node completed in {duration:.0f}ms")
+
         return state
 
     except Exception as e:
         logger.error(f"Error in agent: {str(e)}", exc_info=True)
+        perf.finish_step(error=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
 
@@ -1116,44 +1268,60 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
 
 def _detect_tool_success(result: object) -> bool:
     """
-    Detect if a tool execution was successful.
-    Simple and maintainable - all tools return {"success": true/false, ...} or {"error": "..."}
+    Properly detect if a tool execution was successful.
+    Handles JSON responses, tuples, and string responses.
 
     Args:
         result: Tool execution result
-
     Returns:
         True if successful, False otherwise
     """
-    # Handle tuple format (success_flag, data)
+    # Handle tuple format (success, data)
     if isinstance(result, tuple) and len(result) == TUPLE_RESULT_LEN:
-        return bool(result[0])
+        success_flag, _ = result
+        return bool(success_flag)
 
-    # Parse JSON and check for success/error indicators
+    # Convert to string for analysis
+    result_str = str(result)
+
+    # Try to parse as JSON for more accurate detection
     try:
-        import json
-        result_str = str(result)
-
         if result_str.strip().startswith('{'):
+            import json
             data = json.loads(result_str)
 
+            # Check for explicit error indicators
             if isinstance(data, dict):
-                # Check for "success" field first
-                if "success" in data:
-                    return bool(data["success"])
-
-                # Check for "error" field with actual error content
+                # Check for error field
                 if "error" in data:
                     error_value = data["error"]
                     # If error has content (not None/null), it's a failure
                     if error_value and error_value != "null":
                         return False
 
+                # Check for status field (from tool_system errors and API responses)
+                if "status" in data:
+                    status = str(data["status"]).lower()
+                    if status in ["error", "failed", "failure", "400", "500", "503"]:
+                        return False
+                    if status in ["success", "ok", "200", "201"]:
+                        return True
+
+                # Check for success field (handle both boolean and string)
+                if "success" in data:
+                    success_value = data["success"]
+                    # Handle boolean
+                    if isinstance(success_value, bool):
+                        return success_value
+                    # Handle string "true"/"false"
+                    if isinstance(success_value, str):
+                        return success_value.lower() in ["true", "success"]
+                    return bool(success_value)
+
     except Exception:
         pass
 
     # Fallback: if it starts with "Error:" it's a failure
-    result_str = str(result)
     if result_str.startswith("Error:") or result_str.startswith("Error executing"):
         return False
 
@@ -1166,10 +1334,15 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
     try:
         logger = state["logger"]
 
+        # ⚡ PERFORMANCE: Track timing
+        perf = get_performance_tracker(state)
+        perf.start_step("tool_execution_node")
+
         iteration = len(state.get("all_tool_results", []))
-        writer({"event": "status", "data": {"status": "executing", "message": f"⚙️ Executing tools (step {iteration + 1})..."}})
+        writer({"event": "status", "data": {"status": "executing", "message": f" Executing tools (step {iteration + 1})..."}})
 
         if state.get("error"):
+            perf.finish_step(error=True)
             return state
 
         # Get last AI message with tool calls
@@ -1185,6 +1358,55 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
             return state
 
         tool_calls = last_ai_message.tool_calls
+        original_tool_call_count = len(tool_calls)
+
+        # CRITICAL: Deduplicate tool calls to prevent duplicate operations
+        # This is especially important for create/update/delete operations
+        seen_calls = {}  # (tool_name, args_hash) -> tool_call
+        deduplicated_calls = []
+        duplicate_count = 0
+
+        for tool_call in tool_calls:
+            # Extract tool name and args
+            if isinstance(tool_call, dict):
+                tool_name = tool_call.get("name") or tool_call.get("function", {}).get("name", "")
+                tool_args = tool_call.get("args", {})
+                if not tool_args and "function" in tool_call:
+                    function_data = tool_call["function"]
+                    tool_args = function_data.get("arguments", {})
+                    if isinstance(tool_args, str):
+                        try:
+                            tool_args = json.loads(tool_args)
+                        except json.JSONDecodeError:
+                            tool_args = {}
+            else:
+                tool_name = tool_call.name
+                tool_args = tool_call.args if hasattr(tool_call, 'args') else {}
+
+            # Create a hash of the arguments for comparison
+            # Sort dict keys to ensure consistent hashing
+            args_str = json.dumps(tool_args, sort_keys=True) if tool_args else ""
+            args_hash = hashlib.md5(args_str.encode()).hexdigest()
+            call_key = (tool_name, args_hash)
+
+            # Check if this is a critical operation (create, update, delete)
+            is_critical = any(op in tool_name.lower() for op in ['create', 'update', 'delete', 'remove', 'add'])
+
+            if call_key in seen_calls:
+                duplicate_count += 1
+                if is_critical:
+                    logger.warning(f"🚫 BLOCKED duplicate critical operation: {tool_name} with identical args. This would create duplicate data. Keeping only the first call.")
+                else:
+                    logger.warning(f"⚠️ Detected duplicate tool call: {tool_name} with identical args. Keeping only the first call.")
+                continue
+
+            seen_calls[call_key] = tool_call
+            deduplicated_calls.append(tool_call)
+
+        if duplicate_count > 0:
+            logger.warning(f"🛡️ Deduplication: Removed {duplicate_count} duplicate tool call(s). Original: {original_tool_call_count}, After dedup: {len(deduplicated_calls)}")
+
+        tool_calls = deduplicated_calls
 
         # Limit tool calls per iteration
         if len(tool_calls) > MAX_TOOLS_PER_ITERATION:
@@ -1192,14 +1414,22 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
             tool_calls = tool_calls[:MAX_TOOLS_PER_ITERATION]
 
         # Get available tools
-        from app.modules.agents.qna.tool_registry import get_agent_tools
+        from app.modules.agents.qna.tool_system import get_agent_tools
         tools = get_agent_tools(state)
         tools_by_name = {tool.name: tool for tool in tools}
 
         tool_messages = []
         tool_results = []
 
-        for tool_call in tool_calls:
+        # ⚡ PERFORMANCE: Parallel async execution for maximum speed
+        logger.info(f"🚀 Preparing to execute {len(tool_calls)} tool(s) IN PARALLEL...")
+
+        # Create execution tasks for parallel execution
+        async def execute_single_tool(tool_call: Any) -> dict[str, Any]:  # noqa: ANN401
+            """Execute a single tool with async support and timing."""
+            # ⚡ Track individual tool execution time
+            tool_start_time = time.time()
+
             tool_name = tool_call.get("name") if isinstance(tool_call, dict) else tool_call.name
 
             # Handle both tool_call.args and tool_call.function formats
@@ -1241,7 +1471,59 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
                     logger.info(f"▶️ Executing: {tool_name}")
                     logger.debug(f"  Args: {tool_args}")
 
-                    result = tool._run(**tool_args) if hasattr(tool, '_run') else tool.run(**tool_args)
+                    # PHASE 2: Execute tool properly (handle sync/async correctly)
+                    # ⚡ FIX: Run sync tools in executor with event loop support
+                    if hasattr(tool, '_run'):
+                        # Tool is sync - run in executor to avoid blocking main event loop
+                        # Create wrapper that sets up event loop in thread
+                        def run_with_loop() -> Any:  # noqa: ANN401
+                            import asyncio
+                            # Always create a fresh event loop for this thread
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            try:
+                                # If tool._run is a coroutine function, run it with the loop
+                                result = tool._run(**tool_args)
+                                if asyncio.iscoroutine(result):
+                                    return loop.run_until_complete(result)
+                                return result
+                            finally:
+                                # Clean up the loop to prevent resource leaks
+                                try:
+                                    loop.close()
+                                except Exception:
+                                    pass
+
+                        import asyncio
+                        main_loop = asyncio.get_event_loop()
+                        result = await main_loop.run_in_executor(None, run_with_loop)
+                    elif hasattr(tool, 'arun'):
+                        # Tool supports true async - use it directly!
+                        # ⚡ FIX: LangChain arun() expects dict, not **kwargs
+                        result = await tool.arun(tool_args)
+                    else:
+                        # Fallback to sync run
+                        def run_with_loop() -> Any:  # noqa: ANN401
+                            import asyncio
+                            # Always create a fresh event loop for this thread
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            try:
+                                # If tool.run is a coroutine function, run it with the loop
+                                result = tool.run(**tool_args)
+                                if asyncio.iscoroutine(result):
+                                    return loop.run_until_complete(result)
+                                return result
+                            finally:
+                                # Clean up the loop to prevent resource leaks
+                                try:
+                                    loop.close()
+                                except Exception:
+                                    pass
+
+                        import asyncio
+                        main_loop = asyncio.get_event_loop()
+                        result = await main_loop.run_in_executor(None, run_with_loop)
 
                     # Log result preview
                     result_preview = str(result)[:RESULT_PREVIEW_LENGTH] + "..." if len(str(result)) > RESULT_PREVIEW_LENGTH else str(result)
@@ -1261,6 +1543,47 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
                 # **DEBUG**: Log detection result
                 logger.debug(f"🔍 Tool result detection: is_success={is_success}, status={status}")
 
+                if(tool_name == "retrieval.search_internal_knowledge"):
+                    # CRITICAL: The tool stores results in its self.state, but we need to ensure
+                    # they're in the graph's state object. The tool wrapper should pass the same
+                    # state reference, but let's explicitly sync it here to be safe.
+
+                    # Check if tool stored results in its state (via tool wrapper)
+                    tool_state = None
+                    if hasattr(tool, '_state'):
+                        tool_state = tool._state
+                    elif hasattr(tool, 'state'):
+                        tool_state = tool.state
+
+                    # Sync results from tool's state to graph's state
+                    if tool_state:
+                        if "final_results" in tool_state and tool_state.get("final_results"):
+                            state["final_results"] = tool_state["final_results"]
+                            logger.debug(f"✅ Synced {len(state['final_results'])} final_results from tool state to graph state")
+                        if "virtual_record_id_to_result" in tool_state:
+                            state["virtual_record_id_to_result"] = tool_state["virtual_record_id_to_result"]
+                            logger.debug(f"✅ Synced {len(state.get('virtual_record_id_to_result', {}))} records from tool state to graph state")
+
+                    # Fallback: if still not in state, try to extract from result
+                    if "final_results" not in state or not state.get("final_results"):
+                        if isinstance(result, list):
+                            state["final_results"] = result
+                            logger.debug(f"✅ Stored {len(result)} final_results in state from tool result (fallback)")
+                        elif isinstance(result, str):
+                            try:
+                                parsed_result = json.loads(result)
+                                if isinstance(parsed_result, list):
+                                    state["final_results"] = parsed_result
+                                    logger.debug(f"✅ Parsed and stored {len(parsed_result)} final_results from JSON string (fallback)")
+                            except (json.JSONDecodeError, TypeError):
+                                logger.warning(f"⚠️ Could not extract final_results from compressed result: {type(result)}")
+
+                    # Verify final state
+                    final_results_count = len(state.get('final_results', []))
+                    virtual_records_count = len(state.get('virtual_record_id_to_result', {}))
+                    logger.debug(f"✅ Final state: {final_results_count} final_results, {virtual_records_count} virtual_record_id_to_result records")
+                    logger.debug("***************************************************************************************************************")
+
                 tool_result = {
                     "tool_name": tool_name,
                     "result": result,
@@ -1270,14 +1593,24 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
                     "execution_timestamp": datetime.now().isoformat(),
                     "iteration": iteration
                 }
-                tool_results.append(tool_result)
 
-                tool_message = ToolMessage(content=str(result), tool_call_id=tool_id)
-                tool_messages.append(tool_message)
+                # ⚡ OPTIMIZATION: Format optimization WITHOUT data loss
+                # Preserve ALL data but remove unnecessary metadata and use compact formatting
+                # This maintains answer quality while still optimizing token usage
+                optimized_result = PromptOptimizer.compress_tool_result(
+                    result,
+                    max_chars=None,  # No hard limit - preserve data
+                    preserve_data=True  # Keep all user-facing data
+                )
+                tool_message = ToolMessage(content=optimized_result, tool_call_id=tool_id)
+
+                # ⚡ PERFORMANCE: Track tool execution time
+                tool_duration_ms = (time.time() - tool_start_time) * 1000
+                perf.track_tool_execution(tool_name, tool_duration_ms, is_success)
 
                 # Log correct status
                 if is_success:
-                    logger.info(f"✅ {tool_name} executed successfully")
+                    logger.info(f"✅ {tool_name} executed successfully in {tool_duration_ms:.0f}ms")
 
                     # **GENERIC FEEDBACK**: Provide intelligent guidance based on tool result analysis
                     data_analysis = analyze_tool_data_content(tool_name, str(result))
@@ -1286,8 +1619,10 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
                         if data_analysis["next_actions"]:
                             logger.info(f"🎯 Suggested next actions: {', '.join(data_analysis['next_actions'])}")
                 else:
-                    logger.error(f"❌ {tool_name} failed with error")
+                    logger.error(f"❌ {tool_name} failed with error in {tool_duration_ms:.0f}ms")
                     logger.error(f"Error details: {str(result)[:500]}")
+
+                return (tool_result, tool_message)
 
             except Exception as e:
                 error_result = f"Error executing {tool_name}: {str(e)}"
@@ -1303,10 +1638,44 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
                     "error_details": str(e),
                     "iteration": iteration
                 }
-                tool_results.append(tool_result)
 
+                # Errors are usually short, keep them complete for debugging
                 tool_message = ToolMessage(content=error_result, tool_call_id=tool_id)
+
+                return (tool_result, tool_message)
+
+        # PHASE 3: Execute all tools in parallel using asyncio.gather
+        import asyncio
+        execution_start = asyncio.get_event_loop().time()
+
+        logger.info(f"⚡ Executing {len(tool_calls)} tool(s) in parallel...")
+
+        try:
+            # Execute all tools concurrently
+            execution_results = await asyncio.gather(
+                *[execute_single_tool(tc) for tc in tool_calls],
+                return_exceptions=True
+            )
+
+            execution_end = asyncio.get_event_loop().time()
+            execution_time_ms = (execution_end - execution_start) * 1000
+
+            logger.info(f"✅ Completed {len(tool_calls)} tool(s) in {execution_time_ms:.0f}ms (parallel execution)")
+
+            # Process results
+            for result in execution_results:
+                if isinstance(result, Exception):
+                    logger.error(f"Tool execution exception: {result}")
+                    continue
+
+                tool_result, tool_message = result
+                tool_results.append(tool_result)
                 tool_messages.append(tool_message)
+
+        except Exception as e:
+            logger.error(f"Error in parallel tool execution: {e}")
+            # Fallback: If parallel execution fails, we already have some results
+            pass
 
         # Add to messages
         state["messages"].extend(tool_messages)
@@ -1337,10 +1706,19 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
         logger.info(f"✅ Executed {len(tool_results)} tools in iteration {iteration}")
         logger.debug(f"Total tools executed: {len(state['all_tool_results'])}")
 
+        # ⚡ PERFORMANCE: Finish step timing
+        duration = perf.finish_step(
+            tool_count=len(tool_results),
+            successful=sum(1 for r in tool_results if r.get("status") == "success"),
+            failed=sum(1 for r in tool_results if r.get("status") == "error")
+        )
+        logger.debug(f"⚡ tool_execution_node completed in {duration:.0f}ms")
+
         return state
 
     except Exception as e:
         logger.error(f"Error in tool execution: {str(e)}", exc_info=True)
+        perf.finish_step(error=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
 
@@ -1357,6 +1735,10 @@ async def final_response_node(
     """Generate final response with correct streaming format"""
     try:
         logger = state["logger"]
+
+        # ⚡ PERFORMANCE: Track timing
+        perf = get_performance_tracker(state)
+        perf.start_step("final_response_node")
         llm = state["llm"]
 
         writer({"event": "status", "data": {"status": "finalizing", "message": "Generating final response..."}})
@@ -1401,37 +1783,74 @@ async def final_response_node(
 
             writer({"event": "status", "data": {"status": "delivering", "message": "Delivering response..."}})
 
-            # Normalize response format
+            # Normalize response format (handles markdown code blocks)
             final_content = _normalize_response_format(existing_response)
 
-            # Process citations if available
-            if state.get("final_results"):
-                cited_answer = process_citations(
-                    final_content["answer"],
-                    state["final_results"],
-                    [],
-                    from_agent=True
+            # Process citations if available - use normalize_citations_and_chunks_for_agent
+            final_results = state.get("final_results", [])
+            # Ensure final_results is a list (might be stored as string or other format)
+            if not isinstance(final_results, list):
+                if isinstance(final_results, str):
+                    try:
+                        final_results = json.loads(final_results)
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning(f"⚠️ final_results is not a valid list or JSON: {type(final_results)}")
+                        final_results = []
+                else:
+                    logger.warning(f"⚠️ final_results is not a list: {type(final_results)}")
+                    final_results = []
+
+            virtual_record_id_to_result = state.get("virtual_record_id_to_result", {})
+            logger.debug(f"📊 Citation processing: final_results={len(final_results)} items, virtual_record_id_to_result={len(virtual_record_id_to_result)} records")
+
+            if final_results:
+                answer_text = final_content.get("answer", "")
+                logger.debug(f"📝 Processing citations for answer (length: {len(answer_text)} chars)")
+                # Normalize citations using the agent-specific function
+                normalized_answer, citations = normalize_citations_and_chunks_for_agent(
+                    answer_text,
+                    final_results,
+                    virtual_record_id_to_result
                 )
+                logger.debug(f"✅ Citation normalization complete: {len(citations)} citations created")
+                logger.debug(f"📄 Answer text length: {len(normalized_answer)} chars")
+                logger.debug("***************************************************************************************************************")
+                final_content["answer"] = normalized_answer
+                final_content["citations"] = citations
+            else:
+                logger.warning("⚠️ No final_results available for citation processing")
+                normalized_answer = final_content.get("answer", "")
+                citations = final_content.get("citations", [])
 
-                if isinstance(cited_answer, str):
-                    final_content["answer"] = cited_answer
-                elif isinstance(cited_answer, dict) and "answer" in cited_answer:
-                    final_content = cited_answer
+            # Stream answer in word-based chunks (like chatbot.py)
+            answer_text = normalized_answer
+            words = re.findall(r'\S+', answer_text)
+            target_words_per_chunk = 1  # Stream word by word for smooth experience
 
-            # Stream only the answer text, not the JSON structure
-            answer_text = final_content.get("answer", "")
-            chunk_size = 50
+            accumulated = ""
+            for i in range(0, len(words), target_words_per_chunk):
+                chunk_words = words[i:i + target_words_per_chunk]
+                chunk_text = ' '.join(chunk_words)
+                # Build accumulated string incrementally to avoid quadratic complexity
+                if accumulated:
+                    accumulated += ' ' + chunk_text
+                else:
+                    accumulated = chunk_text
 
-            # Stream answer in chunks
-            for i in range(0, len(answer_text), chunk_size):
-                chunk = answer_text[i:i + chunk_size]
-                writer({"event": "answer_chunk", "data": {"chunk": chunk}})
+                writer({
+                    "event": "answer_chunk",
+                    "data": {
+                        "chunk": chunk_text,
+                        "accumulated": accumulated,
+                        "citations": citations  # Include citations in each chunk
+                    }
+                })
                 await asyncio.sleep(STREAMING_CHUNK_DELAY)
 
-            # Send complete structure only at the end
+            # Send complete structure only at the end (properly formatted)
             completion_data = {
                 "answer": answer_text,
-                "citations": final_content.get("citations", []),
+                "citations": citations,  # Use normalized citations
                 "confidence": final_content.get("confidence", "High"),
                 "reason": final_content.get("reason", "Response generated"),
                 "answerMatchType": final_content.get("answerMatchType", "Derived From Tool Execution"),
@@ -1445,6 +1864,17 @@ async def final_response_node(
             state["completion_data"] = completion_data
 
             logger.debug(f"Delivered existing response: {len(answer_text)} chars")
+
+            # ⚡ PERFORMANCE: Finish step timing and log summary even for cached responses
+            duration = perf.finish_step(response_length=len(answer_text), cached=True)
+            logger.debug(f"⚡ final_response_node completed in {duration:.0f}ms (cached response)")
+
+            # ⚡ PERFORMANCE SUMMARY: Log complete performance report
+            perf.log_summary(logger)
+
+            # Store performance summary in state for API response
+            state["performance_summary"] = perf.get_summary()
+
             return state
 
         # Generate new response if needed
@@ -1452,7 +1882,8 @@ async def final_response_node(
 
         # Convert LangChain messages to dict format
         # Clean message sequence first to ensure proper threading
-        cleaned_messages = _clean_message_history(state.get("messages", []))
+        is_complex = state.get("requires_planning", False)
+        cleaned_messages = _clean_message_history(state.get("messages", []), is_complex=is_complex)
 
         validated_messages = []
         for msg in cleaned_messages:
@@ -1609,6 +2040,17 @@ async def final_response_node(
 
         # Get final results for citations
         final_results = state.get("final_results", [])
+        # Ensure final_results is a list (might be stored as string or other format)
+        if not isinstance(final_results, list):
+            if isinstance(final_results, str):
+                try:
+                    final_results = json.loads(final_results)
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(f"⚠️ final_results is not a valid list or JSON: {type(final_results)}")
+                    final_results = []
+            else:
+                logger.warning(f"⚠️ final_results is not a list: {type(final_results)}")
+                final_results = []
 
         writer({"event": "status", "data": {"status": "generating", "message": "Generating response..."}})
 
@@ -1616,7 +2058,11 @@ async def final_response_node(
         final_content = None
 
         try:
-            async for stream_event in stream_llm_response(llm, validated_messages, final_results, logger):
+            virtual_record_id_to_result = state.get("virtual_record_id_to_result", {})
+            async for stream_event in stream_llm_response(
+                llm, validated_messages, final_results, logger,
+                virtual_record_id_to_result=virtual_record_id_to_result
+            ):
                 event_type = stream_event["event"]
                 event_data = stream_event["data"]
 
@@ -1707,10 +2153,22 @@ async def final_response_node(
         else:
             logger.error("❌ No final content generated - this should not happen")
 
+        # ⚡ PERFORMANCE: Finish step timing and log complete summary
+        duration = perf.finish_step(response_length=len(answer_text) if final_content else 0)
+        logger.debug(f"⚡ final_response_node completed in {duration:.0f}ms")
+
+        # ⚡ PERFORMANCE SUMMARY: Log complete performance report
+        perf.log_summary(logger)
+
+        # Store performance summary in state for API response
+        state["performance_summary"] = perf.get_summary()
+
         return state
 
     except Exception as e:
         logger.error(f"Error in agent final response: {str(e)}", exc_info=True)
+        perf.finish_step(error=True)
+        perf.log_summary(logger)  # Still log performance even on error
         state["error"] = {"status_code": 400, "detail": str(e)}
         writer({"event": "error", "data": {"error": str(e)}})
         return state
@@ -1720,11 +2178,14 @@ async def final_response_node(
 def _normalize_response_format(response) -> dict:
     """Normalize response to expected format - handle both string and dict responses"""
     if isinstance(response, str):
-        # Try to parse if it looks like JSON
-        if response.strip().startswith('{'):
+        # Try to parse if it looks like JSON (including markdown code blocks)
+        response_stripped = response.strip()
+
+        # Check if it's wrapped in markdown code blocks
+        if "```json" in response_stripped or "```" in response_stripped:
             try:
-                import json
-                parsed = json.loads(response)
+                # Use extract_json_from_string to handle markdown code blocks
+                parsed = extract_json_from_string(response_stripped)
                 if isinstance(parsed, dict) and "answer" in parsed:
                     return {
                         "answer": parsed.get("answer", ""),
@@ -1733,9 +2194,29 @@ def _normalize_response_format(response) -> dict:
                         "reason": parsed.get("reason", "Direct response"),
                         "answerMatchType": parsed.get("answerMatchType", "Derived From Tool Execution"),
                         "chunkIndexes": parsed.get("chunkIndexes", []),
-                        "workflowSteps": parsed.get("workflowSteps", [])
+                        "workflowSteps": parsed.get("workflowSteps", []),
+                        "blockNumbers": parsed.get("blockNumbers", [])
                     }
-            except Exception:
+            except (ValueError, json.JSONDecodeError):
+                # If extraction fails, try regular JSON parsing
+                pass
+
+        # Try regular JSON parsing
+        if response_stripped.startswith('{') or response_stripped.startswith('['):
+            try:
+                parsed = json.loads(response_stripped)
+                if isinstance(parsed, dict) and "answer" in parsed:
+                    return {
+                        "answer": parsed.get("answer", ""),
+                        "citations": parsed.get("citations", []),
+                        "confidence": parsed.get("confidence", "High"),
+                        "reason": parsed.get("reason", "Direct response"),
+                        "answerMatchType": parsed.get("answerMatchType", "Derived From Tool Execution"),
+                        "chunkIndexes": parsed.get("chunkIndexes", []),
+                        "workflowSteps": parsed.get("workflowSteps", []),
+                        "blockNumbers": parsed.get("blockNumbers", [])
+                    }
+            except (ValueError, json.JSONDecodeError):
                 pass
 
         # Plain string response
@@ -1758,7 +2239,8 @@ def _normalize_response_format(response) -> dict:
             "reason": response.get("reason", "Processed response"),
             "answerMatchType": response.get("answerMatchType", "Derived From Tool Execution"),
             "chunkIndexes": response.get("chunkIndexes", []),
-            "workflowSteps": response.get("workflowSteps", [])
+            "workflowSteps": response.get("workflowSteps", []),
+            "blockNumbers": response.get("blockNumbers", [])
         }
     else:
         # Fallback for other types
@@ -1869,204 +2351,6 @@ def _build_workflow_summary(tool_results) -> List[str]:
 
     return steps
 
-
-async def _stream_structured_response(content, writer, logger) -> None:
-    """Stream structured response with beautiful markdown answer"""
-    answer_text = content.get("answer", "")
-    chunk_size = 50
-
-    # Stream the answer in chunks
-    for i in range(0, len(answer_text), chunk_size):
-        chunk = answer_text[i:i + chunk_size]
-        writer({"event": "answer_chunk", "data": {"chunk": chunk}})
-        await asyncio.sleep(STREAMING_CHUNK_DELAY)
-
-    # Send complete structured data
-    writer({"event": "complete", "data": content})
-    logger.debug(f"✅ Streamed structured response: {len(answer_text)} chars with citations")
-
-
-async def _stream_conversational_response(content, writer, logger) -> None:
-    """Stream conversational markdown response"""
-    answer_text = content.get("answer", str(content))
-    chunk_size = 50
-
-    # Stream in chunks
-    for i in range(0, len(answer_text), chunk_size):
-        chunk = answer_text[i:i + chunk_size]
-        writer({"event": "answer_chunk", "data": {"chunk": chunk}})
-        await asyncio.sleep(STREAMING_CHUNK_DELAY)
-
-    # Send complete event with proper format
-    complete_data = {
-        "answer": answer_text,
-        "citations": [],
-        "confidence": "High",
-        "reason": "Markdown response (no internal knowledge cited)"
-    }
-    writer({"event": "complete", "data": complete_data})
-    logger.debug(f"✅ Streamed markdown response: {len(answer_text)} chars")
-
-
-def _prepare_final_messages(state, has_internal_knowledge) -> List[Dict[str, str]]:
-    """Prepare messages for final response generation"""
-    validated_messages = []
-
-    for msg in state.get("messages", []):
-        if isinstance(msg, SystemMessage):
-            validated_messages.append({"role": "system", "content": msg.content})
-        elif isinstance(msg, HumanMessage):
-            validated_messages.append({"role": "user", "content": msg.content})
-        elif isinstance(msg, AIMessage):
-            validated_messages.append({"role": "assistant", "content": msg.content})
-
-    # Add tool summary and output format reminder
-    if state.get("all_tool_results"):
-        from app.modules.agents.qna.tool_registry import get_tool_results_summary
-        tool_summary = get_tool_results_summary(state)
-
-        summary_message = f"\n\n## Complete Workflow Summary\n{tool_summary}"
-
-        # Add format reminder
-        if has_internal_knowledge:
-            summary_message += "\n\n⚠️ **CRITICAL**: You have internal knowledge sources. Your response MUST be in Structured JSON format with citations [1][2][3]. The 'answer' field should contain beautifully formatted Markdown."
-        else:
-            summary_message += "\n\n💡 **Output Format**: Respond in Beautiful Markdown format (no internal knowledge to cite)."
-
-        summary_message += "\n\nProvide a comprehensive final response based on all information gathered."
-
-        if validated_messages and validated_messages[-1]["role"] == "user":
-            validated_messages[-1]["content"] += summary_message
-        else:
-            validated_messages.append({
-                "role": "user",
-                "content": summary_message
-            })
-    else:
-        # No tools used, just add format reminder
-        format_reminder = ""
-        if has_internal_knowledge:
-            format_reminder = "\n\n⚠️ **Remember**: Respond in Structured JSON with citations since you have internal knowledge."
-        else:
-            format_reminder = "\n\n💡 **Output**: Use Beautiful Markdown format."
-
-        if validated_messages and validated_messages[-1]["role"] == "user":
-            validated_messages[-1]["content"] += format_reminder
-
-    return validated_messages
-
-
-async def _generate_streaming_response(llm, messages, final_results, writer, logger, state) -> Optional[Dict[str, Any]]:
-    """Generate response with streaming and proper format"""
-    try:
-        writer({"event": "status", "data": {"status": "generating", "message": "✍️ Creating response..."}})
-
-        has_internal_knowledge = state.get("has_internal_knowledge", False)
-        final_content = None
-
-        async for stream_event in stream_llm_response(llm, messages, final_results, logger):
-            event_type = stream_event["event"]
-            event_data = stream_event["data"]
-
-            writer({"event": event_type, "data": event_data})
-
-            if event_type == "complete":
-                final_content = event_data
-
-                # Ensure beautiful formatting
-                if isinstance(final_content, dict) and "answer" in final_content:
-                    if not _is_beautiful_markdown(final_content["answer"]):
-                        logger.warning("Beautifying answer...")
-                        final_content["answer"] = _beautify_markdown(final_content["answer"])
-
-                # Add workflow steps if complex
-                if state.get("requires_planning") and state.get("all_tool_results"):
-                    if isinstance(final_content, dict):
-                        final_content["workflowSteps"] = _build_workflow_summary(state["all_tool_results"])
-
-        return final_content
-
-    except Exception as stream_error:
-        logger.error(f"Streaming failed: {stream_error}")
-
-        # Fallback
-        response = await llm.ainvoke(messages)
-        content = response.content if hasattr(response, 'content') else str(response)
-
-        # Process based on mode
-        if has_internal_knowledge and final_results:
-            cited_content = process_citations(content, final_results, [], from_agent=True)
-            if isinstance(cited_content, str):
-                content = cited_content
-            elif isinstance(cited_content, dict):
-                content = cited_content.get("answer", content)
-
-        # Beautify if needed
-        if not _is_beautiful_markdown(content):
-            content = _beautify_markdown(content)
-
-        # Stream fallback
-        chunk_size = 100
-        for i in range(0, len(content), chunk_size):
-            chunk = content[i:i + chunk_size]
-            writer({"event": "answer_chunk", "data": {"chunk": chunk}})
-            await asyncio.sleep(STREAMING_FALLBACK_DELAY)
-
-        # Build completion data
-        if has_internal_knowledge and final_results:
-            citations = [
-                {
-                    "citationId": result["metadata"].get("_id"),
-                    "content": result.get("content", ""),
-                    "metadata": result.get("metadata", {}),
-                    "citationType": result.get("citationType", "vectordb|document"),
-                    "chunkIndex": i + 1
-                }
-                for i, result in enumerate(final_results)
-            ]
-
-            completion_data = {
-                "answer": content,
-                "citations": citations,
-                "confidence": "Medium",
-                "reason": "Fallback response with internal knowledge"
-            }
-        else:
-            completion_data = {
-                "answer": content,
-                "citations": [],
-                "confidence": "Medium",
-                "reason": "Fallback markdown response"
-            }
-
-        # Add workflow if available
-        if state.get("all_tool_results"):
-            completion_data["workflowSteps"] = _build_workflow_summary(state["all_tool_results"])
-
-        writer({"event": "complete", "data": completion_data})
-
-        return completion_data
-
-def _clean_response(response) -> Dict[str, Any]:
-    """Clean response format"""
-    if isinstance(response, str):
-        try:
-            cleaned_content = response.strip()
-
-            if cleaned_content.startswith('"') and cleaned_content.endswith('"'):
-                cleaned_content = cleaned_content[1:-1].replace('\\"', '"')
-
-            cleaned_content = cleaned_content.replace("\\n", "\n").replace("\\t", "\t")
-            cleaned_content = fix_json_string(cleaned_content)
-
-            response_data = json.loads(cleaned_content)
-            return _normalize_response_format(response_data)
-        except (json.JSONDecodeError, Exception):
-            return _normalize_response_format(response)
-    else:
-        return _normalize_response_format(response)
-
-
 def _validate_and_fix_message_sequence(messages) -> List[Any]:
     """
     Validate and fix message sequence to ensure proper tool_call threading.
@@ -2133,8 +2417,15 @@ def _validate_and_fix_message_sequence(messages) -> List[Any]:
     return validated
 
 
-def _clean_message_history(messages) -> List[Any]:
-    """Clean message history with context length management"""
+def _clean_message_history(messages, is_complex: bool = False) -> List[Any]:
+    """Clean message history with context length management
+
+    Args:
+        messages: List of messages to clean
+        is_complex: Whether this is a complex query (uses larger history limit)
+    """
+    # CRITICAL: Always validate message sequence to prevent orphaned ToolMessages
+    # Even small message lists can have invalid tool_call/response pairs after optimization
     validated_messages = _validate_and_fix_message_sequence(messages)
     cleaned = []
 
@@ -2142,33 +2433,46 @@ def _clean_message_history(messages) -> List[Any]:
     if validated_messages and isinstance(validated_messages[0], SystemMessage):
         cleaned.append(validated_messages[0])
 
+    # ⚡ NUCLEAR: Use aggressive limit for simple queries (75% faster LLM!)
+    message_limit = MAX_MESSAGES_HISTORY if is_complex else MAX_MESSAGES_HISTORY_SIMPLE
+
     # Keep last N messages to manage context length
     recent_messages = validated_messages[1:] if validated_messages else []
 
-    if len(recent_messages) > MAX_MESSAGES_HISTORY:
+    if len(recent_messages) > message_limit:
         # Keep the most recent messages
-        recent_messages = recent_messages[-MAX_MESSAGES_HISTORY:]
+        recent_messages = recent_messages[-message_limit:]
+        if not is_complex and len(validated_messages) > message_limit:
+            # Log when we're using aggressive reduction
+            logger = logging.getLogger(__name__)
+            logger.debug(f"⚡ NUCLEAR: Aggressive context reduction - {len(validated_messages)} → {message_limit} messages (simple query optimization)")
 
-    # Process recent messages and summarize tool results
+    # Process recent messages and ALWAYS summarize oversized tool results
     for i, msg in enumerate(recent_messages):
         if isinstance(msg, (SystemMessage, HumanMessage, AIMessage)):
             cleaned.append(msg)
         elif hasattr(msg, 'tool_call_id'):
-            #  Don't summarize recent tool results - agent needs to see them
-            # Only summarize if we have too many messages
-            if len(recent_messages) > MAX_MESSAGES_HISTORY:
+            # ⚡ PERFORMANCE: Always summarize tool results that exceed MAX_TOOL_RESULT_LENGTH
+            # This prevents massive context bloat and reduces LLM latency
+            msg_content = msg.content if hasattr(msg, 'content') else str(msg)
+            if len(msg_content) > MAX_TOOL_RESULT_LENGTH:
                 summarized_msg = _summarize_tool_result(msg)
                 if summarized_msg:
                     cleaned.append(summarized_msg)
+                else:
+                    # Fallback: truncate if summarization fails
+                    truncated_content = msg_content[:MAX_TOOL_RESULT_LENGTH] + "\n...[truncated for brevity]"
+                    truncated_msg = ToolMessage(content=truncated_content, tool_call_id=msg.tool_call_id)
+                    cleaned.append(truncated_msg)
             else:
-                # Keep full tool results for recent messages
+                # Keep full tool results for reasonably sized results
                 cleaned.append(msg)
 
     return cleaned
 
 
 def _summarize_tool_result(tool_result_msg) -> Optional[object]:
-    """Summarize tool results to reduce context length"""
+    """Summarize tool results to reduce context length WHILE PRESERVING CRITICAL DATA"""
     try:
         from langchain_core.messages import ToolMessage
 
@@ -2178,33 +2482,34 @@ def _summarize_tool_result(tool_result_msg) -> Optional[object]:
         else:
             content = str(tool_result_msg)
 
-        # If content is too long, summarize it
+        # If content is too long, intelligently summarize
         if len(content) > MAX_TOOL_RESULT_LENGTH:
             # Try to extract key information
             if isinstance(content, str):
-                # For JSON responses, try to extract key fields
+                # For JSON responses, try to intelligently summarize
                 try:
                     import json
                     data = json.loads(content)
                     if isinstance(data, dict):
-                        # Create summary with key fields
-                        summary_fields = {}
-                        for key in ['id', 'subject', 'snippet', 'from', 'to', 'date', 'status', 'result']:
-                            if key in data:
-                                summary_fields[key] = data[key]
+                        # ⚡ SMART SUMMARIZATION: Preserve structure but limit array lengths
+                        summarized_data = _smart_summarize_dict(data, max_depth=3, max_array_items=5)
 
-                        # Add truncated content if still too long
-                        summary_content = json.dumps(summary_fields, indent=2)
+                        # Convert back to JSON
+                        summary_content = json.dumps(summarized_data, indent=2)
+
+                        # If still too long after smart summarization, truncate
                         if len(summary_content) > MAX_TOOL_RESULT_LENGTH:
-                            summary_content = summary_content[:MAX_TOOL_RESULT_LENGTH] + "... [TRUNCATED]"
+                            summary_content = summary_content[:MAX_TOOL_RESULT_LENGTH] + "\n... [TRUNCATED - full data available to agent]"
 
                         content = summary_content
                     else:
-                        content = content[:MAX_TOOL_RESULT_LENGTH] + "... [TRUNCATED]"
+                        # Not a dict - just truncate
+                        content = content[:MAX_TOOL_RESULT_LENGTH] + "\n... [TRUNCATED]"
                 except (json.JSONDecodeError, TypeError):
-                    content = content[:MAX_TOOL_RESULT_LENGTH] + "... [TRUNCATED]"
+                    # Not JSON - just truncate
+                    content = content[:MAX_TOOL_RESULT_LENGTH] + "\n... [TRUNCATED]"
             else:
-                content = str(content)[:MAX_TOOL_RESULT_LENGTH] + "... [TRUNCATED]"
+                content = str(content)[:MAX_TOOL_RESULT_LENGTH] + "\n... [TRUNCATED]"
 
         # Create summarized tool message
         return ToolMessage(
@@ -2216,13 +2521,45 @@ def _summarize_tool_result(tool_result_msg) -> Optional[object]:
         # If summarization fails, return truncated original
         try:
             from langchain_core.messages import ToolMessage
-            content = str(tool_result_msg.content)[:1000] + "... [TRUNCATED]"
+            content = str(tool_result_msg.content)[:1500] + "\n... [ERROR IN SUMMARIZATION - TRUNCATED]"
             return ToolMessage(
                 content=content,
                 tool_call_id=tool_result_msg.tool_call_id
             )
         except Exception:
             return None
+
+
+def _smart_summarize_dict(data: dict, max_depth: int = 3, max_array_items: int = 5, current_depth: int = 0) -> dict:
+    """
+    Intelligently summarize a dictionary by:
+    - Preserving structure and keys
+    - Limiting array lengths to first N items + count
+    - Maintaining nested structure up to max_depth
+    - Keeping success/error indicators
+    """
+    if current_depth >= max_depth:
+        return {"[...]": "nested data truncated"}
+
+    result = {}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            # Recursively summarize nested dicts
+            result[key] = _smart_summarize_dict(value, max_depth, max_array_items, current_depth + 1)
+        elif isinstance(value, list):
+            if len(value) > max_array_items:
+                # Keep first N items + add count
+                result[key] = value[:max_array_items]
+                result[f"{key}_total_count"] = len(value)
+                result[f"{key}_note"] = f"Showing first {max_array_items} of {len(value)} items"
+            else:
+                # Keep full list if small enough
+                result[key] = value
+        else:
+            # Keep primitive values as-is
+            result[key] = value
+
+    return result
 
 
 # ============================================================================

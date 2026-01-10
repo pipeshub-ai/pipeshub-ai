@@ -33,6 +33,9 @@ class AtlassianScope(Enum):
     JIRA_DATA_PROVIDER_MANAGE = "manage:jira-data-provider"
     JIRA_PROJECT_READ = "read:jira-project"
     JIRA_PROJECT_WRITE = "write:jira-project"
+    JIRA_USER_VIEW = "read:user:jira"
+    JIRA_USER_COLUMNS = "read:user.columns:jira"
+
 
     # Confluence Scopes
     CONFLUENCE_CONTENT_READ = "read:confluence-content.all"
@@ -140,6 +143,8 @@ class AtlassianScope(Enum):
             cls.JIRA_CONFIGURATION_MANAGE.value,
             cls.JIRA_PROJECT_READ.value,
             cls.JIRA_PROJECT_WRITE.value,
+            cls.JIRA_USER_VIEW.value,
+            cls.JIRA_USER_COLUMNS.value,
             # Confluence
             cls.CONFLUENCE_CONTENT_READ.value,
             cls.CONFLUENCE_CONTENT_WRITE.value,
