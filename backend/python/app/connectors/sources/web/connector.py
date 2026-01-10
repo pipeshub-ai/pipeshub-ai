@@ -66,7 +66,7 @@ class WebApp(App):
 
 @ConnectorBuilder("Web")\
     .in_group("Web")\
-    .with_auth_type("NONE")\
+    .with_supported_auth_types("NONE")\
     .with_description("Crawl and sync data from web pages")\
     .with_categories(["Web"])\
     .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\

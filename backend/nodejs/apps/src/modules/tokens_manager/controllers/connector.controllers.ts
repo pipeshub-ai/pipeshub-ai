@@ -425,7 +425,7 @@ export const createConnectorInstance =
   ): Promise<void> => {
     try {
       const { userId } = req.user || {};
-      const { connectorType, instanceName, config, baseUrl, scope } = req.body;
+      const { connectorType, instanceName, config, baseUrl, scope, authType } = req.body;
 
       if (!userId) {
         throw new UnauthorizedError('User authentication required');
@@ -440,6 +440,7 @@ export const createConnectorInstance =
       logger.info(`Creating connector instance for user ${userId}`, {
         connectorType,
         instanceName,
+        authType,
       });
 
       const isAdmin = await isUserAdmin(req);
@@ -452,7 +453,7 @@ export const createConnectorInstance =
         `${appConfig.connectorBackend}/api/v1/connectors/`,
         HttpMethod.POST,
         headers,
-        { connectorType, instanceName, config, baseUrl, scope },
+        { connectorType, instanceName, config, baseUrl, scope, authType },
       );
 
       handleConnectorResponse(

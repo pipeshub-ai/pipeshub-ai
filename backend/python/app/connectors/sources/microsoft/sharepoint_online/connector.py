@@ -48,6 +48,7 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncPoint,
     generate_record_sync_point_key,
 )
+from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -134,10 +135,41 @@ class SiteMetadata:
 
 @ConnectorBuilder("SharePoint Online")\
     .in_group("Microsoft 365")\
-    .with_auth_type("OAUTH_ADMIN_CONSENT")\
     .with_description("Sync documents and lists from SharePoint Online")\
     .with_categories(["Storage", "Documentation"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH_ADMIN_CONSENT).fields([
+            AuthField(
+                name="clientId",
+                display_name="Application (Client) ID",
+                placeholder="Enter your Azure AD Application ID",
+                description="The Application (Client) ID from Azure AD App Registration"
+            ),
+            AuthField(
+                name="tenantId",
+                display_name="Directory (Tenant) ID (Optional)",
+                placeholder="Enter your Azure AD Tenant ID",
+                description="The Directory (Tenant) ID from Azure AD"
+            ),
+            AuthField(
+                name="hasAdminConsent",
+                display_name="Has Admin Consent",
+                description="Check if admin consent has been granted for the application",
+                field_type="CHECKBOX",
+                required=True,
+                default_value=False
+            ),
+            AuthField(
+                name="sharepointDomain",
+                display_name="SharePoint Domain",
+                placeholder="https://your-domain.sharepoint.com",
+                description="Your SharePoint domain URL",
+                field_type="URL",
+                max_length=2000
+            )
+        ])
+    ])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/sharepoint.svg")
         .add_documentation_link(DocumentationLink(
@@ -149,44 +181,6 @@ class SiteMetadata:
             'Pipeshub Documentation',
             'https://docs.pipeshub.com/connectors/microsoft-365/sharepoint',
             'pipeshub'
-        ))
-        .with_redirect_uri("connectors/oauth/callback/SharePoint Online", False)
-        .add_auth_field(AuthField(
-            name="clientId",
-            display_name="Application (Client) ID",
-            placeholder="Enter your Azure AD Application ID",
-            description="The Application (Client) ID from Azure AD App Registration"
-        ))
-        # .add_auth_field(AuthField(
-        #     name="clientSecret",
-        #     display_name="Client Secret",
-        #     placeholder="Enter your Azure AD Client Secret",
-        #     description="The Client Secret from Azure AD App Registration (Optional if using certificate)",
-        #     field_type="PASSWORD",
-        #     is_secret=True,
-        #     required=False
-        # ))
-        .add_auth_field(AuthField(
-            name="tenantId",
-            display_name="Directory (Tenant) ID (Optional)",
-            placeholder="Enter your Azure AD Tenant ID",
-            description="The Directory (Tenant) ID from Azure AD"
-        ))
-        .add_auth_field(AuthField(
-            name="hasAdminConsent",
-            display_name="Has Admin Consent",
-            description="Check if admin consent has been granted for the application",
-            field_type="CHECKBOX",
-            required=True,
-            default_value=False
-        ))
-        .add_auth_field(AuthField(
-            name="sharepointDomain",
-            display_name="SharePoint Domain",
-            placeholder="https://your-domain.sharepoint.com",
-            description="Your SharePoint domain URL",
-            field_type="URL",
-            max_length=2000
         ))
         .add_filter_field(FilterField(
             name="site_ids",

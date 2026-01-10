@@ -361,6 +361,48 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     registry = await initialize_connector_registry(app_container)
     app.state.connector_registry = registry
     logger.info("✅ Connector registry initialized and synchronized with database")
+
+    # Initialize OAuth config registry (completely independent, no connector registry needed)
+    # Note: OAuth registry is populated when connectors are registered above
+    from app.connectors.core.registry.oauth_config_registry import (
+        get_oauth_config_registry,
+    )
+    oauth_registry = get_oauth_config_registry()
+    app.state.oauth_config_registry = oauth_registry
+    logger.info("✅ OAuth config registry initialized")
+
+    # Run OAuth credentials migration (AFTER connector and OAuth registries are initialized)
+    # This migration needs OAuth registry to be populated to get OAuth infrastructure fields
+    try:
+        logger.info("🔄 Running OAuth credentials migration...")
+        from app.migrations.oauth_credentials_migration import (
+            run_oauth_credentials_migration,
+        )
+
+        migration_result = await run_oauth_credentials_migration(
+            config_service=app_container.config_service(),
+            arango_service=await app_container.arango_service(),
+            logger=logger,
+            dry_run=False
+        )
+
+        if migration_result.get("success"):
+            if migration_result.get("skipped"):
+                logger.info("✅ OAuth credentials migration already completed")
+            else:
+                connectors_migrated = migration_result.get("connectors_migrated", 0)
+                oauth_configs_created = migration_result.get("oauth_configs_created", 0)
+                logger.info(
+                    f"✅ OAuth credentials migration completed: "
+                    f"{connectors_migrated} connectors migrated, {oauth_configs_created} OAuth configs created"
+                )
+        else:
+            error_msg = migration_result.get("error", "Unknown error")
+            logger.error(f"❌ OAuth credentials migration failed: {error_msg}")
+    except Exception as e:
+        logger.error(f"❌ OAuth credentials migration error: {e}")
+        # Don't fail startup - migration is idempotent and can be retried
+
     logger.debug("🚀 Starting application")
     # Start messaging producer first
     try:

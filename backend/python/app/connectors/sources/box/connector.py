@@ -27,6 +27,10 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
 )
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+)
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -109,10 +113,33 @@ def get_mimetype_enum_for_box(entry_type: str, filename: str = None) -> MimeType
 
 @ConnectorBuilder("Box")\
     .in_group("Cloud Storage")\
-    .with_auth_type("API_TOKEN")\
     .with_description("Sync files and folders from Box")\
     .with_categories(["Storage"])\
-    .with_scopes([ConnectorScope.TEAM.value, ConnectorScope.PERSONAL.value])\
+    .with_scopes([ConnectorScope.TEAM.value])\
+    .with_auth([
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+                AuthField(
+                    name="clientId",
+                    display_name="Application (Client) ID",
+                    placeholder="Enter your Box Developer Console Application (Client) ID",
+                    description="The Application (Client) ID from Box Developer Console"
+                ),
+                AuthField(
+                    name="clientSecret",
+                    display_name="Client Secret",
+                    placeholder="Enter your Box Developer Console Client Secret",
+                    description="The Client Secret from Box Developer Console",
+                    field_type="PASSWORD",
+                    is_secret=True
+                ),
+                AuthField(
+                    name="enterpriseId",
+                    display_name="Box Enterprise ID",
+                    placeholder="Enter your Box Enterprise ID",
+                    description="The Enterprise ID from Box Developer Console"
+                )
+        ])
+    ])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/box.svg")
         .with_realtime_support(True)
@@ -126,20 +153,6 @@ def get_mimetype_enum_for_box(entry_type: str, filename: str = None) -> MimeType
             'https://docs.pipeshub.com/connectors/box',
             'pipeshub'
         ))
-        .with_oauth_urls(
-            "https://account.box.com/api/oauth2/authorize",
-            "https://api.box.com/oauth2/token",
-            ["root_readwrite", "manage_managed_users", "manage_groups", "manage_enterprise_properties"]  # Note: Box scopes are configured in Developer Console, not in OAuth URL
-        )
-        .add_auth_field(CommonFields.client_id("Box Developer Console"))
-        .add_auth_field(CommonFields.client_secret("Box Developer Console"))
-        .add_auth_field(AuthField(
-            name="enterpriseId",
-            display_name="Box Enterprise ID",
-            placeholder="Enter Box Enterprise ID",
-            description="The Enterprise ID from Box Developer Console"
-        ))
-        .add_filter_field(CommonFields.file_extension_filter())
         .with_webhook_config(True, ["FILE.UPLOADED", "FILE.DELETED", "FILE.MOVED", "FOLDER.CREATED", "COLLABORATION.REMOVED"])
         .with_scheduled_config(True, 60)
         .with_agent_support(False)

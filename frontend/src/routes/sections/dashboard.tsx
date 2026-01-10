@@ -47,6 +47,9 @@ const ConnectorOAuthCallback = lazy(
   () => import('src/pages/dashboard/account/connectors/oauth-callback')
 );
 
+// OAuth configuration page
+const OAuthConfig = lazy(() => import('src/pages/dashboard/account/oauth-config'));
+
 const SamlSsoConfigPage = lazy(() => import('src/pages/dashboard/account/saml-sso-config'));
 
 // knowledge-base
@@ -351,6 +354,14 @@ export const dashboardRoutes = [
                     ],
                   },
                   {
+                    path: 'oauth-config',
+                    element: CONFIG.auth.skip ? (
+                      <OAuthConfig />
+                    ) : (
+                      <BusinessAdminOnlyRoute component={OAuthConfig} />
+                    ),
+                  },
+                  {
                     path: 'services',
                     element: CONFIG.auth.skip ? (
                       <ServiceSettings />
@@ -480,6 +491,14 @@ export const dashboardRoutes = [
                         element: <IndividualOnlyRoute component={ConnectorManagementPage} />,
                       },
                     ],
+                  },
+                  {
+                    path: 'oauth-config',
+                    element: CONFIG.auth.skip ? (
+                      <OAuthConfig />
+                    ) : (
+                      <IndividualOnlyRoute component={OAuthConfig} />
+                    ),
                   },
                   {
                     path: 'services',

@@ -19,7 +19,7 @@ from uuid import uuid4
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import AppGroups, Connectors, MimeTypes, OriginTypes
+from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -27,6 +27,11 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -634,11 +639,48 @@ async def adf_to_text_with_images(
 
 
 @ConnectorBuilder("Jira")\
-    .in_group(AppGroups.ATLASSIAN.value)\
-    .with_auth_type("OAUTH")\
-    .with_description("Sync issues, comments, and users from Jira Cloud")\
-    .with_categories(["Project Management", "Collaboration"])\
+    .in_group("Atlassian")\
+    .with_description("Sync issues from Jira Cloud")\
+    .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Jira",
+            authorize_url=AUTHORIZE_URL,
+            token_url=TOKEN_URL,
+            redirect_uri="connectors/oauth/callback/Jira",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=AtlassianScope.get_full_access(),
+                agent=AtlassianScope.get_full_access()
+            ),
+            fields=[
+                AuthField(
+                    name="clientId",
+                    display_name="Application (Client) ID",
+                    placeholder="Enter your Atlassian Cloud Application ID",
+                    description="The Application (Client) ID from Azure AD App Registration"
+                ),
+                AuthField(
+                    name="clientSecret",
+                    display_name="Client Secret",
+                    placeholder="Enter your Atlassian Cloud Client Secret",
+                    description="The Client Secret from Azure AD App Registration",
+                    field_type="PASSWORD",
+                    is_secret=True
+                ),
+                AuthField(
+                    name="domain",
+                    display_name="Atlassian Domain",
+                    description="https://your-domain.atlassian.net"
+                )
+            ],
+            icon_path="/assets/icons/connectors/jira.svg",
+            app_group="Atlassian",
+            app_description="OAuth application for accessing Jira Cloud API and issue tracking services",
+            app_categories=["Storage"]
+        )
+    ])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/jira.svg")
         .with_realtime_support(False)
@@ -652,31 +694,10 @@ async def adf_to_text_with_images(
             'https://docs.pipeshub.com/connectors/jira/jira',
             'pipeshub'
         ))
-        .with_redirect_uri("connectors/oauth/callback/Jira", True)
-        .add_auth_field(AuthField(
-            name="clientId",
-            display_name="Application (Client) ID",
-            placeholder="Enter your Atlassian Cloud Application ID",
-            description="The Application (Client) ID from Atlassian Developer Console"
-        ))
-        .add_auth_field(AuthField(
-            name="clientSecret",
-            display_name="Client Secret",
-            placeholder="Enter your Atlassian Cloud Client Secret",
-            description="The Client Secret from Atlassian Developer Console",
-            field_type="PASSWORD",
-            is_secret=True
-        ))
-        .add_auth_field(AuthField(
-            name="domain",
-            display_name="Atlassian Domain",
-            description="https://your-domain.atlassian.net"
-        ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(True)
-        .with_oauth_urls(AUTHORIZE_URL, TOKEN_URL, AtlassianScope.get_full_access())
         .add_filter_field(FilterField(
             name="project_keys",
             display_name="Project Keys",
