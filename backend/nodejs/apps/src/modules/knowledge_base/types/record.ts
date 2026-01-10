@@ -26,7 +26,8 @@ export interface IRecordDocument {
   _key: string;
   // Optional properties can be omitted on document creation
   orgId: string;
-
+  sizeInBytes?: number;
+  
   // Required fields
   recordName: string;
   externalRecordId: string;

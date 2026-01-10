@@ -145,14 +145,12 @@ class KafkaUtils:
         """Create a message handler for record events"""
         logger = app_container.logger()
         event_processor = await app_container.event_processor()
-        redis_scheduler = await app_container.redis_scheduler()
         config_service =  app_container.config_service()
         # Create the entity event service
         record_event_service = RecordEventHandler(
             logger=logger,
             config_service=config_service,
             event_processor=event_processor,
-            scheduler=redis_scheduler
         )
 
         async def handle_record_message(message: Dict[str, Any]) -> bool:

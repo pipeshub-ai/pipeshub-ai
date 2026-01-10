@@ -75,7 +75,8 @@ class Record(BaseModel):
     connector_id: str = Field(description="Unique identifier for the connector configuration instance")
     virtual_record_id: Optional[str] = Field(description="Virtual record identifier", default=None)
     summary_document_id: Optional[str] = Field(description="Summary document identifier", default=None)
-    md5_hash: Optional[str] = Field(default=None, description="MD5 hash of the record")
+    md5_hash: Optional[str] = Field(default=None, description="MD5 hash of the record content")
+    size_in_bytes: Optional[int] = Field(default=None, description="Size of the record content in bytes")
     mime_type: str = Field(default=MimeTypes.UNKNOWN.value, description="MIME type of the record")
     inherit_permissions: bool = Field(default=True, description="Inherit permissions from parent record") # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
     indexing_status: str = Field(default=IndexingStatus.NOT_STARTED.value, description="Indexing status for the record")
@@ -133,6 +134,8 @@ class Record(BaseModel):
             "previewRenderable": self.preview_renderable,
             "isShared": self.is_shared,
             "isVLMOcrProcessed": self.is_vlm_ocr_processed,
+            "md5Checksum": self.md5_hash,
+            "sizeInBytes": self.size_in_bytes,
             "isDependentNode": self.is_dependent_node,
             "parentNodeId": self.parent_node_id,
         }
@@ -176,6 +179,8 @@ class Record(BaseModel):
             is_vlm_ocr_processed=arango_base_record.get("isVLMOcrProcessed", False),
             is_dependent_node=arango_base_record.get("isDependentNode", False),
             parent_node_id=arango_base_record.get("parentNodeId", None),
+            md5_hash=arango_base_record.get("md5Checksum", None),
+            size_in_bytes=arango_base_record.get("sizeInBytes", None),
         )
 
     def to_kafka_record(self) -> Dict:
