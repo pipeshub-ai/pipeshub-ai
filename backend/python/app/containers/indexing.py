@@ -122,8 +122,7 @@ class IndexingAppContainer(BaseAppContainer):
     # Indexing-specific wiring configuration
     wiring_config = containers.WiringConfiguration(
         modules=[
-            "app.indexing_main",
-            "app.modules.extraction.domain_extraction",
+            "app.indexing_main"
         ]
     )
 
