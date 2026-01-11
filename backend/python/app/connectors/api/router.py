@@ -2886,8 +2886,9 @@ async def _handle_oauth_config_creation(
     org_id: str,
     is_admin: bool,
     config_service: ConfigurationService,
-    oauth_config_id: Optional[str],
     auth_type: str,
+    base_url: str,
+    oauth_config_id: Optional[str],
     logger
 ) -> Optional[str]:
     """
@@ -2905,6 +2906,7 @@ async def _handle_oauth_config_creation(
         config_service: Configuration service instance
         oauth_config_id: Existing OAuth config ID (if updating)
         auth_type: Authentication type (from connector instance)
+        base_url: Base URL for OAuth redirects
         logger: Logger instance
 
     Returns:
@@ -2996,6 +2998,7 @@ async def _handle_oauth_config_creation(
         org_id=org_id,
         is_admin=is_admin,
         config_service=config_service,
+        base_url=base_url,
         oauth_app_id=oauth_app_id,
         logger=logger
     )
@@ -3122,7 +3125,7 @@ async def _prepare_connector_config(
                 redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
             else:
                 endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
-                fallback_url = endpoints.get("frontendPublicUrl", "http://localhost:3001")
+                fallback_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
                 redirect_uri = f"{fallback_url.rstrip('/')}/{redirect_uri}"
 
         prepared_config["auth"].update({
@@ -3368,8 +3371,9 @@ async def create_connector_instance(
                     org_id=org_id,
                     is_admin=is_admin,
                     config_service=config_service,
-                    oauth_config_id=oauth_config_id,
                     auth_type=selected_auth_type,
+                    base_url=base_url,
+                    oauth_config_id=oauth_config_id,
                     logger=logger
                 )
 
@@ -3780,6 +3784,7 @@ async def update_connector_instance_auth_config(
                     org_id=org_id,
                     is_admin=is_admin,
                     config_service=config_service,
+                    base_url=base_url,
                     oauth_app_id=oauth_app_id,
                     logger=logger
                 )
@@ -3851,10 +3856,7 @@ async def update_connector_instance_auth_config(
                     "/services/endpoints",
                     use_cache=False
                 )
-                base_url = endpoints.get(
-                    "frontendPublicUrl",
-                    "http://localhost:3001"
-                )
+                base_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
                 redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
             # Only use registry defaults if user hasn't provided these values
@@ -4241,10 +4243,7 @@ async def update_connector_instance_config(
                             "/services/endpoints",
                             use_cache=False
                         )
-                        base_url = endpoints.get(
-                            "frontendPublicUrl",
-                            "http://localhost:3001"
-                        )
+                        base_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
                         redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
 
@@ -4746,7 +4745,8 @@ def _check_oauth_name_conflict(
 async def _update_oauth_infrastructure_fields(
     oauth_config: Dict[str, Any],
     connector_type: str,
-    config_service: ConfigurationService
+    config_service: ConfigurationService,
+    base_url: str
 ) -> None:
     """
     Ensure OAuth infrastructure fields are present from registry.
@@ -4757,6 +4757,7 @@ async def _update_oauth_infrastructure_fields(
         oauth_config: OAuth config dictionary to update
         connector_type: Type of connector
         config_service: Configuration service for endpoints
+        base_url: Base URL for OAuth redirects
     """
     from app.connectors.core.registry.oauth_config_registry import (
         get_oauth_config_registry,
@@ -4778,10 +4779,16 @@ async def _update_oauth_infrastructure_fields(
     if "redirectUri" not in oauth_config:
         redirect_uri_path = oauth_registry_config.redirect_uri
         if redirect_uri_path:
-            endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
-            base_url = endpoints.get("frontendPublicUrl", "http://localhost:3001")
-            oauth_config["redirectUri"] = f"{base_url.rstrip('/')}/{redirect_uri_path}"
+            if base_url:
+                logger.debug(f"Using base URL: {base_url}")
+                oauth_config["redirectUri"] = f"{base_url.rstrip('/')}/{redirect_uri_path}"
+            else:
+                endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
+                fallback_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
+                logger.debug(f"Using fallback URL: {fallback_url}")
+                oauth_config["redirectUri"] = f"{fallback_url.rstrip('/')}/{redirect_uri_path}"
         else:
+            logger.debug("No redirect URI path found")
             oauth_config["redirectUri"] = ""
 
     if "scopes" not in oauth_config:
@@ -6872,6 +6879,7 @@ async def _create_or_update_oauth_config(
     org_id: str,
     is_admin: bool,
     config_service: ConfigurationService,
+    base_url: str,
     oauth_app_id: Optional[str] = None,
     logger = None
 ) -> Optional[str]:
@@ -6887,6 +6895,7 @@ async def _create_or_update_oauth_config(
         org_id: Organization ID
         is_admin: Whether user is admin
         config_service: Configuration service instance
+        base_url: Base URL for OAuth redirects
         oauth_app_id: Optional existing OAuth app ID to update
         logger: Optional logger instance
 
@@ -6923,7 +6932,7 @@ async def _create_or_update_oauth_config(
                             oauth_cfg["config"] = {}
 
                         # Ensure OAuth infrastructure fields are present (if missing, add from registry)
-                        await _update_oauth_infrastructure_fields(oauth_cfg, connector_type, config_service)
+                        await _update_oauth_infrastructure_fields(oauth_cfg, connector_type, config_service, base_url)
 
                         # Update all OAuth credential fields dynamically from auth_config
                         # This allows overriding existing OAuth config credentials
@@ -6963,7 +6972,7 @@ async def _create_or_update_oauth_config(
             }
 
             # Store OAuth infrastructure fields from registry (needed for OAuth flow)
-            await _update_oauth_infrastructure_fields(new_oauth_config, connector_type, config_service)
+            await _update_oauth_infrastructure_fields(new_oauth_config, connector_type, config_service, base_url)
 
             # Populate all OAuth credential fields dynamically from auth_config
             for field_name in oauth_field_names:
@@ -7094,6 +7103,7 @@ async def create_oauth_config(
         body = await request.json()
         oauth_instance_name = (body.get("oauthInstanceName") or "").strip()
         config = body.get("config", {})
+        base_url = body.get("baseUrl", "")
 
         if not oauth_instance_name:
             logger.error("oauthInstanceName is required")
@@ -7150,7 +7160,7 @@ async def create_oauth_config(
         }
 
         # Store OAuth infrastructure fields from registry (needed for OAuth flow)
-        await _update_oauth_infrastructure_fields(new_config, connector_type, config_service)
+        await _update_oauth_infrastructure_fields(new_config, connector_type, config_service, base_url)
 
         # Add to existing configs
         existing_configs.append(new_config)
@@ -7386,6 +7396,7 @@ async def update_oauth_config(
         body = await request.json()
         new_name = body.get("oauthInstanceName")
         new_config = body.get("config")
+        base_url = body.get("baseUrl", "")
 
         # Get OAuth configs for this connector type
         oauth_configs = await _get_oauth_configs_from_etcd(connector_type, config_service)
@@ -7416,7 +7427,7 @@ async def update_oauth_config(
             oauth_config["config"] = new_config
 
         # Ensure OAuth infrastructure fields are present (if missing, add from registry)
-        await _update_oauth_infrastructure_fields(oauth_config, connector_type, config_service)
+        await _update_oauth_infrastructure_fields(oauth_config, connector_type, config_service, base_url)
 
         oauth_config["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
         oauth_config["updatedBy"] = user_context["user_id"]
