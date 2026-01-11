@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Tuple
 
 from app.agents.tools.decorator import tool
@@ -220,6 +220,11 @@ class S3:
                         timestamp_clean = timestamp.replace('Z', '+00:00') if timestamp.endswith('Z') else timestamp
                         filter_timestamp = datetime.fromisoformat(timestamp_clean)
 
+                        # Make filter_timestamp timezone-aware if it's naive (S3 LastModified is always UTC-aware)
+                        # If the user provides a timestamp without timezone info, assume UTC
+                        if filter_timestamp.tzinfo is None:
+                            filter_timestamp = filter_timestamp.replace(tzinfo=timezone.utc)
+
                         # Work directly with response.data dictionary (no need to serialize/deserialize)
                         response_data_dict = response.data
 
@@ -239,8 +244,8 @@ class S3:
                                         else:
                                             # Fallback: if it's not a datetime (unlikely), skip it
                                             logger.warning(f"Skipping object {obj.get('Key', 'unknown')} due to invalid LastModified type: {type(last_modified)}")
-                                    except (ValueError, AttributeError) as e:
-                                        # Skip objects with invalid LastModified timestamps
+                                    except (ValueError, AttributeError, TypeError) as e:
+                                        # Skip objects with invalid LastModified timestamps or comparison errors
                                         logger.warning(f"Skipping object {obj.get('Key', 'unknown')} due to invalid LastModified: {e}")
                                         continue
 

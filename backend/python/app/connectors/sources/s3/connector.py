@@ -1037,15 +1037,32 @@ class S3Connector(BaseConnector):
                 )
             else:
                 # For Personal: permission with individual user (creator)
-                # Since we may not have created_by easily accessible, default to ORG permission
-                # In a real implementation, you would fetch the creator from the connector instance
-                permissions.append(
-                    Permission(
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                        external_id=self.data_entities_processor.org_id
+                if self.created_by:
+                    # Try to get user email from created_by user_id
+                    try:
+                        async with self.data_store_provider.transaction() as tx_store:
+                            user = await tx_store.get_user_by_id(self.created_by)
+                            if user and user.get("email"):
+                                permissions.append(
+                                    Permission(
+                                        type=PermissionType.OWNER,
+                                        entity_type=EntityType.USER,
+                                        email=user.get("email"),
+                                        external_id=self.created_by
+                                    )
+                                )
+                    except Exception as e:
+                        self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
+
+                # Fallback to ORG permission if user not found
+                if not permissions:
+                    permissions.append(
+                        Permission(
+                            type=PermissionType.READ,
+                            entity_type=EntityType.ORG,
+                            external_id=self.data_entities_processor.org_id
+                        )
                     )
-                )
 
             # TODO: Fetch object ACL from S3 if needed
             # response = await self.data_source.get_object_acl(Bucket=bucket_name, Key=key)
@@ -1183,7 +1200,8 @@ class S3Connector(BaseConnector):
 
     async def cleanup(self) -> None:
         """Clean up resources used by the connector."""
-        raise NotImplementedError("This method should be implemented by the subclass")
+        self.logger.info("Cleaning up S3 connector resources.")
+        self.data_source = None
 
     async def get_filter_options(
         self,
