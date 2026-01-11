@@ -219,10 +219,10 @@ class S3:
                         # Handle both 'Z' and timezone offset formats
                         timestamp_clean = timestamp.replace('Z', '+00:00') if timestamp.endswith('Z') else timestamp
                         filter_timestamp = datetime.fromisoformat(timestamp_clean)
-                        
+
                         # Work directly with response.data dictionary (no need to serialize/deserialize)
                         response_data_dict = response.data
-                        
+
                         # Filter objects based on LastModified
                         if response_data_dict and 'Contents' in response_data_dict:
                             filtered_contents = []
@@ -243,13 +243,13 @@ class S3:
                                         # Skip objects with invalid LastModified timestamps
                                         logger.warning(f"Skipping object {obj.get('Key', 'unknown')} due to invalid LastModified: {e}")
                                         continue
-                            
+
                             # Update the response data with filtered contents
                             response_data_dict['Contents'] = filtered_contents
                             # Update KeyCount if it exists
                             if 'KeyCount' in response_data_dict:
                                 response_data_dict['KeyCount'] = len(filtered_contents)
-                            
+
                             # Return the filtered response
                             return True, response.to_json()
                         else:
@@ -258,7 +258,7 @@ class S3:
                     except ValueError as e:
                         logger.error(f"Error parsing timestamp: {e}")
                         return False, json.dumps({"error": f"Invalid timestamp format: {str(e)}"})
-                
+
                 return True, response.to_json()
             else:
                 return False, response.to_json()

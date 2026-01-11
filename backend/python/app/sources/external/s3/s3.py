@@ -4,8 +4,8 @@ from typing import Any, Dict, List, Optional, Union
 
 try:
     import aioboto3  # type: ignore
-    from botocore.exceptions import ClientError  # type: ignore
     from botocore.config import Config  # type: ignore
+    from botocore.exceptions import ClientError  # type: ignore
 except ImportError:
     raise ImportError("aioboto3 is not installed. Please install it with `pip install aioboto3`")
 

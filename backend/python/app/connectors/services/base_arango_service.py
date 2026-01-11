@@ -703,9 +703,6 @@ class BaseArangoService:
 
             user_key = user.get('_key')
 
-            # Get user's accessible app connector ids
-            user_apps_ids = await self._get_user_app_ids(user_key)
-
             # First check access and get permission paths
             access_query = f"""
             LET userDoc = FIRST(
@@ -714,15 +711,6 @@ class BaseArangoService:
                 RETURN user
             )
             LET recordDoc = DOCUMENT(CONCAT(@records, '/', @recordId))
-
-            // App access filter - check if user can access this record based on connector
-            LET hasAppAccess = (
-                recordDoc.origin == "UPLOAD" OR
-                (recordDoc.origin == "CONNECTOR" AND recordDoc.connectorId IN @user_apps_ids)
-            )
-
-            // If user doesn't have app access, return null immediately
-            FILTER hasAppAccess
 
             LET kb = FIRST(
                 FOR k IN 1..1 OUTBOUND recordDoc._id @@belongs_to
@@ -930,7 +918,6 @@ class BaseArangoService:
                 "userId": user_id,
                 "orgId": org_id,
                 "recordId": record_id,
-                "user_apps_ids": user_apps_ids,
                 "@users": CollectionNames.USERS.value,
                 "records": CollectionNames.RECORDS.value,
                 "files": CollectionNames.FILES.value,
@@ -1374,7 +1361,6 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
-                            {app_record_filter}
                             {folder_filter}
                             {record_filter}
                             RETURN {{
@@ -1406,7 +1392,6 @@ class BaseArangoService:
                                 FILTER record.orgId == org_id OR record.orgId == null
                                 FILTER record.origin == "CONNECTOR"
 
-                                {app_record_filter}
                                 {folder_filter}
                                 {record_filter}
 
@@ -1796,7 +1781,6 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
-                            {app_record_filter}
                             {folder_filter}
                             {record_filter}
                             RETURN record._key
@@ -1825,7 +1809,6 @@ class BaseArangoService:
                                 FILTER record.orgId == org_id OR record.orgId == null
                                 FILTER record.origin == "CONNECTOR"
 
-                                {app_record_filter}
                                 {folder_filter}
                                 {record_filter}
 
@@ -2039,7 +2022,6 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
-                            {app_record_filter}
                             LET targetDoc = FIRST(
                                 FOR v IN 1..1 OUTBOUND record._id isOfType
                                     LIMIT 1
@@ -2082,7 +2064,6 @@ class BaseArangoService:
                                 FILTER record.orgId == org_id OR record.orgId == null
                                 FILTER record.origin == "CONNECTOR"
 
-                                {app_record_filter}
                                 {folder_filter}
 
                                 // Get the role from the last edge in the path

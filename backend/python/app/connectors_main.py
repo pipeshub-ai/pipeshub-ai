@@ -204,7 +204,6 @@ async def initialize_connector_registry(app_container: ConnectorAppContainer) ->
         logger.info("✅ Connectors registered")
         registry.register_connector(GoogleDriveConnector)
         registry.register_connector(GmailConnector)
-        registry.register_connector(S3Connector)
         logger.info(f"Registered {len(registry._connectors)} connectors")
 
         # Sync with database

@@ -1,4 +1,3 @@
-import asyncio
 import mimetypes
 import uuid
 from datetime import datetime, timezone
@@ -12,15 +11,9 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
-    CollectionNames,
     Connectors,
     MimeTypes,
     OriginTypes,
-)
-from app.models.entities import (
-    RecordGroup,
-    RecordGroupType,
-    RecordType,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import config_node_constants
@@ -34,6 +27,10 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncPoint,
     generate_record_sync_point_key,
 )
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+)
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -42,25 +39,32 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
 )
 from app.connectors.core.registry.filters import (
-    FilterField,
-    FilterType,
     FilterCategory,
-    OptionSourceType,
-    MultiselectOperator,
-    ListOperator,
-    SyncFilterKey,
-    IndexingFilterKey,
     FilterCollection,
-    load_connector_filters,
-    FilterOptionsResponse,
+    FilterField,
     FilterOption,
+    FilterOptionsResponse,
+    FilterType,
+    IndexingFilterKey,
+    ListOperator,
+    MultiselectOperator,
+    OptionSourceType,
+    SyncFilterKey,
+    load_connector_filters,
 )
 from app.connectors.sources.s3.common.apps import S3App
-from app.models.entities import FileRecord, IndexingStatus, Record, RecordType
+from app.models.entities import (
+    FileRecord,
+    IndexingStatus,
+    Record,
+    RecordGroup,
+    RecordGroupType,
+    RecordType,
+)
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.s3.s3 import S3Client
 from app.sources.external.s3.s3 import S3DataSource
-from app.utils.streaming import logger, stream_content
+from app.utils.streaming import stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -75,7 +79,7 @@ def get_file_extension(key: str) -> Optional[str]:
 
 def get_parent_path_from_key(key: str) -> Optional[str]:
     """Extracts the parent path from an S3 key (without leading slash).
-    
+
     For a key like 'a/b/c/file.txt', returns 'a/b/c'
     For a key like 'a/b/c/', returns 'a/b'
     """
@@ -91,13 +95,13 @@ def get_parent_path_from_key(key: str) -> Optional[str]:
 
 def get_parent_weburl_for_s3(parent_external_id: str) -> str:
     """Generate webUrl for an S3 directory based on parent external_id.
-    
+
     Args:
         parent_external_id: External ID in format "bucket_name/path" or just "bucket_name"
-        
+
     Returns:
         S3 console URL for the directory
-        
+
     Examples:
         - "my-bucket" -> "https://s3.console.aws.amazon.com/s3/buckets/my-bucket"
         - "my-bucket/a/b/c" -> "https://s3.console.aws.amazon.com/s3/object/my-bucket?prefix=a/b/c/"
@@ -121,13 +125,13 @@ def get_parent_weburl_for_s3(parent_external_id: str) -> str:
 
 def get_parent_path_for_s3(parent_external_id: str) -> Optional[str]:
     """Extract directory path from S3 parent external_id.
-    
+
     Args:
         parent_external_id: External ID in format "bucket_name/path" or just "bucket_name"
-        
+
     Returns:
         Directory path without bucket name prefix, or None for root directories
-        
+
     Examples:
         - "my-bucket" -> None
         - "my-bucket/a/b/c" -> "a/b/c/"
@@ -161,7 +165,7 @@ def get_mimetype_for_s3(key: str, is_folder: bool = False) -> str:
 
 class S3DataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
     """S3-specific processor that extends the base processor with S3-specific placeholder record logic."""
-    
+
     def _create_placeholder_parent_record(
         self,
         parent_external_id: str,
@@ -170,7 +174,7 @@ class S3DataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
     ) -> Record:
         """
         Create a placeholder parent record with S3-specific weburl and path.
-        
+
         Overrides the base implementation to use S3 helper functions for generating
         weburl and path when creating placeholder parent records.
         """
@@ -178,7 +182,7 @@ class S3DataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         parent_record = super()._create_placeholder_parent_record(
             parent_external_id, parent_record_type, record
         )
-        
+
         # For S3 FILE records (directories), update weburl and path using S3 helper functions
         if parent_record_type == RecordType.FILE and isinstance(parent_record, FileRecord):
             weburl = get_parent_weburl_for_s3(parent_external_id)
@@ -187,16 +191,45 @@ class S3DataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
             parent_record.path = path
             parent_record.is_internal = True  # Mark S3 folder placeholder records as internal
             parent_record.hide_weburl = True  # Hide web URL for S3 folder records
-        
+
         return parent_record
 
 
 @ConnectorBuilder("S3")\
     .in_group("S3")\
-    .with_auth_type("ACCESS_KEY")\
     .with_description("Sync files and folders from S3")\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
+    .with_auth([
+        AuthBuilder.type(AuthType.ACCESS_KEY).fields([
+            AuthField(
+                name="accessKey",
+                display_name="Access Key",
+                placeholder="Enter your Access Key",
+                description="The Access Key from S3 instance",
+                field_type="PASSWORD",
+                max_length=2000,
+                is_secret=True
+            ),
+            AuthField(
+                name="secretKey",
+                display_name="Secret Key",
+                placeholder="Enter your Secret Key",
+                description="The Secret Key from S3 instance",
+                field_type="PASSWORD",
+                max_length=2000,
+                is_secret=True
+            ),
+            AuthField(
+                name="region",
+                display_name="Region",
+                placeholder="Enter your Region Name",
+                description="The Region from S3 instance",
+                field_type="TEXT",
+                max_length=2000
+            )
+        ])
+    ])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/s3.svg")
         .add_documentation_link(DocumentationLink(
@@ -208,33 +241,6 @@ class S3DataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
             'Pipeshub Documentation',
             'https://docs.pipeshub.com/connectors/s3/s3',
             'pipeshub'
-        ))
-        .with_redirect_uri("", False)
-        .add_auth_field(AuthField(
-            name="accessKey",
-            display_name="Access Key",
-            placeholder="Enter your Access Key",
-            description="The Access Key from S3 instance",
-            field_type="PASSWORD",
-            max_length=2000,
-            is_secret=True
-        ))
-        .add_auth_field(AuthField(
-            name="secretKey",
-            display_name="Secret Key",
-            placeholder="Enter your Secret Key",
-            description="The Secret Key from S3 instance",
-            field_type="PASSWORD",
-            max_length=2000,
-            is_secret=True
-        ))
-        .add_auth_field(AuthField(
-            name="region",
-            display_name="Region",
-            placeholder="Enter your Region Name",
-            description="The Region from S3 instance",
-            field_type="TEXT",
-            max_length=2000
         ))
         .add_filter_field(FilterField(
             name="buckets",
@@ -309,7 +315,7 @@ class S3Connector(BaseConnector):
         self.connector_scope: Optional[str] = None
         self.created_by: Optional[str] = None
         self.bucket_regions: Dict[str, str] = {}  # Cache for bucket-to-region mapping
-        
+
         # Initialize filter collections
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
@@ -339,7 +345,7 @@ class S3Connector(BaseConnector):
         # For now, we'll default to PERSONAL and can be overridden if needed
         self.connector_scope = ConnectorScope.PERSONAL.value
         self.created_by = config.get("created_by")
-        
+
         # Try to get scope from a config field if available
         scope_from_config = config.get("scope")
         if scope_from_config:
@@ -352,12 +358,12 @@ class S3Connector(BaseConnector):
                 connector_instance_id=self.connector_id,
             )
             self.data_source = S3DataSource(client)
-            
+
             # Load connector filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "s3", self.connector_id, self.logger
             )
-            
+
             self.logger.info("S3 client initialized successfully.")
             return True
         except Exception as e:
@@ -379,7 +385,7 @@ class S3Connector(BaseConnector):
 
             # Get sync filters
             sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
-            
+
             # Get bucket filter if specified
             bucket_filter = sync_filters.get("buckets")
             selected_buckets = bucket_filter.value if bucket_filter and bucket_filter.value else []
@@ -478,7 +484,7 @@ class S3Connector(BaseConnector):
                                 )
                     except Exception as e:
                         self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
-                
+
                 # Fallback to ORG permission if user not found
                 if not permissions:
                     permissions.append(
@@ -506,7 +512,7 @@ class S3Connector(BaseConnector):
     def _get_date_filters(self) -> Tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
         """
         Extract date filter values from sync_filters.
-        
+
         Returns date ranges as epoch milliseconds for comparison with S3 LastModified timestamps.
         Returns tuple of (modified_after_ms, modified_before_ms, created_after_ms, created_before_ms)
         """
@@ -553,18 +559,18 @@ class S3Connector(BaseConnector):
     ) -> bool:
         """
         Returns True if S3 object PASSES date filters (should be kept).
-        
+
         Note: S3 uses LastModified for both created and modified dates.
         For "created" filter, we use LastModified as proxy (S3 doesn't track separate creation time).
         Folders always pass through date filters to ensure directory structure exists.
-        
+
         Args:
             obj: S3 object metadata dictionary
             modified_after_ms: Skip files modified before this timestamp (epoch ms)
             modified_before_ms: Skip files modified after this timestamp (epoch ms)
             created_after_ms: Skip files created before this timestamp (epoch ms)
             created_before_ms: Skip files created after this timestamp (epoch ms)
-        
+
         Returns:
             False if the object should be filtered out, True otherwise
         """
@@ -582,7 +588,7 @@ class S3Connector(BaseConnector):
         last_modified = obj.get("LastModified")
         if not last_modified:
             return True  # If no timestamp, allow through
-        
+
         # Convert to epoch milliseconds
         if isinstance(last_modified, datetime):
             obj_timestamp_ms = int(last_modified.timestamp() * 1000)
@@ -609,22 +615,22 @@ class S3Connector(BaseConnector):
 
     async def _get_bucket_region(self, bucket_name: str) -> str:
         """Get the region for a bucket, using cache if available.
-        
+
         Args:
             bucket_name: Name of the S3 bucket
-            
+
         Returns:
             Region name (e.g., 'us-east-1', 'us-west-2'). Falls back to configured region if fetch fails.
         """
         # Check cache first
         if bucket_name in self.bucket_regions:
             return self.bucket_regions[bucket_name]
-        
+
         # Fetch region if not in cache
         if not self.data_source:
             self.logger.warning(f"Cannot fetch region for bucket {bucket_name}: data_source not initialized")
             return self.region or "us-east-1"
-        
+
         try:
             response = await self.data_source.get_bucket_location(Bucket=bucket_name)
             if response.success and response.data:
@@ -648,7 +654,7 @@ class S3Connector(BaseConnector):
                 f"Error fetching region for bucket {bucket_name}: {e}. "
                 f"Using configured region {self.region or 'us-east-1'}"
             )
-        
+
         # Fallback to configured region
         fallback_region = self.region or "us-east-1"
         return fallback_region
@@ -660,7 +666,7 @@ class S3Connector(BaseConnector):
 
         # Get sync filters
         sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
-        
+
         # Get file extensions filter (use string key for consistency with buckets filter)
         file_extensions_filter = sync_filters.get("file_extensions")
         allowed_extensions = []
@@ -677,7 +683,7 @@ class S3Connector(BaseConnector):
                     f"Unexpected file_extensions filter value type: {type(filter_value)}. "
                     f"Expected list or string, got {filter_value}"
                 )
-        
+
         if allowed_extensions:
             self.logger.info(
                 f"File extensions filter active for bucket {bucket_name}: {allowed_extensions} (only files with these extensions will be synced)"
@@ -758,10 +764,10 @@ class S3Connector(BaseConnector):
                     for obj in objects:
                         try:
                             key = obj.get("Key", "")
-                            
+
                             # Determine if it's a folder (S3 uses keys ending with / for folders)
                             is_folder = key.endswith("/")
-                            
+
                             # Apply file extensions filter (only for files, not folders)
                             if not is_folder and allowed_extensions:
                                 ext = get_file_extension(key)
@@ -779,13 +785,13 @@ class S3Connector(BaseConnector):
                                 self.logger.debug(
                                     f"File {key} passed extension filter (extension: '{ext}' matches allowed extensions: {allowed_extensions})"
                                 )
-                            
+
                             # Apply date filters
                             if not self._pass_date_filters(
                                 obj, modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
                             ):
                                 continue
-                            
+
                             # Update max_timestamp for incremental sync tracking
                             if not is_folder:
                                 last_modified = obj.get("LastModified")
@@ -803,7 +809,7 @@ class S3Connector(BaseConnector):
                                     if isinstance(last_modified, datetime):
                                         obj_timestamp_ms = int(last_modified.timestamp() * 1000)
                                         max_timestamp = max(max_timestamp, obj_timestamp_ms)
-                            
+
                             record, permissions = await self._process_s3_object(
                                 obj, bucket_name
                             )
@@ -856,7 +862,7 @@ class S3Connector(BaseConnector):
         self, obj: Dict, bucket_name: str
     ) -> Tuple[Optional[FileRecord], List[Permission]]:
         """Process a single S3 object and convert it to a FileRecord.
-        
+
         When run_sync runs again, this method fetches updated documents by checking
         if the external_revision_id (ETag) has changed. If changed, the document
         is updated; if unchanged, processing is skipped for efficiency.
@@ -897,13 +903,12 @@ class S3Connector(BaseConnector):
 
             # Get current ETag (external_revision_id) from S3 object
             current_etag = obj.get("ETag", "").strip('"')
-            
+
             # Check if document has been updated (ETag/external_revision_id changed)
             # When run_sync runs again, fetch updated documents if external_revision_id has changed
-            etag_changed = False
             if existing_record:
                 stored_etag = existing_record.external_revision_id or ""
-                
+
                 # Compare ETags - both must be non-empty strings for reliable comparison
                 if current_etag and stored_etag:
                     if current_etag == stored_etag:
@@ -914,7 +919,6 @@ class S3Connector(BaseConnector):
                         return None, []
                     else:
                         # External revision ID changed - document updated, fetch and update
-                        etag_changed = True
                         self.logger.info(
                             f"Document updated: {normalized_key} - external_revision_id changed from {stored_etag} to {current_etag}"
                         )
@@ -928,7 +932,6 @@ class S3Connector(BaseConnector):
                         self.logger.debug(
                             f"Stored ETag missing for {normalized_key}, processing record"
                         )
-                    etag_changed = True
             else:
                 # New record - no existing record, so ETag comparison not applicable
                 self.logger.debug(f"New document: {normalized_key}")
@@ -949,7 +952,7 @@ class S3Connector(BaseConnector):
 
             # Create FileRecord first to get the ID
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
-            
+
             # Generate signed URL route for Kafka events
             # Get connector endpoint from config
             endpoints = await self.config_service.get_config(
@@ -962,7 +965,7 @@ class S3Connector(BaseConnector):
 
             # Extract record name (remove trailing slash for folders)
             record_name = normalized_key.rstrip("/").split("/")[-1] or normalized_key.rstrip("/")
-            
+
             # Determine version - only increment for new records or when ETag changed
             # (Note: If we reached here with existing_record, ETag must have changed or one was missing)
             if not existing_record:
@@ -970,7 +973,7 @@ class S3Connector(BaseConnector):
             else:
                 # Existing record with ETag change - increment version
                 version = existing_record.version + 1
-            
+
             # Create FileRecord
             file_record = FileRecord(
                 id=record_id,
@@ -1022,7 +1025,7 @@ class S3Connector(BaseConnector):
         """Create permissions for an S3 object based on connector scope."""
         try:
             permissions = []
-            
+
             if self.connector_scope == ConnectorScope.TEAM.value:
                 # For Teams: permission with ORG (Anyone in org)
                 permissions.append(
@@ -1164,7 +1167,7 @@ class S3Connector(BaseConnector):
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Cannot stream folder content",
             )
-        
+
         signed_url = await self.get_signed_url(record)
         if not signed_url:
             raise HTTPException(
@@ -1293,7 +1296,7 @@ class S3Connector(BaseConnector):
 
     async def reindex_records(self, record_results: List[Record]) -> None:
         """Reindex records by checking for updates at source and publishing reindex events.
-        
+
         For manual sync reindex:
         1. Fetch from S3 to check if external_revision_id (ETag) has changed
         2. If changed: fetch updated data and reindex it
@@ -1349,7 +1352,7 @@ class S3Connector(BaseConnector):
         self, org_id: str, record: Record
     ) -> Optional[Tuple[Record, List[Permission]]]:
         """Check if record has been updated at source and fetch updated data.
-        
+
         Fetches from S3 to check if external_revision_id (ETag) has changed.
         Returns updated record data if changed, None if unchanged.
         """
@@ -1368,7 +1371,7 @@ class S3Connector(BaseConnector):
             else:
                 # Fallback: if format is unexpected, use as-is
                 normalized_key = external_record_id.lstrip("/")
-            
+
             if not normalized_key:
                 self.logger.warning(f"Invalid key for record {record.id}")
                 return None
@@ -1391,13 +1394,13 @@ class S3Connector(BaseConnector):
             # Get current ETag (external_revision_id) from S3
             current_etag = obj_metadata.get("ETag", "").strip('"')
             stored_etag = record.external_revision_id
-            
+
             # Check if external_revision_id (ETag) has changed
             if current_etag == stored_etag:
                 # External revision ID unchanged - return None to trigger reindex only
                 self.logger.debug(f"Record {record.id}: external_revision_id unchanged ({current_etag}), will reindex only")
                 return None
-            
+
             # External revision ID changed - fetch updated data
             self.logger.debug(f"Record {record.id}: external_revision_id changed from {stored_etag} to {current_etag}, fetching updated data")
 
@@ -1437,10 +1440,10 @@ class S3Connector(BaseConnector):
 
             # Extract record name (remove trailing slash for folders)
             record_name = normalized_key.rstrip("/").split("/")[-1] or normalized_key.rstrip("/")
-            
+
             # Create updated FileRecord with bucket_name/path format
             updated_external_record_id = f"{bucket_name}/{normalized_key}"
-            
+
             # Create updated FileRecord
             updated_record = FileRecord(
                 id=record.id,
@@ -1501,7 +1504,7 @@ class S3Connector(BaseConnector):
 
             # Get sync filters
             sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
-            
+
             # Get bucket filter if specified
             bucket_filter = sync_filters.get("buckets")
             selected_buckets = bucket_filter.value if bucket_filter and bucket_filter.value else []
