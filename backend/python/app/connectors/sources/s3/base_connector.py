@@ -147,7 +147,7 @@ class S3CompatibleDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         base_console_url: str = "https://s3.console.aws.amazon.com"
-    ):
+    ) -> None:
         super().__init__(logger, data_store_provider, config_service)
         self.base_console_url = base_console_url
 
@@ -243,7 +243,7 @@ class S3CompatibleBaseConnector(BaseConnector):
         pass
 
     @abstractmethod
-    async def _build_data_source(self) -> Any:
+    async def _build_data_source(self) -> object:
         """Build the data source (S3DataSource or MinIODataSource). Must be implemented by subclasses."""
         pass
 
