@@ -61,12 +61,15 @@ class MinIORESTClientViaAccessKey:
         return self.session
 
     async def get_s3_client(self) -> object:
-        """Get an S3 client context manager from aioboto3 session with MinIO endpoint"""
+        """Get an S3 client context manager from aioboto3 session with MinIO endpoint.
+
+        Note: SSL usage is determined by the URL scheme (http:// vs https://) in endpoint_url.
+        The verify parameter controls SSL certificate verification.
+        """
         session = self.get_session()
         return session.client(
             's3',
             endpoint_url=self.endpoint_url,
-            use_ssl=self.use_ssl,
             verify=self.verify_ssl
         )
 

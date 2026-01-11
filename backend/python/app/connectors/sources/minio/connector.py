@@ -155,6 +155,19 @@ class MinIOConnector(S3CompatibleBaseConnector):
     of AWS S3.
     """
 
+    @staticmethod
+    def _parse_console_url(endpoint_url: str) -> str:
+        """Parse endpoint URL to extract the console base URL.
+
+        Args:
+            endpoint_url: The MinIO endpoint URL (e.g., http://localhost:9000)
+
+        Returns:
+            The base console URL (e.g., http://localhost:9000)
+        """
+        parsed = urlparse(endpoint_url)
+        return f"{parsed.scheme}://{parsed.netloc}"
+
     def __init__(
         self,
         logger: Logger,
@@ -164,9 +177,7 @@ class MinIOConnector(S3CompatibleBaseConnector):
         connector_id: str,
         endpoint_url: str = "http://localhost:9000",
     ) -> None:
-        # Parse endpoint URL to create console URL
-        parsed = urlparse(endpoint_url)
-        base_console_url = f"{parsed.scheme}://{parsed.netloc}"
+        base_console_url = self._parse_console_url(endpoint_url)
 
         super().__init__(
             app=MinIOApp(connector_id),
@@ -205,10 +216,11 @@ class MinIOConnector(S3CompatibleBaseConnector):
             self.logger.error("MinIO endpoint URL not found in configuration.")
             return False
 
-        # Store endpoint URL for web URL generation
+        # Update endpoint URL and console URL from config
         self.endpoint_url = endpoint_url
-        parsed = urlparse(endpoint_url)
-        self.base_console_url = f"{parsed.scheme}://{parsed.netloc}"
+        self.base_console_url = self._parse_console_url(endpoint_url)
+        # Keep data_entities_processor in sync with updated console URL
+        self.data_entities_processor.base_console_url = self.base_console_url
 
         # Get connector scope
         self.connector_scope = ConnectorScope.PERSONAL.value
@@ -259,12 +271,20 @@ class MinIOConnector(S3CompatibleBaseConnector):
         """Get the region for a bucket.
 
         For MinIO, regions are typically not used in the same way as AWS S3.
-        We return the configured region or a default.
+        MinIO servers are usually single-region deployments, so we return a
+        default region value that satisfies the boto3 API requirements.
+
+        Args:
+            bucket_name: The bucket name (unused, but kept for API compatibility)
+
+        Returns:
+            A default region string ("us-east-1") as MinIO doesn't use regions.
         """
-        # MinIO doesn't use regions like AWS, but we cache and return configured region
+        # Check cache first for compatibility with parent class behavior
         if bucket_name in self.bucket_regions:
             return self.bucket_regions[bucket_name]
 
+        # MinIO doesn't use regions like AWS S3; return default region for boto3 compatibility
         return "us-east-1"
 
     @classmethod
@@ -277,7 +297,9 @@ class MinIOConnector(S3CompatibleBaseConnector):
         **kwargs,
     ) -> "MinIOConnector":
         """Factory method to create and initialize connector."""
-        # Get endpoint URL from config for console URL
+        # Get endpoint URL from config for initial console URL setup.
+        # Note: The actual config will be loaded again in init() to set up the client,
+        # but we need endpoint_url here to initialize data_entities_processor correctly.
         config = await config_service.get_config(
             f"/services/connectors/{connector_id}/config"
         )
@@ -286,8 +308,7 @@ class MinIOConnector(S3CompatibleBaseConnector):
             auth_config = config.get("auth", {})
             endpoint_url = auth_config.get("endpointUrl", endpoint_url)
 
-        parsed = urlparse(endpoint_url)
-        base_console_url = f"{parsed.scheme}://{parsed.netloc}"
+        base_console_url = cls._parse_console_url(endpoint_url)
 
         data_entities_processor = S3CompatibleDataSourceEntitiesProcessor(
             logger, data_store_provider, config_service,
