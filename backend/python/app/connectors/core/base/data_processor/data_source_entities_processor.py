@@ -5,7 +5,6 @@ from typing import List, Optional, Tuple
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     CollectionNames,
-    Connectors,
     MimeTypes,
     OriginTypes,
     RecordRelations,
@@ -103,48 +102,6 @@ class DataSourceEntitiesProcessor:
             # Use backward-compatible field access
             self.org_id = orgs[0].get("id", orgs[0].get("_key"))
 
-    def _generate_weburl_for_directory(
-        self,
-        parent_external_id: str,
-        connector_name: Connectors,
-        external_record_group_id: Optional[str] = None,
-    ) -> str:
-        """
-        Generate webUrl for a directory based on connector type and external_id.
-
-        Args:
-            parent_external_id: External ID of the parent directory
-            connector_name: Name of the connector
-            external_record_group_id: External record group ID (e.g., bucket name for S3)
-
-        Returns:
-            Generated webUrl string
-        """
-        if connector_name == Connectors.S3:
-            # For S3, external_id format is "bucket_name/path" or just "bucket_name"
-            # Generate S3 console URL matching the format used in S3 connector:
-            # For directories with path: https://s3.console.aws.amazon.com/s3/object/{bucket}?prefix={path}
-            # For root directories (bucket level): https://s3.console.aws.amazon.com/s3/buckets/{bucket}
-            if "/" in parent_external_id:
-                # Has path: "bucket_name/path/" or "bucket_name/path"
-                parts = parent_external_id.split("/", 1)
-                bucket_name = parts[0]
-                path = parts[1]
-                # Keep trailing slash for directories (S3 connector preserves it)
-                # Normalize: ensure path doesn't start with / but keeps trailing /
-                path = path.lstrip("/")
-                # For directories, ensure trailing slash is present
-                if path and not path.endswith("/"):
-                    path = path + "/"
-                return f"https://s3.console.aws.amazon.com/s3/object/{bucket_name}?prefix={path}"
-            else:
-                # Just bucket name (root level) - use bucket browsing URL format
-                bucket_name = parent_external_id
-                return f"https://s3.console.aws.amazon.com/s3/buckets/{bucket_name}"
-        else:
-            # For other connectors, return empty string - will be updated when real directory is synced
-            return ""
-
     def _create_placeholder_parent_record(
         self,
         parent_external_id: str,
@@ -162,9 +119,6 @@ class DataSourceEntitiesProcessor:
         Returns:
             A placeholder Record instance of the appropriate type
         """
-        # Get current timestamp for placeholder records
-        current_timestamp = get_epoch_timestamp_in_ms()
-        
         base_params = {
             "org_id": self.org_id,
             "external_record_id": parent_external_id,
@@ -176,35 +130,13 @@ class DataSourceEntitiesProcessor:
             "record_group_type": record.record_group_type,
             "version": 0,
             "mime_type": MimeTypes.UNKNOWN.value,
-            "source_created_at": current_timestamp,  # Set timestamp for placeholder (will be updated when synced)
-            "source_updated_at": current_timestamp,  # Set timestamp for placeholder (will be updated when synced)
+            "source_created_at": 0,  # Will be updated when real parent is synced
+            "source_updated_at": 0,  # Will be updated when real parent is synced
         }
 
         # Map RecordType to appropriate Record class
         if parent_record_type == RecordType.FILE:
             file_params = {k: v for k, v in base_params.items() if k != "mime_type"}
-            # Generate webUrl for directories
-            weburl = self._generate_weburl_for_directory(
-                parent_external_id=parent_external_id,
-                connector_name=record.connector_name,
-                external_record_group_id=record.external_record_group_id,
-            )
-            
-            # Extract path from parent_external_id (format: "bucket_name/path" or just "bucket_name")
-            # For S3 connectors, path should be the directory path without the bucket name prefix
-            directory_path = None
-            if record.connector_name == Connectors.S3:
-                if "/" in parent_external_id:
-                    # Has path: extract just the path part (without bucket name)
-                    parts = parent_external_id.split("/", 1)
-                    directory_path = parts[1]
-                    # Ensure trailing slash for directories
-                    if directory_path and not directory_path.endswith("/"):
-                        directory_path = directory_path + "/"
-                else:
-                    # Root directory (bucket level) - path should be empty or None
-                    directory_path = None
-            
             return FileRecord(
                 **file_params,
                 external_record_group_id=record.external_record_group_id,
@@ -212,8 +144,8 @@ class DataSourceEntitiesProcessor:
                 extension=None,
                 mime_type=MimeTypes.FOLDER.value,
                 size_in_bytes=0,  # Folders have 0 size
-                weburl=weburl,
-                path=directory_path,  # Set path for directories
+                weburl="",  # Will be updated when real directory is synced
+                path=None,  # Will be updated when real directory is synced
             )
         elif parent_record_type in [RecordType.WEBPAGE, RecordType.CONFLUENCE_PAGE,
                                      RecordType.CONFLUENCE_BLOGPOST, RecordType.SHAREPOINT_PAGE]:

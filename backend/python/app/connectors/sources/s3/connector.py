@@ -56,7 +56,7 @@ from app.connectors.core.registry.filters import (
     FilterOption,
 )
 from app.connectors.sources.s3.common.apps import S3App
-from app.models.entities import FileRecord, IndexingStatus, Record
+from app.models.entities import FileRecord, IndexingStatus, Record, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.s3.s3 import S3Client
 from app.sources.external.s3.s3 import S3DataSource
@@ -89,6 +89,62 @@ def get_parent_path_from_key(key: str) -> Optional[str]:
     return parent_path if parent_path else None
 
 
+def get_parent_weburl_for_s3(parent_external_id: str) -> str:
+    """Generate webUrl for an S3 directory based on parent external_id.
+    
+    Args:
+        parent_external_id: External ID in format "bucket_name/path" or just "bucket_name"
+        
+    Returns:
+        S3 console URL for the directory
+        
+    Examples:
+        - "my-bucket" -> "https://s3.console.aws.amazon.com/s3/buckets/my-bucket"
+        - "my-bucket/a/b/c" -> "https://s3.console.aws.amazon.com/s3/object/my-bucket?prefix=a/b/c/"
+    """
+    if "/" in parent_external_id:
+        # Has path: "bucket_name/path/" or "bucket_name/path"
+        parts = parent_external_id.split("/", 1)
+        bucket_name = parts[0]
+        path = parts[1]
+        # Normalize: ensure path doesn't start with / but keeps trailing /
+        path = path.lstrip("/")
+        # For directories, ensure trailing slash is present
+        if path and not path.endswith("/"):
+            path = path + "/"
+        return f"https://s3.console.aws.amazon.com/s3/object/{bucket_name}?prefix={path}"
+    else:
+        # Just bucket name (root level) - use bucket browsing URL format
+        bucket_name = parent_external_id
+        return f"https://s3.console.aws.amazon.com/s3/buckets/{bucket_name}"
+
+
+def get_parent_path_for_s3(parent_external_id: str) -> Optional[str]:
+    """Extract directory path from S3 parent external_id.
+    
+    Args:
+        parent_external_id: External ID in format "bucket_name/path" or just "bucket_name"
+        
+    Returns:
+        Directory path without bucket name prefix, or None for root directories
+        
+    Examples:
+        - "my-bucket" -> None
+        - "my-bucket/a/b/c" -> "a/b/c/"
+    """
+    if "/" in parent_external_id:
+        # Has path: extract just the path part (without bucket name)
+        parts = parent_external_id.split("/", 1)
+        directory_path = parts[1]
+        # Ensure trailing slash for directories
+        if directory_path and not directory_path.endswith("/"):
+            directory_path = directory_path + "/"
+        return directory_path
+    else:
+        # Root directory (bucket level) - path should be None
+        return None
+
+
 def get_mimetype_for_s3(key: str, is_folder: bool = False) -> MimeTypes:
     """Determines the correct MimeTypes enum member for an S3 object."""
     if is_folder:
@@ -101,6 +157,37 @@ def get_mimetype_for_s3(key: str, is_folder: bool = False) -> MimeTypes:
         except ValueError:
             return MimeTypes.BIN.value
     return MimeTypes.BIN.value
+
+
+class S3DataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
+    """S3-specific processor that extends the base processor with S3-specific placeholder record logic."""
+    
+    def _create_placeholder_parent_record(
+        self,
+        parent_external_id: str,
+        parent_record_type: RecordType,
+        record: Record,
+    ) -> Record:
+        """
+        Create a placeholder parent record with S3-specific weburl and path.
+        
+        Overrides the base implementation to use S3 helper functions for generating
+        weburl and path when creating placeholder parent records.
+        """
+        # Call the base implementation first
+        parent_record = super()._create_placeholder_parent_record(
+            parent_external_id, parent_record_type, record
+        )
+        
+        # For S3 FILE records (directories), update weburl and path using S3 helper functions
+        if parent_record_type == RecordType.FILE and isinstance(parent_record, FileRecord):
+            weburl = get_parent_weburl_for_s3(parent_external_id)
+            path = get_parent_path_for_s3(parent_external_id)
+            parent_record.weburl = weburl
+            parent_record.path = path
+            parent_record.is_internal = True  # Mark S3 folder placeholder records as internal
+        
+        return parent_record
 
 
 @ConnectorBuilder("S3")\
@@ -885,6 +972,8 @@ class S3Connector(BaseConnector):
                 weburl=web_url,
                 signed_url=None,  # Will be generated on demand
                 fetch_signed_url=signed_url_route,  # Route for Kafka to fetch signed URL
+                hide_weburl=True,  # Hide web URL for S3 documents
+                is_internal=True if is_folder else False,  # Mark S3 folder records as internal
                 parent_external_record_id=parent_external_id,  # bucket_name/parent_path format: my-bucket/a/b/c, or bucket_name if root
                 parent_record_type=RecordType.FILE,
                 size_in_bytes=obj.get("Size", 0) if is_file else 0,
@@ -1353,6 +1442,8 @@ class S3Connector(BaseConnector):
                 weburl=web_url,
                 signed_url=None,
                 fetch_signed_url=signed_url_route,
+                hide_weburl=True,  # Hide web URL for S3 documents
+                is_internal=True if is_folder else False,  # Mark S3 folder records as internal
                 parent_external_record_id=parent_external_id,  # bucket_name/parent_path format: my-bucket/a/b/c, or bucket_name if root
                 parent_record_type=RecordType.FILE ,
                 size_in_bytes=obj_metadata.get("ContentLength", 0) if is_file else 0,
@@ -1455,7 +1546,7 @@ class S3Connector(BaseConnector):
         **kwargs,
     ) -> "S3Connector":
         """Factory method to create and initialize connector."""
-        data_entities_processor = DataSourceEntitiesProcessor(
+        data_entities_processor = S3DataSourceEntitiesProcessor(
             logger, data_store_provider, config_service
         )
         await data_entities_processor.initialize()
