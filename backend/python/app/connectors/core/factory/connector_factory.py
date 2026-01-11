@@ -36,6 +36,7 @@ from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
+from app.connectors.sources.minio.connector import MinIOConnector
 from app.connectors.sources.s3.connector import S3Connector
 from app.connectors.sources.servicenow.servicenow.connector import (
     ServiceNowConnector,
@@ -60,6 +61,7 @@ class ConnectorFactory:
         "web": WebConnector,
         "bookstack": BookStackConnector,
         "s3": S3Connector,
+        "minio": MinIOConnector,
     }
 
     # Beta connector definitions - single source of truth
