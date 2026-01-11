@@ -92,6 +92,8 @@ class Record(BaseModel):
     fetch_signed_url: Optional[str] = None
     preview_renderable: Optional[bool] = True
     is_shared: Optional[bool] = False
+    hide_weburl: bool = Field(default=False, description="Flag indicating if web URL should be hidden")
+    is_internal: bool = Field(default=False, description="Flag indicating if record is internal")
 
     # Processing flags
     is_vlm_ocr_processed: Optional[bool] = Field(default=False, description="Flag indicating if VLM OCR processing has been used to process the record")
@@ -138,6 +140,8 @@ class Record(BaseModel):
             "sizeInBytes": self.size_in_bytes,
             "isDependentNode": self.is_dependent_node,
             "parentNodeId": self.parent_node_id,
+            "hideWeburl": self.hide_weburl,
+            "isInternal": self.is_internal,
         }
 
     @staticmethod
@@ -179,6 +183,8 @@ class Record(BaseModel):
             is_vlm_ocr_processed=arango_base_record.get("isVLMOcrProcessed", False),
             is_dependent_node=arango_base_record.get("isDependentNode", False),
             parent_node_id=arango_base_record.get("parentNodeId", None),
+            hide_weburl=arango_base_record.get("hideWeburl", False),
+            is_internal=arango_base_record.get("isInternal", False),
             md5_hash=arango_base_record.get("md5Checksum", None),
             size_in_bytes=arango_base_record.get("sizeInBytes", None),
         )
