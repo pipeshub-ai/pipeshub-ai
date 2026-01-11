@@ -9,15 +9,35 @@ from app.config.constants.service import config_node_constants
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
+import asyncio
+from typing import Dict
+
+from aiokafka import AIOKafkaProducer
+
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import EventTypes
+from app.config.constants.service import config_node_constants
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+
 class KafkaService:
     def __init__(self, config_service: ConfigurationService, logger) -> None:
         self.config_service = config_service
         self.producer = None
         self.logger = logger
+        self._producer_lock = asyncio.Lock()  # ✅ Add lock
 
     async def _ensure_producer(self) -> None:
         """Ensure producer is initialized and started"""
-        if self.producer is None:
+        if self.producer is not None:
+            return  # Fast path: already initialized
+            
+        async with self._producer_lock:  # ✅ Serialize initialization
+            # Double-check after acquiring lock
+            if self.producer is not None:
+                return
+                
+            producer = None
             try:
                 kafka_config = await self.config_service.get_config(
                     config_node_constants.KAFKA.value
@@ -36,18 +56,27 @@ class KafkaService:
                     brokers = brokers.strip("[]").replace("'", "").replace('"', "").strip()
 
                 producer_config = {
-                    "bootstrap_servers": brokers,  # aiokafka uses bootstrap_servers
+                    "bootstrap_servers": brokers,
                     "client_id": kafka_config.get("client_id", "file-processor"),
                     "request_timeout_ms": 30000,
                     "retry_backoff_ms": 100,
                     "enable_idempotence": True
                 }
 
-                self.producer = AIOKafkaProducer(**producer_config)
-                await self.producer.start()
+                producer = AIOKafkaProducer(**producer_config)
+                await producer.start()
+                
+                # ✅ Only assign after successful start
+                self.producer = producer
                 self.logger.info("✅ Kafka producer initialized and started")
 
             except Exception as e:
+                if producer is not None:
+                    try:
+                        await producer.stop()
+                    except Exception:
+                        pass
+                self.producer = None
                 self.logger.error(f"❌ Failed to initialize Kafka producer: {str(e)}")
                 raise
 
