@@ -212,29 +212,31 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
             </Button>
           )}
 
-          <Button
-            variant={!isConfigured ? 'contained' : 'outlined'}
-            fullWidth
-            size="small"
-            startIcon={<Iconify icon={keyIcon} width={14} height={14} />}
-            onClick={onConfigureAuth}
-            sx={{
-              textTransform: 'none',
-              fontWeight: 500,
-              justifyContent: 'flex-start',
-              borderRadius: 1,
-              ...(!isConfigured && {
-                backgroundColor: theme.palette.secondary.main,
-                '&:hover': {
-                  backgroundColor: isDark
-                    ? alpha(theme.palette.secondary.main, 0.8)
-                    : alpha(theme.palette.secondary.main, 0.8),
-                },
-              }),
-            }}
-          >
-            Auth Settings
-          </Button>
+          {connector.authType !== 'NONE' && (
+            <Button
+              variant={!isConfigured ? 'contained' : 'outlined'}
+              fullWidth
+              size="small"
+              startIcon={<Iconify icon={keyIcon} width={14} height={14} />}
+              onClick={onConfigureAuth}
+              sx={{
+                textTransform: 'none',
+                fontWeight: 500,
+                justifyContent: 'flex-start',
+                borderRadius: 1,
+                ...(!isConfigured && {
+                  backgroundColor: theme.palette.secondary.main,
+                  '&:hover': {
+                    backgroundColor: isDark
+                      ? alpha(theme.palette.secondary.main, 0.8)
+                      : alpha(theme.palette.secondary.main, 0.8),
+                  },
+                }),
+              }}
+            >
+              Auth Settings
+            </Button>
+          )}
 
           {isConfigured && (
             <Button

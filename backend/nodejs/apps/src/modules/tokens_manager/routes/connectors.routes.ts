@@ -112,6 +112,7 @@ const createConnectorInstanceSchema = z.object({
     scope: z.enum(['team', 'personal']).refine((val) => val === 'team' || val === 'personal', {
       message: 'Scope must be either team or personal',
     }),
+    authType: z.string().optional(), // Auth type selected by user (required for connectors with multiple auth types)
   }),
 });
 
@@ -261,6 +262,7 @@ const connectorListSchema = z.object({
     search: z.string().optional(),
   }),
 });
+
 // ============================================================================
 // Router Factory
 // ============================================================================

@@ -59,6 +59,7 @@ from app.core.celery_app import CeleryApp
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
 from app.health.health import Health
 from app.migrations.connector_migration_service import ConnectorMigrationService
+from app.migrations.files_to_records_migration import run_files_to_records_migration
 from app.migrations.folder_hierarchy_migration import run_folder_hierarchy_migration
 from app.migrations.permission_edge_migration import (
     run_permissions_edge_migration,
@@ -811,6 +812,10 @@ class ConnectorAppContainer(BaseAppContainer):
         kafka_service= kafka_service
     )
 
+    # Note: KnowledgeHubService is created manually in the router's get_knowledge_hub_service()
+    # helper function because it depends on async graph_provider which doesn't work well
+    # with dependency_injector's Factory/Resource providers.
+
     google_token_handler = providers.Singleton(
         GoogleTokenHandler,
         logger=logger,
@@ -874,6 +879,7 @@ class ConnectorAppContainer(BaseAppContainer):
             "app.core.celery_app",
             "app.connectors.api.router",
             "app.connectors.sources.localKB.api.kb_router",
+            "app.connectors.sources.localKB.api.knowledge_hub_router",
             "app.connectors.api.middleware",
             "app.core.signed_url",
         ]
@@ -911,6 +917,55 @@ async def run_connector_migration(container) -> bool:
 
     except Exception as e:
         logger.error(f"❌ Connector UUID migration error: {str(e)}")
+        # Don't fail startup - log error and continue
+        # Migration is idempotent and can be retried
+        return False
+
+async def run_files_to_records_migration_wrapper(container) -> bool:
+    """
+    Run files to records MD5/Size migration.
+    This should be called once during system initialization.
+
+    Returns:
+        bool: True if migration completed successfully or was not needed, False on error
+    """
+    logger = container.logger()
+
+    try:
+        logger.info("🔍 Checking if Files to Records MD5/Size migration is needed...")
+
+        # Get required services
+        arango_service = await container.arango_service()
+        config_service = container.config_service()
+
+        # Run the migration
+        migration_result = await run_files_to_records_migration(
+            arango_service=arango_service,
+            config_service=config_service,
+            logger=logger
+        )
+
+        if migration_result.get("success"):
+            records_updated = migration_result.get("records_updated", 0)
+            if records_updated > 0:
+                logger.info(
+                    f"✅ Files to Records MD5/Size migration completed: "
+                    f"{records_updated} record(s) updated, "
+                    f"{migration_result.get('md5_copied', 0)} MD5 checksum(s) copied, "
+                    f"{migration_result.get('size_copied', 0)} size value(s) copied"
+                )
+            else:
+                logger.info("✅ No Files to Records MD5/Size migration needed")
+            return True
+        else:
+            logger.error(
+                f"❌ Files to Records MD5/Size migration failed: "
+                f"{migration_result.get('error', 'Unknown error')}"
+            )
+            return False
+
+    except Exception as e:
+        logger.error(f"❌ Files to Records MD5/Size migration error: {str(e)}")
         # Don't fail startup - log error and continue
         # Migration is idempotent and can be retried
         return False
@@ -989,6 +1044,11 @@ async def initialize_container(container) -> bool:
         connector_migration_success = await run_connector_migration(container)
         if not connector_migration_success:
             logger.warning("⚠️ Connector UUID migration had issues but continuing initialization")
+
+        logger.info("🔄 Running Files to Records MD5/Size migration...")
+        files_to_records_migration_success = await run_files_to_records_migration_wrapper(container)
+        if not files_to_records_migration_success:
+            logger.warning("⚠️ Files to Records MD5/Size migration had issues but continuing initialization")
 
         logger.info("🔄 Running Knowledge Base migration...")
         migration_success = await run_knowledge_base_migration(container)

@@ -29,6 +29,7 @@ import {
   createNestedFolder,
   createRootFolder,
   uploadRecordsToKB,
+  getKnowledgeHubNodes,
 } from '../controllers/kb_controllers';
 import { ArangoService } from '../../../libs/services/arango.service';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
@@ -174,6 +175,22 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(getAllRecordsSchema),
     getAllRecords(appConfig),
+  );
+
+  // Knowledge Hub unified browse API - Root
+  router.get(
+    '/knowledge-hub/nodes',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    getKnowledgeHubNodes(appConfig),
+  );
+
+  // Knowledge Hub unified browse API - Children
+  router.get(
+    '/knowledge-hub/nodes/:parentType/:parentId',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    getKnowledgeHubNodes(appConfig),
   );
 
   // Get a specific record by ID

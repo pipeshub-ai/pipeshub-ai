@@ -4,7 +4,16 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Set,
+    Tuple,
+)
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -26,6 +35,10 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
     generate_record_sync_point_key,
+)
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
 )
 from app.connectors.core.registry.connector_builder import (
     AuthField,
@@ -64,6 +77,7 @@ from app.sources.client.bookstack.bookstack import (
     BookStackTokenConfig,
 )
 from app.sources.external.bookstack.bookstack import BookStackDataSource
+from app.utils.streaming import create_stream_record_response
 
 
 @dataclass
@@ -82,10 +96,38 @@ class RecordUpdate:
 
 @ConnectorBuilder("BookStack")\
     .in_group("BookStack")\
-    .with_auth_type("API_TOKEN")\
+    .with_supported_auth_types("API_TOKEN")\
     .with_description("Sync content from your BookStack instance")\
     .with_categories(["Knowledge Management"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_auth([
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            AuthField(
+                name="base_url",
+                display_name="Bookstack Base URL",
+                placeholder="https://bookstack.example.com",
+                description="The base URL of your BookStack instance",
+                field_type="TEXT",
+                max_length=2048
+            ),
+            AuthField(
+                name="token_id",
+                display_name="Token ID",
+                placeholder="YourTokenID",
+                description="The Token ID generated from your BookStack profile",
+                field_type="TEXT",
+                max_length=100
+            ),
+            AuthField(
+                name="token_secret",
+                display_name="Token Secret",
+                placeholder="YourTokenSecret",
+                description="The Token Secret generated from your BookStack profile",
+                field_type="PASSWORD",
+                max_length=100
+            )
+        ])
+    ])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/bookstack.svg")\
         .add_documentation_link(DocumentationLink(
@@ -97,32 +139,6 @@ class RecordUpdate:
             'Pipeshub Documentation',
             'https://docs.pipeshub.com/connectors/bookstack/bookstack',
             'pipeshub'
-        ))
-        .with_redirect_uri("", False)
-        .add_auth_field(AuthField(
-            name="base_url",
-            display_name="Base URL",
-            placeholder="https://bookstack.example.com",
-            description="The base URL of your BookStack instance",
-            field_type="TEXT",
-            max_length=2048
-        ))
-        .add_auth_field(AuthField(
-            name="token_id",
-            display_name="Token ID",
-            placeholder="YourTokenID",
-            description="The Token ID generated from your BookStack profile",
-            field_type="TEXT",
-            max_length=100
-        ))
-        .add_auth_field(AuthField(
-            name="token_secret",
-            display_name="Token Secret",
-            placeholder="YourTokenSecret",
-            description="The Token Secret generated from your BookStack profile",
-            field_type="PASSWORD",
-            max_length=100,
-            is_secret=True
         ))
         .add_filter_field(CommonFields.modified_date_filter("Filter content by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter content by creation date."))
@@ -314,13 +330,12 @@ class BookStackConnector(BaseConnector):
                 detail="Record not found or access denied"
             )
         raw_markdown = markdown_response.data.get("markdown")
-        # Stream the content from the URL
-        return StreamingResponse(
+
+        return create_stream_record_response(
             raw_markdown,
-            media_type=record.mime_type if record.mime_type else "application/octet-stream",
-            headers={
-                "Content-Disposition": f"attachment; filename={record.record_name}"
-            }
+            filename=record.record_name,
+            mime_type=record.mime_type,
+            fallback_filename=f"record_{record.id}"
         )
 
     def _get_app_users(self, users: List[Dict]) -> List[AppUser]:

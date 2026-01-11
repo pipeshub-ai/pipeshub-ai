@@ -186,12 +186,13 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
       <Box sx={{ mb: 2 }}>
         <TextField
           fullWidth
+          required
           size="small"
           label="Application (Client) ID"
           value={clientId}
           onChange={(e) => onClientIdChange(e.target.value)}
           error={!!clientIdError}
-          helperText={clientIdError || 'Azure AD Application (Client) ID'}
+          helperText={clientIdError || 'Azure AD Application (Client) ID (Required)'}
           placeholder="00000000-0000-0000-0000-000000000000"
           sx={{
             mb: 2,
@@ -278,12 +279,13 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
 
         <TextField
           fullWidth
+          required
           size="small"
           label="SharePoint Domain"
           value={sharepointDomain}
           onChange={(e) => onSharePointDomainChange(e.target.value)}
           error={!!sharepointDomainError}
-          helperText={sharepointDomainError || 'SharePoint domain URL'}
+          helperText={sharepointDomainError || 'SharePoint domain URL (Required)'}
           placeholder="https://your-domain.sharepoint.com"
           sx={{
             mb: 2,

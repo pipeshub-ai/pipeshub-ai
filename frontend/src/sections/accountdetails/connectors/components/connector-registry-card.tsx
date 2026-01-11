@@ -190,7 +190,7 @@ const ConnectorRegistryCard = ({ connector, scope = 'personal' }: ConnectorRegis
                 border: `1px solid ${alpha(theme.palette.text.secondary, 0.12)}`,
               }}
             >
-              {connector.authType.split('_').join(' ')}
+              {(connector.authType || connector.supportedAuthTypes?.[0] || 'NONE').split('_').join(' ')}
             </Typography>
 
             {connector.supportsRealtime && (
@@ -286,7 +286,7 @@ const ConnectorRegistryCard = ({ connector, scope = 'personal' }: ConnectorRegis
             type: connector.type,
             appGroup: connector.appGroup,
             appGroupId: (connector as any).appGroupId || '',
-            authType: connector.authType,
+            authType: connector.authType || connector.supportedAuthTypes?.[0] || 'NONE',
             iconPath: connector.iconPath,
             appDescription: connector.appDescription || '',
             appCategories: connector.appCategories || [],

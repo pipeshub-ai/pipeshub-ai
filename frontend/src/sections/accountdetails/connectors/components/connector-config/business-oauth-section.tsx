@@ -145,15 +145,16 @@ const BusinessOAuthSection: React.FC<BusinessOAuthSectionProps> = ({
             color: theme.palette.text.primary,
           }}
         >
-          Admin Email Address
+          Admin Email Address *
         </Typography>
         <TextField
           fullWidth
+          required
           size="small"
           value={adminEmail}
           onChange={(e) => onAdminEmailChange(e.target.value)}
           error={!!adminEmailError}
-          helperText={adminEmailError || 'Google Workspace administrator email'}
+          helperText={adminEmailError || 'Google Workspace administrator email (Required)'}
           placeholder="admin@yourdomain.com"
           sx={{
             '& .MuiOutlinedInput-root': {
@@ -203,7 +204,7 @@ const BusinessOAuthSection: React.FC<BusinessOAuthSectionProps> = ({
             color: theme.palette.text.primary,
           }}
         >
-          Service Account Credentials
+          Service Account Credentials *
         </Typography>
         
         <Paper

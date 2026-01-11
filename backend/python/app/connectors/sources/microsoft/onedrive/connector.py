@@ -27,6 +27,7 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncPoint,
     generate_record_sync_point_key,
 )
+from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -60,7 +61,7 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission
-from app.utils.streaming import stream_content
+from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -73,10 +74,50 @@ class OneDriveCredentials:
 
 @ConnectorBuilder("OneDrive")\
     .in_group("Microsoft 365")\
-    .with_auth_type("OAUTH_ADMIN_CONSENT")\
     .with_description("Sync files and folders from OneDrive")\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH_ADMIN_CONSENT).fields([
+            AuthField(
+                name="clientId",
+                display_name="Application (Client) ID",
+                placeholder="Enter your Azure AD Application ID",
+                description="The Application (Client) ID from Azure AD App Registration"
+            ),
+            AuthField(
+                name="clientSecret",
+                display_name="Client Secret",
+                placeholder="Enter your Azure AD Client Secret",
+                description="The Client Secret from Azure AD App Registration",
+                field_type="PASSWORD",
+                is_secret=True
+            ),
+            AuthField(
+                name="tenantId",
+                display_name="Directory (Tenant) ID",
+                placeholder="Enter your Azure AD Tenant ID",
+                description="The Directory (Tenant) ID from Azure AD"
+            ),
+            AuthField(
+                name="hasAdminConsent",
+                display_name="Has Admin Consent",
+                description="Check if admin consent has been granted for the application",
+                field_type="CHECKBOX",
+                required=True,
+                default_value=False
+            ),
+            AuthField(
+                name="redirectUri",
+                display_name="Redirect URI",
+                placeholder="http://localhost:3001/connectors/oauth/callback/onedrive",
+                description="The redirect URI for OAuth authentication",
+                field_type="URL",
+                required=False,
+                max_length=2000
+            )
+        ])
+    ])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/onedrive.svg")
         .add_documentation_link(DocumentationLink(
@@ -88,44 +129,6 @@ class OneDriveCredentials:
             'Pipeshub Documentation',
             'https://docs.pipeshub.com/connectors/microsoft-365/one-drive',
             'pipeshub'
-        ))
-        .with_redirect_uri("connectors/oauth/callback/OneDrive", False)
-        .add_auth_field(AuthField(
-            name="clientId",
-            display_name="Application (Client) ID",
-            placeholder="Enter your Azure AD Application ID",
-            description="The Application (Client) ID from Azure AD App Registration"
-        ))
-        .add_auth_field(AuthField(
-            name="clientSecret",
-            display_name="Client Secret",
-            placeholder="Enter your Azure AD Client Secret",
-            description="The Client Secret from Azure AD App Registration",
-            field_type="PASSWORD",
-            is_secret=True
-        ))
-        .add_auth_field(AuthField(
-            name="tenantId",
-            display_name="Directory (Tenant) ID",
-            placeholder="Enter your Azure AD Tenant ID",
-            description="The Directory (Tenant) ID from Azure AD"
-        ))
-        .add_auth_field(AuthField(
-            name="hasAdminConsent",
-            display_name="Has Admin Consent",
-            description="Check if admin consent has been granted for the application",
-            field_type="CHECKBOX",
-            required=True,
-            default_value=False
-        ))
-        .add_auth_field(AuthField(
-            name="redirectUri",
-            display_name="Redirect URI",
-            placeholder="http://localhost:3001/connectors/oauth/callback/onedrive",
-            description="The redirect URI for OAuth authentication",
-            field_type="URL",
-            required=False,
-            max_length=2000
         ))
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
@@ -1353,12 +1356,11 @@ class OneDriveConnector(BaseConnector):
         if not signed_url:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
 
-        return StreamingResponse(
+        return create_stream_record_response(
             stream_content(signed_url),
-            media_type=record.mime_type if record.mime_type else "application/octet-stream",
-            headers={
-                "Content-Disposition": f"attachment; filename={record.record_name}"
-            }
+            filename=record.record_name,
+            mime_type=record.mime_type,
+            fallback_filename=f"record_{record.id}"
         )
 
     def _parse_datetime(self, dt_obj) -> Optional[int]:
