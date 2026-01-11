@@ -4073,7 +4073,7 @@ class JiraConnector(BaseConnector):
 
             issue_data = response.json()
             # Get issue key from the response (it's at the top level, not in fields)
-            issue_key = issue_data.get("key", issue_id)  # Fallback to issue_id if key not found
+            issue_key = issue_data.get("key")  # Fallback to None if key not found
             fields = issue_data.get("fields", {})
             attachments = fields.get("attachment", [])
 
