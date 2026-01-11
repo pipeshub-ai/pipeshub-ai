@@ -249,6 +249,7 @@ export class ConnectorApiService {
     const response = await axios.put(`${BASE_URL}/${connectorId}/config/filters-sync`, {
       sync: trimmedConfig.sync,
       filters: trimmedConfig.filters,
+      baseUrl: window.location.origin,
     });
     if (!response.data) throw new Error('Failed to update connector instance filters-sync config');
     return response.data.config;
@@ -378,6 +379,7 @@ export class ConnectorApiService {
     const response = await axios.post(`/api/v1/oauth/${connectorType}`, {
       oauth_instance_name: oauthInstanceName,
       config,
+      baseUrl: window.location.origin,
     });
     if (!response.data) throw new Error('Failed to create OAuth config');
     return response.data;
@@ -406,6 +408,7 @@ export class ConnectorApiService {
     const response = await axios.put(`/api/v1/oauth/${connectorType}/${oauthConfigId}`, {
       oauth_instance_name: oauthInstanceName,
       config,
+      baseUrl: window.location.origin,
     });
     if (!response.data) throw new Error('Failed to update OAuth config');
     return response.data;
@@ -439,6 +442,7 @@ export class ConnectorApiService {
   static async saveConnectorInstanceFilters(connectorId: string, filters: any): Promise<any> {
     const response = await axios.post(`${BASE_URL}/${connectorId}/filters`, {
       filters,
+      baseUrl: window.location.origin,
     });
     if (!response.data) throw new Error('Failed to save connector instance filters');
     return response.data;
