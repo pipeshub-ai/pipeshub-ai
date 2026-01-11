@@ -701,7 +701,7 @@ class BaseArangoService:
                 self.logger.warning(f"User not found for userId: {user_id}")
                 return None
 
-            user_key = user.get('_key')
+            user.get('_key')
 
             # First check access and get permission paths
             access_query = f"""
@@ -2011,7 +2011,7 @@ class BaseArangoService:
             }
 
             LET allOrgAccessRecords = {
-                f'''(
+                '''(
                     FOR org, belongsEdge IN 1..1 ANY user_from @@belongs_to
                         FILTER belongsEdge.entityType == "ORGANIZATION"
                         FOR record, permEdge IN 1..1 ANY org._id @@permission
@@ -2035,10 +2035,10 @@ class BaseArangoService:
                             )
 
                             FILTER isValidRecord
-                            RETURN {{
+                            RETURN {
                                 record: record,
-                                permission: {{ role: permEdge.role, type: permEdge.type }}
-                            }}
+                                permission: { role: permEdge.role, type: permEdge.type }
+                            }
                 )''' if include_connector_records else '[]'
             }
 
