@@ -2886,9 +2886,9 @@ async def _handle_oauth_config_creation(
     org_id: str,
     is_admin: bool,
     config_service: ConfigurationService,
+    oauth_config_id: Optional[str],
     auth_type: str,
     base_url: str,
-    oauth_config_id: Optional[str],
     logger
 ) -> Optional[str]:
     """
@@ -3371,9 +3371,9 @@ async def create_connector_instance(
                     org_id=org_id,
                     is_admin=is_admin,
                     config_service=config_service,
+                    oauth_config_id=oauth_config_id,
                     auth_type=selected_auth_type,
                     base_url=base_url,
-                    oauth_config_id=oauth_config_id,
                     logger=logger
                 )
 
