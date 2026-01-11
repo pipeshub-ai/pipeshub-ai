@@ -45,12 +45,14 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.models.entities import (
+    AppUser,
     FileRecord,
     IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
     RecordType,
+    User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.streaming import stream_content
@@ -237,6 +239,23 @@ class S3CompatibleBaseConnector(BaseConnector):
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
 
+    def get_app_users(self, users: List[User]) -> List[AppUser]:
+        """Convert User objects to AppUser objects for S3-compatible connectors."""
+        return [
+            AppUser(
+                app_name=self.connector_name,
+                connector_id=self.connector_id,
+                source_user_id=user.source_user_id or user.id or user.email,
+                org_id=user.org_id or self.data_entities_processor.org_id,
+                email=user.email,
+                full_name=user.full_name or user.email,
+                is_active=user.is_active if user.is_active is not None else True,
+                title=user.title,
+            )
+            for user in users
+            if user.email
+        ]
+
     @abstractmethod
     async def init(self) -> bool:
         """Initialize the connector. Must be implemented by subclasses."""
@@ -264,6 +283,10 @@ class S3CompatibleBaseConnector(BaseConnector):
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, self.filter_key, self.connector_id, self.logger
             )
+
+            all_active_users = await self.data_entities_processor.get_all_active_users()
+            app_users = self.get_app_users(all_active_users)
+            await self.data_entities_processor.on_new_app_users(app_users)
 
             # Get sync filters
             sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
