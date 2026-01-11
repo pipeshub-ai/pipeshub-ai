@@ -4780,15 +4780,12 @@ async def _update_oauth_infrastructure_fields(
         redirect_uri_path = oauth_registry_config.redirect_uri
         if redirect_uri_path:
             if base_url:
-                logger.debug(f"Using base URL: {base_url}")
                 oauth_config["redirectUri"] = f"{base_url.rstrip('/')}/{redirect_uri_path}"
             else:
                 endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
                 fallback_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
-                logger.debug(f"Using fallback URL: {fallback_url}")
                 oauth_config["redirectUri"] = f"{fallback_url.rstrip('/')}/{redirect_uri_path}"
         else:
-            logger.debug("No redirect URI path found")
             oauth_config["redirectUri"] = ""
 
     if "scopes" not in oauth_config:
