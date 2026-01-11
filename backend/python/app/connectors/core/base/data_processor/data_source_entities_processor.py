@@ -179,7 +179,7 @@ class DataSourceEntitiesProcessor:
                     parent_record_type=record.parent_record_type,
                     record=record,
                 )
-                self.logger.info(f"parent_record: {parent_record}")
+                self.logger.debug(f"parent_record: {parent_record}")
                 await tx_store.batch_upsert_records([parent_record])
 
             if parent_record and isinstance(parent_record, Record):

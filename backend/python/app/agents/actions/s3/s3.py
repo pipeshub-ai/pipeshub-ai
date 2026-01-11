@@ -220,40 +220,38 @@ class S3:
                         timestamp_clean = timestamp.replace('Z', '+00:00') if timestamp.endswith('Z') else timestamp
                         filter_timestamp = datetime.fromisoformat(timestamp_clean)
                         
-                        # Parse response data to filter
-                        response_data = json.loads(response.to_json())
+                        # Work directly with response.data dictionary (no need to serialize/deserialize)
+                        response_data_dict = response.data
                         
                         # Filter objects based on LastModified
-                        if response_data.get('data') and 'Contents' in response_data['data']:
+                        if response_data_dict and 'Contents' in response_data_dict:
                             filtered_contents = []
-                            for obj in response_data['data']['Contents']:
-                                # LastModified is typically a string in ISO format when serialized
-                                last_modified_str = obj.get('LastModified')
-                                if last_modified_str:
+                            for obj in response_data_dict['Contents']:
+                                # LastModified is already a datetime object in response.data
+                                last_modified = obj.get('LastModified')
+                                if last_modified:
                                     try:
-                                        # Parse ISO format string, handling both 'Z' and timezone offsets
-                                        if isinstance(last_modified_str, str):
-                                            last_modified_clean = last_modified_str.replace('Z', '+00:00') if last_modified_str.endswith('Z') else last_modified_str
-                                            last_modified = datetime.fromisoformat(last_modified_clean)
+                                        # LastModified is already a datetime object, no parsing needed
+                                        if isinstance(last_modified, datetime):
+                                            # Only include objects modified after the timestamp
+                                            if last_modified > filter_timestamp:
+                                                filtered_contents.append(obj)
                                         else:
-                                            # If it's already a datetime object (unlikely in JSON, but handle it)
-                                            last_modified = last_modified_str
-                                        
-                                        # Only include objects modified after the timestamp
-                                        if last_modified > filter_timestamp:
-                                            filtered_contents.append(obj)
+                                            # Fallback: if it's not a datetime (unlikely), skip it
+                                            logger.warning(f"Skipping object {obj.get('Key', 'unknown')} due to invalid LastModified type: {type(last_modified)}")
                                     except (ValueError, AttributeError) as e:
                                         # Skip objects with invalid LastModified timestamps
                                         logger.warning(f"Skipping object {obj.get('Key', 'unknown')} due to invalid LastModified: {e}")
                                         continue
                             
-                            # Update the response with filtered contents
-                            response_data['data']['Contents'] = filtered_contents
+                            # Update the response data with filtered contents
+                            response_data_dict['Contents'] = filtered_contents
                             # Update KeyCount if it exists
-                            if 'KeyCount' in response_data['data']:
-                                response_data['data']['KeyCount'] = len(filtered_contents)
+                            if 'KeyCount' in response_data_dict:
+                                response_data_dict['KeyCount'] = len(filtered_contents)
                             
-                            return True, json.dumps(response_data)
+                            # Return the filtered response
+                            return True, response.to_json()
                         else:
                             # No Contents in response, return as is
                             return True, response.to_json()

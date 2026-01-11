@@ -145,15 +145,15 @@ def get_parent_path_for_s3(parent_external_id: str) -> Optional[str]:
         return None
 
 
-def get_mimetype_for_s3(key: str, is_folder: bool = False) -> MimeTypes:
-    """Determines the correct MimeTypes enum member for an S3 object."""
+def get_mimetype_for_s3(key: str, is_folder: bool = False) -> str:
+    """Determines the correct MimeTypes string value for an S3 object."""
     if is_folder:
         return MimeTypes.FOLDER.value
 
     mime_type_str, _ = mimetypes.guess_type(key)
     if mime_type_str:
         try:
-            return MimeTypes(mime_type_str)
+            return MimeTypes(mime_type_str).value
         except ValueError:
             return MimeTypes.BIN.value
     return MimeTypes.BIN.value
@@ -186,6 +186,7 @@ class S3DataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
             parent_record.weburl = weburl
             parent_record.path = path
             parent_record.is_internal = True  # Mark S3 folder placeholder records as internal
+            parent_record.hide_weburl = True  # Hide web URL for S3 folder records
         
         return parent_record
 
@@ -337,7 +338,7 @@ class S3Connector(BaseConnector):
         # Note: Scope is typically stored in the connector instance document in the database
         # For now, we'll default to PERSONAL and can be overridden if needed
         self.connector_scope = ConnectorScope.PERSONAL.value
-        self.created_by = None
+        self.created_by = config.get("created_by")
         
         # Try to get scope from a config field if available
         scope_from_config = config.get("scope")
@@ -695,6 +696,22 @@ class S3Connector(BaseConnector):
         sync_point = await self.record_sync_point.read_sync_point(sync_point_key)
         continuation_token = sync_point.get("continuation_token") if sync_point else None
         last_sync_time = sync_point.get("last_sync_time") if sync_point else None
+
+        # Merge last_sync_time with user-defined modified_after filter for incremental sync
+        # Use the maximum (more recent) of the two to respect both user filters and incremental sync
+        if last_sync_time:
+            user_modified_after_ms = modified_after_ms
+            if user_modified_after_ms:
+                # Use the maximum (more recent) of the two
+                modified_after_ms = max(user_modified_after_ms, last_sync_time)
+                self.logger.debug(
+                    f"Merging modified_after filter for incremental sync: {modified_after_ms} "
+                    f"(user filter: {user_modified_after_ms}, last_sync_time: {last_sync_time})"
+                )
+            else:
+                # No user-defined filter, use last_sync_time for incremental sync
+                modified_after_ms = last_sync_time
+                self.logger.debug(f"Using last_sync_time for incremental sync: {modified_after_ms}")
 
         batch_records = []
         has_more = True
