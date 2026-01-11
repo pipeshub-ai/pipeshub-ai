@@ -1,15 +1,5 @@
-import json
-from typing import Dict
-
-from aiokafka import AIOKafkaProducer
-
-from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import EventTypes
-from app.config.constants.service import config_node_constants
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
-
-
 import asyncio
+import json
 from typing import Dict
 
 from aiokafka import AIOKafkaProducer
@@ -31,12 +21,12 @@ class KafkaService:
         """Ensure producer is initialized and started"""
         if self.producer is not None:
             return  # Fast path: already initialized
-            
+
         async with self._producer_lock:  # ✅ Serialize initialization
             # Double-check after acquiring lock
             if self.producer is not None:
                 return
-                
+
             producer = None
             try:
                 kafka_config = await self.config_service.get_config(
@@ -65,7 +55,7 @@ class KafkaService:
 
                 producer = AIOKafkaProducer(**producer_config)
                 await producer.start()
-                
+
                 # ✅ Only assign after successful start
                 self.producer = producer
                 self.logger.info("✅ Kafka producer initialized and started")
