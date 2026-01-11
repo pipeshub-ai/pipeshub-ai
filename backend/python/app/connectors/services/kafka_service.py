@@ -171,13 +171,14 @@ class KafkaService:
 
     async def stop_producer(self) -> None:
         """Stop the Kafka producer and clean up resources"""
-        if self.producer:
-            try:
-                await self.producer.stop()
-                self.producer = None
-                self.logger.info("✅ Kafka producer stopped successfully")
-            except Exception as e:
-                self.logger.error(f"❌ Error stopping Kafka producer: {str(e)}")
+        async with self._producer_lock:
+            if self.producer:
+                try:
+                    await self.producer.stop()
+                    self.producer = None
+                    self.logger.info("✅ Kafka producer stopped successfully")
+                except Exception as e:
+                    self.logger.error(f"❌ Error stopping Kafka producer: {str(e)}")
 
     async def __aenter__(self) -> "KafkaService":
         """Async context manager entry"""
