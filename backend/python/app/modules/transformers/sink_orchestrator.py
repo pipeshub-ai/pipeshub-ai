@@ -31,7 +31,6 @@ class SinkOrchestrator(Transformer):
             if result is False:
                 return
 
-        extraction_status = record.get("extractionStatus")
-        if extraction_status != "COMPLETED":
             await self.arango.apply(ctx)
+        
         return

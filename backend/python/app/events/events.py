@@ -280,16 +280,6 @@ class EventProcessor:
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
 
-            # For both create and update events, we need to process the document
-            if event_type == EventTypes.REINDEX_RECORD.value:
-                # For updates, first delete existing embeddings
-                self.logger.info(
-                    f"""🔄 Deleting existing embeddings for record {record_id} for event {event_type}"""
-                )
-                await self.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
-
-            # Update indexing status to IN_PROGRESS
-
             doc = dict(record)
 
             # Extract necessary data

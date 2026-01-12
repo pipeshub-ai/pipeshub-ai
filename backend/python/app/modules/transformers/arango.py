@@ -306,10 +306,15 @@ class Arango(Transformer):
                 )
 
                 # Update extraction status for the record in ArangoDB
+                timestamp = get_epoch_timestamp_in_ms()
                 status_doc = {
                     "_key": record_id,
                     "extractionStatus": "COMPLETED",
-                    "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
+                    "lastExtractionTimestamp": timestamp,
+                    "indexingStatus": "COMPLETED",
+                    "isDirty": False,
+                    "virtualRecordId": virtual_record_id,
+                    "lastIndexTimestamp": timestamp,
                 }
 
                 if is_vlm_ocr_processed:
