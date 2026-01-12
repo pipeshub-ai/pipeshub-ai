@@ -182,6 +182,9 @@ class LinearGraphQLOperations:
                 editedAt
                 quotedText
                 resolvedAt
+                parent {
+                    id
+                }
                 resolvingUser {
                     id
                     name
@@ -204,6 +207,9 @@ class LinearGraphQLOperations:
                 url
                 createdAt
                 updatedAt
+                parent {
+                    id
+                }
                 user {
                     id
                     name

@@ -26,6 +26,11 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
 )
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -49,9 +54,13 @@ from app.connectors.sources.linear.common.apps import LinearApp
 from app.models.blocks import (
     Block,
     BlockComment,
+    BlockGroup,
     BlocksContainer,
     BlockType,
+    CommentAttachment,
     DataFormat,
+    GroupType,
+    GroupSubType,
 )
 from app.models.entities import (
     AppUser,
@@ -82,46 +91,56 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
 
 @ConnectorBuilder("Linear")\
     .in_group(AppGroups.LINEAR.value)\
-    .with_auth_type("OAUTH")\
     .with_description("Sync issues, comments, and projects from Linear")\
     .with_categories(["Issue Tracking", "Project Management"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Linear",
+            authorize_url="https://linear.app/oauth/authorize",
+            token_url="https://api.linear.app/oauth/token",
+            redirect_uri="connectors/oauth/callback/Linear",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=["read", "write"],
+                agent=["read"]
+            ),
+            fields=[
+                AuthField(
+                    name="clientId",
+                    display_name="Client ID",
+                    placeholder="Enter your Linear OAuth Client ID",
+                    description="OAuth Client ID from Linear (https://linear.app/settings/api)",
+                    field_type="TEXT",
+                    max_length=2000
+                ),
+                AuthField(
+                    name="clientSecret",
+                    display_name="Client Secret",
+                    placeholder="Enter your Linear OAuth Client Secret",
+                    description="OAuth Client Secret from Linear",
+                    field_type="PASSWORD",
+                    max_length=2000,
+                    is_secret=True
+                )
+            ],
+            documentation_links=[
+                DocumentationLink(
+                    "Linear OAuth Setup",
+                    "https://linear.app/developers/oauth-2-0-authentication",
+                    "setup"
+                )
+            ]
+        )
+    ])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/linear.svg")
         .with_realtime_support(False)
-        .add_documentation_link(DocumentationLink(
-            "Linear OAuth Setup",
-            "https://linear.app/developers/oauth-2-0-authentication",
-            "setup"
-        ))
         .add_documentation_link(DocumentationLink(
             'Pipeshub Documentation',
             'https://docs.pipeshub.com/connectors/linear/linear',
             'pipeshub'
         ))
-        .with_redirect_uri("connectors/oauth/callback/Linear", True)
-        .add_auth_field(AuthField(
-            name="clientId",
-            display_name="Client ID",
-            placeholder="Enter your Linear OAuth Client ID",
-            description="OAuth Client ID from Linear (https://linear.app/settings/api)",
-            field_type="TEXT",
-            max_length=2000
-        ))
-        .add_auth_field(AuthField(
-            name="clientSecret",
-            display_name="Client Secret",
-            placeholder="Enter your Linear OAuth Client Secret",
-            description="OAuth Client Secret from Linear",
-            field_type="PASSWORD",
-            max_length=2000,
-            is_secret=True
-        ))
-        .with_oauth_urls(
-            "https://linear.app/oauth/authorize",
-            "https://api.linear.app/oauth/token",
-            ["read", "write"]  # Linear OAuth scopes
-        )
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
@@ -1491,10 +1510,23 @@ class LinearConnector(BaseConnector):
                             external_id=project_id
                         )
 
-                        # Parse project data into blocks
-                        blocks_container = await self._parse_project_to_blocks(full_project_data)
+                        # Prepare project BlockGroups and process related records (links, documents, issues)
+                        (
+                            blocks_container,
+                            project_batch_records,
+                            issues_data
+                        ) = await self._prepare_project_blocks_and_related_records(
+                            full_project_data=full_project_data,
+                            project_id=project_id,
+                            existing_record=existing_record,
+                            team_id=team_id,
+                            tx_store=tx_store
+                        )
+                        
+                        # Add project-related records to batch
+                        batch_records.extend(project_batch_records)
 
-                        # Transform project to ProjectRecord with blocks
+                        # Transform project to ProjectRecord with BlockGroup
                         project_record = self._transform_to_project_record(
                             full_project_data, team_id, existing_record, blocks_container
                         )
@@ -1503,8 +1535,7 @@ class LinearConnector(BaseConnector):
                         if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.PROJECTS):
                             project_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
-                        # Add linked issues to related_external_records on ProjectRecord
-                        issues_data = project_data.get("issues", {}).get("nodes", [])
+                        # Add linked issues to related_external_records on ProjectRecord (for LINKED_TO edges)
                         if issues_data:
                             from app.models.entities import RelatedExternalRecord
                             project_record.related_external_records = [
@@ -1521,7 +1552,6 @@ class LinearConnector(BaseConnector):
                         project_content = full_project_data.get("content", "")
                         if project_content:
                             # Extract files from project content (excluding images)
-                            # Use PROJECTS filter key for project file extraction
                             file_records = await self._extract_files_from_markdown(
                                 markdown_text=project_content,
                                 parent_external_id=project_id,
@@ -1532,35 +1562,11 @@ class LinearConnector(BaseConnector):
                                 parent_created_at=project_record.source_created_at,
                                 parent_updated_at=project_record.source_updated_at,
                                 parent_weburl=project_record.weburl,
-                                exclude_images=True,  # Only extract files, not images
-                                indexing_filter_key=IndexingFilterKey.PROJECTS  # Use PROJECTS filter for project files
+                                exclude_images=True,
+                                indexing_filter_key=IndexingFilterKey.PROJECTS
                             )
                             # Add file records to batch
                             batch_records.extend(file_records)
-
-                        # Process project external links (attachments) and create LinkRecords
-                        external_links_data = full_project_data.get("externalLinks", {}).get("nodes", [])
-                        if external_links_data:
-                            link_records = await self._process_project_external_links(
-                                external_links_data=external_links_data,
-                                project_id=project_id,
-                                project_node_id=project_record.id,
-                                team_id=team_id,
-                                tx_store=tx_store
-                            )
-                            batch_records.extend(link_records)
-
-                        # Process project documents and create WebpageRecords
-                        documents_data = full_project_data.get("documents", {}).get("nodes", [])
-                        if documents_data:
-                            document_records = await self._process_project_documents(
-                                documents_data=documents_data,
-                                project_id=project_id,
-                                project_node_id=project_record.id,
-                                team_id=team_id,
-                                tx_store=tx_store
-                            )
-                            batch_records.extend(document_records)
 
                         # Records inherit permissions from RecordGroup (team), so pass empty list
                         batch_records.append((project_record, []))
@@ -1664,6 +1670,100 @@ class LinearConnector(BaseConnector):
             self.logger.debug(f"💬 Issue {issue_identifier}: {len(comment_records)} comments")
 
         return comment_records
+
+    async def _prepare_project_blocks_and_related_records(
+        self,
+        full_project_data: Dict[str, Any],
+        project_id: str,
+        existing_record: Optional[Record],
+        team_id: str,
+        tx_store
+    ) -> Tuple[BlocksContainer, List[Tuple[Record, List[Permission]]], List[Dict[str, Any]]]:
+        """
+        Prepare project BlockGroups and process related records (links, documents, issues).
+
+        This function:
+        1. Gets project weburl and node_id
+        2. Collects issue external IDs
+        3. Processes project external links and documents
+        4. Collects all related external record IDs
+        5. Parses project data into BlockGroups with process_docling=True
+
+        Returns:
+            Tuple containing:
+            - blocks_container: BlocksContainer with BlockGroups
+            - batch_records: List of (Record, permissions) tuples for links and documents
+            - issues_data: List of issue data dictionaries
+        """
+        # Get project weburl for BlockGroup
+        project_weburl = full_project_data.get("url")
+        if not project_weburl:
+            # Fallback: construct URL from project ID
+            project_weburl = f"https://linear.app/project/{project_id}"
+
+        # Get project_node_id (use existing record ID if available, otherwise will be set after project_record creation)
+        project_node_id = existing_record.id if existing_record else None
+
+        # Collect issue external IDs (will be added to related_external_records for LINKED_TO edges)
+        issues_data = full_project_data.get("issues", {}).get("nodes", [])
+        issue_external_ids = [
+            issue.get("id") for issue in issues_data if issue.get("id")
+        ]
+
+        # Process project external links and collect their external IDs
+        external_links_data = full_project_data.get("externalLinks", {}).get("nodes", [])
+        link_external_ids: List[str] = []
+        batch_records: List[Tuple[Record, List[Permission]]] = []
+        
+        if external_links_data:
+            link_records = await self._process_project_external_links(
+                external_links_data=external_links_data,
+                project_id=project_id,
+                project_node_id=project_node_id,
+                team_id=team_id,
+                tx_store=tx_store
+            )
+            # Collect external IDs from link records
+            for link_record, _ in link_records:
+                if link_record.external_record_id:
+                    link_external_ids.append(link_record.external_record_id)
+            batch_records.extend(link_records)
+
+        # Process project documents and collect their external IDs
+        documents_data = full_project_data.get("documents", {}).get("nodes", [])
+        document_external_ids: List[str] = []
+        if documents_data:
+            document_records = await self._process_project_documents(
+                documents_data=documents_data,
+                project_id=project_id,
+                project_node_id=project_node_id,
+                team_id=team_id,
+                tx_store=tx_store
+            )
+            # Collect external IDs from document records
+            for doc_record, _ in document_records:
+                if doc_record.external_record_id:
+                    document_external_ids.append(doc_record.external_record_id)
+            batch_records.extend(document_records)
+
+        # Collect all related external record IDs for BlockGroup
+        related_external_record_ids: List[str] = []
+        related_external_record_ids.extend(issue_external_ids)
+        related_external_record_ids.extend(link_external_ids)
+        related_external_record_ids.extend(document_external_ids)
+
+        # Parse project data into BlockGroup (with process_docling=True)
+        blocks_container = await self._parse_project_to_blocks(
+            full_project_data,
+            weburl=project_weburl,
+            related_external_record_ids=related_external_record_ids if related_external_record_ids else None
+        )
+
+        return (
+            blocks_container,
+            batch_records,
+            issues_data
+        )
 
     async def _process_project_external_links(
         self,
@@ -3089,155 +3189,392 @@ class LinearConnector(BaseConnector):
             self.logger.debug(f"Failed to parse Linear datetime '{datetime_str}': {e}")
             return None
 
+    def _parse_linear_datetime_to_datetime(self, datetime_str: str) -> Optional[datetime]:
+        """
+        Parse Linear datetime string to datetime object.
+
+        Linear format: "2025-01-01T12:00:00.000Z" (ISO 8601 with Z suffix)
+
+        Args:
+            datetime_str: Linear datetime string
+
+        Returns:
+            datetime: Datetime object or None if parsing fails
+        """
+        if not datetime_str:
+            return None
+        try:
+            # Parse ISO 8601 format: '2025-01-01T12:00:00.000Z'
+            # Replace 'Z' with '+00:00' for proper ISO format parsing
+            return datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
+        except Exception as e:
+            self.logger.debug(f"Failed to parse Linear datetime '{datetime_str}': {e}")
+            return None
+
     # ==================== PROJECT BLOCKS PARSER ====================
 
-    async def _parse_project_to_blocks(self, project_data: Dict[str, Any]) -> BlocksContainer:
+    def _organize_comments_by_thread(
+        self,
+        comments: List[BlockComment]
+    ) -> List[List[BlockComment]]:
         """
-        Parse project data into blocks structure.
+        Organize comments into a 2D list grouped by thread_id, with each thread sorted by created_at.
+        
+        Args:
+            comments: List of BlockComment objects
+            
+        Returns:
+            List of lists, where each inner list contains comments for one thread,
+            sorted by created_at (oldest first)
+        """
+        if not comments:
+            return []
+        
+        # Group comments by thread_id
+        threads_dict: Dict[str, List[BlockComment]] = {}
+        for comment in comments:
+            thread_id = comment.thread_id or "no_thread"
+            if thread_id not in threads_dict:
+                threads_dict[thread_id] = []
+            threads_dict[thread_id].append(comment)
+        
+        # Sort each thread's comments by created_at (oldest first)
+        # Comments without created_at will be placed at the end
+        organized_comments: List[List[BlockComment]] = []
+        for thread_id, thread_comments in threads_dict.items():
+            sorted_thread = sorted(
+                thread_comments,
+                key=lambda c: c.created_at if c.created_at else datetime.max.replace(tzinfo=timezone.utc)
+            )
+            organized_comments.append(sorted_thread)
+        
+        # Sort threads by the first comment's created_at (oldest thread first)
+        organized_comments.sort(
+            key=lambda thread: thread[0].created_at if thread[0].created_at else datetime.max.replace(tzinfo=timezone.utc)
+        )
+        
+        return organized_comments
 
-        This creates blocks from:
-        - Project content (markdown) -> Text blocks
-        - Project comments -> BlockComments on main content block
-        - Project milestones -> Text blocks with metadata
-        - Project updates -> Text blocks
-        - Inline images from content -> Image blocks
+    def _create_blockgroup(
+        self,
+        name: str,
+        weburl: str,
+        data: str,
+        group_type: GroupType = GroupType.TEXT_SECTION,
+        group_subtype: Optional[GroupSubType] = None,
+        description: Optional[str] = None,
+        source_group_id: Optional[str] = None,
+        format: DataFormat = DataFormat.MARKDOWN,
+        index: Optional[int] = None,
+        requires_processing: bool = True,
+        comments: Optional[List[List[BlockComment]]] = None,
+    ) -> BlockGroup:
+        """
+        Create a BlockGroup object directly without using BlockGroupBuilder.
+        
+        Args:
+            name: Name of the block group
+            weburl: Web URL for the original source context (e.g., Linear project page)
+            data: Content data (markdown/HTML) to be processed
+            group_type: Type of the block group (defaults to TEXT_SECTION)
+            group_subtype: Optional subtype of the block group (e.g., MILESTONE, UPDATE, PROJECT_CONTENT)
+            description: Optional description of the block group
+            source_group_id: Optional source group identifier
+            format: Data format (defaults to MARKDOWN)
+            index: Optional index for the block group
+            requires_processing: Whether this block group requires further processing (defaults to True)
+            comments: Optional 2D list of BlockComment objects (grouped by thread_id, sorted by created_at)
+            
+        Returns:
+            BlockGroup instance
+            
+        Raises:
+            ValueError: If weburl or data is not provided
+        """
+        if not weburl:
+            raise ValueError("weburl is required when creating BlockGroup")
+        if not data:
+            raise ValueError("data is required when creating BlockGroup")
+        
+        return BlockGroup(
+            name=name,
+            type=group_type,
+            group_subtype=group_subtype,
+            description=description,
+            source_group_id=source_group_id,
+            data=data,
+            format=format,
+            weburl=weburl,
+            index=index,
+            requires_processing=requires_processing,
+            comments=comments or [],
+        )
 
-        Separate FileRecords are only created for actual downloadable files (PDFs, docs, etc.).
+    async def _parse_project_to_blocks(
+        self,
+        project_data: Dict[str, Any],
+        weburl: Optional[str] = None,
+        related_external_record_ids: Optional[List[str]] = None,
+    ) -> BlocksContainer:
+        """
+        Parse project data into multiple BlockGroups that will be processed by Docling.
+
+        This creates separate BlockGroups with process_docling=True for:
+        - Project Description/Content (if exists) - One BlockGroup
+        - Project Comments (if exists) - One BlockGroup with comments as BlockComments (not embedded in markdown)
+        - Each Project Milestone (if exists) - One BlockGroup per milestone
+        - Each Project Update (if exists) - One BlockGroup per update with update comments as BlockComments
+
+        Each BlockGroup will be automatically converted to Blocks by Docling during indexing,
 
         Args:
             project_data: Full project data from Linear API (with nested data)
+            weburl: Project web URL (required for docling BlockGroups)
+            related_external_record_ids: List of external IDs of related records (issues, documents, external links)
 
         Returns:
-            BlocksContainer with all project blocks
+            BlocksContainer with multiple BlockGroups (process_docling=True), one per section
         """
-        blocks: List[Block] = []
-        block_index = 0
-
         project_id = project_data.get("id", "")
         project_name = project_data.get("name", "")
+        project_description = project_data.get("description", "")
 
-        # 1. Project Content as main text block
+        if not weburl:
+            raise ValueError("weburl is required when creating docling BlockGroup for projects")
+
+        block_groups: List[BlockGroup] = []
+        block_group_index = 0
+
+        # 1. Project Description/Content BlockGroup
+        # Include both description and content: description first, then content below
         content = project_data.get("content", "")
-        content_created_at = self._parse_linear_datetime(project_data.get("createdAt", ""))
-        content_updated_at = self._parse_linear_datetime(project_data.get("updatedAt", ""))
-
+        description_sections = []
+        
+        # Add description first (if exists)
+        if project_description:
+            description_sections.append(f"# Project Description\n\n{project_description}")
+        
+        # Add content below description (if exists)
         if content:
-            # Create main content block
-            content_block = Block(
-                index=block_index,
-                type=BlockType.TEXT,
-                name="Project Description",
+            if description_sections:
+                # If we have description, add content as a new section
+                description_sections.append(f"\n# Project Content\n\n{content}")
+            else:
+                # If no description, content becomes the main section
+                description_sections.append(f"# Project Content\n\n{content}")
+        
+        # Create BlockGroup if we have either description or content
+        if description_sections:
+            combined_content = "\n".join(description_sections)
+            
+            # Build project comments as BlockComments
+            block_comments: List[BlockComment] = []
+            comments = project_data.get("comments", {}).get("nodes", [])
+            if comments:
+                for comment_data in comments:
+                    comment_body = comment_data.get("body", "")
+                    if comment_body:
+                        author = comment_data.get("user", {})
+                        author_name = author.get("displayName") or author.get("name", "Unknown")
+                        comment_id = comment_data.get("id", "")
+                        comment_url = comment_data.get("url", "")
+                        comment_created_at_str = comment_data.get("createdAt", "")
+                        comment_updated_at_str = comment_data.get("updatedAt", "")
+                        
+                        # Parse datetime strings to datetime objects
+                        comment_created_at = self._parse_linear_datetime_to_datetime(comment_created_at_str)
+                        comment_updated_at = self._parse_linear_datetime_to_datetime(comment_updated_at_str)
+                        
+                        # Format comment with author and timestamp for better tracking
+                        formatted_comment_text = f"**{author_name}**"
+                        if comment_created_at_str:
+                            formatted_comment_text += f" ({comment_created_at_str})"
+                        formatted_comment_text += f":\n{comment_body}"
+                        
+                        # Handle quoted_text if present
+                        quoted_text = comment_data.get("quotedText") or comment_data.get("quoted_text")
+                        
+                        # Get thread_id from parent comment id, or use comment's own id if top-level
+                        parent_comment = comment_data.get("parent", {})
+                        thread_id = parent_comment.get("id") if parent_comment else comment_id
+                        
+                        block_comments.append(
+                            BlockComment(
+                                text=formatted_comment_text,
+                                format=DataFormat.MARKDOWN,
+                                thread_id=thread_id,
+                                weburl=comment_url if comment_url else None,
+                                created_at=comment_created_at,
+                                updated_at=comment_updated_at,
+                                quoted_text=quoted_text,
+                            )
+                        )
+            
+            # Organize comments by thread_id and sort by created_at
+            organized_comments = self._organize_comments_by_thread(block_comments)
+            
+            content_block_group = self._create_blockgroup(
+                name=f"{project_name} - Description & Content" if project_name else "Project Description & Content",
+                weburl=weburl,
+                data=combined_content,
+                group_type=GroupType.TEXT_SECTION,
+                group_subtype=GroupSubType.PROJECT_CONTENT,
+                description=project_description or "Project content and description",
+                source_group_id=f"{project_id}_description_content",
                 format=DataFormat.MARKDOWN,
-                data=content,
-                comments=[],
-                source_creation_date=datetime.fromtimestamp(content_created_at / 1000, tz=timezone.utc) if content_created_at else None,
-                source_update_date=datetime.fromtimestamp(content_updated_at / 1000, tz=timezone.utc) if content_updated_at else None,
-                source_id=project_id,
-                source_name=project_name,
-                source_type="project_content"
+                index=block_group_index,
+                requires_processing=False,
+                comments=organized_comments,
             )
-            blocks.append(content_block)
-            block_index += 1
+            
+            block_groups.append(content_block_group)
+            block_group_index += 1
 
-        # 2. Project Comments as BlockComments on the main content block
-        comments = project_data.get("comments", {}).get("nodes", [])
-        if comments and blocks:  # Add comments to the main content block
-            main_block = blocks[0]
-            for comment_data in comments:
-                comment_body = comment_data.get("body", "")
-                if comment_body:
-                    author = comment_data.get("user", {})
-                    author_name = author.get("displayName") or author.get("name", "Unknown")
-                    comment_created_at = comment_data.get("createdAt", "")
-
-                    # Format comment with author and timestamp
-                    comment_text = f"**{author_name}** ({comment_created_at}):\n{comment_body}"
-
-                    block_comment = BlockComment(
-                        text=comment_text,
-                        format=DataFormat.MARKDOWN,
-                        thread_id=comment_data.get("id")
-                    )
-                    main_block.comments.append(block_comment)
-
-        # 3. Project Milestones as separate text blocks
+        # 3. Project Milestones - One BlockGroup per Milestone
         milestones = project_data.get("projectMilestones", {}).get("nodes", [])
         for milestone_data in milestones:
+            milestone_id = milestone_data.get("id", "")
             milestone_name = milestone_data.get("name", "")
             milestone_description = milestone_data.get("description", "")
-            milestone_created_at = self._parse_linear_datetime(milestone_data.get("createdAt", ""))
-            milestone_updated_at = self._parse_linear_datetime(milestone_data.get("updatedAt", ""))
-
+            
             if milestone_name or milestone_description:
-                milestone_text = f"# Milestone: {milestone_name}\n\n{milestone_description}" if milestone_description else f"# Milestone: {milestone_name}"
+                # Build markdown content for this milestone with project context for searchability
+                milestone_markdown = f"# Project: {project_name}\n\n## Milestone: {milestone_name}\n"
+                if milestone_description:
+                    milestone_markdown += f"\n{milestone_description}\n"
 
-                milestone_block = Block(
-                    index=block_index,
-                    type=BlockType.TEXT,
-                    name=f"Milestone: {milestone_name}",
+                # Construct milestone-specific URL: {project_url}/overview#milestone-{milestone_id}
+                milestone_weburl = f"{weburl.rstrip('/')}/overview#milestone-{milestone_id}" if milestone_id and weburl else weburl
+
+                milestone_block_group = self._create_blockgroup(
+                    name=f"{project_name} - Milestone: {milestone_name}" if project_name else f"Milestone: {milestone_name}",
+                    weburl=milestone_weburl,
+                    data=milestone_markdown,
+                    group_type=GroupType.TEXT_SECTION,
+                    group_subtype=GroupSubType.MILESTONE,
+                    description=milestone_description or f"Milestone: {milestone_name}",
+                    source_group_id=milestone_id or f"{project_id}_milestone_{block_group_index}",
                     format=DataFormat.MARKDOWN,
-                    data=milestone_text,
-                    comments=[],
-                    source_creation_date=datetime.fromtimestamp(milestone_created_at / 1000, tz=timezone.utc) if milestone_created_at else None,
-                    source_update_date=datetime.fromtimestamp(milestone_updated_at / 1000, tz=timezone.utc) if milestone_updated_at else None,
-                    source_id=milestone_data.get("id", ""),
-                    source_name=milestone_name,
-                    source_type="project_milestone"
+                    index=block_group_index,
+                    requires_processing=True,
                 )
-                blocks.append(milestone_block)
-                block_index += 1
+                block_groups.append(milestone_block_group)
+                block_group_index += 1
 
-        # 4. Project Updates as separate text blocks
+        # 4. Project Updates - One BlockGroup per Update (with comments as BlockComments)
         project_updates = project_data.get("projectUpdates", {}).get("nodes", [])
         for update_data in project_updates:
+            update_id = update_data.get("id", "")
             update_body = update_data.get("body", "")
-            update_created_at = self._parse_linear_datetime(update_data.get("createdAt", ""))
-            update_updated_at = self._parse_linear_datetime(update_data.get("updatedAt", ""))
-
+            
             if update_body:
+                # Build markdown content for this update with project context for searchability
                 author = update_data.get("user", {})
                 author_name = author.get("displayName") or author.get("name", "Unknown")
+                update_created_at = update_data.get("createdAt", "")
+                
+                update_markdown = f"# Project: {project_name}\n\n## Project Update by {author_name}\n"
+                if update_created_at:
+                    update_markdown += f"*Created: {update_created_at}*\n"
+                update_markdown += f"\n{update_body}\n"
 
-                update_text = f"# Project Update by {author_name}\n\n{update_body}"
+                # Update URL is always provided by Linear API
+                update_weburl = update_data.get("url") or weburl
 
-                update_block = Block(
-                    index=block_index,
-                    type=BlockType.TEXT,
-                    name=f"Update by {author_name}",
+                # Build update comments as BlockComments
+                update_block_comments: List[BlockComment] = []
+                update_comments = update_data.get("comments", {}).get("nodes", [])
+                if update_comments:
+                    for comment_data in update_comments:
+                        comment_body = comment_data.get("body", "")
+                        if comment_body:
+                            comment_author = comment_data.get("user", {})
+                            comment_author_name = comment_author.get("displayName") or comment_author.get("name", "Unknown")
+                            comment_id = comment_data.get("id", "")
+                            comment_url = comment_data.get("url", "")
+                            comment_created_at_str = comment_data.get("createdAt", "")
+                            comment_updated_at_str = comment_data.get("updatedAt", "")
+                            
+                            # Parse datetime strings to datetime objects
+                            comment_created_at = self._parse_linear_datetime_to_datetime(comment_created_at_str)
+                            comment_updated_at = self._parse_linear_datetime_to_datetime(comment_updated_at_str)
+                            
+                            # Format comment with author and timestamp for better tracking
+                            formatted_comment_text = f"**{comment_author_name}**"
+                            if comment_created_at_str:
+                                formatted_comment_text += f" ({comment_created_at_str})"
+                            formatted_comment_text += f":\n{comment_body}"
+                            
+                            # Extract attachments from comment body (excluding images) using existing function
+                            attachments = None
+                            if comment_body:
+                                file_urls = self._extract_file_urls_from_markdown(comment_body, exclude_images=True)
+                                if file_urls:
+                                    attachments = [
+                                        CommentAttachment(name=file_info.get("filename", ""))
+                                        for file_info in file_urls
+                                        if file_info.get("filename")
+                                    ]
+                            
+                            # Handle quoted_text if present
+                            quoted_text = comment_data.get("quotedText") or comment_data.get("quoted_text")
+                            
+                            # Get thread_id from parent comment id, or use comment's own id if top-level
+                            parent_comment = comment_data.get("parent", {})
+                            thread_id = parent_comment.get("id") if parent_comment else comment_id
+                            
+                            update_block_comments.append(
+                                BlockComment(
+                                    text=formatted_comment_text,
+                                    format=DataFormat.MARKDOWN,
+                                    thread_id=thread_id,
+                                    weburl=comment_url if comment_url else None,
+                                    created_at=comment_created_at,
+                                    updated_at=comment_updated_at,
+                                    attachments=attachments if attachments else None,
+                                    quoted_text=quoted_text,
+                                )
+                            )
+
+                # Organize comments by thread_id and sort by created_at
+                organized_update_comments = self._organize_comments_by_thread(update_block_comments)
+
+                update_block_group = self._create_blockgroup(
+                    name=f"{project_name} - Update by {author_name}" if project_name else f"Update by {author_name}",
+                    weburl=update_weburl,
+                    data=update_markdown,
+                    group_type=GroupType.TEXT_SECTION,
+                    group_subtype=GroupSubType.UPDATE,
+                    description=f"Project update by {author_name}",
+                    source_group_id=update_id or f"{project_id}_update_{block_group_index}",
                     format=DataFormat.MARKDOWN,
-                    data=update_text,
-                    comments=[],
-                    source_creation_date=datetime.fromtimestamp(update_created_at / 1000, tz=timezone.utc) if update_created_at else None,
-                    source_update_date=datetime.fromtimestamp(update_updated_at / 1000, tz=timezone.utc) if update_updated_at else None,
-                    source_id=update_data.get("id", ""),
-                    source_name=f"Update by {author_name}",
-                    source_type="project_update"
+                    index=block_group_index,
+                    requires_processing=True,
+                    comments=organized_update_comments,
                 )
-                blocks.append(update_block)
-                block_index += 1
+                block_groups.append(update_block_group)
+                block_group_index += 1
 
-        # 5. Extract inline images from content as image blocks
-        if content:
-            image_pattern = r'!\[([^\]]*)\]\(([^\)]+)\)'
-            images = re.findall(image_pattern, content)
+        # If no blockgroups were created (no description, content, milestones, or updates),
+        # create a minimal BlockGroup with just the project name
+        if not block_groups:
+            minimal_data = f"# {project_name}" if project_name else f"# Project {project_id}"
 
-            for alt_text, image_url in images:
-                image_block = Block(
-                    index=block_index,
-                    type=BlockType.IMAGE,
-                    name=alt_text or "Image",
-                    format=DataFormat.UTF8,
-                    data=image_url,
-                    weburl=image_url,
-                    comments=[],
-                    source_id=project_id,
-                    source_name=f"Image: {alt_text}",
-                    source_type="inline_image"
-                )
-                blocks.append(image_block)
-                block_index += 1
+            minimal_block_group = self._create_blockgroup(
+                name=project_name or f"Project {project_id}",
+                weburl=weburl,
+                data=minimal_data,
+                group_type=GroupType.TEXT_SECTION,
+                group_subtype=GroupSubType.PROJECT_CONTENT,
+                description="Project information",
+                source_group_id=project_id,
+                format=DataFormat.MARKDOWN,
+                index=0,
+                requires_processing=True,
+            )
+            block_groups.append(minimal_block_group)
 
-        return BlocksContainer(blocks=blocks, block_groups=[])
+        return BlocksContainer(blocks=[], block_groups=block_groups)
 
     # ==================== CONTENT STREAMING HELPERS ====================
 
@@ -3351,26 +3688,40 @@ class LinearConnector(BaseConnector):
                 if not project_data:
                     raise Exception(f"No project data found for ID: {record_id}")
 
-                # Parse to blocks and stream
-                blocks_container = await self._parse_project_to_blocks(project_data)
-                content_parts = []
+                # Get project weburl for BlockGroup
+                project_weburl = project_data.get("url") or f"https://linear.app/project/{record_id}"
 
-                for block in blocks_container.blocks:
-                    if block.type == BlockType.TEXT:
-                        if block.name:
-                            content_parts.append(f"## {block.name}\n\n")
-                        content_parts.append(block.data or "")
-                        content_parts.append("\n\n")
-                        if block.comments:
-                            content_parts.append("### Comments:\n\n")
-                            for comment in block.comments:
-                                content_parts.append(f"{comment.text}\n\n")
-                    elif block.type == BlockType.IMAGE:
-                        image_url = block.data if isinstance(block.data, str) else block.weburl
-                        if image_url:
-                            content_parts.append(f"![{block.name or 'Image'}]({image_url})\n\n")
+                # Parse to BlockGroup (for streaming, we'll extract content from BlockGroup.data)
+                blocks_container = await self._parse_project_to_blocks(
+                    project_data,
+                    weburl=project_weburl,
+                    related_external_record_ids=None  # Not needed for streaming
+                )
 
-                content = "".join(content_parts)
+                # For streaming, extract content from BlockGroup.data (which contains all markdown)
+                content = ""
+                if blocks_container.block_groups:
+                    # Get content from the BlockGroup's data field
+                    block_group = blocks_container.block_groups[0]
+                    content = block_group.data or ""
+                elif blocks_container.blocks:
+                    # Fallback: if blocks exist (legacy format), use them
+                    content_parts = []
+                    for block in blocks_container.blocks:
+                        if block.type == BlockType.TEXT:
+                            if block.name:
+                                content_parts.append(f"## {block.name}\n\n")
+                            content_parts.append(block.data or "")
+                            content_parts.append("\n\n")
+                            if block.comments:
+                                content_parts.append("### Comments:\n\n")
+                                for comment in block.comments:
+                                    content_parts.append(f"{comment.text}\n\n")
+                        elif block.type == BlockType.IMAGE:
+                            image_url = block.data if isinstance(block.data, str) else block.weburl
+                            if image_url:
+                                content_parts.append(f"![{block.name or 'Image'}]({image_url})\n\n")
+                    content = "".join(content_parts)
 
                 return StreamingResponse(
                     iter([content.encode('utf-8')]),
@@ -3777,8 +4128,29 @@ class LinearConnector(BaseConnector):
                 self.logger.warning(f"Project {project_id} has no team_id, cannot reindex")
                 return None
 
-            # Parse project data into blocks
-            blocks_container = await self._parse_project_to_blocks(project_data)
+            # Get project weburl for BlockGroup
+            project_weburl = project_data.get("url")
+            if not project_weburl:
+                project_weburl = f"https://linear.app/project/{project_id}"
+
+            # Collect related external record IDs (for reference only - edges created during sync)
+            related_external_record_ids: List[str] = []
+            issues_data = project_data.get("issues", {}).get("nodes", [])
+            if issues_data:
+                related_external_record_ids.extend([issue.get("id") for issue in issues_data if issue.get("id")])
+            external_links_data = project_data.get("externalLinks", {}).get("nodes", [])
+            if external_links_data:
+                related_external_record_ids.extend([link.get("id") for link in external_links_data if link.get("id")])
+            documents_data = project_data.get("documents", {}).get("nodes", [])
+            if documents_data:
+                related_external_record_ids.extend([doc.get("id") for doc in documents_data if doc.get("id")])
+
+            # Parse project data into BlockGroup (with process_docling=True)
+            blocks_container = await self._parse_project_to_blocks(
+                project_data,
+                weburl=project_weburl,
+                related_external_record_ids=related_external_record_ids if related_external_record_ids else None
+            )
 
             # Transform project to ProjectRecord
             project_record = self._transform_to_project_record(
