@@ -493,10 +493,10 @@ class S3CompatibleBaseConnector(BaseConnector):
 
     async def _get_signed_url_route(self, record_id: str) -> str:
         """Generate the signed URL route for a record.
-        
+
         Args:
             record_id: The record ID
-            
+
         Returns:
             The signed URL route string
         """

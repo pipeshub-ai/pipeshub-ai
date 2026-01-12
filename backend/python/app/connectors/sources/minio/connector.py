@@ -345,8 +345,8 @@ class MinIOConnector(S3CompatibleBaseConnector):
             connector_id,
             endpoint_url=endpoint_url,
         )
-        
+
         # Update processor with connector-specific URL generator
         data_entities_processor.parent_url_generator = lambda parent_external_id: connector._generate_parent_web_url(parent_external_id)
-        
+
         return connector

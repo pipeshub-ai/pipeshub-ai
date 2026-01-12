@@ -223,7 +223,7 @@ class S3Connector(S3CompatibleBaseConnector):
     ) -> "S3Connector":
         """Factory method to create and initialize connector."""
         base_console_url = "https://s3.console.aws.amazon.com"
-        
+
         # Create processor with default S3 URL generation (will be updated after connector creation)
         data_entities_processor = S3CompatibleDataSourceEntitiesProcessor(
             logger, data_store_provider, config_service,
@@ -238,8 +238,8 @@ class S3Connector(S3CompatibleBaseConnector):
             config_service,
             connector_id,
         )
-        
+
         # Update processor with connector-specific URL generator
         data_entities_processor.parent_url_generator = lambda parent_external_id: connector._generate_parent_web_url(parent_external_id)
-        
+
         return connector
