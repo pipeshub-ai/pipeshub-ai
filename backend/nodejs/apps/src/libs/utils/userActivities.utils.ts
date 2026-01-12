@@ -6,4 +6,5 @@ export const userActivitiesType = {
     WRONG_PASSWORD: "WRONG PASSWORD",
     WRONG_OTP: "WRONG OTP",
     REFRESH_TOKEN: "REFRESH TOKEN",
+    PASSWORD_CHANGED: "PASSWORD CHANGED",
   };

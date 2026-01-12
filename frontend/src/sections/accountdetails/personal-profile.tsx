@@ -35,9 +35,8 @@ import { useAdmin } from 'src/context/AdminContext';
 
 import { Iconify } from 'src/components/iconify';
 import { Form, Field } from 'src/components/hook-form';
-
 import { useAuthContext } from 'src/auth/hooks';
-
+import { STORAGE_KEY } from 'src/auth/context/jwt';
 import {
   logout,
   updateUser,
@@ -50,7 +49,6 @@ import {
   getDataCollectionConsent,
   updateDataCollectionConsent,
 } from './utils';
-
 import type { SnackbarState } from './types/organization-data';
 
 const ProfileSchema = zod.object({
@@ -307,17 +305,23 @@ export default function PersonalProfile() {
 
   const handleChangePassword = async (data: PasswordFormData): Promise<void> => {
     try {
-      await changePassword({
+      const changePasswordResponse = await changePassword({
         currentPassword: data.currentPassword,
         newPassword: data.newPassword,
       });
       setSnackbar({
         open: true,
-        message: 'Password changed successfully',
+        message: 'Password changed successfully, reloading...',
         severity: 'success',
       });
+      localStorage.setItem(STORAGE_KEY, changePasswordResponse.accessToken);
       setIsChangePasswordOpen(false);
       passwordMethods.reset();
+      // Delay before reloading to allow user to see success message
+      setTimeout(() => {
+        window.location.reload();
+      }, 1000);
+
     } catch (err) {
       // Error handling
     }

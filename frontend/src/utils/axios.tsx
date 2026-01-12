@@ -14,6 +14,7 @@ import React, {
 import { Alert, Snackbar } from '@mui/material';
 
 import { CONFIG } from 'src/config-global';
+import { STORAGE_KEY, STORAGE_KEY_REFRESH } from 'src/auth/context/jwt/constant';
 
 // ----------------------------------------------------------------------
 
@@ -159,6 +160,17 @@ axiosInstance.interceptors.response.use(
           processedError.type = ErrorType.AUTHENTICATION_ERROR;
           processedError.message =
             processedError.message || 'Authentication failed. Please sign in again.';
+          // Check for specific message to trigger logout
+          if (error.response.status === 401) {
+            const responseMessage = processedError.message as string;
+            // Check for session expired or similar messages
+            if (responseMessage === "Session expired, please login again") {
+              localStorage.removeItem(STORAGE_KEY);
+              localStorage.removeItem(STORAGE_KEY_REFRESH);
+              // Redirect to login page
+              window.location.href = '/auth/sign-in';
+            }
+          }
         } else if (error.response.status === 404) {
           processedError.type = ErrorType.NOT_FOUND_ERROR;
           processedError.message =
