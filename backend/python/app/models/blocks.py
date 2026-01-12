@@ -47,12 +47,20 @@ class DataFormat(str, Enum):
     BASE64 = "base64"
     UTF8 = "utf8"
 
+class CommentAttachment(BaseModel):
+    """Attachment model for comments"""
+    name: str = Field(description="Name of the attachment")
+
 class BlockComment(BaseModel):
     text: str
     format: DataFormat
     thread_id: Optional[str] = None
-    attachment_record_ids: Optional[List[str]] = None
-
+    weburl: Optional[HttpUrl] = Field(default=None, description="Web URL for the comment (e.g., direct link to comment in Linear)")
+    created_at: Optional[datetime] = Field(default=None, description="Timestamp when the comment was created in Linear")
+    updated_at: Optional[datetime] = Field(default=None, description="Timestamp when the comment was updated in Linear")
+    attachments: Optional[List[CommentAttachment]] = Field(default=None, description="List of attachments associated with the comment")
+    quoted_text: Optional[str] = Field(default=None, description="Quoted text for inline comments")
+    
 class CitationMetadata(BaseModel):
     """Citation-specific metadata for referencing source locations"""
     # All File formatsspecific
@@ -175,6 +183,7 @@ class Confidence(str, Enum):
     LOW = "low"
 
 class GroupType(str, Enum):
+    TEXT_SECTION = "text_section"
     LIST = "list"
     TABLE = "table"
     CODE = "code"
@@ -184,6 +193,11 @@ class GroupType(str, Enum):
     INLINE = "inline"
     KEY_VALUE_AREA = "key_value_area"
     ORDERED_LIST = "ordered_list"
+
+class GroupSubType(str, Enum):
+    MILESTONE = "milestone"
+    UPDATE = "update"
+    PROJECT_CONTENT = "project_content"
 
 class SemanticMetadata(BaseModel):
     entities: Optional[List[Dict[str, Any]]] = None
@@ -243,9 +257,11 @@ class BlockGroup(BaseModel):
     index: int = None
     name: Optional[str] = Field(description="Name of the block group",default=None)
     type: GroupType = Field(description="Type of the block group")
+    group_subtype: Optional[GroupSubType] = Field(default=None, description="Subtype of the block group (e.g., milestone, update, project_content)")
     parent_index: Optional[int] = Field(description="Index of the parent block group",default=None)
     description: Optional[str] = Field(description="Description of the block group",default=None)
     source_group_id: Optional[str] = Field(description="Source group identifier",default=None)
+    requires_processing : bool = Field(default=False, description="Indicates if further processing is needed for this block group")
     citation_metadata: Optional[CitationMetadata] = None
     list_metadata: Optional[ListMetadata] = None
     table_metadata: Optional[TableMetadata] = None
@@ -259,7 +275,9 @@ class BlockGroup(BaseModel):
     children: Optional[List[BlockContainerIndex]] = None
     data: Optional[Any] = None
     format: Optional[DataFormat] = None
-
+    weburl: Optional[HttpUrl] = Field(default=None, description="Web URL for the original source context (e.g., Linear project page). This will be used as primary webUrl in citations for all generated blocks")
+    comments: List[List[BlockComment]] = Field(default_factory=list, description="2D list of comments grouped by thread_id, with each thread's comments sorted by created_at")
+    
 class BlockGroups(BaseModel):
     block_groups: List[BlockGroup] = Field(default_factory=list)
 

@@ -75,8 +75,6 @@ class ConnectorFactory:
         'slides': SlidesConnector,
         'docs': DocsConnector,
         'zendesk': ZendeskConnector,
-        'linear': LinearConnector,
-        's3': S3Connector,
         'notion': NotionConnector,
         'airtable': AirtableConnector,
         'azureblob': AzureBlobConnector,
