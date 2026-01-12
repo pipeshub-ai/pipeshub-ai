@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
 
-from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -102,6 +101,12 @@ class OutlookCredentials:
     .in_group("Microsoft 365")\
     .with_description("Sync emails from Outlook")\
     .with_categories(["Email"])\
+    .with_resilience_config(
+        rate_limit=16,
+        max_retries=5,
+        base_delay=2.0,
+        max_delay=60.0
+    )\
     .with_scopes([ConnectorScope.TEAM.value])\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH_ADMIN_CONSENT).fields([
@@ -222,7 +227,6 @@ class OutlookConnector(BaseConnector):
             config_service,
             connector_id
         )
-        self.rate_limiter = AsyncLimiter(50, 1)
         self.external_outlook_client: Optional[OutlookCalendarContactsDataSource] = None
         self.external_users_client: Optional[UsersGroupsDataSource] = None
         self.credentials: Optional[OutlookCredentials] = None
@@ -253,14 +257,19 @@ class OutlookConnector(BaseConnector):
             # Load credentials
             self.credentials = await self._get_credentials(connector_id)
 
-            # Create shared MSGraph client - store as instance variable for proper cleanup
+            # Get resilience config from connector metadata (via base class property)
+            self.logger.info(f"Resilience config: {self.resilience_config}")
+
+            # Create shared MSGraph client with resilience config
             self.external_client: ExternalMSGraphClient = ExternalMSGraphClient.build_with_config(
                 MSGraphClientWithClientIdSecretConfig(
                     self.credentials.client_id,
                     self.credentials.client_secret,
                     self.credentials.tenant_id
                 ),
-                mode=GraphMode.APP
+                mode=GraphMode.APP,
+                resilience_config=self.resilience_config,
+                logger=self.logger
             )
 
             # Create both data source clients

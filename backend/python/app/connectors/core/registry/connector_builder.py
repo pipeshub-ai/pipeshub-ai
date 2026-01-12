@@ -310,6 +310,7 @@ class ConnectorBuilder:
         self.app_description = ""
         self.app_categories = []
         self.config_builder = ConnectorConfigBuilder()
+        self.resilience_config: Optional[Dict[str, Any]] = None
         self.connector_scopes: List[ConnectorScope] = []
         self._oauth_configs: Dict[str, OAuthConfig] = {}  # Store OAuth configs for auto-registration
 
@@ -396,6 +397,36 @@ class ConnectorBuilder:
         self.app_categories = categories
         return self
 
+    def with_resilience_config(
+        self,
+        rate_limit: int = 50,
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+        max_delay: float = 32.0,
+        enabled: bool = True
+    ) -> 'ConnectorBuilder':
+        """
+        Configure resilience settings (rate limiting and retry) for the connector.
+
+        Args:
+            rate_limit: Maximum requests per second (default: 50)
+            max_retries: Maximum retry attempts (default: 3)
+            base_delay: Initial delay for exponential backoff in seconds (default: 1.0)
+            max_delay: Maximum delay cap in seconds (default: 32.0)
+            enabled: Whether resilience is enabled (default: True)
+
+        Returns:
+            Self for method chaining
+        """
+        self.resilience_config = {
+            'enabled': enabled,
+            'rate_limit': rate_limit,
+            'max_retries': max_retries,
+            'base_delay': base_delay,
+            'max_delay': max_delay
+        }
+        return self
+
     def configure(self, config_func: Callable[[ConnectorConfigBuilder], ConnectorConfigBuilder]) -> 'ConnectorBuilder':
         """Configure the connector using a configuration function"""
         self.config_builder = config_func(self.config_builder)
@@ -466,6 +497,7 @@ class ConnectorBuilder:
             app_description=self.app_description,
             app_categories=self.app_categories,
             config=config,
+            resilience_config=self.resilience_config
             connector_scopes=self.connector_scopes
         )
 

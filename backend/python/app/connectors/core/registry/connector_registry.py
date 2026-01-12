@@ -48,7 +48,8 @@ def Connector(
     app_description: str = "",
     app_categories: Optional[List[str]] = None,
     config: Optional[Dict[str, Any]] = None,
-    connector_scopes: Optional[List[ConnectorScope]] = None
+    connector_scopes: Optional[List[ConnectorScope]] = None,
+    resilience_config: Optional[Dict[str, Any]] = None
 ) -> Callable[[Type], Type]:
     """
     Decorator to register a connector with metadata and configuration schema.
@@ -61,6 +62,7 @@ def Connector(
         app_description: Description of the application
         app_categories: List of categories the app belongs to
         config: Complete configuration schema for the connector
+        resilience_config: Rate limiting and retry configuration
         connector_scopes: List of scopes the connector supports ("personal", "team")
     Returns:
         Decorator function that marks a class as a connector
@@ -96,7 +98,8 @@ def Connector(
             "appDescription": app_description,
             "appCategories": app_categories or [],
             "config": config or {},
-            "connectorScopes": connector_scopes or [ConnectorScope.PERSONAL]  # Default to personal only
+            "connectorScopes": connector_scopes or [ConnectorScope.PERSONAL],  # Default to personal only
+            "resilienceConfig": resilience_config or {}
         }
 
         # Mark class as a connector

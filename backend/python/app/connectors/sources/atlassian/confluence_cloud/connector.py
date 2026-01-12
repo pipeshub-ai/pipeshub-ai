@@ -107,6 +107,12 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
     .in_group("Atlassian")\
     .with_description("Sync pages, spaces, and users from Confluence Cloud")\
     .with_categories(["Knowledge Management", "Collaboration"])\
+    .with_resilience_config(
+        rate_limit=10,
+        max_retries=3,
+        base_delay=1.0,
+        max_delay=32.0
+    )\
     .with_scopes([ConnectorScope.TEAM.value])\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
@@ -286,10 +292,14 @@ class ConfluenceConnector(BaseConnector):
         try:
             self.logger.info("🔧 Initializing Confluence Cloud Connector...")
 
+            # Get resilience config from connector metadata
+            self.logger.info(f"Resilience config: {self.resilience_config}")
+
             # Build client from services (handles config loading, token, base URL internally)
             self.external_client = await ExternalConfluenceClient.build_from_services(
                 logger=self.logger,
                 config_service=self.config_service,
+                resilience_config=self.resilience_config,
                 connector_instance_id=self.connector_id
             )
 
