@@ -83,7 +83,7 @@ EDGE_DEFINITIONS = [
     },
     {
         "edge_collection": CollectionNames.TICKET_RELATIONS.value,
-        "from_vertex_collections": [CollectionNames.TICKETS.value, CollectionNames.RECORDS.value],
-        "to_vertex_collections": [CollectionNames.USERS.value, CollectionNames.RECORDS.value, CollectionNames.TICKETS.value],
+        "from_vertex_collections": [CollectionNames.RECORDS.value],
+        "to_vertex_collections": [CollectionNames.USERS.value],
     },
 ]

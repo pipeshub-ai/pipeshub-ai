@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Type, TypeVar
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -12,6 +12,9 @@ from app.config.constants.arangodb import (
 )
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+# Type variable for enum classes (must be after Enum import)
+EnumType = TypeVar('EnumType', bound=Enum)
 
 
 class RecordGroupType(str, Enum):
@@ -566,7 +569,7 @@ class TicketRecord(Record):
         }
 
     @staticmethod
-    def _safe_enum_parse(value: Optional[str], enum_class) -> Optional[Any]:
+    def _safe_enum_parse(value: Optional[str], enum_class: Type[EnumType]) -> Optional[EnumType]:
         """Safely parse enum value, returning None if invalid"""
         if not value:
             return None

@@ -288,7 +288,7 @@ class TicketEdgeTypes(Enum):
     """Standard edge types for ticket relationships"""
     ASSIGNED_TO = "ASSIGNED_TO"  # Ticket -> User (assignee)
     REPORTED_BY = "REPORTED_BY"  # Ticket -> User (reporter)
-    CREATED = "CREATED_BY"  # Ticket -> User (creator)
+    CREATED_BY = "CREATED_BY"  # Ticket -> User (creator)
 
 class EventTypes(Enum):
     NEW_RECORD = "newRecord"
