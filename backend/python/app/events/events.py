@@ -37,15 +37,7 @@ class EventProcessor:
         """
         try:
             record_id = doc.get("_key", "unknown")
-            old_indexing_status = doc.get("indexingStatus", "NOT_STARTED")
-            old_extraction_status = doc.get("extractionStatus", "NOT_STARTED")
-            
-            self.logger.info(
-                f"🔍 [DEBUG] Record {record_id}: mark_record_status called - "
-                f"updating indexingStatus: {old_indexing_status} -> {status.value}, "
-                f"extractionStatus: {old_extraction_status} -> {status.value}"
-            )
-            
+        
             doc.update(
                 {
                     "indexingStatus": status.value,
@@ -59,14 +51,15 @@ class EventProcessor:
             )
             
             self.logger.info(
-                f"🔍 [DEBUG] Record {record_id}: Successfully updated status to {status.value}"
+                f"🔍 Record {record_id}: Successfully updated status to {status.value}"
             )
         except Exception as e:
             self.logger.error(
-                f"❌ [DEBUG] Record {doc.get('_key', 'unknown')}: Failed to mark record status "
+                f"❌ Record {doc.get('_key', 'unknown')}: Failed to mark record status "
                 f"to {status.value}: {repr(e)}"
             )
-            self.logger.error(f"❌ Error marking record status to IN_PROGRESS: {repr(e)}")
+            if status == ProgressStatus.EMPTY:
+                raise Exception(f"Failed to mark record status to EMPTY: {repr(e)}")
             
 
 
