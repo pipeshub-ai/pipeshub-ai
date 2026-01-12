@@ -1,10 +1,10 @@
+import asyncio
 from datetime import datetime
+from io import BytesIO
 from logging import Logger
 from typing import Any, AsyncGenerator, Dict, Optional
-import asyncio
-from io import BytesIO
+
 import aiohttp  # type: ignore
-from tenacity import retry, stop_after_attempt, wait_exponential  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -16,6 +16,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordTypes,
 )
+from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import IndexingError
@@ -25,8 +26,6 @@ from app.services.messaging.kafka.handlers.entity import BaseEventService
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
-
-
 
 
 class RecordEventHandler(BaseEventService):
@@ -249,7 +248,7 @@ class RecordEventHandler(BaseEventService):
                 yield {"event": "indexing_complete", "data": {"record_id": record_id}}
                 return
 
-          
+
 
             # Signed URL handling
             if payload and payload.get("signedUrlRoute"):
@@ -278,7 +277,7 @@ class RecordEventHandler(BaseEventService):
                         buffer = await self._download_from_signed_url(signed_url=signed_url, record_id=record_id, doc=doc)
                         if not buffer:
                             raise Exception("Failed to download file from signed URL")
-                            
+
                         event_data_for_processor["payload"]["buffer"] = buffer
                     else:
                         event_data_for_processor["payload"]["buffer"] = response["data"]
@@ -452,7 +451,7 @@ class RecordEventHandler(BaseEventService):
 
     async def _download_from_signed_url(
         self, signed_url: str, record_id: str, doc: dict
-    ) -> bytes:
+    ) -> bytes|None:
         """
         Download file from signed URL with exponential backoff retry
 

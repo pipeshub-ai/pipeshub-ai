@@ -1,10 +1,7 @@
-import asyncio
 import hashlib
-from io import BytesIO
 from typing import Any, AsyncGenerator, Dict
 from uuid import uuid4
 
-import aiohttp
 import fitz
 
 from app.config.configuration_service import ConfigurationService
@@ -15,9 +12,7 @@ from app.config.constants.arangodb import (
     MimeTypes,
     ProgressStatus,
 )
-from app.config.constants.http_status_code import HttpStatusCode
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
-from app.utils.jwt import generate_jwt
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -37,7 +32,7 @@ class EventProcessor:
         """
         try:
             record_id = doc.get("_key", "unknown")
-        
+
             doc.update(
                 {
                     "indexingStatus": status.value,
@@ -49,7 +44,7 @@ class EventProcessor:
             await self.arango_service.batch_upsert_nodes(
                 docs, CollectionNames.RECORDS.value
             )
-            
+
             self.logger.info(
                 f"🔍 Record {record_id}: Successfully updated status to {status.value}"
             )
@@ -60,7 +55,7 @@ class EventProcessor:
             )
             if status == ProgressStatus.EMPTY:
                 raise Exception(f"Failed to mark record status to EMPTY: {repr(e)}")
-            
+
 
 
     async def _check_duplicate_by_md5(
@@ -154,7 +149,7 @@ class EventProcessor:
 
         self.logger.info(f"🚀 No duplicate found, proceeding with processing for {doc.get('_key')}")
         return False  # No duplicate found, proceed with processing
-    
+
     async def on_event(self, event_data: dict) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Process events received from Kafka consumer, yielding phase completion events.
@@ -191,7 +186,7 @@ class EventProcessor:
             record = await self.arango_service.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
-       
+
 
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
@@ -257,7 +252,7 @@ class EventProcessor:
                     yield {"event": "indexing_complete", "data": {"record_id": record_id}}
                     return
 
-         
+
             file_content = event_data.get("buffer")
 
             self.logger.debug(f"file_content type: {type(file_content)} length: {len(file_content)}")
