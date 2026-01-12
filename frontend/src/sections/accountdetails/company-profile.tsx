@@ -48,12 +48,12 @@ import type { SnackbarState } from './types/organization-data';
 
 const ProfileSchema = zod.object({
   registeredName: zod.string().min(1, { message: 'Name is required' }).refine(
-    (val) => !val || /^[A-Za-z\s]+$/.test(val),
-    'Name must contain only letters'
+    (val) => !val || !/[<>]/.test(val),
+    'Name cannot contain HTML tags'
   ),
   shortName: zod.string().optional().refine(
-    (val) => !val || /^[A-Za-z\s]+$/.test(val),
-    'Short name must contain only letters'
+    (val) => !val || !/[<>]/.test(val),
+    'Short name cannot contain HTML tags'
   ),
   contactEmail: zod
     .string()

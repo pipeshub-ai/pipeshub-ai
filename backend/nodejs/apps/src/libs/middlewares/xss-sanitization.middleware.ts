@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import xss from 'xss';
 import { Logger } from '../services/logger.service';
 import { BadRequestError } from '../errors/http.errors';
+import { containsXSSPattern } from '../../utils/xss-sanitization';
 
 /**
  * XSS Sanitization Middleware
@@ -20,48 +21,6 @@ import { BadRequestError } from '../errors/http.errors';
  *   // Apply globally (in app.ts after body parsing)
  *   app.use(xssSanitizationMiddleware);
  */
-
-/**
- * Checks if a string contains HTML tags or XSS patterns
- * @param value - The string to check
- * @returns true if HTML/XSS content is detected
- */
-function containsHTML(value: string): boolean {
-  if (typeof value !== 'string' || value.length === 0) {
-    return false;
-  }
-
-  // Simple check for HTML tags (opening or closing)
-  const htmlTagPattern = /<[^>]+>/i;
-  if (htmlTagPattern.test(value)) {
-    return true;
-  }
-
-  // Check for encoded HTML entities that might be used to bypass detection
-  const dangerousEncodedPattern = /&(lt|gt|quot|#x?[0-9a-f]+);/i;
-  if (dangerousEncodedPattern.test(value)) {
-    return true;
-  }
-
-  // Use xss to sanitize and compare - if different, HTML was present
-  try {
-    const sanitized = xss(value, {
-      stripIgnoreTag: true,
-      stripIgnoreTagBody: ['script'],
-      whiteList: {},
-    }).trim();
-    
-    // If sanitized differs from original (after trimming), HTML was present
-    return sanitized !== value.trim();
-  } catch (error) {
-    // If sanitization fails, assume HTML might be present for safety
-    Logger.getInstance().warn('XSS detection failed for string', {
-      error: error instanceof Error ? error.message : String(error),
-      valueLength: value.length,
-    });
-    return true; // Err on the side of caution
-  }
-}
 
 /**
  * Sanitizes a string using xss library to remove HTML/script tags
@@ -104,9 +63,9 @@ function validateNoXSS(value: any, path: string = ''): void {
     return;
   }
 
-  // Handle strings - check for HTML
+  // Handle strings - check for HTML/XSS using utility function
   if (typeof value === 'string') {
-    if (containsHTML(value)) {
+    if (containsXSSPattern(value)) {
       // Create a user-friendly field name from the path
       throw new BadRequestError(
         `HTML tags, scripts, and XSS content are not allowed. Please remove any HTML tags and try again.`,
@@ -123,7 +82,7 @@ function validateNoXSS(value: any, path: string = ''): void {
     value instanceof RegExp ||
     value instanceof Error
   ) {
-    return value;
+    return;
   }
 
   // Handle arrays - validate each element
