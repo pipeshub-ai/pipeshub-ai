@@ -1,7 +1,8 @@
 from datetime import datetime
 from logging import Logger
 from typing import Any, AsyncGenerator, Dict, Optional
-
+import asyncio
+from io import BytesIO
 import aiohttp  # type: ignore
 from tenacity import retry, stop_after_attempt, wait_exponential  # type: ignore
 
@@ -268,18 +269,7 @@ class RecordEventHandler(BaseEventService):
                 yield {"event": "indexing_complete", "data": {"record_id": record_id}}
                 return
 
-            # Update with new metadata fields
-            doc.update(
-                {
-                    "indexingStatus": ProgressStatus.IN_PROGRESS.value,
-                    "extractionStatus": ProgressStatus.IN_PROGRESS.value,
-                }
-            )
-
-            docs = [doc]
-            await self.event_processor.arango_service.batch_upsert_nodes(
-                docs, CollectionNames.RECORDS.value
-            )
+          
 
             # Signed URL handling
             if payload and payload.get("signedUrlRoute"):

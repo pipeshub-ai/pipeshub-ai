@@ -31,7 +31,43 @@ class EventProcessor:
 
 
 
+    async def mark_record_status(self, doc: dict, status: ProgressStatus) -> None:
+        """
+        Mark the record status to IN_PROGRESS
+        """
+        try:
+            record_id = doc.get("_key", "unknown")
+            old_indexing_status = doc.get("indexingStatus", "NOT_STARTED")
+            old_extraction_status = doc.get("extractionStatus", "NOT_STARTED")
+            
+            self.logger.info(
+                f"🔍 [DEBUG] Record {record_id}: mark_record_status called - "
+                f"updating indexingStatus: {old_indexing_status} -> {status.value}, "
+                f"extractionStatus: {old_extraction_status} -> {status.value}"
+            )
+            
+            doc.update(
+                {
+                    "indexingStatus": status.value,
+                    "extractionStatus": status.value,
+                }
+            )
 
+            docs = [doc]
+            await self.arango_service.batch_upsert_nodes(
+                docs, CollectionNames.RECORDS.value
+            )
+            
+            self.logger.info(
+                f"🔍 [DEBUG] Record {record_id}: Successfully updated status to {status.value}"
+            )
+        except Exception as e:
+            self.logger.error(
+                f"❌ [DEBUG] Record {doc.get('_key', 'unknown')}: Failed to mark record status "
+                f"to {status.value}: {repr(e)}"
+            )
+            self.logger.error(f"❌ Error marking record status to IN_PROGRESS: {repr(e)}")
+            
 
 
     async def _check_duplicate_by_md5(
@@ -162,6 +198,7 @@ class EventProcessor:
             record = await self.arango_service.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
+       
 
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
@@ -204,21 +241,28 @@ class EventProcessor:
                         self.logger.error(f"❌ Error in Gmail MD5/duplicate processing: {repr(e)}")
                         raise
 
-                if event_type == EventTypes.UPDATE_RECORD.value:
-                    virtual_record_id = str(uuid4())
+                    await self.mark_record_status(doc, ProgressStatus.IN_PROGRESS)
 
-                self.logger.info("🚀 Processing Gmail Message")
-                async for event in self.processor.process_gmail_message(
-                    recordName=record_name,
-                    recordId=record_id,
-                    version=record_version,
-                    source=connector,
-                    orgId=org_id,
-                    html_content=html_content,
-                    virtual_record_id=virtual_record_id
-                ):
-                    yield event
-                return
+                    if event_type == EventTypes.UPDATE_RECORD.value:
+                        virtual_record_id = str(uuid4())
+
+                    self.logger.info("🚀 Processing Gmail Message")
+                    async for event in self.processor.process_gmail_message(
+                        recordName=record_name,
+                        recordId=record_id,
+                        version=record_version,
+                        source=connector,
+                        orgId=org_id,
+                        html_content=html_content,
+                        virtual_record_id=virtual_record_id
+                    ):
+                        yield event
+                    return
+                else:
+                    await self.mark_record_status(doc, ProgressStatus.EMPTY)
+                    yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+                    yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                    return
 
          
             file_content = event_data.get("buffer")
@@ -237,6 +281,8 @@ class EventProcessor:
             except Exception as e:
                 self.logger.error(f"❌ Error in MD5/duplicate processing: {repr(e)}")
                 raise
+
+            await self.mark_record_status(doc, ProgressStatus.IN_PROGRESS)
 
             if event_type == EventTypes.UPDATE_RECORD.value:
                 virtual_record_id = str(uuid4())
