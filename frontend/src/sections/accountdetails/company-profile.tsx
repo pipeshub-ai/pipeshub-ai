@@ -47,8 +47,14 @@ import {
 import type { SnackbarState } from './types/organization-data';
 
 const ProfileSchema = zod.object({
-  registeredName: zod.string().min(1, { message: 'Name is required' }),
-  shortName: zod.string().optional(),
+  registeredName: zod.string().min(1, { message: 'Name is required' }).refine(
+    (val) => !val || /^[A-Za-z\s]+$/.test(val),
+    'Name must contain only letters'
+  ),
+  shortName: zod.string().optional().refine(
+    (val) => !val || /^[A-Za-z\s]+$/.test(val),
+    'Short name must contain only letters'
+  ),
   contactEmail: zod
     .string()
     .email({ message: 'Invalid email' })

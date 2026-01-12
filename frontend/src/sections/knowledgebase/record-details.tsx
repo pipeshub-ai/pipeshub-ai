@@ -417,7 +417,7 @@ export default function RecordDetails() {
                   <SummaryButton onClick={handleShowSummary} variant="default" />
                 )}
 
-                {webUrl && <OpenButton webUrl={webUrl} variant="default" />}
+                {webUrl && record.origin !=='UPLOAD' && <OpenButton webUrl={webUrl} variant="default" />}
 
                 {/* Reindex button */}
                 {recordId && (
@@ -456,7 +456,7 @@ export default function RecordDetails() {
                   <SummaryButton onClick={handleShowSummary} variant="default" />
                 )}
 
-                {webUrl && <OpenButton webUrl={webUrl} variant="default" />}
+                {webUrl && record.origin !=='UPLOAD' && <OpenButton webUrl={webUrl} variant="default" />}
 
                 {/* Reindex button */}
                 {recordId && (
@@ -504,7 +504,7 @@ export default function RecordDetails() {
                   />
                 )}
 
-                {webUrl && <OpenButton webUrl={webUrl} variant="compact" />}
+                {webUrl && record.origin !=='UPLOAD' && <OpenButton webUrl={webUrl} variant="compact" />}
 
                 {/* Delete button - Compact */}
                 {!isRecordConnector && (
@@ -612,7 +612,7 @@ export default function RecordDetails() {
                   )}
 
                   {/* Open */}
-                  {webUrl && (
+                  {webUrl && record.origin !=='UPLOAD' && (
                     <OpenButton
                       webUrl={webUrl}
                       variant="menu"

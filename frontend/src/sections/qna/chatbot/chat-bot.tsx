@@ -1100,7 +1100,66 @@ const ChatInterface = () => {
         });
 
         if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
+          // Try to read the error response body to get the actual error message
+          let errorMessage = `HTTP error! status: ${response.status}`;
+          try {
+            const errorText = await response.text();
+            if (errorText) {
+              try {
+                const errorJson = JSON.parse(errorText);
+                // Handle nested error objects (e.g., { error: { message: "..." } })
+                if (errorJson.error && typeof errorJson.error === 'object') {
+                  errorMessage = errorJson.error.message || errorJson.error.error || errorMessage;
+                } else if (typeof errorJson.error === 'string') {
+                  errorMessage = errorJson.error;
+                } else if (errorJson.message) {
+                  errorMessage = errorJson.message;
+                } else if (typeof errorJson === 'string') {
+                  errorMessage = errorJson;
+                }
+              } catch {
+                // If not JSON, use the text as is
+                errorMessage = errorText || errorMessage;
+              }
+            }
+          } catch (parseError) {
+            // If we can't parse the error, use the default message
+            console.error('Failed to parse error response:', parseError);
+          }
+
+          // Create an error message in the UI before throwing
+          if (!hasCreatedMessage.current) {
+            const errorMsg: FormattedMessage = {
+              type: 'bot',
+              content: errorMessage,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+              id: streamingBotMessageId,
+              contentFormat: 'MARKDOWN',
+              followUpQuestions: [],
+              citations: [],
+              confidence: '',
+              messageType: 'error',
+              timestamp: new Date(),
+            };
+            streamingManager.mapMessageToConversation(streamingBotMessageId, conversationKey);
+            streamingManager.updateConversationMessages(conversationKey, (prev) => [
+              ...prev,
+              errorMsg,
+            ]);
+            hasCreatedMessage.current = true;
+          } else {
+            streamingManager.updateConversationMessages(conversationKey, (prev) =>
+              prev.map((msg) =>
+                msg.id === streamingBotMessageId
+                  ? { ...msg, content: errorMessage, messageType: 'error' }
+                  : msg
+              )
+            );
+          }
+
+          streamingManager.clearStreaming(conversationKey);
+          throw new Error(errorMessage);
         }
 
         const reader = response.body?.getReader();
@@ -1136,6 +1195,43 @@ const ChatInterface = () => {
         }
 
         console.error('Streaming connection error:', error);
+        
+        // If error wasn't already displayed (e.g., from response.ok check above),
+        // create an error message now
+        const errorMessage =
+          error instanceof Error
+            ? error.message
+            : 'An unexpected error occurred while processing your request.';
+        
+        if (!hasCreatedMessage.current) {
+          const errorMsg: FormattedMessage = {
+            type: 'bot',
+            content: errorMessage,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            id: streamingBotMessageId,
+            contentFormat: 'MARKDOWN',
+            followUpQuestions: [],
+            citations: [],
+            confidence: '',
+            messageType: 'error',
+            timestamp: new Date(),
+          };
+          streamingManager.mapMessageToConversation(streamingBotMessageId, conversationKey);
+          streamingManager.updateConversationMessages(conversationKey, (prev) => [
+            ...prev,
+            errorMsg,
+          ]);
+        } else {
+          streamingManager.updateConversationMessages(conversationKey, (prev) =>
+            prev.map((msg) =>
+              msg.id === streamingBotMessageId
+                ? { ...msg, content: errorMessage, messageType: 'error' }
+                : msg
+            )
+          );
+        }
+        
         streamingManager.clearStreaming(conversationKey);
         throw error; // Re-throw non-abort errors
       }
@@ -1222,6 +1318,21 @@ const ChatInterface = () => {
         }
       } catch (error) {
         console.error('Error in streaming response:', error);
+        // Error is already displayed in the chat by handleStreamingResponse
+        // But we can show a snackbar for additional visibility if needed
+        const errorMessage =
+          error instanceof Error
+            ? error.message
+            : 'An error occurred while processing your request.';
+        
+        // Only show snackbar for non-abort errors
+        if (!(error instanceof Error && error.name === 'AbortError')) {
+          setSnackbar({
+            open: true,
+            message: errorMessage,
+            severity: 'error',
+          });
+        }
       }
     },
     [
@@ -1963,7 +2074,43 @@ const ChatInterface = () => {
         );
 
         if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
+          // Try to read the error response body to get the actual error message
+          let errorMessage = `HTTP error! status: ${response.status}`;
+          try {
+            const errorText = await response.text();
+            if (errorText) {
+              try {
+                const errorJson = JSON.parse(errorText);
+                // Handle nested error objects (e.g., { error: { message: "..." } })
+                if (errorJson.error && typeof errorJson.error === 'object') {
+                  errorMessage = errorJson.error.message || errorJson.error.error || errorMessage;
+                } else if (typeof errorJson.error === 'string') {
+                  errorMessage = errorJson.error;
+                } else if (errorJson.message) {
+                  errorMessage = errorJson.message;
+                } else if (typeof errorJson === 'string') {
+                  errorMessage = errorJson;
+                }
+              } catch {
+                // If not JSON, use the text as is
+                errorMessage = errorText || errorMessage;
+              }
+            }
+          } catch (parseError) {
+            // If we can't parse the error, use the default message
+            console.error('Failed to parse error response:', parseError);
+          }
+
+          // Show error in the message
+          streamingManager.updateConversationMessages(conversationKey, (prevMessages) =>
+            prevMessages.map((msg) =>
+              msg.id === streamingBotMessageId
+                ? { ...msg, content: errorMessage, messageType: 'error' }
+                : msg
+            )
+          );
+          streamingManager.clearStreaming(conversationKey);
+          throw new Error(errorMessage);
         }
 
         const reader = response.body?.getReader();

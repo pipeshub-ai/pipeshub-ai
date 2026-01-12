@@ -54,11 +54,23 @@ import {
 import type { SnackbarState } from './types/organization-data';
 
 const ProfileSchema = zod.object({
-  fullName: zod.string().min(1, { message: 'Full Name is required' }),
-  firstName: zod.string().optional(),
-  lastName: zod.string().optional(),
+  fullName: zod.string().min(1, { message: 'Full Name is required' }).refine(
+    (val) => !val || /^[A-Za-z\s]+$/.test(val),
+    'Full name must contain only letters'
+  ),
+  firstName: zod.string().optional().refine(
+    (val) => !val || /^[A-Za-z\s]+$/.test(val),
+    'First name must contain only letters'
+  ),
+  lastName: zod.string().optional().refine(
+    (val) => !val || /^[A-Za-z\s]+$/.test(val),
+    'Last name must contain only letters'
+  ),
   email: zod.string().email({ message: 'Invalid email' }).min(1, { message: 'Email is required' }),
-  designation: zod.string().optional(),
+  designation: zod.string().optional().refine(
+    (val) => !val || /^[A-Za-z\s]+$/.test(val),
+    'Designation must contain only letters'
+  ),
   dataCollectionConsent: zod.boolean().optional(),
 });
 
