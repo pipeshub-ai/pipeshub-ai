@@ -45,7 +45,7 @@ class KafkaMessagingProducer(IMessagingProducer):
             try:
                 if not self.kafka_config:
                     raise ValueError("Kafka configuration is not valid")
-                
+
                 producer_config = KafkaMessagingProducer.kafka_config_to_dict(self.kafka_config)
 
                 producer = AIOKafkaProducer(**producer_config)
