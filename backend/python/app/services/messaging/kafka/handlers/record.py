@@ -27,26 +27,6 @@ from app.utils.jwt import generate_jwt
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=15))
-async def make_signed_url_api_call(signed_url: str) -> dict:
-    """
-    Make an API call with the JWT token.
-
-    Args:
-        signed_url (str): The signed URL to send the request to
-
-    Returns:
-        dict: The response from the API
-    """
-    try:
-        async with aiohttp.ClientSession() as session:
-            url = signed_url
-            # Make the request
-            async with session.get(url) as response:
-                data = await response.read()
-                return data
-    except Exception:
-        raise Exception("Failed to make signed URL API call")
 
 
 class RecordEventHandler(BaseEventService):
@@ -320,7 +300,7 @@ class RecordEventHandler(BaseEventService):
 
             elif payload and payload.get("signedUrl"):
                 try:
-                    response = await make_signed_url_api_call(signed_url=payload["signedUrl"])
+                    response = await self._download_from_signed_url(signed_url=payload["signedUrl"], record_id=record_id, doc=doc)
                     if not response:
                         raise Exception("Failed to download file from signed URL")
 
