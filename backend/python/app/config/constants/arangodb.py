@@ -113,6 +113,7 @@ class CollectionNames(Enum):
     WEBPAGES = "webpages"
     COMMENTS = "comments"
     TICKETS = "tickets"
+    TICKET_RELATIONS = "ticketRelations"  # Standard ticket relationship edges
 
     # Users and groups
     PEOPLE = "people"
@@ -261,6 +262,33 @@ class RecordRelations(Enum):
     PARENT_CHILD = "PARENT_CHILD"
     SIBLING = "SIBLING"
     ATTACHMENT = "ATTACHMENT"
+    LINKED_TO = "LINKED_TO"  # For ticket linking relationships
+
+
+class LinkRelationshipTag(str, Enum):
+    """Standard relationship tags for LINKED_TO edges in ticket relationships"""
+    RELATES_TO = "RELATES_TO"  # General relationship
+    BLOCKS = "BLOCKS"  # This ticket blocks the linked ticket
+    BLOCKED_BY = "BLOCKED_BY"  # This ticket is blocked by the linked ticket
+    DUPLICATES = "DUPLICATES"  # This ticket duplicates the linked ticket
+    DUPLICATED_BY = "DUPLICATED_BY"  # This ticket is duplicated by the linked ticket
+    DEPENDS_ON = "DEPENDS_ON"  # This ticket depends on the linked ticket
+    REQUIRED_BY = "REQUIRED_BY"  # This ticket is required by the linked ticket
+    CLONES = "CLONES"  # This ticket clones the linked ticket
+    CLONED_FROM = "CLONED_FROM"  # This ticket is cloned from the linked ticket
+    PARENT = "PARENT"  # This ticket is parent of the linked ticket (for subtasks/epics)
+    CHILD = "CHILD"  # This ticket is child of the linked ticket (for subtasks/epics)
+    RELATED = "RELATED"  # General related ticket
+    SPLIT_FROM = "SPLIT_FROM"  # This ticket was split from the linked ticket
+    MERGED_INTO = "MERGED_INTO"  # This ticket was merged into the linked ticket
+    UNKNOWN = "UNKNOWN"  # Unknown or unmapped relationship type
+
+
+class TicketEdgeTypes(Enum):
+    """Standard edge types for ticket relationships"""
+    ASSIGNED_TO = "ASSIGNED_TO"  # Ticket -> User (assignee)
+    REPORTED_BY = "REPORTED_BY"  # Ticket -> User (reporter)
+    CREATED = "CREATED_BY"  # Ticket -> User (creator)
 
 class EventTypes(Enum):
     NEW_RECORD = "newRecord"

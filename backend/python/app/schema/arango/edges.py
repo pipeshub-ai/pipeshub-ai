@@ -1,3 +1,15 @@
+from app.config.constants.arangodb import (
+    LinkRelationshipTag,
+    RecordRelations,
+    TicketEdgeTypes,
+)
+
+
+def _get_enum_values(enum_class):
+    """Helper function to extract enum values from an enum class"""
+    return [item.value for item in enum_class]
+
+
 record_relations_schema = {
     "rule": {
         "type": "object",
@@ -6,15 +18,13 @@ record_relations_schema = {
             "_to": {"type": "string", "minLength": 1},
             "relationshipType": {
                 "type": "string",
-                "enum": [
-                    "PARENT_CHILD",
-                    "DUPLICATE",
-                    "ATTACHMENT",
-                    "SIBLING",
-                    "OTHERS",
-                ],
+                "enum": _get_enum_values(RecordRelations),
             },
-            "customRelationshipTag": {"type": "string"},
+            "customRelationshipTag": {
+                "type": "string",
+                "enum": _get_enum_values(LinkRelationshipTag),
+                "description": "Required when relationshipType is LINKED_TO. Standard tag describing the ticket linking relationship."
+            },
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
         },
@@ -22,6 +32,26 @@ record_relations_schema = {
     },
     "level": "strict",
     "message": "Document does not match the file relations schema.",
+}
+
+ticket_relations_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "edgeType": {
+                "type": "string",
+                "enum": _get_enum_values(TicketEdgeTypes),
+            },
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["edgeType", "createdAtTimestamp"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the ticket relations schema.",
 }
 
 is_of_type_schema = {

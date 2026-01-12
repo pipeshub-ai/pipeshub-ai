@@ -56,6 +56,34 @@ class IndexingStatus(str, Enum):
     FAILED = "FAILED"
     AUTO_INDEX_OFF = "AUTO_INDEX_OFF"  # Record saved but not indexed (filtered out)
 
+
+class TicketPriority(str, Enum):
+    """Standard ticket priority values for all ticketing connectors"""
+    LOWEST = "LOWEST"
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    HIGHEST = "HIGHEST"
+    CRITICAL = "CRITICAL"
+    BLOCKER = "BLOCKER"
+    UNKNOWN = "UNKNOWN"  # For unmapped or missing priority values
+
+
+class TicketStatus(str, Enum):
+    """Standard ticket status values for all ticketing connectors"""
+    NEW = "NEW"
+    OPEN = "OPEN"
+    IN_PROGRESS = "IN_PROGRESS"
+    RESOLVED = "RESOLVED"
+    CLOSED = "CLOSED"
+    CANCELLED = "CANCELLED"
+    REOPENED = "REOPENED"
+    PENDING = "PENDING"
+    WAITING = "WAITING"
+    BLOCKED = "BLOCKED"
+    DONE = "DONE"
+    UNKNOWN = "UNKNOWN"  # For unmapped or missing status values
+
 class Record(BaseModel):
     # Core record properties
     id: str = Field(description="Unique identifier for the record", default_factory=lambda: str(uuid4()))
@@ -513,8 +541,8 @@ class CommentRecord(Record):
         )
 
 class TicketRecord(Record):
-    status: Optional[str] = None
-    priority: Optional[str] = None
+    status: Optional[TicketStatus] = None
+    priority: Optional[TicketPriority] = None
     type: Optional[str] = None
     assignee: Optional[str] = None
     reporter_email: Optional[str] = None
@@ -527,8 +555,8 @@ class TicketRecord(Record):
         return {
             "_key": self.id,
             "orgId": self.org_id,
-            "status": self.status,
-            "priority": self.priority,
+            "status": self.status.value if self.status else None,
+            "priority": self.priority.value if self.priority else None,
             "type": self.type,
             "assignee": self.assignee,
             "reporterEmail": self.reporter_email,
@@ -536,6 +564,24 @@ class TicketRecord(Record):
             "creatorEmail": self.creator_email,
             "creatorName": self.creator_name,
         }
+
+    @staticmethod
+    def _safe_enum_parse(value: Optional[str], enum_class) -> Optional[Any]:
+        """Safely parse enum value, returning None if invalid"""
+        if not value:
+            return None
+        try:
+            return enum_class(value)
+        except (ValueError, KeyError):
+            # If value doesn't match enum, try to find by value (case-insensitive)
+            value_upper = value.upper()
+            for enum_item in enum_class:
+                if enum_item.value.upper() == value_upper:
+                    return enum_item
+            # If still no match, return UNKNOWN if available, else None
+            if hasattr(enum_class, "UNKNOWN"):
+                return enum_class.UNKNOWN
+            return None
 
     @staticmethod
     def from_arango_record(ticket_doc: Dict, record_doc: Dict) -> "TicketRecord":
@@ -569,10 +615,8 @@ class TicketRecord(Record):
             preview_renderable=record_doc.get("previewRenderable", True),
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId", None),
-            summary=ticket_doc.get("summary"),
-            description=ticket_doc.get("description"),
-            status=ticket_doc.get("status"),
-            priority=ticket_doc.get("priority"),
+            status=TicketRecord._safe_enum_parse(ticket_doc.get("status"), TicketStatus),
+            priority=TicketRecord._safe_enum_parse(ticket_doc.get("priority"), TicketPriority),
             type=ticket_doc.get("type"),
             assignee=ticket_doc.get("assignee"),
             reporter_email=ticket_doc.get("reporterEmail"),
