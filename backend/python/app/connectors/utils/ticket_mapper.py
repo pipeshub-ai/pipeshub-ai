@@ -10,6 +10,13 @@ from typing import Dict, Optional
 
 from app.models.entities import TicketPriority, TicketStatus
 
+# Priority level constants for numeric priority mapping
+PRIORITY_HIGHEST = 1
+PRIORITY_HIGH = 2
+PRIORITY_MEDIUM = 3
+PRIORITY_LOW = 4
+PRIORITY_LOWEST_THRESHOLD = 5
+
 
 class TicketValueMapper:
     """Maps connector-specific ticket values to standard enum values"""
@@ -58,7 +65,7 @@ class TicketValueMapper:
         self,
         status_mappings: Optional[Dict[str, TicketStatus]] = None,
         priority_mappings: Optional[Dict[str, TicketPriority]] = None,
-    ):
+    ) -> None:
         """
         Initialize the mapper with optional connector-specific mappings.
 
@@ -124,50 +131,46 @@ class TicketValueMapper:
             return self.priority_mappings[normalized]
 
         # Try numeric priority (e.g., "P1", "1" -> HIGHEST, "P5", "5" -> LOWEST)
-        if normalized.startswith("p") and len(normalized) == 2:
+        num_part = normalized
+        if normalized.startswith("p") and len(normalized) > 1:
+            num_part = normalized[1:]
+
+        if num_part.isdigit():
             try:
-                num = int(normalized[1])
-                if num == 1:
+                num = int(num_part)
+                if num == PRIORITY_HIGHEST:
                     return TicketPriority.HIGHEST
-                elif num == 2:
+                elif num == PRIORITY_HIGH:
                     return TicketPriority.HIGH
-                elif num == 3:
+                elif num == PRIORITY_MEDIUM:
                     return TicketPriority.MEDIUM
-                elif num == 4:
+                elif num == PRIORITY_LOW:
                     return TicketPriority.LOW
-                elif num >= 5:
+                elif num >= PRIORITY_LOWEST_THRESHOLD:
                     return TicketPriority.LOWEST
             except ValueError:
-                pass
-
-        # Try pure numeric
-        try:
-            num = int(normalized)
-            if num == 1:
-                return TicketPriority.HIGHEST
-            elif num == 2:
-                return TicketPriority.HIGH
-            elif num == 3:
-                return TicketPriority.MEDIUM
-            elif num == 4:
-                return TicketPriority.LOW
-            elif num >= 5:
-                return TicketPriority.LOWEST
-        except ValueError:
-            pass
+                pass  # Should not happen due to isdigit() check
 
         # If no match found, return UNKNOWN
         return TicketPriority.UNKNOWN
 
 
+# Default mapper instance for convenience functions (performance optimization)
+_default_mapper = TicketValueMapper()
+
+
 # Convenience function for quick mapping without creating a mapper instance
 def map_ticket_status(api_status: Optional[str], custom_mappings: Optional[Dict[str, TicketStatus]] = None) -> Optional[TicketStatus]:
     """Quick function to map status without creating a mapper instance"""
-    mapper = TicketValueMapper(status_mappings=custom_mappings)
-    return mapper.map_status(api_status)
+    if custom_mappings:
+        mapper = TicketValueMapper(status_mappings=custom_mappings)
+        return mapper.map_status(api_status)
+    return _default_mapper.map_status(api_status)
 
 
 def map_ticket_priority(api_priority: Optional[str], custom_mappings: Optional[Dict[str, TicketPriority]] = None) -> Optional[TicketPriority]:
     """Quick function to map priority without creating a mapper instance"""
-    mapper = TicketValueMapper(priority_mappings=custom_mappings)
-    return mapper.map_priority(api_priority)
+    if custom_mappings:
+        mapper = TicketValueMapper(priority_mappings=custom_mappings)
+        return mapper.map_priority(api_priority)
+    return _default_mapper.map_priority(api_priority)

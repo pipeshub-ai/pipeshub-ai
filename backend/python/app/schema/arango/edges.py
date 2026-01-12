@@ -1,3 +1,6 @@
+from enum import Enum
+from typing import List, Type
+
 from app.config.constants.arangodb import (
     LinkRelationshipTag,
     RecordRelations,
@@ -5,7 +8,7 @@ from app.config.constants.arangodb import (
 )
 
 
-def _get_enum_values(enum_class):
+def _get_enum_values(enum_class: Type[Enum]) -> List[str]:
     """Helper function to extract enum values from an enum class"""
     return [item.value for item in enum_class]
 
