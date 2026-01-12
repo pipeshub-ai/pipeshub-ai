@@ -48,7 +48,7 @@ class BaseConnector(ABC):
         NotImplementedError("This method is not supported")
 
     @abstractmethod
-    def stream_record(self, record: Record) -> StreamingResponse:
+    def stream_record(self, record: Record, user_id: Optional[str] = None) -> StreamingResponse:
         NotImplementedError("This method is not supported by the subclass")
 
     @abstractmethod

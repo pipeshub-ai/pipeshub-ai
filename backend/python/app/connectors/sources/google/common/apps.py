@@ -1,5 +1,5 @@
 from app.config.constants.arangodb import AppGroups, Connectors
-from app.connectors.core.interfaces.connector.apps import App, AppGroup
+from app.connectors.core.interfaces.connector.apps import App
 
 
 class GmailApp(App):

@@ -44,14 +44,14 @@ def is_valid_email(email: str) -> bool:
 
 async def test_run() -> None:
     user_email = os.getenv("TEST_USER_EMAIL")
-    
+
     # Validate that TEST_USER_EMAIL is set
     if not user_email or not is_valid_email(user_email):
         raise ValueError(
             "TEST_USER_EMAIL environment variable must be set to a valid email address. "
             "Example: export TEST_USER_EMAIL='test@example.com'"
         )
-    
+
     org_id = "org_1"
 
     async def create_test_users(user_email: str, arango_service: BaseArangoService) -> None:
@@ -92,7 +92,7 @@ async def test_run() -> None:
     arango_service = BaseArangoService(logger, arango_client, config_service, kafka_service)
     await arango_service.connect()
     data_store_provider = ArangoDataStore(logger, arango_service)
-    
+
     # Create test users BEFORE initializing the connector
     # This ensures the organization exists when DataSourceEntitiesProcessor.initialize() runs
     await create_test_users(user_email, arango_service)
@@ -134,7 +134,7 @@ async def test_run() -> None:
         logger, data_store_provider, config_service, "google_drive"
     )
     await connector.init()
-    
+
     # Note: run_sync() is not implemented yet, so this will raise NotImplementedError
     # This is expected behavior as per the implementation requirements
     try:

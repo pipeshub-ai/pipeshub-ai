@@ -677,7 +677,8 @@ async def download_file(
         connector_type = connector_instance.get("type", None)
         if connector_type is None:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Connector not found")
-        if connector_type.lower() == Connectors.GOOGLE_DRIVE.value.lower() or connector_type.lower() == Connectors.GOOGLE_MAIL.value.lower():
+
+        if connector_type.lower() == Connectors.GOOGLE_MAIL.value.lower():
             connector_scope = connector_instance.get("scope", ConnectorScope.PERSONAL.value) if connector_instance else ConnectorScope.PERSONAL.value
 
             # Use service account credentials only for TEAM scope connectors in enterprise/business accounts
@@ -689,115 +690,10 @@ async def download_file(
             else:
                 # Use user credentials for personal scope or individual accounts
                 creds = await get_user_credentials(org_id, user_id, logger, google_token_handler, request.app.container,connector,connector_id)
-        # Download file based on connector type
+
         try:
-            if connector_type.lower() == Connectors.GOOGLE_DRIVE.value.lower():
-                file_id = external_record_id
-                logger.info(f"Downloading Drive file: {file_id}")
-                # Build the Drive service
-                drive_service = build("drive", "v3", credentials=creds)
 
-                file = await arango_service.get_document(
-                    record_id, CollectionNames.FILES.value
-                )
-                if not file:
-                    raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found")
-                mime_type = file.get("mimeType", "application/octet-stream")
-                google_workspace_export_formats = {
-                    "application/vnd.google-apps.spreadsheet": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # Excel format
-                    "application/vnd.google-apps.document": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # Word format
-                    "application/vnd.google-apps.presentation": "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # PowerPoint format
-                }
-
-                if mime_type in google_workspace_export_formats:
-                    async def file_stream(export_mime_type) -> AsyncGenerator[bytes, None]:
-                        file_buffer = io.BytesIO()
-                        try:
-                            logger.info(f"Exporting Google Workspace file ({mime_type}) to {export_mime_type}")
-                            request = drive_service.files().export_media(fileId=file_id,mimeType=export_mime_type)
-                            downloader = MediaIoBaseDownload(file_buffer, request)
-
-                            done = False
-                            while not done:
-                                status, done = downloader.next_chunk()
-                                logger.info(f"Download {int(status.progress() * 100)}%.")
-
-                            # Reset buffer position to start
-                            file_buffer.seek(0)
-
-                            # Stream the response with content type from metadata
-                            logger.info("Initiating streaming response...")
-                            yield file_buffer.read()
-
-                        except Exception as download_error:
-                            logger.error(f"Download failed: {repr(download_error)}")
-                            if hasattr(download_error, "response"):
-                                logger.error(
-                                    f"Response status: {download_error.response.status_code}"
-                                )
-                                logger.error(
-                                    f"Response content: {download_error.response.content}"
-                                )
-                            raise HTTPException(
-                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                detail=f"File download failed: {repr(download_error)}",
-                            )
-                        finally:
-                            file_buffer.close()
-                    return create_stream_record_response(
-                        file_stream(google_workspace_export_formats[mime_type]),
-                        filename=record.record_name,
-                        mime_type=google_workspace_export_formats[mime_type],
-                        fallback_filename=f"record_{record_id}"
-                    )
-
-                # Enhanced logging for regular file download as a default fallback
-                logger.info(f"Starting binary file download for file_id: {file_id}")
-
-                async def file_stream() -> AsyncGenerator[bytes, None]:
-                    file_buffer = io.BytesIO()
-                    try:
-                        logger.info("Initiating download process...")
-                        request = drive_service.files().get_media(fileId=file_id)
-                        downloader = MediaIoBaseDownload(file_buffer, request)
-
-                        done = False
-                        while not done:
-                            status, done = downloader.next_chunk()
-                            logger.info(f"Download {int(status.progress() * 100)}%.")
-
-                        # Reset buffer position to start
-                        file_buffer.seek(0)
-
-                        # Stream the response with content type from metadata
-                        logger.info("Initiating streaming response...")
-                        yield file_buffer.read()
-
-                    except Exception as download_error:
-                        logger.error(f"Download failed: {repr(download_error)}")
-                        if hasattr(download_error, "response"):
-                            logger.error(
-                                f"Response status: {download_error.response.status_code}"
-                            )
-                            logger.error(
-                                f"Response content: {download_error.response.content}"
-                            )
-                        raise HTTPException(
-                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                            detail=f"File download failed: {repr(download_error)}",
-                        )
-                    finally:
-                        file_buffer.close()
-
-                # Return streaming response with proper headers
-                return create_stream_record_response(
-                    file_stream(),
-                    filename=record.record_name,
-                    mime_type=mime_type,
-                    fallback_filename=f"record_{record_id}"
-                )
-
-            elif connector_type.lower() == Connectors.GOOGLE_MAIL.value.lower():
+            if connector_type.lower() == Connectors.GOOGLE_MAIL.value.lower():
                 file_id = external_record_id
                 logger.info(f"Downloading Gmail attachment for record_id: {record_id}")
                 gmail_service = build("gmail", "v1", credentials=creds)
@@ -1004,7 +900,7 @@ async def download_file(
                         status_code=HttpStatusCode.NOT_FOUND.value,
                         detail=f"Connector '{connector_id}' not found"
                     )
-                buffer = await connector.stream_record(record)
+                buffer = await connector.stream_record(record, user_id)
                 return buffer
 
         except Exception as e:
@@ -1051,6 +947,7 @@ async def stream_record(
             )
             jwt_secret = secret_keys.get("jwtSecret")
             payload = jwt.decode(token, jwt_secret, algorithms=["HS256"])
+
             org_id = payload.get("orgId")
             user_id = payload.get("userId")
         except JWTError as e:
@@ -1082,7 +979,7 @@ async def stream_record(
         # Different auth handling based on account type and connector scope
         creds = None
 
-        if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower() or connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
+        if connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
             # Get connector instance to check scope
             connector_instance = await arango_service.get_document(connector_id, CollectionNames.APPS.value)
             connector_scope = connector_instance.get("scope", ConnectorScope.PERSONAL.value) if connector_instance else ConnectorScope.PERSONAL.value
@@ -1095,202 +992,10 @@ async def stream_record(
             else:
                 # Use user credentials for personal scope or individual accounts
                 creds = await get_user_credentials(org_id, user_id,logger, google_token_handler, request.app.container,connector=connector, connector_id=connector_id)
-        # Download file based on connector type
+
+
         try:
-            if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower():
-                file_id = external_record_id
-                logger.info(f"Downloading Drive file: {file_id}")
-                drive_service = build("drive", "v3", credentials=creds)
-                file_name = record.record_name
-                file = await arango_service.get_document(
-                    record_id, CollectionNames.FILES.value
-                )
-                if not file:
-                    raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found")
-
-                mime_type = file.get("mimeType", "application/octet-stream")
-
-                # Handle Google Workspace files (they need to be exported, not downloaded)
-                # Map Google Workspace mime types to export formats
-                google_workspace_export_formats = {
-                    "application/vnd.google-apps.spreadsheet": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # Excel format
-                    "application/vnd.google-apps.document": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # Word format
-                    "application/vnd.google-apps.presentation": "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # PowerPoint format
-                }
-
-                # Check if PDF conversion is requested for Google Workspace files
-                if convertTo == MimeTypes.PDF.value and mime_type in google_workspace_export_formats:
-                    logger.info(f"Exporting Google Workspace file ({mime_type}) directly to PDF")
-
-                    request = drive_service.files().export_media(fileId=file_id, mimeType="application/pdf")
-                    return StreamingResponse(
-                        _stream_google_api_request(request, error_context="PDF export"),
-                        media_type="application/pdf",
-                        headers={
-                            "Content-Disposition": f'inline; filename="{Path(file_name).stem}.pdf"'
-                        },
-                    )
-
-                # Regular export for Google Workspace files (not PDF conversion)
-                if mime_type in google_workspace_export_formats:
-                    export_mime_type = google_workspace_export_formats[mime_type]
-                    logger.info(f"Exporting Google Workspace file ({mime_type}) to {export_mime_type}")
-
-                    # Export and stream the file
-                    request = drive_service.files().export_media(fileId=file_id, mimeType=export_mime_type)
-
-                    # Determine the appropriate file extension and media type for the response
-                    export_media_types = {
-                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx"),
-                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx"),
-                        "application/vnd.openxmlformats-officedocument.presentationml.presentation": ("application/vnd.openxmlformats-officedocument.presentationml.presentation", ".pptx"),
-                    }
-
-                    response_media_type, file_ext = export_media_types.get(export_mime_type, (export_mime_type, ""))
-
-                    file_name_with_ext = file_name if file_name.endswith(file_ext) else f"{file_name}{file_ext}"
-
-                    return create_stream_record_response(
-                        _stream_google_api_request(request, error_context="Google Workspace file export"),
-                        filename=file_name_with_ext,
-                        mime_type=response_media_type,
-                        fallback_filename=f"record_{record_id}"
-                    )
-
-                # Check if PDF conversion is requested (for regular files only, Google Workspace handled above)
-                if convertTo == MimeTypes.PDF.value:
-                    logger.info(f"Converting file to PDF: {file_name}")
-                    # For regular files, download and convert to PDF
-                    with tempfile.TemporaryDirectory() as temp_dir:
-                        temp_file_path = os.path.join(temp_dir, file_name)
-
-                        # Download file to temp directory
-                        try:
-                            with open(temp_file_path, "wb") as f:
-                                request = drive_service.files().get_media(fileId=file_id)
-                                downloader = MediaIoBaseDownload(f, request)
-
-                                done = False
-                                while not done:
-                                    status, done = downloader.next_chunk()
-                                    logger.info(
-                                        f"Download {int(status.progress() * 100)}%."
-                                    )
-                        except HttpError as http_error:
-                            # Check if this is a Google Workspace file that can't be downloaded directly
-                            if http_error.resp.status == HttpStatusCode.FORBIDDEN.value:
-                                error_details = http_error.error_details if hasattr(http_error, 'error_details') else []
-                                for detail in error_details:
-                                    if detail.get('reason') == 'fileNotDownloadable':
-                                        logger.error(
-                                            f"Google Workspace file cannot be downloaded for PDF conversion: {str(http_error)}"
-                                        )
-                                        raise HTTPException(
-                                            status_code=HttpStatusCode.BAD_REQUEST.value,
-                                            detail="Google Workspace files (Sheets, Docs, Slides) cannot be converted to PDF using direct download. Please use the file's native export functionality.",
-                                        )
-                            raise
-
-                        # Convert to PDF
-                        pdf_path = await convert_to_pdf(temp_file_path, temp_dir)
-                        logger.info(f"PDF file converted: {pdf_path}")
-                        # Create async generator to properly handle file cleanup
-                        async def file_iterator() -> AsyncGenerator[bytes, None]:
-                            try:
-                                with open(pdf_path, "rb") as pdf_file:
-                                    yield await asyncio.to_thread(pdf_file.read)
-                            except Exception as e:
-                                logger.error(f"Error reading PDF file: {str(e)}")
-                                raise HTTPException(
-                                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                    detail="Error reading converted PDF file",
-                                )
-
-                        return StreamingResponse(
-                            file_iterator(),
-                            media_type="application/pdf",
-                            headers={
-                                "Content-Disposition": f'inline; filename="{Path(file_name).stem}.pdf"'
-                            },
-                        )
-
-                # Regular file download without conversion - now with direct streaming
-                async def file_stream() -> AsyncGenerator[bytes, None]:
-                    try:
-                        chunk_count = 0
-                        total_bytes = 0
-
-                        request = drive_service.files().get_media(fileId=file_id)
-                        buffer = io.BytesIO()
-                        downloader = MediaIoBaseDownload(buffer, request)
-
-                        done = False
-                        while not done:
-                            try:
-                                _ , done = downloader.next_chunk()
-                                chunk_count += 1
-
-                                buffer.seek(0)
-                                chunk = buffer.read()
-                                total_bytes += len(chunk)
-
-                                if chunk:  # Only yield if we have data
-                                    yield chunk
-
-                                # Clear buffer for next chunk
-                                buffer.seek(0)
-                                buffer.truncate(0)
-
-                                # Yield control back to event loop
-                                await asyncio.sleep(0)
-
-                            except Exception as chunk_error:
-                                logger.error(
-                                    f"Error streaming chunk: {str(chunk_error)}"
-                                )
-                                raise HTTPException(
-                                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                    detail="Error during file streaming",
-                                )
-                        logger.info(f"File streamed: {chunk_count} chunks, {total_bytes} bytes")
-
-                    except HttpError as http_error:
-                        logger.debug(f"HTTP error in file stream: {str(http_error)}")
-                        # Check if this is a Google Workspace file that can't be downloaded directly
-                        if http_error.resp.status == HttpStatusCode.FORBIDDEN.value:
-                            error_details = http_error.error_details if hasattr(http_error, 'error_details') else []
-                            for detail in error_details:
-                                if detail.get('reason') == 'fileNotDownloadable':
-                                    logger.error(
-                                        f"Google Workspace file cannot be downloaded directly: {str(http_error)}"
-                                    )
-                                    raise HTTPException(
-                                        status_code=HttpStatusCode.BAD_REQUEST.value,
-                                        detail="Google Workspace files (Sheets, Docs, Slides) must be processed using their specific parsers. This file type is not supported for direct download.",
-                                    )
-                        logger.error(f"HTTP error in file stream: {str(http_error)}")
-                        raise HTTPException(
-                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                            detail=f"Error setting up file stream: {str(http_error)}",
-                        )
-                    except Exception as stream_error:
-                        logger.error(f"Error in file stream: {str(stream_error)}")
-                        raise HTTPException(
-                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error setting up file stream"
-                        )
-                    finally:
-                        buffer.close()
-
-
-                # Return streaming response with proper headers
-                return create_stream_record_response(
-                    file_stream(),
-                    filename=file_name,
-                    mime_type=mime_type,
-                    fallback_filename=f"record_{record_id}"
-                )
-
-            elif connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
+            if connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
                 file_id = external_record_id
                 logger.info(
                     f"Handling Gmail request for record_id: {record_id}, type: {recordType}"
@@ -1700,7 +1405,8 @@ async def stream_record(
                         status_code=HttpStatusCode.NOT_FOUND.value,
                         detail=f"Connector '{connector_id}' not found"
                     )
-                buffer = await connector.stream_record(record)
+                # Pass convertTo parameter if provided
+                buffer = await connector.stream_record(record, user_id)
                 return buffer
         except Exception as e:
             logger.error(f"Error downloading file: {str(e)}")
@@ -6025,7 +5731,7 @@ async def _ensure_connector_initialized(
     """
     # Skip synchronous initialization for Gmail and Google Drive - they use event-based initialization
     # via specialized sync services and don't extend BaseConnector
-    is_gmail_or_drive = connector_type in [Connectors.GOOGLE_MAIL.value, Connectors.GOOGLE_DRIVE.value]
+    is_gmail_or_drive = connector_type in [Connectors.GOOGLE_MAIL.value]
 
     if is_gmail_or_drive:
         logger.info(f"Skipping synchronous initialization for {connector_type} - will be initialized via event handlers")
@@ -6267,7 +5973,7 @@ async def toggle_connector_instance(
             org_account_type = str(org.get("accountType", "")).lower()
             custom_google_business_logic = (
                 org_account_type == "enterprise" and
-                connector_type in ["GMAIL", "DRIVE"] and
+                connector_type in ["GMAIL", "DRIVE", "DRIVE TEAM"] and
                 instance.get("scope") == ConnectorScope.TEAM.value
             )
 

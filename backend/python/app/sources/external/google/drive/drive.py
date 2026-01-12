@@ -148,7 +148,8 @@ class GoogleDriveDataSource:
         supportsTeamDrives: Optional[bool] = None,
         teamDriveId: Optional[str] = None,
         includePermissionsForView: Optional[str] = None,
-        includeLabels: Optional[str] = None
+        includeLabels: Optional[str] = None,
+        fields: Optional[str] = None
     ) -> Dict[str, Any]:
         """Google Drive API: Lists the changes for a user or shared drive. For more information, see [Retrieve changes](https://developers.google.com/workspace/drive/api/guides/manage-changes).
 
@@ -169,6 +170,7 @@ class GoogleDriveDataSource:
             teamDriveId (str, optional): Deprecated: Use `driveId` instead.
             includePermissionsForView (str, optional): Specifies which additional view's permissions to include in the response. Only 'published' is supported.
             includeLabels (str, optional): A comma-separated list of IDs of labels to include in the `labelInfo` part of the response.
+            fields (str, optional): Selector specifying which fields to include in a partial response.
 
         Returns:
             Dict[str, Any]: API response
@@ -202,6 +204,8 @@ class GoogleDriveDataSource:
             kwargs['includePermissionsForView'] = includePermissionsForView
         if includeLabels is not None:
             kwargs['includeLabels'] = includeLabels
+        if fields is not None:
+            kwargs['fields'] = fields
 
         request = self.client.changes().list(**kwargs) # type: ignore
         return request.execute()
@@ -1029,14 +1033,7 @@ class GoogleDriveDataSource:
         Returns:
             Dict[str, Any]: API response
         """
-        # #region agent log
-        import json, inspect
-        sig = inspect.signature(self.files_list)
-        received_params = {k: v for k, v in locals().items() if k != 'self' and v is not None}
-        with open('/home/rogue/Programs/pipeshub-ai/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "drive.py:1030", "message": "files_list method entry", "data": {"received_params": list(received_params.keys()), "has_fields": "fields" in received_params, "method_params": list(sig.parameters.keys())}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
-        # #endregion
-        
+
         kwargs = {}
         if corpora is not None:
             kwargs['corpora'] = corpora
@@ -1070,11 +1067,6 @@ class GoogleDriveDataSource:
             kwargs['includeLabels'] = includeLabels
         if fields is not None:
             kwargs['fields'] = fields
-
-        # #region agent log
-        with open('/home/rogue/Programs/pipeshub-ai/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "drive.py:1062", "message": "kwargs before API call", "data": {"kwargs_keys": list(kwargs.keys()), "has_fields": "fields" in kwargs}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
-        # #endregion
 
         request = self.client.files().list(**kwargs) # type: ignore
         return request.execute()
@@ -1428,7 +1420,8 @@ class GoogleDriveDataSource:
         supportsAllDrives: Optional[bool] = None,
         supportsTeamDrives: Optional[bool] = None,
         useDomainAdminAccess: Optional[bool] = None,
-        includePermissionsForView: Optional[str] = None
+        includePermissionsForView: Optional[str] = None,
+        fields: Optional[str] = None
     ) -> Dict[str, Any]:
         """Google Drive API: Lists a file's or shared drive's permissions.
 
@@ -1442,6 +1435,7 @@ class GoogleDriveDataSource:
             supportsTeamDrives (bool, optional): Deprecated: Use `supportsAllDrives` instead.
             useDomainAdminAccess (bool, optional): Issue the request as a domain administrator; if set to true, then the requester will be granted access if the file ID parameter refers to a shared drive and the requester is an administrator of the domain to which the shared drive belongs.
             includePermissionsForView (str, optional): Specifies which additional view's permissions to include in the response. Only 'published' is supported.
+            fields (str, optional): Selector specifying which fields to include in a partial response. Use this to include emailAddress, displayName, etc. Example: "permissions(id, displayName, type, role, domain, emailAddress, deleted)"
 
         Returns:
             Dict[str, Any]: API response
@@ -1461,6 +1455,8 @@ class GoogleDriveDataSource:
             kwargs['useDomainAdminAccess'] = useDomainAdminAccess
         if includePermissionsForView is not None:
             kwargs['includePermissionsForView'] = includePermissionsForView
+        if fields is not None:
+            kwargs['fields'] = fields
 
         request = self.client.permissions().list(**kwargs) # type: ignore
         return request.execute()

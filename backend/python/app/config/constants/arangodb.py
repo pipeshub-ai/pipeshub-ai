@@ -30,6 +30,7 @@ class DepartmentNames(Enum):
 
 class Connectors(Enum):
     GOOGLE_DRIVE = "DRIVE"
+    GOOGLE_DRIVE_TEAM = "DRIVE TEAM"
     GOOGLE_MAIL = "GMAIL"
     GOOGLE_CALENDAR = "CALENDAR"
 
