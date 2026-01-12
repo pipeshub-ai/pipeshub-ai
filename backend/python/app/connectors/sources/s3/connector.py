@@ -38,6 +38,7 @@ from app.connectors.core.registry.filters import (
 from app.connectors.sources.s3.base_connector import (
     S3CompatibleBaseConnector,
     S3CompatibleDataSourceEntitiesProcessor,
+    parse_parent_external_id,
 )
 from app.connectors.sources.s3.common.apps import S3App
 from app.sources.client.s3.s3 import S3Client
@@ -200,16 +201,10 @@ class S3Connector(S3CompatibleBaseConnector):
 
     def _generate_parent_web_url(self, parent_external_id: str) -> str:
         """Generate the web URL for an S3 parent folder/directory."""
-        if "/" in parent_external_id:
-            parts = parent_external_id.split("/", 1)
-            bucket_name = parts[0]
-            path = parts[1]
-            path = path.lstrip("/")
-            if path and not path.endswith("/"):
-                path = path + "/"
+        bucket_name, path = parse_parent_external_id(parent_external_id)
+        if path:
             return f"{self.base_console_url}/s3/object/{bucket_name}?prefix={path}"
         else:
-            bucket_name = parent_external_id
             return f"{self.base_console_url}/s3/buckets/{bucket_name}"
 
     @classmethod

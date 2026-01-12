@@ -58,6 +58,9 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.streaming import stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+# Default connector endpoint for signed URL generation
+DEFAULT_CONNECTOR_ENDPOINT = "http://localhost:8000"
+
 
 def get_file_extension(key: str) -> Optional[str]:
     """Extracts the extension from an S3 key."""
@@ -124,6 +127,33 @@ def get_parent_path_for_s3(parent_external_id: str) -> Optional[str]:
         return directory_path
     else:
         return None
+
+
+def parse_parent_external_id(parent_external_id: str) -> Tuple[str, Optional[str]]:
+    """Parse parent_external_id to extract bucket_name and normalized path.
+
+    This helper method extracts the common parsing logic for parent_external_id
+    used by both S3 and MinIO connectors to generate parent web URLs.
+
+    Args:
+        parent_external_id: External ID in format "bucket_name/path" or just "bucket_name"
+
+    Returns:
+        A tuple of (bucket_name, normalized_path) where normalized_path is None
+        if parent_external_id contains only a bucket name, otherwise it's the
+        path normalized (leading slashes removed, trailing slash added if not present).
+    """
+    if "/" in parent_external_id:
+        parts = parent_external_id.split("/", 1)
+        bucket_name = parts[0]
+        path = parts[1]
+        path = path.lstrip("/")
+        if path and not path.endswith("/"):
+            path = path + "/"
+        return bucket_name, path
+    else:
+        bucket_name = parent_external_id
+        return bucket_name, None
 
 
 def get_mimetype_for_s3(key: str, is_folder: bool = False) -> str:
@@ -503,7 +533,7 @@ class S3CompatibleBaseConnector(BaseConnector):
         endpoints = await self.config_service.get_config(
             config_node_constants.ENDPOINTS.value
         )
-        connector_endpoint = endpoints.get("connectors", {}).get("endpoint", "http://localhost:8000")
+        connector_endpoint = endpoints.get("connectors", {}).get("endpoint", DEFAULT_CONNECTOR_ENDPOINT)
         return f"{connector_endpoint}/api/v1/internal/stream/record/{record_id}"
 
     async def _get_bucket_region(self, bucket_name: str) -> str:

@@ -41,6 +41,7 @@ from app.connectors.sources.minio.common.apps import MinIOApp
 from app.connectors.sources.s3.base_connector import (
     S3CompatibleBaseConnector,
     S3CompatibleDataSourceEntitiesProcessor,
+    parse_parent_external_id,
 )
 from app.sources.client.minio.minio import MinIOClient
 from app.sources.external.minio.minio import MinIODataSource
@@ -273,16 +274,10 @@ class MinIOConnector(S3CompatibleBaseConnector):
         MinIO console uses a different URL format than AWS S3 console.
         Format: {endpoint}/browser/{bucket}/{path}
         """
-        if "/" in parent_external_id:
-            parts = parent_external_id.split("/", 1)
-            bucket_name = parts[0]
-            path = parts[1]
-            path = path.lstrip("/")
-            if path and not path.endswith("/"):
-                path = path + "/"
+        bucket_name, path = parse_parent_external_id(parent_external_id)
+        if path:
             return f"{self.base_console_url}/browser/{bucket_name}/{path}"
         else:
-            bucket_name = parent_external_id
             return f"{self.base_console_url}/browser/{bucket_name}"
 
     async def _get_bucket_region(self, bucket_name: str) -> str:
