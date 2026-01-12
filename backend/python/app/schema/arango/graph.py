@@ -81,4 +81,9 @@ EDGE_DEFINITIONS = [
         "from_vertex_collections": [CollectionNames.USERS.value, CollectionNames.TEAMS.value, CollectionNames.ROLES.value, CollectionNames.GROUPS.value, CollectionNames.ORGS.value],
         "to_vertex_collections": [CollectionNames.AGENT_INSTANCES.value, CollectionNames.AGENT_TEMPLATES.value, CollectionNames.TEAMS.value, CollectionNames.ROLES.value, CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value ],
     },
+    {
+        "edge_collection": CollectionNames.TICKET_RELATIONS.value,
+        "from_vertex_collections": [CollectionNames.TICKETS.value, CollectionNames.RECORDS.value],
+        "to_vertex_collections": [CollectionNames.USERS.value, CollectionNames.RECORDS.value, CollectionNames.TICKETS.value],
+    },
 ]
