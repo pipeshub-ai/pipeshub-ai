@@ -900,8 +900,13 @@ async def download_file(
                         status_code=HttpStatusCode.NOT_FOUND.value,
                         detail=f"Connector '{connector_id}' not found"
                     )
-                buffer = await connector.stream_record(record, user_id)
-                return buffer
+
+                if connector.get_app_name() == Connectors.GOOGLE_DRIVE:
+                    buffer = await connector.stream_record(record, user_id)
+                    return buffer
+                else:
+                    buffer = await connector.stream_record(record)
+                    return buffer
 
         except Exception as e:
             logger.error(f"Error downloading file: {str(e)}")
@@ -1406,8 +1411,13 @@ async def stream_record(
                         detail=f"Connector '{connector_id}' not found"
                     )
                 # Pass convertTo parameter if provided
-                buffer = await connector.stream_record(record, user_id)
-                return buffer
+
+                if connector.get_app_name() == Connectors.GOOGLE_DRIVE:
+                    buffer = await connector.stream_record(record, user_id)
+                    return buffer
+                else:
+                    buffer = await connector.stream_record(record)
+                    return buffer
         except Exception as e:
             logger.error(f"Error downloading file: {str(e)}")
             raise HTTPException(
@@ -5973,7 +5983,7 @@ async def toggle_connector_instance(
             org_account_type = str(org.get("accountType", "")).lower()
             custom_google_business_logic = (
                 org_account_type == "enterprise" and
-                connector_type in ["GMAIL", "DRIVE", "DRIVE TEAM"] and
+                connector_type in ["GMAIL", "DRIVE", "DRIVE WORKSPACE"] and
                 instance.get("scope") == ConnectorScope.TEAM.value
             )
 

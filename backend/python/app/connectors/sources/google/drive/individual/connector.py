@@ -65,6 +65,7 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
+from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
 
@@ -75,7 +76,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
     .with_scopes([ConnectorScope.PERSONAL.value])\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
-            connector_name="Drive Team",
+            connector_name="Drive",
             authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
             token_url="https://oauth2.googleapis.com/token",
             redirect_uri="connectors/oauth/callback/Drive",
@@ -205,9 +206,33 @@ class GoogleDriveIndividualConnector(BaseConnector):
             self.config = {"credentials": config}
 
             # Extract auth configuration
-            auth_config = config.get("auth", {})
-            client_id = auth_config.get("clientId")
-            client_secret = auth_config.get("clientSecret")
+            # auth_config = config.get("auth", {})
+            # client_id = auth_config.get("clientId")
+            # client_secret = auth_config.get("clientSecret")
+
+            auth_config = config.get("auth")
+            oauth_config_id = auth_config.get("oauthConfigId")
+
+            if not oauth_config_id:
+                self.logger.error("Dropbox oauthConfigId not found in auth configuration.")
+                return False
+
+            # Fetch OAuth config
+            oauth_config = await fetch_oauth_config_by_id(
+                oauth_config_id=oauth_config_id,
+                connector_type=Connectors.GOOGLE_DRIVE.value,
+                config_service=self.config_service,
+                logger=self.logger
+            )
+
+            if not oauth_config:
+                self.logger.error(f"OAuth config {oauth_config_id} not found for Dropbox connector.")
+                return False
+
+            oauth_config_data = oauth_config.get("config", {})
+
+            client_id = oauth_config_data.get("clientId")
+            client_secret = oauth_config_data.get("clientSecret")
 
             if not all((client_id, client_secret)):
                 self.logger.error(

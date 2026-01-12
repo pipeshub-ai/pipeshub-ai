@@ -71,14 +71,14 @@ from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
 
-@ConnectorBuilder("Drive Team")\
+@ConnectorBuilder("Drive Workspace")\
     .in_group("Google Workspace")\
     .with_description("Sync files and folders from Google Drive")\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.TEAM.value])\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
-            connector_name="Drive Team",
+            connector_name="Drive Workspace",
             authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
             token_url="https://oauth2.googleapis.com/token",
             redirect_uri="connectors/oauth/callback/Drive",
@@ -1393,7 +1393,7 @@ class GoogleDriveEnterpriseConnector(BaseConnector):
                 parent_external_record_id=metadata.get("parents", [None])[0] if metadata.get("parents", [None]) else None,
                 version=0 if is_new else (existing_record.version + 1 if existing_record else 0),
                 origin=OriginTypes.CONNECTOR.value,
-                connector_name=Connectors.GOOGLE_DRIVE.value,
+                connector_name=Connectors.GOOGLE_DRIVE_WORKSPACE.value,
                 connector_id=self.connector_id,
                 created_at=timestamp_ms,
                 updated_at=timestamp_ms,

@@ -62,7 +62,7 @@ class ConnectorFactory:
         "jira": JiraConnector,
         "box": BoxConnector,
         "drive": GoogleDriveIndividualConnector,
-        "driveteam": GoogleDriveEnterpriseConnector,
+        "driveworkspace": GoogleDriveEnterpriseConnector,
         "dropbox": DropboxConnector,
         "dropboxpersonal": DropboxIndividualConnector,
         "servicenow": ServiceNowConnector,
