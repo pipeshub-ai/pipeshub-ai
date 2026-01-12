@@ -196,7 +196,21 @@ class S3Connector(S3CompatibleBaseConnector):
 
     def _generate_web_url(self, bucket_name: str, normalized_key: str) -> str:
         """Generate the web URL for an S3 object."""
-        return f"https://s3.console.aws.amazon.com/s3/object/{bucket_name}?prefix={normalized_key}"
+        return f"{self.base_console_url}/s3/object/{bucket_name}?prefix={normalized_key}"
+
+    def _generate_parent_web_url(self, parent_external_id: str) -> str:
+        """Generate the web URL for an S3 parent folder/directory."""
+        if "/" in parent_external_id:
+            parts = parent_external_id.split("/", 1)
+            bucket_name = parts[0]
+            path = parts[1]
+            path = path.lstrip("/")
+            if path and not path.endswith("/"):
+                path = path + "/"
+            return f"{self.base_console_url}/s3/object/{bucket_name}?prefix={path}"
+        else:
+            bucket_name = parent_external_id
+            return f"{self.base_console_url}/s3/buckets/{bucket_name}"
 
     @classmethod
     async def create_connector(
@@ -208,16 +222,24 @@ class S3Connector(S3CompatibleBaseConnector):
         **kwargs,
     ) -> "S3Connector":
         """Factory method to create and initialize connector."""
+        base_console_url = "https://s3.console.aws.amazon.com"
+        
+        # Create processor with default S3 URL generation (will be updated after connector creation)
         data_entities_processor = S3CompatibleDataSourceEntitiesProcessor(
             logger, data_store_provider, config_service,
-            base_console_url="https://s3.console.aws.amazon.com"
+            base_console_url=base_console_url
         )
         await data_entities_processor.initialize()
 
-        return cls(
+        connector = cls(
             logger,
             data_entities_processor,
             data_store_provider,
             config_service,
             connector_id,
         )
+        
+        # Update processor with connector-specific URL generator
+        data_entities_processor.parent_url_generator = lambda parent_external_id: connector._generate_parent_web_url(parent_external_id)
+        
+        return connector
