@@ -57,6 +57,13 @@ DEFAULT_TAG_MAPPINGS: Dict[str, LinkRelationshipTag] = {
     "mergedinto": LinkRelationshipTag.MERGED_INTO,
 }
 
+# Priority level constants for numeric priority mapping
+PRIORITY_HIGHEST = 1
+PRIORITY_HIGH = 2
+PRIORITY_MEDIUM = 3
+PRIORITY_LOW = 4
+PRIORITY_LOWEST_THRESHOLD = 5
+
 
 class TicketValueMapper:
     """Maps connector-specific ticket values to standard enum values"""
@@ -301,6 +308,10 @@ class TicketValueMapper:
 
         # If no match found, return original value to preserve connector-specific delivery status
         return api_delivery_status
+
+
+# Default mapper instance for convenience functions (performance optimization)
+_default_mapper = TicketValueMapper()
 
 
 # Default mapper instance for convenience functions (performance optimization)
