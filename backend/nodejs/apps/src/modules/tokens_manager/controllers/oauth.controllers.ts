@@ -202,7 +202,7 @@ export const createOAuthConfig = (appConfig: AppConfig) =>
     (req) => `/api/v1/oauth/${req.params.connectorType}`,
     (req) => {
       const { connectorType } = req.params;
-      const { oauthInstanceName, config } = req.body;
+      const { oauthInstanceName, config, baseUrl } = req.body;
 
       if (!connectorType) {
         throw new BadRequestError('Connector type is required');
@@ -213,10 +213,13 @@ export const createOAuthConfig = (appConfig: AppConfig) =>
       if (!config) {
         throw new BadRequestError('Config is required');
       }
+      if (!baseUrl) {
+        throw new BadRequestError('Base URL is required');
+      }
     },
     (req) => {
-      const { oauthInstanceName, config } = req.body;
-      return { oauthInstanceName, config };
+      const { oauthInstanceName, config, baseUrl } = req.body;
+      return { oauthInstanceName, config, baseUrl };
     },
     'Creating OAuth config',
     HttpMethod.POST,
@@ -253,7 +256,7 @@ export const updateOAuthConfig = (appConfig: AppConfig) =>
     (req) => `/api/v1/oauth/${req.params.connectorType}/${req.params.configId}`,
     (req) => {
       const { connectorType, configId } = req.params;
-      const { oauthInstanceName, config } = req.body;
+      const { oauthInstanceName, config, baseUrl } = req.body;
 
       if (!connectorType) {
         throw new BadRequestError('Connector type is required');
@@ -264,15 +267,21 @@ export const updateOAuthConfig = (appConfig: AppConfig) =>
       if (!oauthInstanceName && !config) {
         throw new BadRequestError('Either oauthInstanceName or config must be provided');
       }
+      if (!baseUrl) {
+        throw new BadRequestError('Base URL is required');
+      }
     },
     (req) => {
-      const { oauthInstanceName, config } = req.body;
+      const { oauthInstanceName, config, baseUrl } = req.body;
       const payload: any = {};
       if (oauthInstanceName) {
         payload.oauthInstanceName = oauthInstanceName;
       }
       if (config) {
         payload.config = config;
+      }
+      if (baseUrl) {
+        payload.baseUrl = baseUrl;
       }
       return payload;
     },

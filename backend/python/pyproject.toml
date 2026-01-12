@@ -1,11 +1,13 @@
 [tool.ruff]
 line-length = 88
 target-version = "py310"
+src = ["."]
+
+[tool.ruff.lint]
 select = ["E", "F", "W", "I", "F401", "PLW0603"]
 ignore = [
     "E501",  # Line too long
 ]
-src = ["."]
 
 
 [project]
