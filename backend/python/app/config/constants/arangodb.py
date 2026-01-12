@@ -125,6 +125,7 @@ class CollectionNames(Enum):
     TICKETS = "tickets"
     TICKET_RELATIONS = "ticketRelations"  # Standard ticket relationship edges
     PROJECTS = "projects"
+    TICKET_RELATIONS = "ticketRelations"  # Standard ticket relationship edges
 
     # Users and groups
     PEOPLE = "people"

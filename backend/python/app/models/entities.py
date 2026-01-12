@@ -158,6 +158,33 @@ class RelatedExternalRecord(BaseModel):
     )
 
 
+class TicketPriority(str, Enum):
+    """Standard ticket priority values for all ticketing connectors"""
+    LOWEST = "LOWEST"
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    HIGHEST = "HIGHEST"
+    CRITICAL = "CRITICAL"
+    BLOCKER = "BLOCKER"
+    UNKNOWN = "UNKNOWN"  # For unmapped or missing priority values
+
+
+class TicketStatus(str, Enum):
+    """Standard ticket status values for all ticketing connectors"""
+    NEW = "NEW"
+    OPEN = "OPEN"
+    IN_PROGRESS = "IN_PROGRESS"
+    RESOLVED = "RESOLVED"
+    CLOSED = "CLOSED"
+    CANCELLED = "CANCELLED"
+    REOPENED = "REOPENED"
+    PENDING = "PENDING"
+    WAITING = "WAITING"
+    BLOCKED = "BLOCKED"
+    DONE = "DONE"
+    UNKNOWN = "UNKNOWN"  # For unmapped or missing status values
+
 class Record(BaseModel):
     # Core record properties
     id: str = Field(description="Unique identifier for the record", default_factory=lambda: str(uuid4()))
