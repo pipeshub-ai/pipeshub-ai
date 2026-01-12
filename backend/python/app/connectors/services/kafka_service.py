@@ -64,7 +64,8 @@ class KafkaService:
                 if producer is not None:
                     try:
                         await producer.stop()
-                    except Exception:
+                    except Exception as e:
+                        self.logger.info(f"⚠️ Failed to stop Kafka producer during error handling: {str(e)}")
                         pass
                 self.producer = None
                 self.logger.error(f"❌ Failed to initialize Kafka producer: {str(e)}")
