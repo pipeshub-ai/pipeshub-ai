@@ -146,9 +146,6 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
           } else if (finalConfigType === 'storage' && data.providerType === 'local') {
             hasData = true;
             validationResult = true;
-          } else if (finalConfigType === 'url') {
-            hasData = !!(data.frontendUrl?.trim());
-            validationResult = hasData ? isValid : true;
           } else {
             const nonMetaKeys = Object.keys(data).filter(
               (key) => key !== 'providerType' && key !== 'modelType' && key !== '_provider'
@@ -418,10 +415,6 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
           return true;
         }
 
-        if (finalConfigType === 'url') {
-          return !!(formData.frontendUrl?.trim());
-        }
-
         const nonMetaKeys = Object.keys(formData).filter(
           (key) => key !== 'providerType' && key !== 'modelType' && key !== '_provider'
         );
@@ -556,8 +549,6 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
         return 'Configure your storage settings for file management.';
       case 'smtp':
         return 'Configure SMTP settings for email notifications.';
-      case 'url':
-        return 'Configure the public URLs for your services.';
       default:
         return `Configure your ${String(finalConfigType).toUpperCase()} settings.`;
     }

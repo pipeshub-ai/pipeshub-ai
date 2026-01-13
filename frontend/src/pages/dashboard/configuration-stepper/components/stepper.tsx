@@ -32,10 +32,8 @@ import { createScrollableContainerStyle } from 'src/sections/qna/chatbot/utils/s
 
 import {
   getLlmConfig,
-  getUrlConfig,
   getSmtpConfig,
   updateLlmConfig,
-  updateUrlConfig,
   getStorageConfig,
   updateSmtpConfig,
   getEmbeddingConfig,
@@ -79,18 +77,6 @@ const CONFIGURATION_STEPS = [
     isRequired: false,
     canSkip: true,
     documentationUrl: 'https://docs.pipeshub.com/system-overview/storage',
-  },
-  {
-    id: 'url' as ConfigType,
-    label: 'Public URLs',
-    title: 'Public URL Configuration',
-    description:
-      'Configure the public URLs for your frontend and connector services. These URLs are used for OAuth redirects and webhook callbacks.',
-    infoMessage:
-      'Set up public URLs for external integrations. These are optional but recommended for production.',
-    isRequired: false,
-    canSkip: true,
-    documentationUrl: 'https://docs.pipeshub.com/system-overview/internal-services',
   },
   {
     id: 'smtp' as ConfigType,
@@ -148,7 +134,6 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
   const llmRef = useRef<DynamicFormRef>(null);
   const embeddingRef = useRef<DynamicFormRef>(null);
   const storageRef = useRef<DynamicFormRef>(null);
-  const urlRef = useRef<DynamicFormRef>(null);
   const smtpRef = useRef<DynamicFormRef>(null);
 
   // Group them into a stable object reference
@@ -157,7 +142,6 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
       llm: llmRef,
       embedding: embeddingRef,
       storage: storageRef,
-      url: urlRef,
       smtp: smtpRef,
     }),
     []
@@ -222,8 +206,6 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
         return { getConfig: getEmbeddingConfig, updateConfig: updateEmbeddingConfig };
       case 'storage':
         return { getConfig: getStorageConfig, updateConfig: updateStorageConfig };
-      case 'url':
-        return { getConfig: getUrlConfig, updateConfig: updateUrlConfig };
       case 'smtp':
         return { getConfig: getSmtpConfig, updateConfig: updateSmtpConfig };
       default:
@@ -661,7 +643,6 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
           if (state.hasValidData && state.formData && !state.skipped) {
             const updateFns = {
               storage: () => updateStorageConfig(state.formData),
-              url: () => updateUrlConfig(state.formData),
               smtp: () => updateSmtpConfig(state.formData),
             };
 

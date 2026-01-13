@@ -33,7 +33,7 @@ import axios from 'src/utils/axios';
 import { CONFIG } from 'src/config-global';
 
 import { ORIGIN } from 'src/sections/knowledgebase/constants/knowledge-search';
-import { getConnectorPublicUrl } from 'src/sections/accountdetails/account-settings/services/utils/services-configuration-service';
+import { ConnectorApiService } from 'src/sections/accountdetails/connectors/services/api';
 
 import { Agent } from 'src/types/agent';
 import HtmlViewer from 'src/sections/qna/chatbot/components/html-highlighter';
@@ -1646,7 +1646,7 @@ const AgentChat = () => {
             handleLargePPTFile(record);
           }
 
-          const publicConnectorUrlResponse = await getConnectorPublicUrl();
+          const publicConnectorUrlResponse = await ConnectorApiService.getConnectorPublicUrl();
           let connectorResponse;
           if (publicConnectorUrlResponse && publicConnectorUrlResponse.url) {
             const CONNECTOR_URL = publicConnectorUrlResponse.url;

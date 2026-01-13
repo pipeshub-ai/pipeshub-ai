@@ -6,6 +6,7 @@ import axios from 'src/utils/axios';
 
 import { CONFIG } from 'src/config-global';
 
+import { ConnectorApiService } from 'src/sections/accountdetails/connectors/services/api';
 import { KnowledgeBaseAPI } from './services/api';
 import KnowledgeSearch from './knowledge-search';
 import { ORIGIN } from './constants/knowledge-search';
@@ -17,7 +18,6 @@ import ExcelViewer from '../qna/chatbot/components/excel-highlighter';
 import PdfHighlighterComp from '../qna/chatbot/components/pdf-highlighter';
 import MarkdownViewer from '../qna/chatbot/components/markdown-highlighter';
 import { createScrollableContainerStyle } from '../qna/chatbot/utils/styles/scrollbar';
-import { getConnectorPublicUrl } from '../accountdetails/account-settings/services/utils/services-configuration-service';
 import { useConnectors } from '../accountdetails/connectors/context';
 import { getWebUrlWithFragment } from './utils/utils';
 
@@ -431,7 +431,7 @@ export default function KnowledgeBaseSearch() {
             handleLargePPTFile(record);
           }
           
-          const publicConnectorUrlResponse = await getConnectorPublicUrl();
+          const publicConnectorUrlResponse = await ConnectorApiService.getConnectorPublicUrl();
           let response;
           
           if (publicConnectorUrlResponse && publicConnectorUrlResponse.url) {
