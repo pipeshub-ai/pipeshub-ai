@@ -153,7 +153,9 @@ class RecordEventHandler(BaseEventService):
                             f"⏭️ Skipping indexing for record {record_id}: "
                             f"connector instance {connector_id} not found (possibly deleted)."
                         )
-                        return True
+                        yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+                        yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                        return
                     if not connector_instance.get("isActive", False):
                         self.logger.info(
                             f"⏭️ Skipping indexing for record {record_id}: "
