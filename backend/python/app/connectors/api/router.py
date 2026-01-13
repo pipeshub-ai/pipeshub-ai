@@ -569,7 +569,7 @@ async def stream_record_internal(
         )
         jwt_secret = secret_keys.get("scopedJwtSecret")
         payload = jwt.decode(token, jwt_secret, algorithms=["HS256"])
-        # Validate JWT scopes
+        # Validate JWT scopes (must be connector:streamRecord to ensure proper authorization)
         scopes = payload.get("scopes", [])
         if "connector:streamRecord" not in scopes:
             raise HTTPException(
