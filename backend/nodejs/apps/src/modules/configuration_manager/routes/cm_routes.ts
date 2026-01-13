@@ -4,8 +4,6 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import {
   createAIModelsConfig,
   createGoogleWorkspaceCredentials,
-  createKafkaConfig,
-  createRedisConfig,
   createSmtpConfig,
   createStorageConfig,
   getAIModelsConfig,
@@ -26,14 +24,11 @@ import {
   setOAuthConfig,
   setSsoAuthConfig,
   setGoogleWorkspaceOauthConfig,
-  createArangoDbConfig,
   getArangoDbConfig,
-  createMongoDbConfig,
   getMongoDbConfig,
   deleteGoogleWorkspaceCredentials,
   getGoogleWorkspaceBusinessCredentials,
   getQdrantConfig,
-  createQdrantConfig,
   getFrontendUrl,
   setFrontendUrl,
   getConnectorPublicUrl,
@@ -65,9 +60,7 @@ import {
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
-  redisConfigSchema,
   smtpConfigSchema,
-  kafkaConfigSchema,
   aiModelsConfigSchema,
   storageValidationSchema,
   azureAdConfigSchema,
@@ -75,9 +68,6 @@ import {
   oauthConfigSchema,
   ssoConfigSchema,
   googleWorkspaceConfigSchema,
-  mongoDBConfigSchema,
-  arangoDBConfigSchema,
-  qdrantConfigSchema,
   platformSettingsSchema,
   urlSchema,
   metricsCollectionPushIntervalSchema,
@@ -95,13 +85,6 @@ import {
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
-import {
-  checkArangoHealth,
-  checkKafkaHealth,
-  checkMongoHealth,
-  checkQdrantHealth,
-  checkRedisHealth,
-} from '../middlewares/health.middleware';
 
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
@@ -467,16 +450,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     setOAuthConfig(keyValueStoreService),
   );
 
-  router.post(
-    '/mongoDBConfig',
-    authMiddleware.authenticate,
-    userAdminCheck,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(mongoDBConfigSchema),
-    checkMongoHealth,
-    createMongoDbConfig(keyValueStoreService),
-  );
-
   router.get(
     '/mongoDBConfig',
     authMiddleware.authenticate,
@@ -485,40 +458,12 @@ export function createConfigurationManagerRouter(container: Container): Router {
     getMongoDbConfig(keyValueStoreService),
   );
 
-  router.post(
-    '/arangoDBConfig',
-    authMiddleware.authenticate,
-    userAdminCheck,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(arangoDBConfigSchema),
-    checkArangoHealth,
-    createArangoDbConfig(keyValueStoreService),
-  );
-
   router.get(
     '/arangoDBConfig',
     authMiddleware.authenticate,
     userAdminCheck,
     metricsMiddleware(container),
     getArangoDbConfig(keyValueStoreService),
-  );
-
-  // keyValueStore config routes
-  /**
-   * POST /keyValueStoreConfig
-   * Creates or updates key-value store configuration in the key-value store
-   * Requires authentication
-   * @param {Object} req.body.keyValueStoreConfig - Key-value store configuration object to store
-   * @returns {Object} The stored configuration object
-   */
-  router.post(
-    '/redisConfig',
-    authMiddleware.authenticate,
-    userAdminCheck,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(redisConfigSchema),
-    checkRedisHealth,
-    createRedisConfig(keyValueStoreService),
   );
 
   /**
@@ -535,15 +480,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     getRedisConfig(keyValueStoreService),
   );
 
-  router.post(
-    '/qdrantConfig',
-    authMiddleware.authenticate,
-    userAdminCheck,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(qdrantConfigSchema),
-    checkQdrantHealth,
-    createQdrantConfig(keyValueStoreService),
-  );
 
   router.get(
     '/qdrantConfig',
@@ -596,23 +532,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     setCustomSystemPrompt(keyValueStoreService),
   );
 
-  // message broker config routes
-  /**
-   * POST /messageBrokerConfig
-   * Creates or updates message broker configuration in the key-value store
-   * Requires authentication
-   * @param {Object} req.body.messageBrokerConfig - Message broker configuration object to store
-   * @returns {Object} The stored configuration object
-   */
-  router.post(
-    '/kafkaConfig',
-    authMiddleware.authenticate,
-    userAdminCheck,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(kafkaConfigSchema),
-    checkKafkaHealth,
-    createKafkaConfig(keyValueStoreService),
-  );
 
   /**
    * GET /messageBrokerConfig

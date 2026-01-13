@@ -25,7 +25,6 @@ const UsersAndGroups = lazy(() => import('src/pages/dashboard/account/user-and-g
 const GroupDetails = lazy(() => import('src/pages/dashboard/account/group-details'));
 const UserProfile = lazy(() => import('src/pages/dashboard/account/user-profile'));
 const PersonalProfile = lazy(() => import('src/pages/dashboard/account/personal-profile'));
-const ServiceSettings = lazy(() => import('src/pages/dashboard/account/services-settings'));
 const AuthenticationSettings = lazy(
   () => import('src/pages/dashboard/account/authentication-settings')
 );
@@ -362,14 +361,6 @@ export const dashboardRoutes = [
                     ),
                   },
                   {
-                    path: 'services',
-                    element: CONFIG.auth.skip ? (
-                      <ServiceSettings />
-                    ) : (
-                      <BusinessAdminOnlyRoute component={ServiceSettings} />
-                    ),
-                  },
-                  {
                     path: 'ai-models',
                     element: CONFIG.auth.skip ? (
                       <AiModelsSettings />
@@ -498,14 +489,6 @@ export const dashboardRoutes = [
                       <OAuthConfig />
                     ) : (
                       <IndividualOnlyRoute component={OAuthConfig} />
-                    ),
-                  },
-                  {
-                    path: 'services',
-                    element: CONFIG.auth.skip ? (
-                      <ServiceSettings />
-                    ) : (
-                      <IndividualOnlyRoute component={ServiceSettings} />
                     ),
                   },
                   {

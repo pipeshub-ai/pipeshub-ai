@@ -41,6 +41,7 @@ from app.connectors.sources.minio.common.apps import MinIOApp
 from app.connectors.sources.s3.base_connector import (
     S3CompatibleBaseConnector,
     S3CompatibleDataSourceEntitiesProcessor,
+    parse_parent_external_id,
 )
 from app.sources.client.minio.minio import MinIOClient
 from app.sources.external.minio.minio import MinIODataSource
@@ -267,6 +268,18 @@ class MinIOConnector(S3CompatibleBaseConnector):
         # MinIO console browser URL format
         return f"{self.base_console_url}/browser/{bucket_name}/{normalized_key}"
 
+    def _generate_parent_web_url(self, parent_external_id: str) -> str:
+        """Generate the web URL for a MinIO parent folder/directory.
+
+        MinIO console uses a different URL format than AWS S3 console.
+        Format: {endpoint}/browser/{bucket}/{path}
+        """
+        bucket_name, path = parse_parent_external_id(parent_external_id)
+        if path:
+            return f"{self.base_console_url}/browser/{bucket_name}/{path}"
+        else:
+            return f"{self.base_console_url}/browser/{bucket_name}"
+
     async def _get_bucket_region(self, bucket_name: str) -> str:
         """Get the region for a bucket.
 
@@ -285,7 +298,10 @@ class MinIOConnector(S3CompatibleBaseConnector):
             return self.bucket_regions[bucket_name]
 
         # MinIO doesn't use regions like AWS S3; return default region for boto3 compatibility
-        return "us-east-1"
+        # and cache it to avoid repeated checks.
+        region = "us-east-1"
+        self.bucket_regions[bucket_name] = region
+        return region
 
     @classmethod
     async def create_connector(
@@ -316,7 +332,7 @@ class MinIOConnector(S3CompatibleBaseConnector):
         )
         await data_entities_processor.initialize()
 
-        return cls(
+        connector = cls(
             logger,
             data_entities_processor,
             data_store_provider,
@@ -324,3 +340,8 @@ class MinIOConnector(S3CompatibleBaseConnector):
             connector_id,
             endpoint_url=endpoint_url,
         )
+
+        # Update processor with connector-specific URL generator
+        data_entities_processor.parent_url_generator = lambda parent_external_id: connector._generate_parent_web_url(parent_external_id)
+
+        return connector

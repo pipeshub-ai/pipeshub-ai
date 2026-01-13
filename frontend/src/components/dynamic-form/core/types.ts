@@ -50,10 +50,6 @@ export interface StorageFormValues extends BaseFormValues {
   baseUrl?: string;
 }
 
-export interface UrlFormValues extends BaseFormValues {
-  frontendUrl?: string;
-}
-
 export interface SmtpFormValues extends BaseFormValues {
   host?: string;
   port?: number;
@@ -70,4 +66,4 @@ export interface SaveResult {
 }
 
 
-export type AnyFormValues = LlmFormValues | EmbeddingFormValues | StorageFormValues | UrlFormValues | SmtpFormValues;
+export type AnyFormValues = LlmFormValues | EmbeddingFormValues | StorageFormValues | SmtpFormValues;

@@ -39,8 +39,8 @@ import {
 
 import axios from 'src/utils/axios';
 import { CONFIG } from 'src/config-global';
+import { ConnectorApiService } from 'src/sections/accountdetails/connectors/services/api';
 import type { Record } from './types/record-details';
-import { getConnectorPublicUrl } from '../accountdetails/account-settings/services/utils/services-configuration-service';
 import { ORIGIN } from './constants/knowledge-search';
 import PdfHighlighterComp from '../qna/chatbot/components/pdf-highlighter';
 import DocxViewer from '../qna/chatbot/components/docx-highlighter';
@@ -642,7 +642,7 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
             }
           }
 
-          const publicConnectorUrlResponse = await getConnectorPublicUrl();
+          const publicConnectorUrlResponse = await ConnectorApiService.getConnectorPublicUrl();
           let connectorResponse;
 
           if (publicConnectorUrlResponse && publicConnectorUrlResponse.url) {

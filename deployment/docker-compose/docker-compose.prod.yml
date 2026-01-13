@@ -64,6 +64,13 @@ services:
       - QDRANT_PORT=6333
 
       - OLLAMA_API_URL=http://host.docker.internal:11434
+
+      # Rate limit config
+      - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-500}
+
+      # Token config
+      - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
+      - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
     depends_on:
       qdrant:
         condition: service_healthy
