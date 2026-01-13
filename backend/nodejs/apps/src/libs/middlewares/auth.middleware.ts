@@ -7,8 +7,11 @@ import { AuthTokenService } from '../services/authtoken.service';
 import { inject, injectable } from 'inversify';
 import { UserActivities } from '../../modules/auth/schema/userActivities.schema';
 import { userActivitiesType } from '../utils/userActivities.utils';
+import { TokenScopes } from '../enums/token-scopes.enum';
 
-const { LOGOUT } = userActivitiesType;
+const { LOGOUT, PASSWORD_CHANGED } = userActivitiesType;
+// Delay in milliseconds between password change activity and token generation
+const PASSWORD_CHANGE_TOKEN_DELAY_MS = 1000;
 
 @injectable()
 export class AuthMiddleware {
@@ -44,7 +47,7 @@ export class AuthMiddleware {
             userId: userId,
             orgId: orgId,
             isDeleted: false,
-            activityType: LOGOUT,
+            activityType: { $in: [LOGOUT, PASSWORD_CHANGED] },
           })
             .sort({ createdAt: -1 }) // Sort by most recent first
             .lean()
@@ -56,9 +59,8 @@ export class AuthMiddleware {
 
         if(userActivity) {
           const tokenIssuedAt = decoded.iat ? decoded.iat * 1000 : 0;
-          const logoutTimestamp = (userActivity?.createdAt).getTime() 
-          if (logoutTimestamp > tokenIssuedAt ) {
-            this.logger.error('Need to send session expired notification to user');
+          const activityTimestamp = (userActivity?.createdAt).getTime() 
+          if (activityTimestamp > tokenIssuedAt + PASSWORD_CHANGE_TOKEN_DELAY_MS) {
             throw new UnauthorizedError('Session expired, please login again');
           }
         }
@@ -87,6 +89,37 @@ export class AuthMiddleware {
         const decoded = await this.tokenService.verifyScopedToken(token, scope);
         req.tokenPayload = decoded;
 
+        const userId = decoded?.userId;
+        const orgId = decoded?.orgId;
+
+        this.logger.info(`userId: ${userId}, orgId: ${orgId}, scope: ${scope}`);
+  
+        if (userId && orgId && scope === TokenScopes.PASSWORD_RESET) {
+          let userActivity: any;
+          try {
+            userActivity = await UserActivities.findOne({
+              userId: userId,
+              orgId: orgId,
+              isDeleted: false,
+              activityType: PASSWORD_CHANGED,
+            })
+              .sort({ createdAt: -1 }) // Sort by most recent first
+              .lean()
+              .exec();
+            
+          } catch (activityError) {
+            this.logger.error('Failed to fetch user activity', activityError);
+          }
+  
+          if(userActivity) {
+            const tokenIssuedAt = decoded.iat ? decoded.iat * 1000 : 0;
+            const activityTimestamp = (userActivity?.createdAt).getTime() 
+            if (activityTimestamp > tokenIssuedAt ) {
+              throw new UnauthorizedError('Password reset link expired, please request for a new link');
+            }
+          }
+        }
+  
         this.logger.debug('User authenticated', decoded);
         next();
       } catch (error) {
