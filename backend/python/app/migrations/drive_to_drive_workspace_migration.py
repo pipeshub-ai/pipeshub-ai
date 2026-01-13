@@ -255,10 +255,10 @@ class DriveToDriveWorkspaceMigrationService:
 
                 # Update the record connectorName
                 update_query = f"""
-                    FOR record IN {CollectionNames.RECORDS.value}
-                        FILTER record._key == @record_key
-                        UPDATE record WITH {{ connectorName: @new_connector_name }} IN {CollectionNames.RECORDS.value}
-                        RETURN NEW
+                    UPDATE {{ _key: @record_key }} WITH {{ connectorName: @new_connector_name }}
+                    IN {CollectionNames.RECORDS.value}
+                    OPTIONS {{ keepNull: false, mergeObjects: true }}
+                    RETURN NEW
                 """
 
                 cursor = transaction.aql.execute(
