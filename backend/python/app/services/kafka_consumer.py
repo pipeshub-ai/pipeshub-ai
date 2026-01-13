@@ -374,7 +374,7 @@ class KafkaConsumerManager:
                 try:
                     payload = {
                         "orgId": payload_data["orgId"],
-                        "scopes": ["connector:signedUrl"],
+                        "scopes": ["connector:streamRecord"],
                     }
                     token = await self.generate_jwt(payload)
                     self.logger.debug(f"Generated JWT token for message {message_id}")

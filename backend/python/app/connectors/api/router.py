@@ -569,7 +569,13 @@ async def stream_record_internal(
         )
         jwt_secret = secret_keys.get("scopedJwtSecret")
         payload = jwt.decode(token, jwt_secret, algorithms=["HS256"])
-        # TODO: Validate scopes ["connector:signedUrl"]
+        # Validate JWT scopes
+        scopes = payload.get("scopes", [])
+        if "connector:streamRecord" not in scopes:
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Missing required scope: connector:streamRecord"
+            )
 
         org_id = payload.get("orgId")
         org_task = arango_service.get_document(org_id, CollectionNames.ORGS.value)

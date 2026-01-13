@@ -26,7 +26,7 @@ from app.services.messaging.kafka.handlers.entity import BaseEventService
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
-
+from app.config.constants.http_status_code import HttpStatusCode
 
 class RecordEventHandler(BaseEventService):
     def __init__(self, logger: Logger,
@@ -39,7 +39,225 @@ class RecordEventHandler(BaseEventService):
 
         self.event_processor : EventProcessor = event_processor
 
-    async def _trigger_next_queued_duplicate(self, record_id: str, virtual_record_id) -> None:
+    async def _fetch_via_signed_url_route(
+        self,
+        payload: dict,
+        event_type: str,
+    ) -> dict:
+        """
+        Fetch record data via signedUrlRoute (storage service).
+        
+        Args:
+            payload: Event payload containing signedUrlRoute
+            event_type: Type of event being processed
+            message_id: Message identifier for logging
+            
+        Returns:
+            dict: Event data ready for processing with signedUrl or buffer in payload
+            
+        Raises:
+            Exception: If fetching fails
+        """
+        jwt_payload = {
+            "orgId": payload["orgId"],
+            "scopes": ["storage:token"],
+        }
+        token = await generate_jwt(self.config_service, jwt_payload)
+        record_id = payload.get("recordId")
+        message_id = f"{event_type}-{record_id}"
+
+        self.logger.debug(f"Generated JWT token for message {message_id}")
+
+        response = await make_api_call(
+            route=payload["signedUrlRoute"], token=token
+        )
+
+        self.logger.debug(
+            f"Received signed URL response for message {message_id}"
+        )
+
+        event_data_for_processor = {
+            "eventType": event_type,
+            "payload": payload.copy()  # The original payload
+        }
+
+        if response.get("is_json"):
+            signed_url = response["data"]["signedUrl"]
+            # Download the actual data from the signed URL
+            buffer_data = await self._download_from_signed_url(
+                signed_url, record_id
+            )
+            event_data_for_processor["payload"]["buffer"] = buffer_data
+        else:
+            event_data_for_processor["payload"]["buffer"] = response["data"]
+
+        return event_data_for_processor
+
+    async def _fetch_via_signed_url(
+        self,
+        payload: dict,
+        event_type: str,
+    ) -> dict:
+        """
+        Fetch record data via direct signedUrl.
+        
+        Args:
+            payload: Event payload containing signedUrl
+            event_type: Type of event being processed
+            
+        Returns:
+            dict: Event data ready for processing with buffer in payload
+            
+        Raises:
+            Exception: If fetching fails
+        """
+        record_id = payload.get("recordId")
+
+        response = await self._download_from_signed_url(signed_url=payload["signedUrl"], record_id=record_id)
+        if response:
+            payload["buffer"] = response
+        event_data_for_processor = {
+            "eventType": event_type,
+            "payload": payload.copy()  # The original payload
+        }
+        return event_data_for_processor
+
+    async def _fetch_via_connector_stream(
+        self,
+        payload: dict,
+        event_type: str,
+    ) -> dict:
+        """
+        Fetch record data via connector stream endpoint (fallback method).
+        
+        Args:
+            payload: Event payload
+            record_id: Record identifier
+            event_type: Type of event being processed
+            message_id: Message identifier for logging
+            
+        Returns:
+            dict: Event data ready for processing with buffer in payload
+            
+        Raises:
+            Exception: If fetching fails
+        """
+        jwt_payload = {
+            "orgId": payload["orgId"],
+            "scopes": ["connector:streamRecord"],
+        }
+        token = await generate_jwt(self.config_service, jwt_payload)
+        record_id = payload.get("recordId")
+        message_id = f"{event_type}-{record_id}"
+
+        self.logger.debug(f"Generated JWT token for message {message_id}")
+
+        endpoints = await self.config_service.get_config(config_node_constants.ENDPOINTS.value)
+        connectors_config = endpoints.get("connectors") if isinstance(endpoints, dict) else None
+        connector_url = connectors_config.get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value) if connectors_config else DefaultEndpoints.CONNECTOR_ENDPOINT.value
+
+        response = await make_api_call(
+            route=f"{connector_url}/api/v1/internal/stream/record/{record_id}", token=token
+        )
+
+        event_data_for_processor = {
+            "eventType": event_type,
+            "payload": payload.copy()
+        }
+
+        event_data_for_processor["payload"]["buffer"] = response["data"]
+
+        return event_data_for_processor
+
+    async def _fetch_record_data_with_fallback(
+        self,
+        payload: dict,
+        event_type: str,
+    ) -> dict:
+        """
+        Attempt to fetch record data using multiple methods with fallback.
+        
+        Logic:
+        1. If payload has 'signedUrlRoute': try method 1, fallback to method 3 on failure
+        2. Else if payload has 'signedUrl': try method 2, fallback to method 3 on failure
+        3. Else: use method 3 directly
+        
+        Methods 1 and 2 are mutually exclusive based on payload fields.
+        Method 3 is the universal fallback.
+        
+        Args:
+            payload: Event payload
+            event_type: Type of event being processed
+            
+        Returns:
+            dict: Event data ready for processing
+            
+        Raises:
+            Exception: If all fetch methods fail
+        """
+        record_id = payload.get("recordId")
+
+        
+        # Method 1: Try signedUrlRoute if available
+        if payload and payload.get("signedUrlRoute"):
+            try:
+                self.logger.info(f"Attempting to fetch record {record_id} via signedUrlRoute")
+                event_data = await self._fetch_via_signed_url_route(
+                    payload, event_type
+                )
+                self.logger.info(f"✅ Successfully fetched record {record_id} via signedUrlRoute")
+                return event_data
+            except Exception as e:
+                self.logger.warning(
+                    f"⚠️ Method 1 (signedUrlRoute) failed for record {record_id}: {str(e)}. "
+                    f"Falling back to connector stream endpoint"
+                )
+                # Fallback to method 3
+                try:
+                    self.logger.info(f"Attempting to fetch record {record_id} via connector stream (fallback)")
+                    event_data = await self._fetch_via_connector_stream(
+                        payload, event_type
+                    )
+                    self.logger.info(f"✅ Successfully fetched record {record_id} via connector stream (fallback)")
+                    return event_data
+                except Exception as e2:
+                    raise Exception(f"All fetch methods failed. Last error: {str(e2)}")
+
+        # Method 2: Try signedUrl if available
+        elif payload and payload.get("signedUrl"):
+            try:
+                self.logger.info(f"Attempting to fetch record {record_id} via signedUrl")
+                event_data = await self._fetch_via_signed_url(
+                    payload, event_type
+                )
+                self.logger.info(f"✅ Successfully fetched record {record_id} via signedUrl")
+                return event_data
+            except Exception as e:
+                self.logger.warning(
+                    f"⚠️ Method 2 (signedUrl) failed for record {record_id}: {str(e)}. "
+                    f"Falling back to connector stream endpoint"
+                )
+                # Fallback to method 3
+                try:
+                    self.logger.info(f"Attempting to fetch record {record_id} via connector stream (fallback)")
+                    event_data = await self._fetch_via_connector_stream(
+                        payload, event_type
+                    )
+                    self.logger.info(f"✅ Successfully fetched record {record_id} via connector stream (fallback)")
+                    return event_data
+                except Exception as e2:
+                    raise Exception(f"All fetch methods failed. Last error: {str(e2)}")
+
+        # Method 3: Direct call (no other options available)
+        else:
+            self.logger.info(f"Attempting to fetch record {record_id} via connector stream (direct)")
+            event_data = await self._fetch_via_connector_stream(
+                payload, event_type
+            )
+            self.logger.info(f"✅ Successfully fetched record {record_id} via connector stream (direct)")
+            return event_data
+
+    async def _trigger_next_queued_duplicate(self, record_id: str, virtual_record_id: Optional[str]) -> None:
         try:
             self.logger.info(f"🔍 Looking for next queued duplicate for record {record_id}")
 
@@ -89,7 +307,7 @@ class RecordEventHandler(BaseEventService):
         """
         start_time = datetime.now()
         record_id = None
-        message_id = f"{event_type}-unknown"
+        message_id = None
         error_occurred = False
         error_msg = None
         record = None
@@ -153,7 +371,9 @@ class RecordEventHandler(BaseEventService):
                             f"⏭️ Skipping indexing for record {record_id}: "
                             f"connector instance {connector_id} not found (possibly deleted)."
                         )
-                        return True
+                        yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+                        yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                        return
                     if not connector_instance.get("isActive", False):
                         self.logger.info(
                             f"⏭️ Skipping indexing for record {record_id}: "
@@ -256,115 +476,23 @@ class RecordEventHandler(BaseEventService):
 
 
 
-            # Signed URL handling
-            if payload and payload.get("signedUrlRoute"):
-                try:
-                    jwt_payload  = {
-                        "orgId": payload["orgId"],
-                        "scopes": ["storage:token"],
-                    }
-                    token = await generate_jwt(self.config_service, jwt_payload)
-                    self.logger.debug(f"Generated JWT token for message {message_id}")
+            # Fetch record data with fallback mechanism
+            event_data_for_processor = await self._fetch_record_data_with_fallback(
+                payload=payload,
+                event_type=event_type,
+            )
 
-                    response = await make_api_call(
-                        route=payload["signedUrlRoute"], token=token
-                    )
-                    self.logger.debug(
-                        f"Received signed URL response for message {message_id}"
-                    )
+            async for event in self.event_processor.on_event(event_data_for_processor):
+                yield event
 
-                    event_data_for_processor = {
-                        "eventType": event_type,
-                        "payload": payload # The original payload
-                    }
+            processing_time = (datetime.now() - start_time).total_seconds()
+            self.logger.info(
+                f"✅ Successfully processed document for event: {event_type}. "
+                f"Record: {record_id}, Time: {processing_time:.2f}s"
+            )
+            return
 
-                    if response.get("is_json"):
-                        signed_url = response["data"]["signedUrl"]
-                        buffer = await self._download_from_signed_url(signed_url=signed_url, record_id=record_id, doc=doc)
-                        if not buffer:
-                            raise Exception("Failed to download file from signed URL")
-
-                        event_data_for_processor["payload"]["buffer"] = buffer
-                    else:
-                        event_data_for_processor["payload"]["buffer"] = response["data"]
-
-                    # Yield events from the event processor
-                    async for event in self.event_processor.on_event(event_data_for_processor):
-                        yield event
-
-                    processing_time = (datetime.now() - start_time).total_seconds()
-                    self.logger.info(
-                        f"✅ Successfully processed document for event: {event_type}. "
-                        f"Record: {record_id}, Time: {processing_time:.2f}s"
-                    )
-                    return
-                except Exception as e:
-                    error_occurred = True
-                    error_msg = f"Failed to process signed URL: {str(e)}"
-                    raise Exception(error_msg)
-
-            elif payload and payload.get("signedUrl"):
-                try:
-                    response = await self._download_from_signed_url(signed_url=payload["signedUrl"], record_id=record_id, doc=doc)
-                    if not response:
-                        raise Exception("Failed to download file from signed URL")
-
-                    payload["buffer"] = response
-                    event_data_for_processor = {
-                        "eventType": event_type,
-                        "payload": payload # The original payload
-                    }
-                    # Yield events from the event processor
-                    async for event in self.event_processor.on_event(event_data_for_processor):
-                        yield event
-
-                    processing_time = (datetime.now() - start_time).total_seconds()
-                    self.logger.info(
-                        f"✅ Successfully processed document for event: {event_type}. "
-                        f"Record: {record_id}, Time: {processing_time:.2f}s"
-                    )
-                    return
-                except Exception as e:
-                    error_occurred = True
-                    error_msg = f"Failed to process signed URL: {str(e)}"
-                    raise Exception(error_msg)
-            else:
-                try:
-                    jwt_payload  = {
-                        "orgId": payload["orgId"],
-                        "scopes": ["connector:signedUrl"],
-                    }
-                    token = await generate_jwt(self.config_service, jwt_payload)
-                    self.logger.debug(f"Generated JWT token for message {message_id}")
-
-                    endpoints = await self.config_service.get_config(config_node_constants.ENDPOINTS.value)
-                    connector_url = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
-
-                    response = await make_api_call(
-                        route=f"{connector_url}/api/v1/internal/stream/record/{record_id}", token=token
-                    )
-
-                    event_data_for_processor = {
-                        "eventType": event_type,
-                        "payload": payload
-                    }
-
-                    event_data_for_processor["payload"]["buffer"] = response["data"]
-
-                    # Yield events from the event processor
-                    async for event in self.event_processor.on_event(event_data_for_processor):
-                        yield event
-
-                    processing_time = (datetime.now() - start_time).total_seconds()
-                    self.logger.info(
-                        f"✅ Successfully processed document for event: {event_type}. "
-                        f"Record: {record_id}, Time: {processing_time:.2f}s"
-                    )
-                    return
-                except Exception as e:
-                    error_occurred = True
-                    error_msg = f"Failed to process signed URL: {str(e)}"
-                    raise Exception(error_msg)
+                
         except IndexingError as e:
             error_occurred = True
             error_msg = f"❌ Indexing error for record {record_id}: {str(e)}"
@@ -394,11 +522,9 @@ class RecordEventHandler(BaseEventService):
                 await self._trigger_next_queued_duplicate(record_id,virtual_record_id)
                 return
 
-            if record is None:
-                return
 
             # Update queued duplicates for ALL record types (not just FILE)
-            if event_type != EventTypes.DELETE_RECORD.value:
+            if event_type != EventTypes.DELETE_RECORD.value and record_id:
                 record = await self.event_processor.arango_service.get_document(
                     record_id, CollectionNames.RECORDS.value
                 )
@@ -456,7 +582,7 @@ class RecordEventHandler(BaseEventService):
             return None
 
     async def _download_from_signed_url(
-        self, signed_url: str, record_id: str, doc: dict
+        self, signed_url: str, record_id: str
     ) -> bytes|None:
         """
         Download file from signed URL with exponential backoff retry
@@ -464,7 +590,6 @@ class RecordEventHandler(BaseEventService):
         Args:
             signed_url: The signed URL to download from
             record_id: Record ID for logging
-            doc: Document object for status updates
 
         Returns:
             bytes: The downloaded file content
@@ -479,29 +604,13 @@ class RecordEventHandler(BaseEventService):
             sock_read=1200,  # 20 minutes per chunk read
         )
 
-        # Generate JWT token for authentication if config_service is available
-        headers = {}
-        if self.config_service:
-            try:
-                org_id = doc.get("orgId")
-                if org_id:
-                    jwt_payload = {
-                        "orgId": org_id,
-                        "scopes": ["connector:signedUrl"],
-                    }
-                    jwt_token = await generate_jwt(self.config_service, jwt_payload)
-                    headers["Authorization"] = f"Bearer {jwt_token}"
-                    self.logger.debug(f"Generated JWT token for downloading signed URL for record {record_id}")
-            except Exception as e:
-                self.logger.warning(f"Failed to generate JWT token for signed URL download: {e}")
-
         for attempt in range(max_retries):
             delay = base_delay * (2**attempt)  # Exponential backoff
             file_buffer = BytesIO()
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     try:
-                        async with session.get(signed_url, headers=headers) as response:
+                        async with session.get(signed_url) as response:
                             if response.status != HttpStatusCode.SUCCESS.value:
                                 raise aiohttp.ClientError(
                                     f"Failed to download file: {response.status}"
@@ -565,3 +674,6 @@ class RecordEventHandler(BaseEventService):
             finally:
                 if not file_buffer.closed:
                     file_buffer.close()
+
+
+
