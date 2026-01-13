@@ -244,12 +244,12 @@ const PdfHighlighterComp = ({
       .Highlight__part {
         cursor: pointer;
         position: absolute;
-        background: rgba(0, 226, 143, 0.2);
+        background: rgba(139, 250, 209, 0.2);
         transition: background 0.3s;
       }
-   
+    
       .Highlight--scrolledTo .Highlight__part {
-        background: rgba(0, 226, 143, 0.4);
+        background: rgba(139, 250, 209, 0.4);
         position: relative;
       }
       
