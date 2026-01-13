@@ -154,11 +154,14 @@ def get_mimetype_enum_for_box(entry_type: str, filename: str = None) -> MimeType
             'https://docs.pipeshub.com/connectors/box',
             'pipeshub'
         ))
+        .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
+        .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
+        .add_filter_field(CommonFields.file_extension_filter())
         .with_webhook_config(True, ["FILE.UPLOADED", "FILE.DELETED", "FILE.MOVED", "FOLDER.CREATED", "COLLABORATION.CREATED", "COLLABORATION.ACCEPTED", "COLLABORATION.REMOVED"])
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .with_agent_support(False)
         .with_sync_support(True)
-        .add_filter_field(CommonFields.file_extension_filter())
         .add_sync_custom_field(CommonFields.batch_size_field())
     )\
     .build_decorator()
@@ -1188,6 +1191,9 @@ class BoxConnector(BaseConnector):
                 self.config_service, "box", self.connector_id, self.logger
             )
 
+            # Cache date filters once at sync start for performance
+            self._cached_date_filters = self._get_date_filters()
+
             # 1. Check if we have an existing cursor
             key = "event_stream_cursor"
 
@@ -2115,9 +2121,45 @@ class BoxConnector(BaseConnector):
             self.logger.error(f"Error during Box reindex: {e}", exc_info=True)
             raise
 
+    def _get_date_filters(self) -> Tuple[Optional[datetime], Optional[datetime], Optional[datetime], Optional[datetime]]:
+        """
+        Extract date filter values from sync_filters.
+
+        Returns:
+            Tuple of (modified_after, modified_before, created_after, created_before)
+        """
+        modified_after: Optional[datetime] = None
+        modified_before: Optional[datetime] = None
+        created_after: Optional[datetime] = None
+        created_before: Optional[datetime] = None
+
+        # Get modified date filter
+        modified_date_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
+        if modified_date_filter and not modified_date_filter.is_empty():
+            after_iso, before_iso = modified_date_filter.get_datetime_iso()
+            if after_iso:
+                modified_after = datetime.fromisoformat(after_iso).replace(tzinfo=timezone.utc)
+                self.logger.info(f"Applying modified date filter: after {modified_after}")
+            if before_iso:
+                modified_before = datetime.fromisoformat(before_iso).replace(tzinfo=timezone.utc)
+                self.logger.info(f"Applying modified date filter: before {modified_before}")
+
+        # Get created date filter
+        created_date_filter = self.sync_filters.get(SyncFilterKey.CREATED)
+        if created_date_filter and not created_date_filter.is_empty():
+            after_iso, before_iso = created_date_filter.get_datetime_iso()
+            if after_iso:
+                created_after = datetime.fromisoformat(after_iso).replace(tzinfo=timezone.utc)
+                self.logger.info(f"Applying created date filter: after {created_after}")
+            if before_iso:
+                created_before = datetime.fromisoformat(before_iso).replace(tzinfo=timezone.utc)
+                self.logger.info(f"Applying created date filter: before {created_before}")
+
+        return modified_after, modified_before, created_after, created_before
+
     def _should_include_file(self, entry: Dict) -> bool:
         """
-        Determines if a file should be included based on the file extension filter.
+        Determines if a file should be included based on the file extension filter and date filters.
 
         Args:
             entry: Box file entry dict
@@ -2128,6 +2170,63 @@ class BoxConnector(BaseConnector):
         # Only filter files
         if entry.get('type') != 'file':
             return True
+
+        # Get date filters from cache (performance optimization)
+        modified_after, modified_before, created_after, created_before = getattr(
+            self, '_cached_date_filters', (None, None, None, None)
+        )
+
+        # Parse Box timestamps
+        modified_at_str = entry.get('modified_at')
+        created_at_str = entry.get('created_at')
+
+        modified_at = None
+        created_at = None
+
+        if modified_at_str:
+            try:
+                modified_at = datetime.fromisoformat(modified_at_str.replace('Z', '+00:00'))
+                if modified_at.tzinfo is None:
+                    modified_at = modified_at.replace(tzinfo=timezone.utc)
+            except Exception as e:
+                self.logger.debug(f"Could not parse modified_at for {entry.get('name')}: {e}")
+
+        if created_at_str:
+            try:
+                created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+            except Exception as e:
+                self.logger.debug(f"Could not parse created_at for {entry.get('name')}: {e}")
+
+        # Validate: If date filter is configured but file has no date, exclude it
+        if modified_after or modified_before:
+            if not modified_at:
+                self.logger.debug(f"Skipping {entry.get('name')}: no modified date available")
+                return False
+
+        if created_after or created_before:
+            if not created_at:
+                self.logger.debug(f"Skipping {entry.get('name')}: no created date available")
+                return False
+
+        # Apply modified date filters
+        if modified_at:
+            if modified_after and modified_at < modified_after:
+                self.logger.debug(f"Skipping {entry.get('name')}: modified {modified_at} before cutoff {modified_after}")
+                return False
+            if modified_before and modified_at > modified_before:
+                self.logger.debug(f"Skipping {entry.get('name')}: modified {modified_at} after cutoff {modified_before}")
+                return False
+
+        # Apply created date filters
+        if created_at:
+            if created_after and created_at < created_after:
+                self.logger.debug(f"Skipping {entry.get('name')}: created {created_at} before cutoff {created_after}")
+                return False
+            if created_before and created_at > created_before:
+                self.logger.debug(f"Skipping {entry.get('name')}: created {created_at} after cutoff {created_before}")
+                return False
 
         # Get the extensions filter
         extensions_filter = self.sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
