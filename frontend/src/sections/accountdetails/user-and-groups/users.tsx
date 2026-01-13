@@ -1118,15 +1118,15 @@ function AddUserModal({ open, onClose, groups, onUsersAdded }: AddUserModalProps
     fontWeight: 500,
     bgcolor: alpha(theme.palette.info.main, 0.85),
     color: isDark
-      ? alpha(theme.palette.primary.light, 0.1)
+      ? alpha(theme.palette.info.light, 0.9)
       : alpha(theme.palette.common.white, 0.9),
-    border: isDark ? `1px solid ${alpha(theme.palette.primary.main, 0.4)}` : 'none',
+    border: isDark ? `1px solid ${alpha(theme.palette.info.main, 0.4)}` : 'none',
     '& .MuiChip-deleteIcon': {
       color: isDark
-        ? alpha(theme.palette.primary.dark, 0.7)
+        ? alpha(theme.palette.info.dark, 0.7)
         : alpha(theme.palette.common.white, 0.7),
       '&:hover': {
-        color: isDark ? theme.palette.primary.darker : theme.palette.primary.light,
+        color: isDark ? theme.palette.info.light : theme.palette.info.dark,
       },
     },
   };
@@ -1743,15 +1743,15 @@ function AddUsersToGroupsModal({
     fontWeight: 500,
     bgcolor: alpha(theme.palette.info.main, 0.85),
     color: isDark
-      ? alpha(theme.palette.primary.light, 0.1)
+      ? alpha(theme.palette.info.light, 0.9)
       : alpha(theme.palette.common.white, 0.9),
-    border: isDark ? `1px solid ${alpha(theme.palette.primary.main, 0.4)}` : 'none',
+    border: isDark ? `1px solid ${alpha(theme.palette.info.main, 0.4)}` : 'none',
     '& .MuiChip-deleteIcon': {
       color: isDark
-        ? alpha(theme.palette.primary.dark, 0.7)
+        ? alpha(theme.palette.info.dark, 0.7)
         : alpha(theme.palette.common.white, 0.7),
       '&:hover': {
-        color: isDark ? theme.palette.primary.darker : theme.palette.primary.light,
+        color: isDark ? theme.palette.info.light : theme.palette.info.dark,
       },
     },
   };
