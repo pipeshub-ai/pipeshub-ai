@@ -119,25 +119,24 @@ const AzureAdAuthForm = forwardRef<AzureAdAuthFormRef, AzureAdAuthFormProps>(
       const fetchConfig = async () => {
         setIsLoading(true);
         try {
-          const uris = await getRedirectUris();
+          // Parallelize API calls for better performance
+          const [uris, config] = await Promise.all([
+            getRedirectUris(),
+            getAzureAuthConfig(),
+          ]);
+
           setRedirectUris(uris);
 
           // Set default redirectUri from uris immediately (not from state)
           const recommendedUri =
             uris?.recommendedRedirectUri || `${window.location.origin}/auth/microsoft/callback`;
 
-          setFormData((prevFormData) => ({
-            ...prevFormData,
+          // Consolidate all form data updates into a single atomic update
+          setFormData({
             redirectUri: recommendedUri,
-          }));
-
-          const config = await getAzureAuthConfig();
-
-          setFormData((prev) => ({
-            ...prev,
-            clientId: config.clientId || '',
-            tenantId: config.tenantId || '',
-          }));
+            clientId: config?.clientId || '',
+            tenantId: config?.tenantId || '',
+          });
         } catch (error) {
           console.error('Failed to load Azure AD auth config:', error);
           // showErrorSnackbar('Failed to load Azure AD authentication configuration');
