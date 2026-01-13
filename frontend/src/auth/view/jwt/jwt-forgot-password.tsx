@@ -11,8 +11,12 @@ import LoadingButton from '@mui/lab/LoadingButton';
 import { Snackbar, Typography } from '@mui/material';
 
 import { useRouter } from 'src/routes/hooks';
+import { useTurnstile } from 'src/hooks/use-turnstile';
+
+import { CONFIG } from 'src/config-global';
 
 import { Form, Field } from 'src/components/hook-form';
+import { TurnstileWidget } from 'src/components/turnstile/turnstile-widget';
 
 import { forgotPassword } from '../../context/jwt';
 import { FormHead } from '../../components/form-head';
@@ -42,6 +46,7 @@ export default function ForgotPassword({ onBackToSignIn, sx } : ForgotPasswordPr
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [openSnackBar, setOpenSnackBar] = useState<boolean>(false);
   const [successMsg, setSuccessMsg] = useState<string>('');
+  const { turnstileToken, handleSuccess, handleError, handleExpire } = useTurnstile();
 
   const methods = useForm<ForgotPasswordSchemaType>({
     resolver: zodResolver(ForgotPasswordSchema),
@@ -54,7 +59,7 @@ export default function ForgotPassword({ onBackToSignIn, sx } : ForgotPasswordPr
 
   const onSubmit = handleSubmit(async (data : ForgotPasswordSchemaType) : Promise<void> => {
     try {
-      await forgotPassword({ email: data.email });
+      await forgotPassword({ email: data.email, turnstileToken });
       setSuccessMsg('Reset Password email sent successfully');
       setOpenSnackBar(true);
       setErrorMsg('');
@@ -74,7 +79,6 @@ export default function ForgotPassword({ onBackToSignIn, sx } : ForgotPasswordPr
   const renderForm = (
     <Box gap={3} display="flex" flexDirection="column">
       <Field.Text name="email" label="Email address" InputLabelProps={{ shrink: true }} />
-
       <LoadingButton
         fullWidth
         color="inherit"
@@ -82,9 +86,10 @@ export default function ForgotPassword({ onBackToSignIn, sx } : ForgotPasswordPr
         type="submit"
         variant="contained"
         loading={isSubmitting}
-        loadingIndicator="Sign in..."
+        disabled={!turnstileToken && !!CONFIG.turnstileSiteKey}
+        loadingIndicator="Sending request..."
       >
-        Send request
+        {CONFIG.turnstileSiteKey && !turnstileToken ? 'Verifying...' : 'Send request'}
       </LoadingButton>
     </Box>
   );
