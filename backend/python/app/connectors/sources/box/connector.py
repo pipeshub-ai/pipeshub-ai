@@ -459,9 +459,7 @@ class BoxConnector(BaseConnector):
                 else:
                     self.logger.warning(f"Size field missing for file {entry_name}")
 
-            web_url = entry.get('shared_link', {}).get('url')
-            if not web_url:
-                web_url = f"https://app.box.com/{entry_type}/{entry_id}"
+            web_url = f"https://app.box.com/{entry_type}/{entry_id}"
 
             file_record = FileRecord(
                 id=record_id,
@@ -1932,60 +1930,47 @@ class BoxConnector(BaseConnector):
 
     async def get_signed_url(self, record: Record) -> Optional[str]:
         """
-        Get a signed URL, ensuring we impersonate the correct user (Record Group Owner).
+        Get a download URL for indexing (creates temporary shared link if needed).
+        Uses Box's official downloads.get_download_file_url() API which:
+        - Creates a temporary shared link visible in Box UI (expires in ~24 hours)
+        - Returns existing shared link URL if file already has one
+        - Does not require authentication headers for download
+        Note: Similar to Dropbox's get_temporary_link approach. The created shared
+        links expire automatically and are visible in Box UI with expiration badge.
         """
         if not self.data_source:
             return None
 
-        # 1. Determine the user context
+        # Determine the user context for As-User impersonation
         context_user_id = record.external_record_group_id
 
         try:
-            # 2. Set As-User Context
+            # Set As-User Context
             if context_user_id:
                 await self.data_source.set_as_user_context(context_user_id)
 
-            # 3. Try to get existing file info
-            response = await self.data_source.files_get_file_by_id(
+            # Get download URL (creates temporary shared link if needed, expires ~24 hours)
+            response = await self.data_source.downloads_get_download_file_url(
                 file_id=record.external_record_id
             )
 
-            download_url = None
-
-            if response.success:
-                file_data = self._to_dict(response.data)
-
-                # shared_link might be None, dict, or Object (if _to_dict was shallow, though it usually handles it)
-                shared_link = file_data.get('shared_link')
-                if isinstance(shared_link, dict):
-                    download_url = shared_link.get('download_url')
-                elif hasattr(shared_link, 'download_url'):
-                    # Fallback for SDK objects that survived
-                    download_url = getattr(shared_link, 'download_url', None)
-
-            # 4. If no URL found, create a temporary shared link
-            if not download_url:
-                link_response = await self.data_source.shared_links_create_shared_link_for_file(
-                    file_id=record.external_record_id,
-                    access='open'
+            if response.success and response.data:
+                # Response.data is the download URL (shared link or existing link)
+                return str(response.data)
+            else:
+                self.logger.warning(
+                    f"Failed to get download URL for {record.record_name}: {response.error}"
                 )
-
-                if link_response.success:
-                    file_data = self._to_dict(link_response.data)
-                    shared_link = file_data.get('shared_link')
-
-                    if isinstance(shared_link, dict):
-                        download_url = shared_link.get('download_url')
-                else:
-                    self.logger.warning(f"Failed to create shared link for {record.record_name}: {link_response.error}")
-
-            return str(download_url) if download_url else None
+                return None
 
         except Exception as e:
-            self.logger.error(f"Error creating signed URL for record {record.id}: {e}", exc_info=True)
+            self.logger.error(
+                f"Error getting temporary download URL for record {record.id}: {e}",
+                exc_info=True
+            )
             return None
         finally:
-            # 5. ALWAYS clear context to avoid polluting other requests
+            # Always clear As-User context to avoid polluting other requests
             if context_user_id:
                 await self.data_source.clear_as_user_context()
 
