@@ -8,7 +8,6 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Upload } from '@aws-sdk/lib-storage';
-import { Readable } from 'stream';
 import { StorageServiceInterface } from '../services/storage.service';
 import {
   FilePayload,
@@ -234,26 +233,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
         throw new StorageDownloadError('Retrieved object has no content');
       }
 
-      // Convert Readable stream to Buffer
-      let buffer: Buffer;
-      if (response.Body instanceof Readable) {
-        const chunks: Buffer[] = [];
-        for await (const chunk of response.Body) {
-          chunks.push(Buffer.from(chunk));
-        }
-        buffer = Buffer.concat(chunks);
-      } else {
-        // Fallback for other stream types (Blob, ReadableStream)
-        const chunks: Uint8Array[] = [];
-        const stream = response.Body.transformToWebStream();
-        const reader = stream.getReader();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (value) chunks.push(value);
-        }
-        buffer = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
-      }
+      const buffer = Buffer.from(await response.Body.transformToByteArray());
 
       if (process.env.NODE_ENV == 'development') {
         this.logger.info('S3 object fetched successfully', { key });
