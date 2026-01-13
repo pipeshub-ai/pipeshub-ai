@@ -99,7 +99,8 @@ export class IamService {
       const users = response.data;
 
       if (!users || users.length === 0) {
-        throw new NotFoundError('Account not found');
+        // throw new NotFoundError('Account not found');
+        return { statusCode: 404, data: { message: 'Account not found' } };
       }
       this.logger.debug(users);
       return { statusCode: 200, data: users[0] };
