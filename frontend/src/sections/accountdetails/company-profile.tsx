@@ -256,9 +256,23 @@ export default function CompanyProfile() {
       setUploading(true);
       const orgId = await getOrgIdFromToken();
       await uploadOrgLogo(formData);
-      setSnackbar({ open: true, message: 'Logo updated successfully!', severity: 'success' });
+      
+      // Fetch the processed logo from server (with EXIF metadata stripped) instead of using original file
+      try {
+        const processedLogoUrl = await getOrgLogo(orgId);
+        setLogo(processedLogoUrl);
+        setSnackbar({ open: true, message: 'Logo updated successfully!', severity: 'success' });
+      } catch (fetchErr) {
+        // Upload succeeded but fetching failed - show warning but don't fail completely
+        setSnackbar({
+          open: true,
+          message: 'Logo uploaded successfully, but failed to refresh. Please refresh the page.',
+          severity: 'warning',
+        });
+        // Fallback to original file preview (user can refresh to see processed version)
+        setLogo(URL.createObjectURL(file));
+      }
       setUploading(false);
-      setLogo(URL.createObjectURL(file));
     } catch (err) {
       setError('Failed to upload logo');
       // setSnackbar({ open: true, message: 'Failed to upload logo', severity: 'error' });

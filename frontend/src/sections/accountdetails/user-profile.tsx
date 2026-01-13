@@ -25,7 +25,15 @@ import { Form, Field } from 'src/components/hook-form';
 
 import axios from 'src/utils/axios';
 import { CONFIG } from 'src/config-global';
-import { updateUser, getUserById, deleteUserLogo, uploadUserLogo, changePassword } from './utils';
+import {
+  updateUser,
+  getUserById,
+  deleteUserLogo,
+  uploadUserLogo,
+  changePassword,
+  getUserLogo,
+} from './utils';
+
 
 import type { SnackbarState } from './types/organization-data';
 
@@ -222,9 +230,23 @@ export default function UserProfile() {
       setUploading(true);
 
       await uploadUserLogo(userId, formData);
-      setSnackbar({ open: true, message: 'Photo updated successfully', severity: 'success' });
+      
+      // Fetch the processed logo from server (with EXIF metadata stripped) instead of using original file
+      try {
+        const processedLogoUrl = await getUserLogo(userId);
+        setLogo(processedLogoUrl);
+        setSnackbar({ open: true, message: 'Photo updated successfully', severity: 'success' });
+      } catch (fetchErr) {
+        // Upload succeeded but fetching failed - show warning but don't fail completely
+        setSnackbar({
+          open: true,
+          message: 'Photo uploaded successfully, but failed to refresh. Please refresh the page.',
+          severity: 'warning',
+        });
+        // Fallback to original file preview (user can refresh to see processed version)
+        setLogo(URL.createObjectURL(file));
+      }
       setUploading(false);
-      setLogo(URL.createObjectURL(file));
     } catch (err) {
       setError('Failed to upload photo');
       // setSnackbar({ open: true, message: 'Failed to upload photo', severity: 'error' });
