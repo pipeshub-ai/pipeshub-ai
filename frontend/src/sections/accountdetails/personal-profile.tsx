@@ -33,8 +33,14 @@ import {
 
 import { useAdmin } from 'src/context/AdminContext';
 
+import { CONFIG } from 'src/config-global';
+
+import { useTurnstile } from 'src/hooks/use-turnstile';
+
 import { Iconify } from 'src/components/iconify';
 import { Form, Field } from 'src/components/hook-form';
+import { TurnstileWidget } from 'src/components/turnstile/turnstile-widget';
+
 import { useAuthContext } from 'src/auth/hooks';
 import { STORAGE_KEY } from 'src/auth/context/jwt';
 import {
@@ -118,6 +124,15 @@ export default function PersonalProfile() {
     current: false,
     new: false,
   });
+  
+  // Turnstile hook for change password
+  const { 
+    turnstileToken, 
+    handleSuccess: handleTurnstileSuccess, 
+    handleError: handleTurnstileError, 
+    handleExpire: handleTurnstileExpire,
+    resetTurnstile 
+  } = useTurnstile();
 
   const methods = useForm<ProfileFormData>({
     resolver: zodResolver(ProfileSchema),
@@ -320,7 +335,10 @@ export default function PersonalProfile() {
       const changePasswordResponse = await changePassword({
         currentPassword: data.currentPassword,
         newPassword: data.newPassword,
+        ...(turnstileToken && { 'cf-turnstile-response': turnstileToken })
       });
+      
+      // await changePassword(payload);
       setSnackbar({
         open: true,
         message: 'Password changed successfully, reloading...',
@@ -334,8 +352,14 @@ export default function PersonalProfile() {
         window.location.reload();
       }, 1000);
 
+      resetTurnstile(); // Reset turnstile after successful submission
     } catch (err) {
       // Error handling
+      setSnackbar({
+        open: true,
+        message: 'Failed to change password. Please try again.',
+        severity: 'error',
+      });
     }
   };
 
@@ -343,6 +367,7 @@ export default function PersonalProfile() {
     setIsChangePasswordOpen(false);
     setPasswordVisibility({ current: false, new: false }); // Reset all visibilities
     passwordMethods.reset(); // Clear all form fields
+    resetTurnstile(); // Reset turnstile when closing dialog
   };
 
   if (loading) {
@@ -927,6 +952,19 @@ export default function PersonalProfile() {
                 }}
               />
             </Box>
+            
+            {/* Turnstile widget */}
+            {CONFIG.turnstileSiteKey && (
+              <Box sx={{ mt: 2, mb: 1 }}>
+                <TurnstileWidget
+                  siteKey={CONFIG.turnstileSiteKey}
+                  onSuccess={handleTurnstileSuccess}
+                  onError={handleTurnstileError}
+                  onExpire={handleTurnstileExpire}
+                  size="normal"
+                />
+              </Box>
+            )}
           </DialogContent>
           <DialogActions sx={{ px: 2.5, pb: 2, pt: 1 }}>
             <Button
@@ -944,7 +982,7 @@ export default function PersonalProfile() {
               variant="contained"
               color="primary"
               size="small"
-              disabled={!passwordMethods.formState.isValid}
+              disabled={!passwordMethods.formState.isValid || !!(CONFIG.turnstileSiteKey && !turnstileToken)}
               sx={{
                 textTransform: 'none',
                 borderRadius: 0.75,
@@ -957,7 +995,7 @@ export default function PersonalProfile() {
                 },
               }}
             >
-              Update password
+              {CONFIG.turnstileSiteKey && !turnstileToken ? 'Please complete verification' : 'Update password'}
             </Button>
           </DialogActions>
         </Form>

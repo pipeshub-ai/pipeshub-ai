@@ -130,9 +130,18 @@ export function createUserAccountRouter(container: Container) {
     },
   );
 
+  const resetPasswordValidationSchema = z.object({
+    body: z.object({
+      currentPassword: z.string(),
+      newPassword: z.string(),
+      'cf-turnstile-response': z.string().optional(),
+    }),
+  });
+
   router.post(
     '/password/reset',
     userValidator,
+    ValidationMiddleware.validate(resetPasswordValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         const userAccountController = container.get<UserAccountController>(

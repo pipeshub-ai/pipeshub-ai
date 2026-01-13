@@ -79,17 +79,6 @@ export default function ForgotPassword({ onBackToSignIn, sx } : ForgotPasswordPr
   const renderForm = (
     <Box gap={3} display="flex" flexDirection="column">
       <Field.Text name="email" label="Email address" InputLabelProps={{ shrink: true }} />
-
-      {CONFIG.turnstileSiteKey && (
-        <TurnstileWidget
-          siteKey={CONFIG.turnstileSiteKey}
-          onSuccess={handleSuccess}
-          onError={handleError}
-          onExpire={handleExpire}
-          size="invisible"
-        />
-      )}
-
       <LoadingButton
         fullWidth
         color="inherit"

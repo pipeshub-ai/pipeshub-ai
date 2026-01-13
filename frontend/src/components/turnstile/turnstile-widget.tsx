@@ -14,7 +14,7 @@ declare global {
           'error-callback'?: () => void;
           'expired-callback'?: () => void;
           theme?: 'light' | 'dark' | 'auto';
-          size?: 'normal' | 'compact' | 'invisible';
+          size?: 'normal' | 'compact' | 'flexible';
         }
       ) => string;
       reset: (widgetId?: string) => void;
@@ -29,7 +29,7 @@ interface TurnstileWidgetProps {
   onError?: () => void;
   onExpire?: () => void;
   theme?: 'light' | 'dark' | 'auto';
-  size?: 'normal' | 'compact' | 'invisible';
+  size?: 'normal' | 'compact' | 'flexible';
   className?: string;
 }
 
@@ -39,7 +39,7 @@ export const TurnstileWidget = memo(({
   onError,
   onExpire,
   theme = 'auto',
-  size = 'invisible',
+  size = 'normal',
   className,
 }: TurnstileWidgetProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -133,7 +133,7 @@ export const TurnstileWidget = memo(({
       sx={{
         display: 'flex',
         justifyContent: 'center',
-        minHeight: size === 'invisible' ? 0 : 65,
+        minHeight: size === 'compact' ? 50 : 65,
       }}
     />
   );

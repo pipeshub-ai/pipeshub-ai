@@ -166,9 +166,12 @@ export default function PasswordSignIn({
           onSuccess={handleSuccess}
           onError={handleError}
           onExpire={handleExpire}
-          size="invisible"
+          size="compact"
         />
       )}
+      {/* {CONFIG.turnstileSiteKey && (
+        <div className="cf-turnstile" data-sitekey={CONFIG.turnstileSiteKey}></div>
+      )} */}
 
       <LoadingButton
         fullWidth

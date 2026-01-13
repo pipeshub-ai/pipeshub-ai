@@ -658,13 +658,25 @@ export class UserAccountController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const { newPassword } = req.body;
-      const { currentPassword } = req.body;
+      const { newPassword, currentPassword, 'cf-turnstile-response': turnstileToken } = req.body;
+      
       if (!currentPassword) {
         throw new BadRequestError('currentPassword is required');
       }
       if (!newPassword) {
         throw new BadRequestError('newPassword is required');
+      }
+
+      // Verify Turnstile token if secret key is configured
+      const turnstileSecretKey = process.env.TURNSTILE_SECRET_KEY;
+      if (turnstileSecretKey) {
+        const isTurnstileValid = await verifyTurnstileToken(
+          turnstileToken,
+          turnstileSecretKey
+        );
+        if (!isTurnstileValid) {
+          throw new UnauthorizedError('Invalid CAPTCHA verification. Please try again.');
+        }
       }
 
       const userCredentialData = await UserCredentials.findOne({

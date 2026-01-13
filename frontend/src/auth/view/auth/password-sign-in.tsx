@@ -231,9 +231,6 @@ export default function PasswordSignIn({
                   <Typography variant="caption">Forgot Password?</Typography>
                 </Link>
               </Tooltip>
-              {CONFIG.turnstileSiteKey && !turnstileToken && (
-                <CircularProgress size={12} sx={{ color: 'text.secondary' }} />
-              )}
             </Box>
           </Box>
 
@@ -244,7 +241,7 @@ export default function PasswordSignIn({
               onSuccess={handleSuccess}
               onError={handleError}
               onExpire={handleExpire}
-              size="invisible"
+              size="normal"
             />
           )}
 
@@ -258,7 +255,7 @@ export default function PasswordSignIn({
             disabled={!turnstileToken && !!CONFIG.turnstileSiteKey}
             sx={{ mt: 2 }}
           >
-            {CONFIG.turnstileSiteKey && !turnstileToken ? 'Verifying...' : 'Continue'}
+            Continue
           </LoadingButton>
         </Stack>
       </Form>
