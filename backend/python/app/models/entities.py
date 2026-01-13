@@ -11,7 +11,13 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
-from app.models.blocks import BlocksContainer, SemanticMetadata
+from app.models.blocks import (
+    BlockGroup,
+    BlocksContainer,
+    ChildRecord,
+    SemanticMetadata,
+    TableRowMetadata,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -1213,3 +1219,27 @@ class AppRole(BaseModel):
             source_created_at=arango_doc.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_doc.get("sourceLastModifiedTimestamp"),
         )
+
+# Rebuild models to resolve forward references after all imports are complete
+# This is necessary due to circular imports between entities.py and blocks.py
+Record.model_rebuild()
+FileRecord.model_rebuild()
+MessageRecord.model_rebuild()
+MailRecord.model_rebuild()
+WebpageRecord.model_rebuild()
+CommentRecord.model_rebuild()
+TicketRecord.model_rebuild()
+LinkRecord.model_rebuild()
+ProjectRecord.model_rebuild()
+SharePointListRecord.model_rebuild()
+SharePointListItemRecord.model_rebuild()
+SharePointDocumentLibraryRecord.model_rebuild()
+SharePointPageRecord.model_rebuild()
+
+# Rebuild blocks models that have forward references to RecordType
+# ChildRecord has a forward reference to RecordType, and other models depend on it
+# These models need to be rebuilt after RecordType is defined
+ChildRecord.model_rebuild()
+TableRowMetadata.model_rebuild()
+BlockGroup.model_rebuild()
+BlocksContainer.model_rebuild()
