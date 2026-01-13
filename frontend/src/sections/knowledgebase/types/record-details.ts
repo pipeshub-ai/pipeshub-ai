@@ -136,11 +136,14 @@ export interface TicketRecord {
   name: string;
   status: string;
   priority: string;
+  type: string;
+  deliveryStatus: string;
   assignee: string | null;
   reporterEmail: string | null;
   assigneeEmail: string | null;
   creatorEmail: string;
   creatorName: string;
+  reporterName: string | null;
 }
 
 export interface Permissions {
