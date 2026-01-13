@@ -157,7 +157,7 @@ class RecordEventHandler(BaseEventService):
                     connector_instance = await self.event_processor.arango_service.get_document(
                         connector_id, CollectionNames.APPS.value
                     )
-                    if connector_instance and not connector_instance.get("isActive", True):
+                    if not connector_instance or not connector_instance.get("isActive", False):
                         self.logger.info(
                             f"⏭️ Skipping indexing for record {record_id}: "
                             f"connector instance {connector_id} is inactive"
