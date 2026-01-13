@@ -130,14 +130,19 @@ class GraphTransactionStore(TransactionStore):
     async def get_user_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[AppUserGroup]:
         return await self.graph_provider.get_user_group_by_external_id(connector_id, external_id, transaction=self.txn)
 
+    async def delete_user_group_by_id(self, group_id: str) -> None:
+        return await self.graph_provider.delete_nodes_and_edges([group_id],CollectionNames.GROUPS.value,graph_name="knowledgeGraph",transaction=self.txn)
+
     async def get_app_role_by_external_id(self, connector_id: str, external_id: str) -> Optional[AppRole]:
         return await self.graph_provider.get_app_role_by_external_id(connector_id, external_id, transaction=self.txn)
 
     async def get_users(self, org_id: str, active: bool = True) -> List[User]:
-        return await self.graph_provider.get_users(org_id, active)
+        users_dict = await self.graph_provider.get_users(org_id, active)
+        return [User.from_arango_user(user_dict) for user_dict in users_dict if user_dict is not None]
 
     async def get_app_users(self, org_id: str, connector_id: str) -> List[AppUser]:
-        return await self.graph_provider.get_app_users(org_id, connector_id)
+        app_users_dict = await self.graph_provider.get_app_users(org_id, connector_id)
+        return [AppUser.from_arango_user(user_dict) for user_dict in app_users_dict if user_dict is not None]
 
     async def get_user_groups(self, connector_id: str, org_id: str) -> List[AppUserGroup]:
         return await self.graph_provider.get_user_groups(connector_id, org_id, transaction=self.txn)
@@ -510,6 +515,10 @@ class GraphTransactionStore(TransactionStore):
         """Get all edges pointing to a specific node"""
         return await self.graph_provider.get_edges_to_node(node_id, edge_collection, transaction=self.txn)
 
+    async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> List[Dict]:
+        """Get all edges originating from a specific node"""
+        return await self.graph_provider.get_edges_from_node(from_node_id, edge_collection, transaction=self.txn)
+
     async def get_related_node_field(
         self, node_id: str, edge_collection: str, target_collection: str,
         field: str, direction: str = "outbound"
@@ -564,12 +573,12 @@ class GraphDataStore(DataStoreProvider):
 
         """
         # Begin transaction - returns transaction ID (str) for HTTP provider
-        self.logger.info("🔄 Beginning transaction...")
+        self.logger.debug("🔄 Beginning transaction...")
         txn = await self.graph_provider.begin_transaction(
             read=read_collections,
             write=write_collections
         )
-        self.logger.info(f"✅ Transaction started with ID: {txn}")
+        self.logger.debug(f"✅ Transaction started with ID: {txn}")
 
         tx_store = GraphTransactionStore(self.graph_provider, txn)
 
@@ -578,12 +587,9 @@ class GraphDataStore(DataStoreProvider):
         except Exception as e:
             self.logger.error(f"❌ Transaction error, rolling back: {str(e)}")
             await tx_store.rollback()
-            self.logger.info(f"🔄 Transaction {txn} rolled back")
             raise
         else:
-            self.logger.info(f"💾 Committing transaction {txn}...")
             await tx_store.commit()
-            self.logger.info(f"✅ Transaction {txn} committed successfully")
 
     async def execute_in_transaction(self, func, *args, **kwargs) -> None:
         """Execute function within graph database transaction"""

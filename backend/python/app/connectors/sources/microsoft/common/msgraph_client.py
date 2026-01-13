@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass
 from logging import Logger
 from typing import Any, Callable, Dict, List, Optional
@@ -15,6 +16,7 @@ from msgraph.generated.models.base_delta_function_response import (
 from msgraph.generated.models.drive_item import DriveItem
 from msgraph.generated.models.group import Group
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
+from msgraph.generated.models.search_response import SearchResponse
 from msgraph.generated.users.users_request_builder import UsersRequestBuilder
 
 from app.models.entities import AppUser, FileRecord
@@ -516,3 +518,55 @@ class MSGraphClient:
         except Exception as ex:
             self.logger.error(f"Error creating signed URL for item {item_id} in drive {drive_id}: {ex}")
             return None
+
+    async def search_query(
+        self,
+        entity_types: List[str],
+        query: str = "*",
+        page: int = 1,
+        limit: int = 20,
+        region: str = "NAM"
+    ) -> dict:
+        """
+        Raw Search via MS Graph. Returns the raw response object/dict.
+        """
+        try:
+            offset = (page - 1) * limit
+            search_query = query.strip() if query and query.strip() else "*"
+
+            search_request = {
+                "requests": [
+                    {
+                        "entityTypes": entity_types,
+                        "query": {"queryString": search_query},
+                        "from": offset,
+                        "size": limit,
+                        "region": region,
+                        # distinct_fields can be requested here if needed
+                        # "fields": ["ListTitle", "title", "path"]
+                    }
+                ]
+            }
+
+            async with self.rate_limiter:
+                request_info = RequestInformation(Method.POST, "https://graph.microsoft.com/v1.0/search/query")
+                request_info.headers.add("Content-Type", "application/json")
+                request_info.content = json.dumps(search_request).encode('utf-8')
+
+                error_mapping = {
+                    "4XX": ODataError,
+                    "5XX": ODataError,
+                }
+
+                result = await self.client.request_adapter.send_async(
+                    request_info=request_info,
+                    parsable_factory=SearchResponse,
+                    error_map=error_mapping
+                )
+
+                # Return the raw result directly
+                return result
+
+        except Exception as ex:
+            self.logger.error(f"Error searching entities {entity_types}: {ex}")
+            raise

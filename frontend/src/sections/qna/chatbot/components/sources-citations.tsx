@@ -36,6 +36,10 @@ import {
 
 import type { CustomCitation } from 'src/types/chat-bot';
 import type { Record } from 'src/types/chat-message';
+import {
+  getWebUrlWithFragment,
+} from 'src/sections/knowledgebase/utils/utils';
+
 import { useConnectors } from '../../../accountdetails/connectors/context';
 
 // File type configuration with modern icons
@@ -350,7 +354,7 @@ const FileCard = React.memo(
               justifyContent: 'flex-end',
             }}
           >
-            {file.extension && isDocViewable(file.extension) && (
+            {file.extension && isDocViewable(file.extension) && file.citation?.metadata?.previewRenderable !== false && (
               <Button
                 size="small"
                 variant="text"
@@ -501,7 +505,16 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
     });
   }, []);
 
+
   const handleViewDocument = useCallback((file: FileInfo) => {
+    // Check if previewRenderable is false - if so, open webUrl instead of viewer
+    if (file.citation?.metadata?.previewRenderable === false) {
+      const webUrl = getWebUrlWithFragment(file.citation);
+      if (webUrl) {
+        window.open(webUrl, '_blank', 'noopener,noreferrer');
+      }
+      return;
+    }
     if (file.webUrl) {
       window.open(file.webUrl, '_blank', 'noopener,noreferrer');
     }
@@ -509,6 +522,14 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
 
   const handleViewCitations = useCallback(
     (file: FileInfo) => {
+      // Check if previewRenderable is false - if so, open webUrl instead of viewer
+      if (file.citation?.metadata?.previewRenderable === false) {
+        const webUrl = getWebUrlWithFragment(file.citation);
+        if (webUrl) {
+          window.open(webUrl, '_blank', 'noopener,noreferrer');
+        }
+        return;
+      }
       const recordCitations = aggregatedCitations[file.recordId] || [file.citation];
       onViewPdf('', file.citation, recordCitations, false);
     },
@@ -533,6 +554,15 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
         const recordCitations = aggregatedCitations[recordId] || [];
         if (recordCitations.length > 0) {
           const citation = recordCitations[0];
+          // Check if previewRenderable is false - if so, open webUrl instead of viewer
+          if (citation?.metadata?.previewRenderable === false) {
+            const webUrl = getWebUrlWithFragment(citation);
+            if (webUrl) {
+              window.open(webUrl, '_blank', 'noopener,noreferrer');
+            }
+            resolve();
+            return;
+          }
           onViewPdf('', citation, recordCitations, false);
           resolve();
         }
@@ -871,6 +901,14 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                           onClick={(e) => {
                             e.stopPropagation();
                             const firstCitation = recordCitations[0];
+                            // Check if previewRenderable is false - if so, open webUrl instead of viewer
+                            if (firstCitation?.metadata?.previewRenderable === false) {
+                              const webUrl = getWebUrlWithFragment(firstCitation);
+                              if (webUrl) {
+                                window.open(webUrl, '_blank', 'noopener,noreferrer');
+                              }
+                              return;
+                            }
                             if (firstCitation?.metadata?.webUrl) {
                               window.open(
                                 firstCitation.metadata.webUrl,
@@ -945,7 +983,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                               whiteSpace: 'nowrap',
                             }}
                           >
-                            {recordInfo.connector || 'UPLOAD'}
+                            {recordInfo.connector || 'KB'}
                           </Typography>
                         </Button>
                         {recordInfo.extension && (
@@ -1002,8 +1040,19 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                         key={citation._id}
                         onClick={(e) => {
                           e.stopPropagation();
+                          // Check if previewRenderable is false - if so, open webUrl instead of viewer
+                          if (citation.metadata?.previewRenderable === false) {
+                            const webUrl = getWebUrlWithFragment(citation);
+                            if (webUrl) {
+                              window.open(webUrl, '_blank', 'noopener,noreferrer');
+                            }
+                            return;
+                          }
                           if (!citation.metadata?.extension && citation.metadata?.webUrl) {
-                            window.open(citation.metadata.webUrl, '_blank', 'noopener,noreferrer');
+                            const webUrl = getWebUrlWithFragment(citation);
+                            if (webUrl) {
+                              window.open(webUrl, '_blank', 'noopener,noreferrer');
+                            }
                             return;
                           }
                           if (citation.metadata?.recordId) {

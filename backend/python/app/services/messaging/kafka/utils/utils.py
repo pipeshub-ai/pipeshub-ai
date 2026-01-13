@@ -1,4 +1,4 @@
-from typing import Any, Awaitable, Callable, Dict, List, Union
+from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Union
 
 from app.config.constants.arangodb import Connectors
 from app.config.constants.service import config_node_constants
@@ -141,45 +141,55 @@ class KafkaUtils:
         return handle_entity_message
 
     @staticmethod
-    async def create_record_message_handler(app_container: IndexingAppContainer) -> Callable[[Dict[str, Any]], Awaitable[bool]]:
-        """Create a message handler for record events"""
+    async def create_record_message_handler(app_container: IndexingAppContainer) -> Callable[[Dict[str, Any]], AsyncGenerator[Dict[str, Any], None]]:
+        """Create a message handler for record events.
+
+        Returns an async generator function that yields events during processing:
+        - 'parsing_complete': When document parsing is done
+        - 'indexing_complete': When indexing pipeline is done
+        """
         logger = app_container.logger()
         event_processor = await app_container.event_processor()
-        redis_scheduler = await app_container.redis_scheduler()
         config_service =  app_container.config_service()
         # Create the entity event service
         record_event_service = RecordEventHandler(
             logger=logger,
             config_service=config_service,
             event_processor=event_processor,
-            scheduler=redis_scheduler
         )
 
-        async def handle_record_message(message: Dict[str, Any]) -> bool:
-            """Handle incoming record messages"""
-            try:
+        async def handle_record_message(message: Dict[str, Any]) -> AsyncGenerator[Dict[str, Any], None]:
+            """Handle incoming record messages, yielding events during processing.
 
+            Yields:
+                Dict with 'event' key indicating phase completion:
+                - {'event': 'parsing_complete', 'data': {...}}
+                - {'event': 'indexing_complete', 'data': {...}}
+            """
+            try:
                 if message is None:
                     logger.warning("Received a None message, likely during shutdown. Skipping.")
-                    return True
+                    return
 
                 event_type = message.get("eventType")
                 payload = message.get("payload")
 
                 if not event_type:
                     logger.error("Missing event_type in message")
-                    return False
+                    return
 
                 if not payload:
                     logger.error("Missing payload in message")
-                    return False
+                    return
 
                 logger.info(f"Processing record event: {event_type}")
-                return await record_event_service.process_event(event_type, payload)
+                # Yield events from the record event service
+                async for event in record_event_service.process_event(event_type, payload):
+                    yield event
 
             except Exception as e:
                 logger.error(f"Error processing record message: {str(e)}", exc_info=True)
-                return False
+                raise
 
         return handle_record_message
 

@@ -27,6 +27,7 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncPoint,
     generate_record_sync_point_key,
 )
+from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -35,7 +36,11 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
 )
 from app.connectors.core.registry.filters import (
+    FilterCategory,
     FilterCollection,
+    FilterField,
+    FilterOperator,
+    FilterType,
     IndexingFilterKey,
     SyncFilterKey,
     load_connector_filters,
@@ -56,7 +61,7 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission
-from app.utils.streaming import stream_content
+from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -69,10 +74,50 @@ class OneDriveCredentials:
 
 @ConnectorBuilder("OneDrive")\
     .in_group("Microsoft 365")\
-    .with_auth_type("OAUTH_ADMIN_CONSENT")\
     .with_description("Sync files and folders from OneDrive")\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH_ADMIN_CONSENT).fields([
+            AuthField(
+                name="clientId",
+                display_name="Application (Client) ID",
+                placeholder="Enter your Azure AD Application ID",
+                description="The Application (Client) ID from Azure AD App Registration"
+            ),
+            AuthField(
+                name="clientSecret",
+                display_name="Client Secret",
+                placeholder="Enter your Azure AD Client Secret",
+                description="The Client Secret from Azure AD App Registration",
+                field_type="PASSWORD",
+                is_secret=True
+            ),
+            AuthField(
+                name="tenantId",
+                display_name="Directory (Tenant) ID",
+                placeholder="Enter your Azure AD Tenant ID",
+                description="The Directory (Tenant) ID from Azure AD"
+            ),
+            AuthField(
+                name="hasAdminConsent",
+                display_name="Has Admin Consent",
+                description="Check if admin consent has been granted for the application",
+                field_type="CHECKBOX",
+                required=True,
+                default_value=False
+            ),
+            AuthField(
+                name="redirectUri",
+                display_name="Redirect URI",
+                placeholder="http://localhost:3001/connectors/oauth/callback/onedrive",
+                description="The redirect URI for OAuth authentication",
+                field_type="URL",
+                required=False,
+                max_length=2000
+            )
+        ])
+    ])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/onedrive.svg")
         .add_documentation_link(DocumentationLink(
@@ -85,47 +130,18 @@ class OneDriveCredentials:
             'https://docs.pipeshub.com/connectors/microsoft-365/one-drive',
             'pipeshub'
         ))
-        .with_redirect_uri("connectors/oauth/callback/OneDrive", False)
-        .add_auth_field(AuthField(
-            name="clientId",
-            display_name="Application (Client) ID",
-            placeholder="Enter your Azure AD Application ID",
-            description="The Application (Client) ID from Azure AD App Registration"
-        ))
-        .add_auth_field(AuthField(
-            name="clientSecret",
-            display_name="Client Secret",
-            placeholder="Enter your Azure AD Client Secret",
-            description="The Client Secret from Azure AD App Registration",
-            field_type="PASSWORD",
-            is_secret=True
-        ))
-        .add_auth_field(AuthField(
-            name="tenantId",
-            display_name="Directory (Tenant) ID",
-            placeholder="Enter your Azure AD Tenant ID",
-            description="The Directory (Tenant) ID from Azure AD"
-        ))
-        .add_auth_field(AuthField(
-            name="hasAdminConsent",
-            display_name="Has Admin Consent",
-            description="Check if admin consent has been granted for the application",
-            field_type="CHECKBOX",
-            required=True,
-            default_value=False
-        ))
-        .add_auth_field(AuthField(
-            name="redirectUri",
-            display_name="Redirect URI",
-            placeholder="http://localhost:3001/connectors/oauth/callback/onedrive",
-            description="The redirect URI for OAuth authentication",
-            field_type="URL",
-            required=False,
-            max_length=2000
-        ))
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
+        .add_filter_field(CommonFields.file_extension_filter())
+        .add_filter_field(FilterField(
+            name="shared",
+            display_name="Index Shared Items",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of shared items",
+            default_value=True
+        ))
         .add_conditional_display("redirectUri", "hasAdminConsent", "equals", False)
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
@@ -177,10 +193,6 @@ class OneDriveConnector(BaseConnector):
             self.logger.error("Incomplete OneDrive config. Ensure tenantId, clientId, and clientSecret are configured.")
             raise ValueError("Incomplete OneDrive credentials. Ensure tenantId, clientId, and clientSecret are configured.")
 
-        self.sync_filters, self.indexing_filters = await load_connector_filters(
-            self.config_service, "onedrive", self.connector_id, self.logger
-        )
-
         has_admin_consent = auth_config.get("hasAdminConsent", False)
         credentials = OneDriveCredentials(
             tenant_id=tenant_id,
@@ -219,10 +231,15 @@ class OneDriveConnector(BaseConnector):
             RecordUpdate object containing the record and change information
         """
         try:
+
             # Apply Date Filters
             if not self._pass_date_filters(item):
                 self.logger.debug(f"Skipping item {item.name} (ID: {item.id}) due to date filters.")
                 return # Skip this item
+
+            if not self._pass_extension_filter(item):
+                self.logger.debug(f"Skipping item {item.name} (ID: {item.id}) due to extention filters.")
+                return
 
             # Check if item is deleted
             if hasattr(item, 'deleted') and item.deleted is not None:
@@ -285,6 +302,8 @@ class OneDriveConnector(BaseConnector):
                     item.id,
                 )
 
+            is_shared = hasattr(item, 'shared') and item.shared is not None
+
             file_record = FileRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
                 record_name=item.name,
@@ -303,7 +322,7 @@ class OneDriveConnector(BaseConnector):
                 source_updated_at=int(item.last_modified_date_time.timestamp() * 1000),
                 weburl=item.web_url,
                 signed_url=signed_url,
-                is_shared=is_shared_folder,
+                is_shared=is_shared,
                 mime_type=item.file.mime_type if item.file else MimeTypes.FOLDER.value,
                 parent_external_record_id=item.parent_reference.id if item.parent_reference else None,
                 external_record_group_id=item.parent_reference.drive_id if item.parent_reference else None,
@@ -340,8 +359,8 @@ class OneDriveConnector(BaseConnector):
                 is_updated = True
                 await self._update_folder_children_permissions(
                     drive_id=item.parent_reference.drive_id,
-                        folder_id=item.id
-                    )
+                    folder_id=item.id
+                )
 
 
             return RecordUpdate(
@@ -492,6 +511,65 @@ class OneDriveConnector(BaseConnector):
 
         return True
 
+    def _pass_extension_filter(self, item: DriveItem) -> bool:
+        """
+        Checks if the DriveItem passes the configured file extensions filter.
+
+        For MULTISELECT filters:
+        - Operator IN: Only allow files with extensions in the selected list
+        - Operator NOT_IN: Allow files with extensions NOT in the selected list
+
+        Folders always pass this filter to maintain directory structure.
+        """
+        # 1. ALWAYS Allow Folders
+        if item.folder is not None:
+            return True
+
+        # 2. Get the extensions filter
+        extensions_filter = self.sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
+
+        # If no filter configured or filter is empty, allow all files
+        if extensions_filter is None or extensions_filter.is_empty():
+            return True
+
+        # 3. Get the file extension from the item
+        # The extension is stored without the dot (e.g., "pdf", "docx")
+        file_extension = None
+        if item.name and "." in item.name:
+            file_extension = item.name.rsplit(".", 1)[-1].lower()
+
+        # Files without extensions: behavior depends on operator
+        # If using IN operator and file has no extension, it won't match any allowed extensions
+        # If using NOT_IN operator and file has no extension, it passes (not in excluded list)
+        if file_extension is None:
+            operator = extensions_filter.get_operator()
+            operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+            if operator_str == FilterOperator.NOT_IN:
+                return True
+            return False
+
+        # 4. Get the list of extensions from the filter value
+        allowed_extensions = extensions_filter.value
+        if not isinstance(allowed_extensions, list):
+            return True  # Invalid filter value, allow the file
+
+        # Normalize extensions (lowercase, without dots)
+        normalized_extensions = [ext.lower().lstrip(".") for ext in allowed_extensions]
+
+        # 5. Apply the filter based on operator
+        operator = extensions_filter.get_operator()
+        operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+
+        if operator_str == FilterOperator.IN:
+            # Only allow files with extensions in the list
+            return file_extension in normalized_extensions
+        elif operator_str == FilterOperator.NOT_IN:
+            # Allow files with extensions NOT in the list
+            return file_extension not in normalized_extensions
+
+        # Unknown operator, default to allowing the file
+        return True
+
     async def _process_delta_items_generator(self, delta_items: List[dict]) -> AsyncGenerator[Tuple[FileRecord, List[Permission], RecordUpdate], None]:
         """
         Process delta items and yield records with their permissions.
@@ -509,8 +587,12 @@ class OneDriveConnector(BaseConnector):
                         # For deleted items, yield with empty permissions
                         yield (None, [], record_update)
                     elif record_update.record:
-                        if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                        files_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
+                        shared_disabled = record_update.record.is_shared and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True)
+
+                        if files_disabled or shared_disabled:
                             record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
 
                         yield (record_update.record, record_update.new_permissions or [], record_update)
 
@@ -1027,6 +1109,10 @@ class OneDriveConnector(BaseConnector):
             # scheduled runs that are days apart, causing the HTTP session to timeout
             await self._reinitialize_credential_if_needed()
 
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "onedrive", self.connector_id, self.logger
+            )
+
             # Step 1: Sync users
             self.logger.info("Syncing users...")
             users = await self.msgraph_client.get_all_users()
@@ -1270,12 +1356,11 @@ class OneDriveConnector(BaseConnector):
         if not signed_url:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
 
-        return StreamingResponse(
+        return create_stream_record_response(
             stream_content(signed_url),
-            media_type=record.mime_type if record.mime_type else "application/octet-stream",
-            headers={
-                "Content-Disposition": f"attachment; filename={record.record_name}"
-            }
+            filename=record.record_name,
+            mime_type=record.mime_type,
+            fallback_filename=f"record_{record.id}"
         )
 
     def _parse_datetime(self, dt_obj) -> Optional[int]:

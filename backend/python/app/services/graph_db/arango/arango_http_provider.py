@@ -882,6 +882,40 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get edges to node failed: {str(e)}")
             return []
 
+    async def get_edges_from_node(
+        self,
+        node_id: str,
+        edge_collection: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Get all edges originating from a node.
+
+        Args:
+            node_id: Source node ID (e.g., "groups/123")
+            edge_collection: Edge collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            List[Dict]: List of edges
+        """
+        query = f"""
+        FOR edge IN {edge_collection}
+            FILTER edge._from == @node_id
+            RETURN edge
+        """
+
+        try:
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={"node_id": node_id},
+                txn_id=transaction
+            )
+            return results or []
+        except Exception as e:
+            self.logger.error(f"❌ Get edges from node failed: {str(e)}")
+            return []
+
     async def get_related_nodes(
         self,
         node_id: str,
@@ -1783,7 +1817,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
                     RETURN MERGE(user, {{
                         sourceUserId: edge.sourceUserId,
-                        appName: UPPER(app.name)
+                        appName: UPPER(app.type),
+                        connectorId: app._key
                     }})
             """
 
@@ -4349,7 +4384,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 # ArangoDB REST API returns graph info with 'graph' key containing the definition
                 graph_def = graph_info.get('graph', graph_info)  # Handle both nested and direct formats
                 edge_definitions = graph_def.get('edgeDefinitions', [])
-                edge_collections = [e.get('edge_collection') for e in edge_definitions if e.get('edge_collection')]
+                edge_collections = [e.get('collection') for e in edge_definitions if e.get('collection')]
 
                 if not edge_collections:
                     self.logger.warning(f"⚠️ Graph '{graph_name}' has no edge collections defined.")
@@ -5172,4 +5207,1093 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "success": False,
                 "reason": f"Transaction failed: {str(e)}"
             }
+
+    # ==================== Knowledge Hub Operations ====================
+
+    async def get_knowledge_hub_root_nodes(
+        self,
+        user_key: str,
+        org_id: str,
+        user_app_ids: List[str],
+        skip: int,
+        limit: int,
+        sort_field: str,
+        sort_dir: str,
+        include_kbs: bool,
+        include_apps: bool,
+        only_containers: bool,
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Get root level nodes (KBs and Apps) for Knowledge Hub."""
+        query = """
+        // Get KBs (record groups with connectorName=KB)
+        LET kbs = @include_kbs ? (
+            FOR kb IN recordGroups
+                FILTER kb.orgId == @org_id
+                FILTER kb.connectorName == "KB"
+                LET has_permission = LENGTH(
+                    FOR perm IN permission
+                        FILTER perm._from == CONCAT("users/", @user_key)
+                        FILTER perm._to == kb._id
+                        RETURN 1
+                ) > 0
+                FILTER has_permission
+                LET has_children = LENGTH(
+                    FOR edge IN recordRelations
+                        FILTER edge._from == kb._id
+                        FILTER edge.relationshipType == "PARENT_CHILD"
+                        LET child = DOCUMENT(edge._to)
+                        FILTER child != null AND child.isDeleted != true
+                        RETURN 1
+                ) > 0 OR LENGTH(
+                    FOR perm_edge IN inheritPermissions
+                        FILTER perm_edge._to == kb._id
+                        LET record = DOCUMENT(perm_edge._from)
+                        FILTER record != null AND record.isDeleted != true
+                        RETURN 1
+                ) > 0
+                RETURN {
+                    id: kb._key,
+                    name: kb.groupName,
+                    nodeType: "kb",
+                    parentId: null,
+                    source: "KB",
+                    connector: "KB",
+                    createdAt: kb.createdAtTimestamp,
+                    updatedAt: kb.updatedAtTimestamp,
+                    webUrl: CONCAT("/kb/", kb._key),
+                    hasChildren: has_children
+                }
+        ) : []
+
+        // Get Apps
+        LET apps = @include_apps ? (
+            FOR app IN apps
+                FILTER app._key IN @user_app_ids
+                LET has_children = LENGTH(
+                    FOR rg IN recordGroups
+                        FILTER rg.connectorId == app._key
+                        FILTER rg.orgId == @org_id
+                        RETURN 1
+                ) > 0
+                RETURN {
+                    id: app._key,
+                    name: app.name,
+                    nodeType: "app",
+                    parentId: null,
+                    source: "CONNECTOR",
+                    connector: app.appGroup,
+                    createdAt: app.createdAtTimestamp || 0,
+                    updatedAt: app.updatedAtTimestamp || 0,
+                    webUrl: CONCAT("/app/", app._key),
+                    hasChildren: has_children
+                }
+        ) : []
+
+        LET all_nodes = APPEND(kbs, apps)
+        LET filtered_nodes = @only_containers ?
+            (FOR node IN all_nodes FILTER node.hasChildren == true RETURN node) : all_nodes
+        LET sorted_nodes = (
+            FOR node IN filtered_nodes
+                SORT node[@sort_field] @sort_dir
+                RETURN node
+        )
+
+        LET total_count = LENGTH(sorted_nodes)
+        LET paginated_nodes = SLICE(sorted_nodes, @skip, @limit)
+
+        RETURN { nodes: paginated_nodes, total: total_count }
+        """
+
+        bind_vars = {
+            "org_id": org_id,
+            "user_key": user_key,
+            "user_app_ids": user_app_ids,
+            "include_kbs": include_kbs,
+            "include_apps": include_apps,
+            "skip": skip,
+            "limit": limit,
+            "sort_field": sort_field,
+            "sort_dir": sort_dir,
+            "only_containers": only_containers,
+        }
+
+        result = await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction)
+        return result[0] if result else {"nodes": [], "total": 0}
+
+    async def get_knowledge_hub_children(
+        self,
+        parent_id: str,
+        parent_type: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        sort_field: str,
+        sort_dir: str,
+        filter_clause: str,
+        bind_vars: Dict[str, Any],
+        only_containers: bool,
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Unified method to get children of any node type.
+
+        Args:
+            parent_id: The ID of the parent node.
+            parent_type: The type of parent: 'app', 'kb', 'recordGroup', 'folder', 'record'.
+            org_id: The organization ID.
+            skip: Number of items to skip for pagination.
+            limit: Maximum number of items to return.
+            sort_field: Field to sort by.
+            sort_dir: Sort direction ('ASC' or 'DESC').
+            filter_clause: AQL filter clause string.
+            bind_vars: Bind variables for the filter clause.
+            only_containers: If True, only return nodes that can have children.
+            transaction: Optional transaction ID.
+        """
+        # Generate the sub-query based on parent type
+        if parent_type == "app":
+            sub_query, parent_bind_vars = self._get_app_children_subquery(parent_id, org_id)
+        elif parent_type in ("kb", "recordGroup"):
+            sub_query, parent_bind_vars = self._get_record_group_children_subquery(parent_id, org_id, parent_type)
+        elif parent_type in ("folder", "record"):
+            sub_query, parent_bind_vars = self._get_record_children_subquery(parent_id, org_id)
+        else:
+            return {"nodes": [], "total": 0}
+
+        # Common template for filtering, sorting, pagination
+        query = f"""
+        {sub_query}
+
+        LET filtered_children = (
+            FOR node IN raw_children
+                FILTER {filter_clause if filter_clause else "true"}
+                FILTER @only_containers == false OR node.hasChildren == true
+                RETURN node
+        )
+        LET sorted_children = (FOR child IN filtered_children SORT child[@sort_field] @sort_dir RETURN child)
+        LET total_count = LENGTH(sorted_children)
+        LET paginated_children = SLICE(sorted_children, @skip, @limit)
+
+        RETURN {{ nodes: paginated_children, total: total_count }}
+        """
+
+        all_bind_vars = {
+            "org_id": org_id,
+            "skip": skip,
+            "limit": limit,
+            "sort_field": sort_field,
+            "sort_dir": sort_dir,
+            "only_containers": only_containers,
+            **parent_bind_vars,
+            **bind_vars,
+        }
+
+        result = await self.http_client.execute_aql(query, bind_vars=all_bind_vars, txn_id=transaction)
+        return result[0] if result else {"nodes": [], "total": 0}
+
+    def _get_app_children_subquery(self, app_id: str, org_id: str) -> Tuple[str, Dict[str, Any]]:
+        """Generate AQL sub-query to fetch RecordGroups for an App."""
+        sub_query = """
+        LET app = DOCUMENT("apps", @app_id)
+        FILTER app != null
+
+        LET raw_children = (
+            FOR rg IN recordGroups
+                FILTER rg.connectorId == @app_id AND rg.orgId == @org_id AND rg.isDeleted != true AND rg.parentId == null
+                LET has_child_rgs = LENGTH(FOR child_rg IN recordGroups FILTER child_rg.parentId == rg._key AND child_rg.isDeleted != true RETURN 1) > 0
+                LET has_records = LENGTH(
+                    FOR perm_edge IN inheritPermissions FILTER perm_edge._to == rg._id
+                    LET record = DOCUMENT(perm_edge._from) FILTER record != null AND record.isDeleted != true
+                    LET has_parent = LENGTH(FOR pe IN recordRelations FILTER pe._to == record._id AND pe.relationshipType == "PARENT_CHILD" RETURN 1) > 0
+                    FILTER has_parent == false RETURN 1
+                ) > 0
+                RETURN {
+                    id: rg._key, name: rg.groupName, nodeType: "recordGroup",
+                    parentId: CONCAT("apps/", @app_id),
+                    source: "CONNECTOR", connector: app.appGroup,
+                    recordType: null, indexingStatus: null,
+                    createdAt: rg.createdAtTimestamp, updatedAt: rg.updatedAtTimestamp,
+                    sizeInBytes: null, mimeType: null, extension: null,
+                    webUrl: rg.webUrl, hasChildren: has_child_rgs OR has_records
+                }
+        )
+        """
+        return sub_query, {"app_id": app_id}
+
+    def _get_record_group_children_subquery(self, rg_id: str, org_id: str, parent_type: str) -> Tuple[str, Dict[str, Any]]:
+        """Generate AQL sub-query to fetch children of a KB or RecordGroup."""
+        rg_doc_id = f"recordGroups/{rg_id}"
+        source = "KB" if parent_type == "kb" else "CONNECTOR"
+
+        sub_query = f"""
+        LET rg = DOCUMENT(@rg_doc_id)
+        FILTER rg != null AND rg.orgId == @org_id
+
+        LET nested_rgs = (
+            FOR child_rg IN recordGroups
+                FILTER child_rg.parentId == rg._key AND child_rg.isDeleted != true AND child_rg.orgId == @org_id
+                LET has_children = LENGTH(FOR sub_rg IN recordGroups FILTER sub_rg.parentId == child_rg._key AND sub_rg.isDeleted != true RETURN 1) > 0 OR
+                    LENGTH(FOR pe IN inheritPermissions FILTER pe._to == child_rg._id LET r = DOCUMENT(pe._from) FILTER r != null AND r.isDeleted != true
+                        LET hp = LENGTH(FOR pre IN recordRelations FILTER pre._to == r._id AND pre.relationshipType == "PARENT_CHILD" RETURN 1) > 0 FILTER hp == false RETURN 1) > 0
+                RETURN {{
+                    id: child_rg._key, name: child_rg.groupName, nodeType: "recordGroup",
+                    parentId: @rg_doc_id, source: "{source}",
+                    connector: child_rg.connectorName, recordType: null, indexingStatus: null,
+                    createdAt: child_rg.createdAtTimestamp, updatedAt: child_rg.updatedAtTimestamp,
+                    sizeInBytes: null, mimeType: null, extension: null,
+                    webUrl: child_rg.webUrl, hasChildren: has_children
+                }}
+        )
+
+        LET records = (
+            FOR perm_edge IN inheritPermissions FILTER perm_edge._to == @rg_doc_id
+            LET record = DOCUMENT(perm_edge._from)
+            FILTER record != null AND record.isDeleted != true AND record.orgId == @org_id
+            LET has_parent_rec = LENGTH(FOR pre IN recordRelations FILTER pre._to == record._id AND pre.relationshipType == "PARENT_CHILD" RETURN 1) > 0
+            FILTER has_parent_rec == false
+            LET file_info = FIRST(FOR fe IN isOfType FILTER fe._from == record._id LET f = DOCUMENT(fe._to) RETURN f)
+            LET is_folder = file_info != null AND file_info.isFile == false
+            LET has_children = LENGTH(FOR ce IN recordRelations FILTER ce._from == record._id AND ce.relationshipType == "PARENT_CHILD" LET c = DOCUMENT(ce._to) FILTER c != null AND c.isDeleted != true RETURN 1) > 0
+            RETURN {{
+                id: record._key, name: record.recordName, nodeType: is_folder ? "folder" : "record",
+                parentId: @rg_doc_id,
+                source: "{source}", connector: record.connectorName,
+                recordType: record.recordType, indexingStatus: record.indexingStatus,
+                createdAt: record.createdAtTimestamp, updatedAt: record.updatedAtTimestamp,
+                sizeInBytes: file_info.fileSizeInBytes, mimeType: file_info.mimeType,
+                extension: file_info.extension, webUrl: record.webUrl,
+                hasChildren: has_children
+            }}
+        )
+
+        LET raw_children = UNION(nested_rgs, records)
+        """
+        return sub_query, {"rg_doc_id": rg_doc_id}
+
+    def _get_record_children_subquery(self, record_id: str, org_id: str) -> Tuple[str, Dict[str, Any]]:
+        """Generate AQL sub-query to fetch children of a Folder/Record."""
+        record_doc_id = f"records/{record_id}"
+
+        sub_query = """
+        LET parent_record = DOCUMENT(@record_doc_id)
+        FILTER parent_record != null
+
+        LET raw_children = (
+            FOR edge IN recordRelations
+                FILTER edge._from == @record_doc_id AND edge.relationshipType == "PARENT_CHILD"
+                LET record = DOCUMENT(edge._to)
+                FILTER record != null AND record.isDeleted != true AND record.orgId == @org_id
+                LET file_info = FIRST(FOR fe IN isOfType FILTER fe._from == record._id LET f = DOCUMENT(fe._to) RETURN f)
+                LET is_folder = file_info != null AND file_info.isFile == false
+                LET has_children = LENGTH(FOR ce IN recordRelations FILTER ce._from == record._id AND ce.relationshipType == "PARENT_CHILD" LET c = DOCUMENT(ce._to) FILTER c != null AND c.isDeleted != true RETURN 1) > 0
+                LET source = record.connectorName == "KB" ? "KB" : "CONNECTOR"
+                RETURN {
+                    id: record._key, name: record.recordName,
+                    nodeType: is_folder ? "folder" : "record",
+                    parentId: @record_doc_id,
+                    source: source, connector: record.connectorName,
+                    recordType: record.recordType, indexingStatus: record.indexingStatus,
+                    createdAt: record.createdAtTimestamp, updatedAt: record.updatedAtTimestamp,
+                    sizeInBytes: file_info.fileSizeInBytes, mimeType: file_info.mimeType,
+                    extension: file_info.extension, webUrl: record.webUrl,
+                    hasChildren: has_children
+                }
+        )
+        """
+        return sub_query, {"record_doc_id": record_doc_id}
+
+    async def get_knowledge_hub_search_nodes(
+        self,
+        user_key: str,
+        org_id: str,
+        user_app_ids: List[str],
+        skip: int,
+        limit: int,
+        sort_field: str,
+        sort_dir: str,
+        search_query: Optional[str],
+        node_types: Optional[List[str]],
+        record_types: Optional[List[str]],
+        only_containers: bool,
+        origins: Optional[List[str]] = None,
+        connector_ids: Optional[List[str]] = None,
+        kb_ids: Optional[List[str]] = None,
+        indexing_status: Optional[List[str]] = None,
+        created_at: Optional[Dict[str, Optional[int]]] = None,
+        updated_at: Optional[Dict[str, Optional[int]]] = None,
+        size: Optional[Dict[str, Optional[int]]] = None,
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Search across all nodes with filters.
+
+        TODO(Performance): This query currently fetches ALL matching documents from KBs, Apps, and Records,
+        unions them, and THEN sorts and slices. This is O(N) where N is total matches, which is not scalable.
+        OPTIMIZATION: Push down the SORT and LIMIT into the individual sub-queries (kb_nodes, app_nodes, record_nodes).
+        Calculate `union_limit = skip + limit` and apply `LIMIT union_limit` to each sub-query to drastically
+        reduce the number of documents merged and sorted in memory.
+        """
+        # Build filter conditions
+        filters = []
+        bind_vars = {
+            "org_id": org_id, "user_key": user_key, "user_apps_ids": user_app_ids,
+            "skip": skip, "limit": limit, "sort_field": sort_field, "sort_dir": sort_dir,
+        }
+
+        if search_query:
+            bind_vars["search_query"] = search_query.lower()
+            filters.append("FILTER LOWER(node.name) LIKE CONCAT('%', @search_query, '%')")
+        if node_types:
+            bind_vars["node_types"] = node_types
+            filters.append("FILTER node.nodeType IN @node_types")
+        if record_types:
+            bind_vars["record_types"] = record_types
+            filters.append("FILTER node.recordType != null AND node.recordType IN @record_types")
+        if origins:
+            bind_vars["origins"] = origins
+            filters.append("FILTER node.source IN @origins")
+        if connector_ids:
+            bind_vars["connector_ids"] = connector_ids
+            # Filter Apps by ID OR Records by connectorId
+            filters.append("FILTER (node.nodeType == 'app' AND node.id IN @connector_ids) OR (node.connectorId IN @connector_ids)")
+        if kb_ids:
+            bind_vars["kb_ids"] = kb_ids
+            filters.append("FILTER (node.nodeType == 'kb' AND node.id IN @kb_ids) OR (node.kbId IN @kb_ids)")
+        if indexing_status:
+            bind_vars["indexing_status"] = indexing_status
+            filters.append("FILTER node.indexingStatus != null AND node.indexingStatus IN @indexing_status")
+        if created_at:
+            if created_at.get("gte"):
+                bind_vars["created_at_gte"] = created_at["gte"]
+                filters.append("FILTER node.createdAt >= @created_at_gte")
+            if created_at.get("lte"):
+                bind_vars["created_at_lte"] = created_at["lte"]
+                filters.append("FILTER node.createdAt <= @created_at_lte")
+        if updated_at:
+            if updated_at.get("gte"):
+                bind_vars["updated_at_gte"] = updated_at["gte"]
+                filters.append("FILTER node.updatedAt >= @updated_at_gte")
+            if updated_at.get("lte"):
+                bind_vars["updated_at_lte"] = updated_at["lte"]
+                filters.append("FILTER node.updatedAt <= @updated_at_lte")
+        if size:
+            if size.get("gte"):
+                bind_vars["size_gte"] = size["gte"]
+                filters.append("FILTER node.sizeInBytes != null AND node.sizeInBytes >= @size_gte")
+            if size.get("lte"):
+                bind_vars["size_lte"] = size["lte"]
+                filters.append("FILTER node.sizeInBytes != null AND node.sizeInBytes <= @size_lte")
+        if only_containers:
+            filters.append("FILTER node.hasChildren == true")
+
+        filter_clause = "\n                    ".join(filters) if filters else ""
+
+        query = f"""
+        LET kb_nodes = (
+            FOR kb IN recordGroups
+                FILTER kb.orgId == @org_id AND kb.connectorName == "KB"
+                LET has_permission = LENGTH(
+                    FOR perm IN permission
+                        FILTER perm._from == CONCAT("users/", @user_key) AND perm._to == kb._id
+                        RETURN 1
+                ) > 0
+                FILTER has_permission
+                LET has_children = LENGTH(
+                    FOR edge IN recordRelations
+                        FILTER edge._from == kb._id AND edge.relationshipType == "PARENT_CHILD"
+                        LET child = DOCUMENT(edge._to)
+                        FILTER child != null AND child.isDeleted != true
+                        RETURN 1
+                ) > 0 OR LENGTH(
+                    FOR perm_edge IN inheritPermissions
+                        FILTER perm_edge._to == kb._id
+                        LET record = DOCUMENT(perm_edge._from)
+                        FILTER record != null AND record.isDeleted != true
+                        RETURN 1
+                ) > 0
+                RETURN {{
+                    id: kb._key, name: kb.groupName, nodeType: "kb",
+                    parentId: null, source: "KB", connector: "KB", recordType: null,
+                    indexingStatus: null, createdAt: kb.createdAtTimestamp, updatedAt: kb.updatedAtTimestamp,
+                    sizeInBytes: null, webUrl: CONCAT("/kb/", kb._key), hasChildren: has_children,
+                    connectorId: null, kbId: kb._key
+                }}
+        )
+
+        LET app_nodes = (
+            FOR app IN apps
+                FILTER app.orgId == @org_id AND app._key IN @user_apps_ids
+                LET has_children = LENGTH(
+                    FOR rg IN recordGroups FILTER rg.connectorId == app._key AND rg.orgId == @org_id RETURN 1
+                ) > 0
+                RETURN {{
+                    id: app._key, name: app.name, nodeType: "app",
+                    parentId: null, source: "CONNECTOR", connector: app.appGroup, recordType: null,
+                    indexingStatus: null, createdAt: app.createdAtTimestamp || 0, updatedAt: app.updatedAtTimestamp || 0,
+                    sizeInBytes: null, webUrl: CONCAT("/app/", app._key), hasChildren: has_children,
+                    connectorId: app._key, kbId: null
+                }}
+        )
+
+        LET record_nodes = (
+            FOR record IN records
+                FILTER record.orgId == @org_id AND record.isDeleted != true
+                LET has_access = record.connectorName == "KB" ? (
+                    LENGTH(
+                        FOR perm IN inheritPermissions
+                            FILTER perm._from == record._id
+                            LET rg = DOCUMENT(perm._to)
+                            FILTER rg != null
+                            FOR user_perm IN permission
+                                FILTER user_perm._from == CONCAT("users/", @user_key) AND user_perm._to == rg._id
+                                RETURN 1
+                    ) > 0
+                ) : (record.connectorId IN @user_apps_ids)
+                FILTER has_access
+                LET file_info = FIRST(
+                    FOR file_edge IN isOfType FILTER file_edge._from == record._id
+                    LET file = DOCUMENT(file_edge._to) RETURN file
+                )
+                LET is_folder = file_info != null AND file_info.isFile == false
+                LET has_children = LENGTH(
+                    FOR child_edge IN recordRelations
+                        FILTER child_edge._from == record._id AND child_edge.relationshipType == "PARENT_CHILD"
+                        LET child = DOCUMENT(child_edge._to)
+                        FILTER child != null AND child.isDeleted != true
+                        RETURN 1
+                ) > 0
+                LET source = record.connectorName == "KB" ? "KB" : "CONNECTOR"
+                RETURN {{
+                    id: record._key, name: record.recordName, nodeType: is_folder ? "folder" : "record",
+                    parentId: record.parentId, source: source,
+                    connector: record.connectorName, recordType: record.recordType,
+                    indexingStatus: record.indexingStatus, createdAt: record.createdAtTimestamp,
+                    updatedAt: record.updatedAtTimestamp, sizeInBytes: file_info.fileSizeInBytes,
+                    webUrl: record.webUrl, hasChildren: has_children,
+                    connectorId: record.connectorName == "KB" ? null : record.connectorId,
+                    kbId: record.connectorName == "KB" ? record.parentId : null // Approx for KB root records?
+                }}
+        )
+
+        LET record_group_nodes = (
+            FOR rg IN recordGroups
+                FILTER rg.orgId == @org_id AND rg.connectorName != "KB" AND rg.isDeleted != true
+                FILTER rg.connectorId IN @user_apps_ids
+                LET has_children = LENGTH(
+                    FOR child_rg IN recordGroups FILTER child_rg.parentId == rg._key AND child_rg.isDeleted != true RETURN 1
+                ) > 0 OR LENGTH(
+                    FOR perm_edge IN inheritPermissions FILTER perm_edge._to == rg._id
+                    LET rec = DOCUMENT(perm_edge._from)
+                    FILTER rec != null AND rec.isDeleted != true
+                    LET has_parent = LENGTH(FOR pe IN recordRelations FILTER pe._to == rec._id AND pe.relationshipType == "PARENT_CHILD" RETURN 1) > 0
+                    FILTER has_parent == false
+                    RETURN 1
+                ) > 0
+                RETURN {{
+                    id: rg._key, name: rg.groupName, nodeType: "recordGroup",
+                    parentId: rg.parentId != null ? CONCAT("recordGroups/", rg.parentId) : CONCAT("apps/", rg.connectorId),
+                    source: "CONNECTOR", connector: rg.connectorName, recordType: null,
+                    indexingStatus: null, createdAt: rg.createdAtTimestamp, updatedAt: rg.updatedAtTimestamp,
+                    sizeInBytes: null, webUrl: rg.webUrl, hasChildren: has_children,
+                    connectorId: rg.connectorId, kbId: null
+                }}
+        )
+
+        LET all_nodes = UNION(kb_nodes, app_nodes, record_nodes, record_group_nodes)
+        LET filtered_nodes = (
+            FOR node IN all_nodes
+                {filter_clause}
+                RETURN node
+        )
+        LET sorted_nodes = (FOR node IN filtered_nodes SORT node[@sort_field] @sort_dir RETURN node)
+        LET total_count = LENGTH(sorted_nodes)
+        LET paginated_nodes = SLICE(sorted_nodes, @skip, @limit)
+
+        RETURN {{ nodes: paginated_nodes, total: total_count }}
+        """
+
+        result = await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction)
+        return result[0] if result else {"nodes": [], "total": 0}
+
+    async def get_knowledge_hub_node_permissions(
+        self,
+        user_key: str,
+        node_ids: List[str],
+        node_types: List[str],
+        transaction: Optional[str] = None
+    ) -> Dict[str, Dict[str, Any]]:
+        """Get user permissions for multiple nodes in batch."""
+        if not node_ids:
+            return {}
+
+        # Separate by type
+        record_group_ids = [nid for nid, ntype in zip(node_ids, node_types) if ntype in ['kb', 'recordGroup']]
+        app_ids = [nid for nid, ntype in zip(node_ids, node_types) if ntype == 'app']
+        record_ids = [nid for nid, ntype in zip(node_ids, node_types) if ntype not in ['kb', 'recordGroup', 'app']]
+
+        permissions = {}
+
+        # Query record group permissions
+        if record_group_ids:
+            query = """
+            LET user_from = CONCAT('users/', @user_key)
+            FOR rg_id IN @record_group_ids
+                LET rg_to = CONCAT('recordGroups/', rg_id)
+                LET direct_perm = FIRST(
+                    FOR perm IN permission
+                        FILTER perm._from == user_from AND perm._to == rg_to AND perm.type == "USER"
+                        RETURN perm.role
+                )
+                LET group_perm = direct_perm != null ? null : FIRST(
+                    FOR rg_group_perm IN permission
+                        FILTER rg_group_perm._to == rg_to AND rg_group_perm.type == "GROUP"
+                        LET group_to = rg_group_perm._from
+                        FOR user_group_perm IN permission
+                            FILTER user_group_perm._from == user_from AND user_group_perm._to == group_to
+                            RETURN rg_group_perm.role
+                )
+                LET role = direct_perm != null ? direct_perm : (group_perm != null ? group_perm : "READER")
+                RETURN { id: rg_id, role: role }
+            """
+            results = await self.http_client.execute_aql(query, bind_vars={"user_key": user_key, "record_group_ids": record_group_ids}, txn_id=transaction)
+            for r in (results or []):
+                role = r.get('role', 'READER')
+                permissions[r['id']] = {"role": role, "canEdit": role in ['OWNER', 'WRITER', 'ADMIN', 'EDITOR'], "canDelete": role in ['OWNER', 'ADMIN']}
+
+        # Apps - generally read-only
+        for app_id in app_ids:
+            permissions[app_id] = {"role": "READER", "canEdit": False, "canDelete": False}
+
+        # Query record permissions via parent record group
+        if record_ids:
+            query = """
+            LET user_from = CONCAT('users/', @user_key)
+            FOR rec_id IN @record_ids
+                LET record_from = CONCAT('records/', rec_id)
+                LET parent_rg = FIRST(
+                    FOR edge IN inheritPermissions FILTER edge._from == record_from
+                    RETURN PARSE_IDENTIFIER(edge._to).key
+                )
+                LET rg_to = parent_rg != null ? CONCAT('recordGroups/', parent_rg) : null
+                LET direct_perm = rg_to != null ? FIRST(
+                    FOR perm IN permission
+                        FILTER perm._from == user_from AND perm._to == rg_to AND perm.type == "USER"
+                        RETURN perm.role
+                ) : null
+                LET group_perm = rg_to != null ? FIRST(
+                    FOR rg_group_perm IN permission
+                        FILTER rg_group_perm._to == rg_to AND rg_group_perm.type == "GROUP"
+                        LET group_to = rg_group_perm._from
+                        FOR user_group_perm IN permission
+                            FILTER user_group_perm._from == user_from AND user_group_perm._to == group_to
+                            RETURN rg_group_perm.role
+                ) : null
+                LET role = direct_perm != null ? direct_perm : (group_perm != null ? group_perm : "READER")
+                RETURN { id: rec_id, role: role }
+            """
+            results = await self.http_client.execute_aql(query, bind_vars={"user_key": user_key, "record_ids": record_ids}, txn_id=transaction)
+            for r in (results or []):
+                role = r.get('role', 'READER')
+                permissions[r['id']] = {"role": role, "canEdit": role in ['OWNER', 'WRITER', 'ADMIN', 'EDITOR'], "canDelete": role in ['OWNER', 'ADMIN']}
+
+        return permissions
+
+    async def get_knowledge_hub_breadcrumbs(
+        self,
+        node_id: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get breadcrumb trail for a node.
+
+        NOTE(N+1 Queries): Uses iterative parent lookup (one query per level) because a single
+        AQL graph traversal isn't feasible here. Parent relationships are stored via multiple
+        mechanisms: parentId field (recordGroups), PARENT_CHILD edges (records),
+        inheritPermissions edges, and connectorId field (linking to apps). AQL graph traversal
+        requires consistent edge-based relationships, but our hierarchy uses mixed field/edge
+        patterns across different collections (records, recordGroups, apps).
+        """
+        breadcrumbs = []
+        current_id = node_id
+        visited = set()
+        max_depth = 20
+
+        while current_id and len(visited) < max_depth:
+            if current_id in visited:
+                break
+            visited.add(current_id)
+
+            # Get node info and parent in one query
+            query = """
+            LET doc = DOCUMENT("records", @id) || DOCUMENT("recordGroups", @id) || DOCUMENT("apps", @id)
+            FILTER doc != null
+
+            LET node_type = (
+                doc.appGroup != null ? "app" : (
+                    doc.connectorName == "KB" ? "kb" : (
+                        doc.groupName != null ? "recordGroup" : "record"
+                    )
+                )
+            )
+
+            // Find parent ID
+            LET parent_from_field = doc.parentId
+            LET parent_from_relation = FIRST(
+                FOR edge IN recordRelations
+                    FILTER edge._to == doc._id AND edge.relationshipType == "PARENT_CHILD"
+                    RETURN PARSE_IDENTIFIER(edge._from).key
+            )
+            LET parent_from_perm = FIRST(
+                FOR edge IN inheritPermissions
+                    FILTER edge._from == doc._id
+                    RETURN PARSE_IDENTIFIER(edge._to).key
+            )
+            LET parent_id = parent_from_field || parent_from_relation || parent_from_perm || doc.connectorId
+
+            RETURN {
+                id: doc._key,
+                name: doc.name || doc.recordName || doc.groupName,
+                nodeType: node_type,
+                subType: doc.recordType || doc.connectorName || doc.appGroup,
+                parentId: parent_id
+            }
+            """
+
+            result = await self.http_client.execute_aql(query, bind_vars={"id": current_id}, txn_id=transaction)
+            if not result or not result[0]:
+                break
+
+            node_info = result[0]
+            breadcrumbs.append({
+                "id": node_info["id"],
+                "name": node_info["name"],
+                "nodeType": node_info["nodeType"],
+                "subType": node_info.get("subType")
+            })
+
+            current_id = node_info.get("parentId")
+
+        # Reverse to get root -> leaf order
+        breadcrumbs.reverse()
+        return breadcrumbs
+
+    async def get_user_app_ids(
+        self,
+        user_key: str,
+        transaction: Optional[str] = None
+    ) -> List[str]:
+        """Get list of app IDs the user has access to."""
+        query = """
+        FOR app IN OUTBOUND CONCAT("users/", @user_key) userAppRelation
+            FILTER app != null
+            RETURN app._key
+        """
+        result = await self.http_client.execute_aql(query, bind_vars={"user_key": user_key}, txn_id=transaction)
+        return result if result else []
+
+    async def get_knowledge_hub_context_permissions(
+        self,
+        user_key: str,
+        org_id: str,
+        parent_id: Optional[str],
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get user's context-level permissions.
+        Supports both direct user permissions and team-based permissions.
+        If multiple permissions exist, returns the highest role.
+        """
+        if not parent_id:
+            query = """
+            LET user = DOCUMENT("users", @user_key)
+            FILTER user != null
+            LET is_admin = user.role == "ADMIN" OR user.orgRole == "ADMIN"
+            RETURN {
+                role: is_admin ? "ADMIN" : "MEMBER",
+                canUpload: is_admin, canCreateFolders: is_admin, canEdit: is_admin,
+                canDelete: is_admin, canManagePermissions: is_admin
+            }
+            """
+            results = await self.http_client.execute_aql(query, bind_vars={"user_key": user_key}, txn_id=transaction)
+        else:
+            query = """
+            LET node_id = CONTAINS(@parent_id, "/") ? @parent_id : (
+                FIRST(UNION(
+                    (FOR doc IN records FILTER doc._key == @parent_id RETURN doc._id),
+                    (FOR doc IN apps FILTER doc._key == @parent_id RETURN doc._id),
+                    (FOR doc IN recordGroups FILTER doc._key == @parent_id RETURN doc._id)
+                ))
+            )
+
+            // Role priority: OWNER > ADMIN > EDITOR > WRITER > COMMENTER > READER
+            LET role_priority = {
+                "OWNER": 6,
+                "ADMIN": 5,
+                "EDITOR": 4,
+                "WRITER": 3,
+                "COMMENTER": 2,
+                "READER": 1
+            }
+
+            // Step 1: Get permission target (node itself or its parent via inheritPermissions)
+            LET permission_target = node_id
+
+            // For records, check if they inherit from a parent (KB or record group)
+            LET inherited_from = STARTS_WITH(node_id, "records/") ? FIRST(
+                FOR edge IN inheritPermissions
+                    FILTER edge._from == node_id
+                    RETURN edge._to
+            ) : null
+
+            // Use inherited parent for permission check if it exists, otherwise use node itself
+            LET final_permission_target = inherited_from != null ? inherited_from : permission_target
+
+            // Step 2: Get direct user permission on the target
+            LET direct_user_perm = FIRST(
+                FOR perm IN permission
+                    FILTER perm._from == CONCAT("users/", @user_key)
+                    FILTER perm._to == final_permission_target
+                    FILTER perm.type == "USER"
+                    RETURN {
+                        role: perm.role || "READER",
+                        priority: role_priority[perm.role] || 1,
+                        source: "direct_user"
+                    }
+            )
+
+            // Step 3: Get team-based permissions on the target
+            LET team_perms = (
+                // Get all teams the user belongs to
+                FOR user_team_perm IN permission
+                    FILTER user_team_perm._from == CONCAT("users/", @user_key)
+                    FILTER user_team_perm.type == "USER"
+                    FILTER STARTS_WITH(user_team_perm._to, "teams/")
+                    // Check if those teams have permission to the target node
+                    FOR team_node_perm IN permission
+                        FILTER team_node_perm._from == user_team_perm._to
+                        FILTER team_node_perm._to == final_permission_target
+                        FILTER team_node_perm.type == "TEAM"
+                        RETURN {
+                            role: user_team_perm.role || "READER",
+                            priority: role_priority[user_team_perm.role] || 1,
+                            source: "team"
+                        }
+            )
+
+            // Step 4: Get group-based permissions on the target
+            LET group_perms = (
+                // Get all groups the user belongs to
+                FOR user_group_perm IN permission
+                    FILTER user_group_perm._from == CONCAT("users/", @user_key)
+                    FILTER user_group_perm.type == "USER"
+                    FILTER STARTS_WITH(user_group_perm._to, "groups/")
+                    // Check if those groups have permission to the target node
+                    FOR group_node_perm IN permission
+                        FILTER group_node_perm._from == user_group_perm._to
+                        FILTER group_node_perm._to == final_permission_target
+                        FILTER group_node_perm.type == "GROUP"
+                        RETURN {
+                            role: user_group_perm.role || "READER",
+                            priority: role_priority[user_group_perm.role] || 1,
+                            source: "group"
+                        }
+            )
+
+            // Step 5: Check org-level and domain-level permissions
+            LET user_doc = DOCUMENT("users", @user_key)
+            LET org_perm = user_doc != null ? FIRST(
+                FOR perm IN permission
+                    FILTER perm._to == final_permission_target
+                    FILTER perm.type == "ORG"
+                    FILTER perm._from == CONCAT("organizations/", @org_id)
+                    RETURN {
+                        role: perm.role || "READER",
+                        priority: role_priority[perm.role] || 1,
+                        source: "org"
+                    }
+            ) : null
+
+            // Step 6: Check ANYONE permissions
+            LET anyone_perm = FIRST(
+                FOR perm IN permission
+                    FILTER perm._to == final_permission_target
+                    FILTER perm.type == "ANYONE"
+                    RETURN {
+                        role: perm.role || "READER",
+                        priority: role_priority[perm.role] || 1,
+                        source: "anyone"
+                    }
+            )
+
+            // Step 7: Combine ALL permissions and get the highest role
+            LET all_perms = REMOVE_VALUE(
+                FLATTEN([
+                    direct_user_perm != null ? [direct_user_perm] : [],
+                    team_perms,
+                    group_perms,
+                    org_perm != null ? [org_perm] : [],
+                    anyone_perm != null ? [anyone_perm] : []
+                ]),
+                null
+            )
+
+            LET highest_perm = LENGTH(all_perms) > 0 ? (
+                FIRST(
+                    FOR p IN all_perms
+                        SORT p.priority DESC
+                        LIMIT 1
+                        RETURN p
+                )
+            ) : null
+
+            LET final_role = highest_perm != null ? highest_perm.role : "READER"
+            LET can_edit = final_role IN ["ADMIN", "EDITOR", "WRITER", "OWNER"]
+            LET can_upload = final_role IN ["ADMIN", "EDITOR", "WRITER", "OWNER"]
+            LET can_create = final_role IN ["ADMIN", "EDITOR", "WRITER", "OWNER"]
+            LET can_delete = final_role IN ["ADMIN", "OWNER"]
+            LET can_manage = final_role IN ["ADMIN", "OWNER"]
+
+            RETURN {
+                role: final_role,
+                canUpload: can_upload,
+                canCreateFolders: can_create,
+                canEdit: can_edit,
+                canDelete: can_delete,
+                canManagePermissions: can_manage
+            }
+            """
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={"user_key": user_key, "org_id": org_id, "parent_id": parent_id},
+                txn_id=transaction
+            )
+
+        if results and results[0]:
+            return results[0]
+        return {
+            "role": "READER",
+            "canUpload": False,
+            "canCreateFolders": False,
+            "canEdit": False,
+            "canDelete": False,
+            "canManagePermissions": False
+        }
+
+    async def is_knowledge_hub_folder(
+        self,
+        record_id: str,
+        folder_mime_types: List[str],
+        transaction: Optional[str] = None
+    ) -> bool:
+        """Check if a record is a folder."""
+        query = """
+        LET record = DOCUMENT("records", @record_id)
+        FILTER record != null
+        LET is_folder_by_mimetype = record.mimeType IN @folder_mime_types
+        LET is_folder_by_file = FIRST(
+            FOR edge IN isOfType
+                FILTER edge._from == record._id
+                LET f = DOCUMENT(edge._to)
+                FILTER f != null AND f.isFile == false
+                RETURN true
+        ) == true
+        RETURN is_folder_by_mimetype OR is_folder_by_file
+        """
+        results = await self.http_client.execute_aql(query, bind_vars={"record_id": record_id, "folder_mime_types": folder_mime_types}, txn_id=transaction)
+        return results[0] if results else False
+
+    async def get_knowledge_hub_node_info(
+        self,
+        node_id: str,
+        folder_mime_types: List[str],
+        transaction: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Get node information including type and subtype."""
+        query = """
+        LET record = DOCUMENT("records", @node_id)
+        LET rg = record == null ? DOCUMENT("recordGroups", @node_id) : null
+        LET app = record == null AND rg == null ? DOCUMENT("apps", @node_id) : null
+
+        LET result = record != null ? {
+            id: record._key,
+            name: record.recordName,
+            nodeType: record.mimeType IN @folder_mime_types ? "folder" : "record",
+            subType: record.recordType
+        } : (rg != null ? {
+            id: rg._key,
+            name: rg.groupName,
+            nodeType: rg.connectorName == "KB" ? "kb" : "recordGroup",
+            subType: rg.connectorName == "KB" ? "KB" : (rg.groupType || rg.connectorName)
+        } : (app != null ? {
+            id: app._key,
+            name: app.name,
+            nodeType: "app",
+            subType: app.appGroup
+        } : null))
+
+        RETURN result
+        """
+        results = await self.http_client.execute_aql(query, bind_vars={"node_id": node_id, "folder_mime_types": folder_mime_types}, txn_id=transaction)
+        return results[0] if results and results[0] else None
+
+    async def get_knowledge_hub_parent_node(
+        self,
+        node_id: str,
+        folder_mime_types: List[str],
+        transaction: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Get the parent node of a given node in a single query."""
+        query = """
+        LET record = DOCUMENT("records", @node_id)
+        LET rg = record == null ? DOCUMENT("recordGroups", @node_id) : null
+        LET app = record == null AND rg == null ? DOCUMENT("apps", @node_id) : null
+
+        // Apps have no parent
+        LET parent_id = app != null ? null : (
+            rg != null ? (
+                // KBs are root level, no parent. Otherwise use parentId or connectorId (app)
+                rg.connectorName == "KB" ? null : (rg.parentId != null ? rg.parentId : rg.connectorId)
+            ) : (
+                // Records: check PARENT_CHILD edge first
+                record != null ? FIRST(
+                    FOR edge IN recordRelations
+                        FILTER edge._to == record._id AND edge.relationshipType == "PARENT_CHILD"
+                        RETURN PARSE_IDENTIFIER(edge._from).key
+                ) : null
+            )
+        )
+
+        // Fallback: check inheritPermissions if no PARENT_CHILD edge
+        LET final_parent_id = parent_id != null ? parent_id : (
+            record != null ? FIRST(
+                FOR edge IN inheritPermissions
+                    FILTER edge._from == record._id
+                    RETURN PARSE_IDENTIFIER(edge._to).key
+            ) : null
+        )
+
+        // Now get full parent info in the same query
+        LET parent_record = final_parent_id != null ? DOCUMENT("records", final_parent_id) : null
+        LET parent_rg = parent_record == null AND final_parent_id != null ? DOCUMENT("recordGroups", final_parent_id) : null
+        LET parent_app = parent_record == null AND parent_rg == null AND final_parent_id != null ? DOCUMENT("apps", final_parent_id) : null
+
+        LET parent_info = parent_record != null ? {
+            id: parent_record._key,
+            name: parent_record.recordName,
+            nodeType: parent_record.mimeType IN @folder_mime_types ? "folder" : "record",
+            subType: parent_record.recordType
+        } : (parent_rg != null ? {
+            id: parent_rg._key,
+            name: parent_rg.groupName,
+            nodeType: parent_rg.connectorName == "KB" ? "kb" : "recordGroup",
+            subType: parent_rg.connectorName == "KB" ? "KB" : (parent_rg.groupType || parent_rg.connectorName)
+        } : (parent_app != null ? {
+            id: parent_app._key,
+            name: parent_app.name,
+            nodeType: "app",
+            subType: parent_app.appGroup
+        } : null))
+
+        RETURN parent_info
+        """
+        results = await self.http_client.execute_aql(
+            query, bind_vars={"node_id": node_id, "folder_mime_types": folder_mime_types}, txn_id=transaction
+        )
+        return results[0] if results and results[0] else None
+
+    async def get_knowledge_hub_filter_options(
+        self,
+        user_key: str,
+        org_id: str,
+        transaction: Optional[str] = None
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Get available filter options (KBs and Apps) for a user.
+        Returns only KBs and Connectors that the user has access to.
+        """
+        self.logger.info(f"🔍 Getting filter options for user_key={user_key}, org_id={org_id}")
+
+        query = """
+        // Get KBs the user has access to (via direct or team/group permissions)
+        LET user_from = CONCAT("users/", @user_key)
+
+        // Direct KB permissions
+        LET direct_kb_perms = (
+            FOR perm IN permission
+                FILTER perm._from == user_from
+                FILTER perm.type == "USER"
+                FILTER STARTS_WITH(perm._to, "recordGroups/")
+                LET kb = DOCUMENT(perm._to)
+                FILTER kb != null AND kb.isDeleted != true
+                FILTER kb.groupType == "KB" AND kb.connectorName == "KB"
+                FILTER kb.orgId == @org_id
+                RETURN kb._key
+        )
+
+        // Team-based KB permissions
+        LET team_kb_perms = (
+            FOR user_team_perm IN permission
+                FILTER user_team_perm._from == user_from
+                FILTER user_team_perm.type == "USER"
+                FILTER STARTS_WITH(user_team_perm._to, "teams/")
+                FOR team_kb_perm IN permission
+                    FILTER team_kb_perm._from == user_team_perm._to
+                    FILTER team_kb_perm.type == "TEAM"
+                    FILTER STARTS_WITH(team_kb_perm._to, "recordGroups/")
+                    LET kb = DOCUMENT(team_kb_perm._to)
+                    FILTER kb != null AND kb.isDeleted != true
+                    FILTER kb.groupType == "KB" AND kb.connectorName == "KB"
+                    FILTER kb.orgId == @org_id
+                    RETURN kb._key
+        )
+
+        // Group-based KB permissions
+        LET group_kb_perms = (
+            FOR user_group_perm IN permission
+                FILTER user_group_perm._from == user_from
+                FILTER user_group_perm.type == "USER"
+                FILTER STARTS_WITH(user_group_perm._to, "groups/")
+                FOR group_kb_perm IN permission
+                    FILTER group_kb_perm._from == user_group_perm._to
+                    FILTER group_kb_perm.type == "GROUP"
+                    FILTER STARTS_WITH(group_kb_perm._to, "recordGroups/")
+                    LET kb = DOCUMENT(group_kb_perm._to)
+                    FILTER kb != null AND kb.isDeleted != true
+                    FILTER kb.groupType == "KB" AND kb.connectorName == "KB"
+                    FILTER kb.orgId == @org_id
+                    RETURN kb._key
+        )
+
+        // Combine and deduplicate KB IDs
+        LET all_kb_ids = UNIQUE(UNION(direct_kb_perms, team_kb_perms, group_kb_perms))
+
+        LET kbs = (
+            FOR kb_id IN all_kb_ids
+                LET kb = DOCUMENT("recordGroups", kb_id)
+                FILTER kb != null
+                RETURN { id: kb._key, name: kb.groupName }
+        )
+
+        // Get connector apps the user has access to
+        // Apps don't have orgId field - they're scoped via user relationship
+        LET apps = (
+            FOR app IN OUTBOUND CONCAT("users/", @user_key) userAppRelation
+                FILTER app != null
+                RETURN { id: app._key, name: app.name }
+        )
+
+        RETURN { kbs: kbs, apps: apps }
+        """
+
+        try:
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={"user_key": user_key, "org_id": org_id},
+                txn_id=transaction
+            )
+            return results[0] if results else {"kbs": [], "apps": []}
+        except Exception:
+            # self.logger.error(f"Failed to get filter options: {e}")
+            return {"kbs": [], "apps": []}
 

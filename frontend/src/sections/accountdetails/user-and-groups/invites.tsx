@@ -38,10 +38,9 @@ import {
 import { useAdmin } from 'src/context/AdminContext';
 
 import { Iconify } from 'src/components/iconify';
-
+import { useUserEmails } from 'src/hooks/use-user-emails';
 import { removeUser, resendInvite, getAllUsersWithGroups } from '../utils';
 import { setInviteCount, decrementInvitesCount } from '../../../store/user-and-groups-slice';
-
 import type { GroupUser } from '../types/group-details';
 import type { SnackbarState } from '../types/organization-data';
 
@@ -75,6 +74,15 @@ export default function Invites() {
 
   const dispatch = useDispatch();
   const { isAdmin } = useAdmin();
+  const { userEmails, emailLoading, fetchUserEmail } = useUserEmails({
+    onError: () => {
+      setSnackbar({
+        open: true,
+        message: 'Failed to fetch email',
+        severity: 'error',
+      });
+    },
+  });
 
   useEffect(() => {
     const fetchUsers = async (): Promise<void> => {
@@ -94,9 +102,13 @@ export default function Invites() {
     fetchUsers();
   }, [dispatch]);
 
-  const filteredUsers = users.filter((user) =>
-    user?.email.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredUsers = users.filter((user) => {
+    const email = userEmails[user._id] || '';
+    return (
+      (user?.fullName?.toLowerCase() || '').includes(searchTerm.toLowerCase()) ||
+      email.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+  });
 
   const handleChangePage = (event: unknown, newPage: number): void => {
     setPage(newPage);
@@ -380,7 +392,37 @@ export default function Invites() {
                           />
                         </Box>
                         <Box>
-                          <Typography variant="subtitle2">{user.email}</Typography>
+                          {userEmails[user._id] ? (
+                            <Typography variant="subtitle2">{userEmails[user._id]}</Typography>
+                          ) : (
+                            <Button
+                              size="small"
+                              variant="text"
+                              onClick={() => fetchUserEmail(user._id)}
+                              disabled={emailLoading[user._id]}
+                              sx={{
+                                fontSize: '0.875rem',
+                                minWidth: 'auto',
+                                p: 0.5,
+                                textTransform: 'none',
+                                color: 'text.secondary',
+                                '&:hover': {
+                                  bgcolor: 'transparent',
+                                },
+                              }}
+                            >
+                              {emailLoading[user._id] ? (
+                                <Stack direction="row" alignItems="center" spacing={0.5}>
+                                  <CircularProgress size={12} />
+                                  <Typography variant="body2" sx={{ fontSize: '0.875rem' }}>
+                                    Loading...
+                                  </Typography>
+                                </Stack>
+                              ) : (
+                                'Show Email'
+                              )}
+                            </Button>
+                          )}
                           <Stack direction="row" alignItems="center" spacing={0.5}>
                             <Iconify
                               icon={clockIcon}
@@ -453,8 +495,20 @@ export default function Invites() {
                             variant="outlined"
                             color="primary"
                             startIcon={<Iconify icon={emailIcon} />}
-                            onClick={() => handleResendInvite(user._id || '', user.email)}
-                            disabled={!isAdmin}
+                            onClick={async () => {
+                              if (!user._id) return;
+                              const email = await fetchUserEmail(user._id);
+                              if (email) {
+                                handleResendInvite(user._id, email);
+                              } else {
+                                setSnackbar({
+                                  open: true,
+                                  message: 'Failed to fetch email. Please try again.',
+                                  severity: 'error',
+                                });
+                              }
+                            }}
+                            disabled={!isAdmin || emailLoading[user._id]}
                             sx={{
                               borderRadius: 1.5,
                               fontSize: '0.75rem',
@@ -474,8 +528,20 @@ export default function Invites() {
                             variant="outlined"
                             color="error"
                             startIcon={<Iconify icon={trashIcon} />}
-                            onClick={() => handleRemoveUser(user._id || '', user.email)}
-                            disabled={!isAdmin}
+                            onClick={async () => {
+                              if (!user._id) return;
+                              const email = await fetchUserEmail(user._id);
+                              if (email) {
+                                handleRemoveUser(user._id, email);
+                              } else {
+                                setSnackbar({
+                                  open: true,
+                                  message: 'Failed to fetch email. Please try again.',
+                                  severity: 'error',
+                                });
+                              }
+                            }}
+                            disabled={!isAdmin || emailLoading[user._id]}
                             sx={{
                               borderRadius: 1.5,
                               fontSize: '0.75rem',

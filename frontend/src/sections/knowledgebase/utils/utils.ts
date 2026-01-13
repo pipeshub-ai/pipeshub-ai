@@ -126,106 +126,56 @@ export const getFileIconColor = (extension: string): string => {
  * Extracts a clean text fragment for URL text highlighting.
  *
  * Strategy:
- * 1. Remove content inside brackets [content], (content), {content}
- * 2. Process text word by word, preserving words EXACTLY as they appear (no character removal)
- * 3. When encountering words with problematic special characters, save current segment and start fresh from NEXT word
- * 4. Keep the longest valid segment found (up to maxWords)
- * 5. Return plain text that will be properly URL-encoded by encodeURIComponent
+ * 1. Remove ONLY content inside square brackets [content] and curly braces {content}
+ * 2. Keep content inside parentheses () as they're often part of the actual text
+ * 3. Remove leading punctuation (bullets, dashes, etc.)
+ * 4. Stop at problematic characters that break Text Fragment API matching (@, #, $, %, &, *, +, =, <, >, |, \, /, ^, ~)
+ * 5. Keep safe punctuation (commas, periods, colons, semicolons, hyphens, apostrophes, parentheses, exclamation, question marks)
+ * 6. Limit to 1000 characters to prevent excessively long URLs (truncates at last space to avoid cutting words)
  * @param text - The content text to process
- * @param maxWords - Maximum number of words to include (default: 5)
- * @returns A clean plain text fragment suitable for URL text highlighting
+ * @returns A clean plain text fragment suitable for URL text highlighting (max 300 characters)
  */
-export const extractCleanTextFragment = (text: string, maxWords: number = 5): string => {
+export const extractCleanTextFragment = (text: string): string => {
   if (!text || typeof text !== 'string') return '';
 
-  // Step 1: Remove content inside brackets - these are usually metadata/notes
-  // This preserves the text structure outside brackets
+  // Step 1: Remove content inside square brackets and curly braces - these are usually metadata/notes
+  // Keep parentheses () as they're often part of the actual content
   let cleaned = text
     .replace(/\[[^\]]*\]/g, ' ') // Remove [content]
-    .replace(/\([^)]*\)/g, ' ') // Remove (content)
     .replace(/\{[^}]*\}/g, ' '); // Remove {content}
 
   // Step 2: Normalize whitespace - replace all whitespace sequences with single spaces
-  // CRITICAL: This only normalizes whitespace, never modifies actual characters or numbers
   cleaned = cleaned.replace(/\s+/g, ' ').trim();
   if (!cleaned) return '';
 
-  // Step 3: Split into words by whitespace
-  // Each word is preserved EXACTLY as it appears - no modification
-  const words = cleaned.split(/\s+/).filter((w) => w.length > 0);
-  if (words.length === 0) return '';
+  // Step 3: Remove leading punctuation/special characters (like leading dashes, bullets, etc.)
+  // Keep alphanumeric start and preserve the rest of the text including opening parentheses
+  cleaned = cleaned.replace(/^[^\w\s(]+\s*/, '');
+  cleaned = cleaned.trim();
+  if (!cleaned) return '';
 
-  // Step 4: Determine if a word is safe for URL text fragments
-  // We allow words with common punctuation that works in text fragments:
-  // - Letters, numbers, periods, commas, colons, semicolons, hyphens, apostrophes
-  // We reject words with characters that break text fragment matching:
-  // - @, #, $, %, &, *, +, =, <, >, [, ], {, }, |, \, /, etc.
-  const isSafeWord = (word: string): boolean => {
-    if (!word || word.length === 0) return false;
-
-    // Must contain at least one alphanumeric character
-    if (!/[a-zA-Z0-9]/.test(word)) return false;
-
-    // Check if word contains only safe characters for text fragments
-    // Allowed: letters, numbers, periods, commas, colons, semicolons, hyphens, apostrophes, exclamation, question marks
-    // These characters work well with URL text fragment highlighting
-    const hasOnlySafeChars = /^[a-zA-Z0-9.,:;!?\-']+$/.test(word);
-
-    return hasOnlySafeChars;
-  };
-
-  // Step 5: Build valid segments using sliding window approach
-  // CRITICAL: We do NOT modify words - we use them exactly as they appear
-  // When we encounter a word with problematic characters, we save the current
-  // segment and start a new segment from the NEXT word
-  let bestSegment: string[] = [];
-  let currentSegment: string[] = [];
-
-  // Process each word sequentially, using words EXACTLY as they appear
-  for (let i = 0; i < words.length; i += 1) {
-    const word = words[i]; // Use word exactly as-is, no cleaning/modification
-
-    // Check if this word is safe for text fragments
-    if (isSafeWord(word)) {
-      // Add the word to current segment AS-IS (no modification)
-      // This preserves: "1:", "Step", "2025", etc. exactly
-      currentSegment.push(word);
-
-      // If we've reached max words, this is our best segment - return immediately
-      if (currentSegment.length >= maxWords) {
-        // Join with single spaces - encodeURIComponent will handle URL encoding
-        // Result: "Step 1: Register Application in" (preserves colon in "1:")
-        return currentSegment.slice(0, maxWords).join(' ');
-      }
-    } else {
-      // Word contains problematic special characters (e.g., @, #, $, etc.)
-      // Save current segment if it's better than what we have
-      if (currentSegment.length > bestSegment.length) {
-        bestSegment = [...currentSegment]; // Copy array to preserve it
-      }
-      // CRITICAL: Start fresh with a new segment from the NEXT word
-      // This maintains contiguous substrings for proper highlighting
-      // We skip the problematic word entirely
-      currentSegment = [];
-    }
+  // Step 4: Find the position of the first problematic character that breaks Text Fragment API
+  // Problematic chars: @, #, $, %, &, *, +, =, <, >, |, \, /, ^, ~, [, ], {, }
+  // Safe chars: letters, numbers, spaces, commas, periods, colons, semicolons, hyphens, apostrophes, parentheses, !, ?
+  const problematicCharPattern = /[@#$%&*+=<>|\\/^~[\]{}]/;
+  const match = cleaned.match(problematicCharPattern);
+  
+  if (match && match.index !== undefined) {
+    // Found a problematic character - truncate at that position
+    cleaned = cleaned.substring(0, match.index).trim();
   }
 
-  // After processing all words, check if the last segment is better
-  if (currentSegment.length > bestSegment.length) {
-    bestSegment = currentSegment;
+  // Step 5: Limit length to prevent excessively long URLs (browser limits ~2000 chars, but be conservative)
+  // Truncate at last space within limit to avoid cutting words in half
+  const MAX_FRAGMENT_LENGTH = 1000;
+  if (cleaned.length > MAX_FRAGMENT_LENGTH) {
+    const truncated = cleaned.substring(0, MAX_FRAGMENT_LENGTH);
+    const lastSpaceIndex = truncated.lastIndexOf(' ');
+    // If we found a space, truncate there; otherwise use the hard limit
+    cleaned = lastSpaceIndex > 0 ? truncated.substring(0, lastSpaceIndex).trim() : truncated.trim();
   }
 
-  // Step 6: Return the best segment found (limit to maxWords)
-  if (bestSegment.length === 0) {
-    // Fallback: try to get the first safe word
-    const firstSafeWord = words.find((word) => isSafeWord(word));
-    if (firstSafeWord) {
-      return firstSafeWord; // Return single word if that's all we have
-    }
-    return ''; // No safe words found
-  }
-
-  return bestSegment.slice(0, maxWords).join(' ');
+  return cleaned;
 };
 
 /**
@@ -326,3 +276,87 @@ const mimeTypeToExtensionMap: Record<string, string> = {
 
 export const getExtensionFromMimeType = (mimeType: string): string =>
   mimeTypeToExtensionMap[mimeType] || '';
+
+/**
+ * Gets a web URL with text fragment for highlighting.
+ * 
+ * This function handles different input types:
+ * - CustomCitation: citation with metadata.webUrl, metadata.origin, metadata.blockText
+ * - Record + Citation: record with webUrl/origin, and citation with metadata.blockText
+ * 
+ * @param citationOrRecord - Either a CustomCitation or a PipesHub.Record
+ * @param recordCitation - Optional SearchResult when first param is a Record
+ * @returns URL with text fragment, or null if URL not available
+ */
+export const getWebUrlWithFragment = (
+  citationOrRecord?: { metadata?: { webUrl?: string; origin?: string; blockText?: string } } | { webUrl?: string; origin?: string },
+  recordCitation?: { metadata?: { blockText?: string; webUrl?: string }; content?: string } | { content?: string }
+): string | null => {
+  let webUrl: string | undefined;
+  let origin: string | undefined;
+  let blockText: string | undefined;
+  let content: string | undefined;
+
+  // Handle CustomCitation type (has metadata property)
+  if (citationOrRecord && 'metadata' in citationOrRecord) {
+    const citation = citationOrRecord as { metadata?: { webUrl?: string; origin?: string; blockText?: string } };
+    webUrl = citation.metadata?.webUrl;
+    origin = citation.metadata?.origin;
+    blockText = citation.metadata?.blockText;
+  } 
+  // Handle PipesHub.Record type (has webUrl directly)
+  else if (citationOrRecord && 'webUrl' in citationOrRecord) {
+    const record = citationOrRecord as { webUrl?: string; origin?: string };
+    webUrl = record.webUrl;
+    origin = record.origin;
+    
+    // Get blockText from recordCitation if provided
+    if (recordCitation) {
+      if ('metadata' in recordCitation) {
+        blockText = recordCitation.metadata?.blockText;
+        // SearchResult has both metadata and content
+        if ('content' in recordCitation) {
+          content = recordCitation.content;
+        }
+        // Fallback to recordCitation metadata webUrl if record doesn't have one
+        if (!webUrl) {
+          webUrl = recordCitation.metadata?.webUrl;
+        }
+      } else if ('content' in recordCitation) {
+        content = recordCitation.content;
+      }
+    }
+  }
+
+  if (!webUrl) {
+    return null;
+  }
+
+  try {
+    // Handle relative URLs for UPLOAD origin
+    if (origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
+      const baseUrl = `${window.location.protocol}//${window.location.host}`;
+      webUrl = baseUrl + webUrl;
+    }
+
+    // Check if blockText exists and is not empty before adding text fragment
+    let textForFragment: string | undefined;
+    if (blockText && typeof blockText === 'string' && blockText.trim().length > 0) {
+      textForFragment = blockText;
+    } else if (content && typeof content === 'string' && content.trim().length > 0) {
+      textForFragment = content;
+    }
+
+    if (textForFragment) {
+      const textFragment = extractCleanTextFragment(textForFragment);
+      if (textFragment) {
+        return addTextFragmentToUrl(webUrl, textFragment);
+      }
+    }
+
+    return webUrl;
+  } catch (error) {
+    console.warn('Error accessing webUrl:', error);
+    return null;
+  }
+};

@@ -236,7 +236,7 @@ const CitationHoverCard = ({
       // Check if blockText exists and is not empty before adding text fragment
       const blockText = citation?.metadata?.blockText;
       if (blockText && typeof blockText === 'string' && blockText.trim().length > 0) {
-        const textFragment = extractCleanTextFragment(blockText, 5);
+        const textFragment = extractCleanTextFragment(blockText);
         if (textFragment) {
           return addTextFragmentToUrl(webUrl, textFragment);
         }
@@ -268,6 +268,15 @@ const CitationHoverCard = ({
   const handleOpenPdf = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+
+    // Check if previewRenderable is false - if so, open webUrl instead of viewer
+    if (citation?.metadata?.previewRenderable === false) {
+      const webUrl = getWebUrl();
+      if (webUrl) {
+        window.open(webUrl, '_blank', 'noopener,noreferrer');
+      }
+      return;
+    }
 
     if (citation?.metadata?.recordId) {
       try {

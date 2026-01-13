@@ -481,6 +481,18 @@ class BaseArangoService:
             self.logger.error(f"Failed to get user apps: {str(e)}")
             raise
 
+    async def _get_user_app_ids(self, user_id: str) -> List[str]:
+        """Gets a list of accessible app connector IDs for a user."""
+        try:
+            user_app_docs = await self.get_user_apps(user_id)
+            # Filter out None values and apps without _key before accessing _key
+            user_apps = [app['_key'] for app in user_app_docs if app and app.get('_key')]
+            self.logger.debug(f"User has access to {len(user_apps)} apps: {user_apps}")
+            return user_apps
+        except Exception as e:
+            self.logger.error(f"Failed to get user app ids: {str(e)}")
+            raise
+
     async def get_all_orgs(self, active: bool = True) -> list:
         """Get all organizations, optionally filtering by active status."""
         try:
@@ -682,6 +694,15 @@ class BaseArangoService:
             dict: Record details with permissions if accessible, None if not
         """
         try:
+
+            # Get user document to extract _key
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                self.logger.warning(f"User not found for userId: {user_id}")
+                return None
+
+            user.get('_key')
+
             # First check access and get permission paths
             access_query = f"""
             LET userDoc = FIRST(
@@ -690,6 +711,7 @@ class BaseArangoService:
                 RETURN user
             )
             LET recordDoc = DOCUMENT(CONCAT(@records, '/', @recordId))
+
             LET kb = FIRST(
                 FOR k IN 1..1 OUTBOUND recordDoc._id @@belongs_to
                 RETURN k
@@ -1107,6 +1129,9 @@ class BaseArangoService:
             include_kb_records = source in ['all', 'local']
             include_connector_records = source in ['all', 'connector']
 
+            # Get user's accessible apps and extract connector IDs (_key)
+            user_apps_ids = await self._get_user_app_ids(user_id)
+
             # Build filter conditions function
             def build_record_filters(include_filter_vars: bool = True) -> str:
                 conditions = []
@@ -1141,6 +1166,7 @@ class BaseArangoService:
             perm_edge_filter = "FILTER permEdge.role IN @role_filter" if permissions else ""
             record_group_edge_filter = "FILTER recordGroupToRecordEdge.role IN @role_filter" if permissions else ""
             child_rg_edge_filter = "FILTER childRgToRecordEdge.role IN @role_filter" if permissions else ""
+            #filter folders out of the all records query
             folder_filter = '''
                 LET targetDoc = FIRST(
                     FOR v IN 1..1 OUTBOUND record._id isOfType
@@ -1158,6 +1184,9 @@ class BaseArangoService:
 
                 FILTER isValidRecord
             '''
+
+            #filter records that match the user's app connector_ids
+            app_record_filter = 'FILTER record.connectorId IN @user_apps_ids'
 
             main_query = f"""
             LET user_from = @user_from
@@ -1282,6 +1311,7 @@ class BaseArangoService:
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
 
+                        {app_record_filter}
                         {folder_filter}
                         {record_filter}
                         RETURN {{
@@ -1307,6 +1337,7 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
+                            {app_record_filter}
                             {folder_filter}
                             {record_filter}
 
@@ -1399,6 +1430,7 @@ class BaseArangoService:
                                 FILTER record.orgId == org_id OR record.orgId == null
                                 FILTER record.origin == "CONNECTOR"
 
+                                {app_record_filter}
                                 {folder_filter}
                                 {record_filter}
 
@@ -1436,6 +1468,7 @@ class BaseArangoService:
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
 
+                        {app_record_filter}
                         {folder_filter}
                         {record_filter}
 
@@ -1467,6 +1500,7 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
+                            {app_record_filter}
                             {folder_filter}
                             {record_filter}
 
@@ -1704,6 +1738,7 @@ class BaseArangoService:
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
 
+                        {app_record_filter}
                         {folder_filter}
                         {record_filter}
                         RETURN record._key
@@ -1726,6 +1761,7 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
+                            {app_record_filter}
                             {folder_filter}
                             {record_filter}
                             RETURN record._key
@@ -1801,6 +1837,7 @@ class BaseArangoService:
                                 FILTER record.orgId == org_id OR record.orgId == null
                                 FILTER record.origin == "CONNECTOR"
 
+                                {app_record_filter}
                                 {folder_filter}
                                 {record_filter}
 
@@ -1832,6 +1869,7 @@ class BaseArangoService:
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
 
+                        {app_record_filter}
                         {folder_filter}
                         {record_filter}
 
@@ -1857,6 +1895,7 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
+                            {app_record_filter}
                             {folder_filter}
                             {record_filter}
 
@@ -1960,6 +1999,7 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
+                            {app_record_filter}
                             {folder_filter}
                             {record_filter}
 
@@ -2058,6 +2098,7 @@ class BaseArangoService:
                                 FILTER record.orgId == org_id OR record.orgId == null
                                 FILTER record.origin == "CONNECTOR"
 
+                                {app_record_filter}
                                 {folder_filter}
 
                                 RETURN {{
@@ -2090,6 +2131,7 @@ class BaseArangoService:
                         FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
 
+                        {app_record_filter}
                         {folder_filter}
                         {record_filter}
 
@@ -2121,6 +2163,7 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
+                            {app_record_filter}
                             {folder_filter}
 
                             // Get the role from the last edge in the path
@@ -2208,6 +2251,7 @@ class BaseArangoService:
                 "skip": skip,
                 "limit": limit,
                 "kb_permissions": final_kb_roles,
+                "user_apps_ids": user_apps_ids,
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
@@ -2220,6 +2264,7 @@ class BaseArangoService:
                 "user_from": f"users/{user_id}",
                 "org_id": org_id,
                 "kb_permissions": final_kb_roles,
+                "user_apps_ids": user_apps_ids,
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
@@ -2231,6 +2276,7 @@ class BaseArangoService:
             filters_bind_vars = {
                 "user_from": f"users/{user_id}",
                 "org_id": org_id,
+                "user_apps_ids": user_apps_ids,
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
@@ -5840,11 +5886,11 @@ class BaseArangoService:
                 **sync_point_data,
                 "syncPointKey": sync_point_key  # Ensure the key is in the document
             }
-
+            # this is done (REPLACE MERGE(UNSET(OLD, 'syncPointData'), @document_data)) because we want to remove the syncPointData key if it exists (from old nested structure)
             query = """
             UPSERT { syncPointKey: @sync_point_key }
             INSERT @document_data
-            UPDATE @document_data
+            REPLACE MERGE(UNSET(OLD, 'syncPointData'), @document_data)
             IN @@collection
             RETURN { action: OLD ? "updated" : "inserted", key: NEW._key }
             """
@@ -6430,6 +6476,45 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error("❌ Failed to get edge by from_key: %s and to_key: %s: %s", from_key, to_key, str(e))
             return None
+
+    async def get_edges_from_node(
+        self,
+        from_key: str,
+        collection: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> List[Dict]:
+        """
+        Get all edges originating from a specific node.
+
+        Args:
+            from_key: Source node key (e.g., "groups/12345")
+            collection: Edge collection name
+            transaction: Optional transaction database
+
+        Returns:
+            List[Dict]: List of edge documents
+        """
+        try:
+            self.logger.info("🚀 Getting edges from node: %s in collection: %s", from_key, collection)
+            query = """
+            FOR edge IN @@collection
+                FILTER edge._from == @from_key
+                RETURN edge
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"from_key": from_key, "@collection": collection})
+            edges = list(cursor)
+            count = len(edges)
+
+            if count > 0:
+                self.logger.info("✅ Successfully got %d edges from node: %s", count, from_key)
+            else:
+                self.logger.warning("⚠️ No edges found from node: %s in collection: %s", from_key, collection)
+
+            return edges
+        except Exception as e:
+            self.logger.error("❌ Failed to get edges from node: %s in collection: %s: %s", from_key, collection, str(e))
+            return []
 
     async def update_node(self, key: str, node_updates: Dict, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
         """
@@ -13946,53 +14031,65 @@ class BaseArangoService:
         cursor = self.db.aql.execute(query)
         return list(cursor)
 
-    async def find_duplicate_files(
+
+    async def find_duplicate_records(
         self,
-        file_key: str,
+        record_key: str,
         md5_checksum: str,
-        size_in_bytes: int,
+        record_type: Optional[str] = None,
+        size_in_bytes: Optional[int] = None,
         transaction: Optional[TransactionDatabase] = None,
-    ) -> List[str]:
+    ) -> List[Dict]:
         """
-        Find duplicate files based on MD5 checksum and file size
+        Find duplicate records based on MD5 checksum.
+        This method queries the RECORDS collection and works for all record types.
 
         Args:
-            md5_checksum (str): MD5 checksum of the file
-            size_in_bytes (int): Size of the file in bytes
+            record_key (str): The key of the current record to exclude from results
+            md5_checksum (str): MD5 checksum of the record content
+            record_type (Optional[str]): Optional record type to filter by
+            size_in_bytes (Optional[int]): Optional file size in bytes to filter by
             transaction (Optional[TransactionDatabase]): Optional database transaction
 
         Returns:
-            List[str]: List of file keys that match both criteria
+            List[Dict]: List of duplicate records that match both criteria
         """
         try:
             self.logger.info(
-                "🔍 Finding duplicate files with MD5: %s and size: %d bytes",
+                "🔍 Finding duplicate records with MD5: %s",
                 md5_checksum,
-                size_in_bytes,
             )
 
+            # Build query with optional record type filter
             query = f"""
-            FOR file IN {CollectionNames.FILES.value}
-                FILTER file.md5Checksum == @md5_checksum
-                AND file.sizeInBytes == @size_in_bytes
-                AND file._key != @file_key
-                LET record = (
-                    FOR r IN {CollectionNames.RECORDS.value}
-                        FILTER r._key == file._key
-                        RETURN r
-                )[0]
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.md5Checksum == @md5_checksum
+                AND record._key != @record_key
+            """
+
+            bind_vars = {
+                "md5_checksum": md5_checksum,
+                "record_key": record_key,
+            }
+
+            if record_type:
+                query += """
+                AND record.recordType == @record_type
+                """
+                bind_vars["record_type"] = record_type
+
+            if size_in_bytes is not None:
+                query += """
+                AND record.sizeInBytes == @size_in_bytes
+                """
+                bind_vars["size_in_bytes"] = size_in_bytes
+
+            query += """
                 RETURN record
             """
 
             db = transaction if transaction else self.db
-            cursor = db.aql.execute(
-                query,
-                bind_vars={
-                    "md5_checksum": md5_checksum,
-                    "size_in_bytes": size_in_bytes,
-                    "file_key": file_key
-                }
-            )
+            cursor = db.aql.execute(query, bind_vars=bind_vars)
 
             duplicate_records = list(cursor)
 
@@ -14008,7 +14105,7 @@ class BaseArangoService:
 
         except Exception as e:
             self.logger.error(
-                "Failed to find duplicate files: %s",
+                "Failed to find duplicate records: %s",
                 str(e)
             )
             if transaction:
@@ -14108,12 +14205,13 @@ class BaseArangoService:
         transaction: Optional[TransactionDatabase] = None,
     ) -> int:
         """
-        Find all QUEUED duplicate records with the same file md5 hash and update their status.
+        Find all QUEUED duplicate records with the same md5 hash and update their status.
+        Works with all record types by querying the RECORDS collection directly.
 
         Args:
             record_id (str): The record ID to use as reference for finding duplicates
             new_indexing_status (str): The new indexing status to set
-            new_extraction_status (Optional[str]): The new extraction status to set (if provided)
+            virtual_record_id (Optional[str]): The virtual record ID to set on duplicates
             transaction (Optional[TransactionDatabase]): Optional database transaction
 
         Returns:
@@ -14124,61 +14222,64 @@ class BaseArangoService:
                 f"🔍 Finding QUEUED duplicate records for record {record_id}"
             )
 
-            # First get the file info for the reference record
-            file_query = f"""
-            FOR file IN {CollectionNames.FILES.value}
-                FILTER file._key == @record_id
-                RETURN file
+            # First get the record info for the reference record
+            record_query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record._key == @record_id
+                RETURN record
             """
 
             db = transaction if transaction else self.db
             cursor = db.aql.execute(
-                file_query,
+                record_query,
                 bind_vars={"record_id": record_id}
             )
 
-            file_doc = None
+            ref_record = None
             try:
-                file_doc = cursor.next()
+                ref_record = cursor.next()
             except StopIteration:
-                self.logger.info(f"No file found for record {record_id}, skipping queued duplicate update")
+                self.logger.info(f"No record found for {record_id}, skipping queued duplicate update")
                 return 0
 
-            if not file_doc:
-                self.logger.info(f"No file found for record {record_id}, skipping queued duplicate update")
+            if not ref_record:
+                self.logger.info(f"No record found for {record_id}, skipping queued duplicate update")
                 return 0
 
-            md5_checksum = file_doc.get("md5Checksum")
-            size_in_bytes = file_doc.get("sizeInBytes")
+            md5_checksum = ref_record.get("md5Checksum")
+            size_in_bytes = ref_record.get("sizeInBytes")
 
-            if not md5_checksum or size_in_bytes is None:
-                self.logger.warning(f"File {record_id} missing md5Checksum or sizeInBytes")
+            if not md5_checksum:
+                self.logger.warning(f"Record {record_id} missing md5Checksum")
                 return 0
 
-            # Find all queued duplicate records
+            # Find all queued duplicate records directly from RECORDS collection
             query = f"""
-            FOR file IN {CollectionNames.FILES.value}
-                FILTER file.md5Checksum == @md5_checksum
-                AND file.sizeInBytes == @size_in_bytes
-                AND file._key != @record_id
-                LET record = (
-                    FOR r IN {CollectionNames.RECORDS.value}
-                        FILTER r._key == file._key
-                        AND r.indexingStatus == @queued_status
-                        RETURN r
-                )[0]
-                FILTER record != null
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.md5Checksum == @md5_checksum
+                AND record._key != @record_id
+                AND record.indexingStatus == @queued_status
+            """
+
+            bind_vars = {
+                "md5_checksum": md5_checksum,
+                "record_id": record_id,
+                "queued_status": "QUEUED"
+            }
+
+            if size_in_bytes is not None:
+                query += """
+                AND record.sizeInBytes == @size_in_bytes
+                """
+                bind_vars["size_in_bytes"] = size_in_bytes
+
+            query += """
                 RETURN record
             """
 
             cursor = db.aql.execute(
                 query,
-                bind_vars={
-                    "md5_checksum": md5_checksum,
-                    "size_in_bytes": size_in_bytes,
-                    "record_id": record_id,
-                    "queued_status": "QUEUED"
-                }
+                bind_vars=bind_vars
             )
 
             queued_records = list(cursor)
@@ -14241,7 +14342,8 @@ class BaseArangoService:
         transaction: Optional[TransactionDatabase] = None,
     ) -> Optional[dict]:
         """
-        Find the next QUEUED duplicate record with the same file md5 hash.
+        Find the next QUEUED duplicate record with the same md5 hash.
+        Works with all record types by querying the RECORDS collection directly.
 
         Args:
             record_id (str): The record ID to use as reference for finding duplicates
@@ -14255,62 +14357,65 @@ class BaseArangoService:
                 f"🔍 Finding next QUEUED duplicate record for record {record_id}"
             )
 
-            # First get the file info for the reference record
-            file_query = f"""
-            FOR file IN {CollectionNames.FILES.value}
-                FILTER file._key == @record_id
-                RETURN file
+            # First get the record info for the reference record
+            record_query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record._key == @record_id
+                RETURN record
             """
 
             db = transaction if transaction else self.db
             cursor = db.aql.execute(
-                file_query,
+                record_query,
                 bind_vars={"record_id": record_id}
             )
 
-            file_doc = None
+            ref_record = None
             try:
-                file_doc = cursor.next()
+                ref_record = cursor.next()
             except StopIteration:
-                self.logger.info(f"No file found for record {record_id}, skipping queued duplicate search")
+                self.logger.info(f"No record found for {record_id}, skipping queued duplicate search")
                 return None
 
-            if not file_doc:
-                self.logger.info(f"No file found for record {record_id}, skipping queued duplicate search")
+            if not ref_record:
+                self.logger.info(f"No record found for {record_id}, skipping queued duplicate search")
                 return None
 
-            md5_checksum = file_doc.get("md5Checksum")
-            size_in_bytes = file_doc.get("sizeInBytes")
+            md5_checksum = ref_record.get("md5Checksum")
+            size_in_bytes = ref_record.get("sizeInBytes")
 
-            if not md5_checksum or size_in_bytes is None:
-                self.logger.warning(f"File {record_id} missing md5Checksum or sizeInBytes")
+            if not md5_checksum:
+                self.logger.warning(f"Record {record_id} missing md5Checksum")
                 return None
 
-            # Find the first queued duplicate record
+            # Find the first queued duplicate record directly from RECORDS collection
             query = f"""
-            FOR file IN {CollectionNames.FILES.value}
-                FILTER file.md5Checksum == @md5_checksum
-                AND file.sizeInBytes == @size_in_bytes
-                AND file._key != @record_id
-                LET record = (
-                    FOR r IN {CollectionNames.RECORDS.value}
-                        FILTER r._key == file._key
-                        AND r.indexingStatus == @queued_status
-                        RETURN r
-                )[0]
-                FILTER record != null
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.md5Checksum == @md5_checksum
+                AND record._key != @record_id
+                AND record.indexingStatus == @queued_status
+            """
+
+            bind_vars = {
+                "md5_checksum": md5_checksum,
+                "record_id": record_id,
+                "queued_status": "QUEUED"
+            }
+
+            if size_in_bytes is not None:
+                query += """
+                AND record.sizeInBytes == @size_in_bytes
+                """
+                bind_vars["size_in_bytes"] = size_in_bytes
+
+            query += """
                 LIMIT 1
                 RETURN record
             """
 
             cursor = db.aql.execute(
                 query,
-                bind_vars={
-                    "md5_checksum": md5_checksum,
-                    "size_in_bytes": size_in_bytes,
-                    "record_id": record_id,
-                    "queued_status": "QUEUED"
-                }
+                bind_vars=bind_vars
             )
 
             queued_record = None
@@ -14361,6 +14466,16 @@ class BaseArangoService:
         )
 
         try:
+
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                self.logger.warning(f"User not found for userId: {user_id}")
+                return None
+
+            user_key = user.get('_key')
+            # Get user's accessible app connector ids
+            user_apps_ids = await self._get_user_app_ids(user_key)
+
             # Extract filters
             kb_ids = filters.get("kb") if filters else None
             connector_ids = filters.get("apps") if filters else None
@@ -14374,6 +14489,14 @@ class BaseArangoService:
                 f"App filter: {has_app_filter} (Connector IDs: {connector_ids})"
             )
 
+            # App filter condition - only filter connector records by user's accessible apps
+            app_filter_condition = '''
+                FILTER (
+                    record.origin == "UPLOAD" OR
+                    (record.origin == "CONNECTOR" AND record.connectorId IN @user_apps_ids)
+                )
+            '''
+
             # Build base query with common parts
             query = f"""
             LET userDoc = FIRST(
@@ -14385,29 +14508,33 @@ class BaseArangoService:
 
             // User -> Direct Records (via permission edges)
             LET directRecords = (
-                FOR records IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                RETURN DISTINCT records
+                FOR record IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    {app_filter_condition}
+                    RETURN DISTINCT record
             )
 
             // User -> Group -> Records (via belongs_to edges)
             LET groupRecords = (
                 FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FOR records IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                RETURN DISTINCT records
+                FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                    {app_filter_condition}
+                    RETURN DISTINCT record
             )
 
             // User -> Group -> Records (via permission edges)
             LET groupRecordsPermissionEdge = (
                 FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FOR records IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                RETURN DISTINCT records
+                FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                    {app_filter_condition}
+                    RETURN DISTINCT record
             )
 
             // User -> Organization -> Records (direct)
             LET orgRecords = (
                 FOR org, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FOR records IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
-                RETURN DISTINCT records
+                FOR record IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                    {app_filter_condition}
+                    RETURN DISTINCT record
             )
 
             // User -> Organization -> RecordGroup -> Records (direct and inherited)
@@ -14419,6 +14546,7 @@ class BaseArangoService:
 
                         FOR record, edge, path IN 0..2 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
                             FILTER IS_SAME_COLLECTION("records", record)
+                            {app_filter_condition}
                             RETURN DISTINCT record
             )
 
@@ -14433,6 +14561,7 @@ class BaseArangoService:
                 // Support nested RecordGroups (0..5 levels)
                 FOR record, edge, path IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
                 FILTER IS_SAME_COLLECTION("records", record)
+                {app_filter_condition}
                 RETURN DISTINCT record
             )
 
@@ -14443,6 +14572,7 @@ class BaseArangoService:
 
                 FOR record, edge, path IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
                 FILTER IS_SAME_COLLECTION("records", record)
+                {app_filter_condition}
                 RETURN DISTINCT record
             )
 
@@ -14461,6 +14591,7 @@ class BaseArangoService:
                     FILTER records.organization == @orgId
                     FOR record IN @@records
                         FILTER record != null AND record._key == records.file_key
+                        {app_filter_condition}
                         RETURN record
             )
             """
@@ -14715,6 +14846,7 @@ class BaseArangoService:
             bind_vars = {
                 "userId": user_id,
                 "orgId": org_id,
+                "user_apps_ids": user_apps_ids,
                 "@users": CollectionNames.USERS.value,
                 "@records": CollectionNames.RECORDS.value,
                 "@anyone": CollectionNames.ANYONE.value,

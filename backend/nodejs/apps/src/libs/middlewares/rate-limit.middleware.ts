@@ -8,7 +8,7 @@ import { AuthenticatedUserRequest, AuthenticatedServiceRequest } from './types';
 export function createGlobalRateLimiter(logger: Logger): RequestHandler {
   const config: Partial<Options> = {
     windowMs: 60 * 1000,
-    max: process.env.MAX_REQUESTS_PER_MINUTE ? parseInt(process.env.MAX_REQUESTS_PER_MINUTE, 10) : 10000,
+    max: process.env.MAX_REQUESTS_PER_MINUTE ? parseInt(process.env.MAX_REQUESTS_PER_MINUTE, 10) : 500,
     standardHeaders: true,
     legacyHeaders: false,
 

@@ -25,12 +25,12 @@ const UsersAndGroups = lazy(() => import('src/pages/dashboard/account/user-and-g
 const GroupDetails = lazy(() => import('src/pages/dashboard/account/group-details'));
 const UserProfile = lazy(() => import('src/pages/dashboard/account/user-profile'));
 const PersonalProfile = lazy(() => import('src/pages/dashboard/account/personal-profile'));
-const ServiceSettings = lazy(() => import('src/pages/dashboard/account/services-settings'));
 const AuthenticationSettings = lazy(
   () => import('src/pages/dashboard/account/authentication-settings')
 );
 const AiModelsSettings = lazy(() => import('src/pages/dashboard/account/ai-models-settings'));
 const PlatformSettings = lazy(() => import('src/pages/dashboard/account/platform-settings'));
+const PromptsSettings = lazy(() => import('src/pages/dashboard/account/prompts-settings'));
 const ConnectorSettings = lazy(
   () => import('src/pages/dashboard/account/connectors/connector-settings')
 );
@@ -45,6 +45,9 @@ const ConnectorManagementPage = lazy(
 const ConnectorOAuthCallback = lazy(
   () => import('src/pages/dashboard/account/connectors/oauth-callback')
 );
+
+// OAuth configuration page
+const OAuthConfig = lazy(() => import('src/pages/dashboard/account/oauth-config'));
 
 const SamlSsoConfigPage = lazy(() => import('src/pages/dashboard/account/saml-sso-config'));
 
@@ -350,11 +353,11 @@ export const dashboardRoutes = [
                     ],
                   },
                   {
-                    path: 'services',
+                    path: 'oauth-config',
                     element: CONFIG.auth.skip ? (
-                      <ServiceSettings />
+                      <OAuthConfig />
                     ) : (
-                      <BusinessAdminOnlyRoute component={ServiceSettings} />
+                      <BusinessAdminOnlyRoute component={OAuthConfig} />
                     ),
                   },
                   {
@@ -371,6 +374,14 @@ export const dashboardRoutes = [
                       <PlatformSettings />
                     ) : (
                       <BusinessAdminOnlyRoute component={PlatformSettings} />
+                    ),
+                  },
+                  {
+                    path: 'prompts',
+                    element: CONFIG.auth.skip ? (
+                      <PromptsSettings />
+                    ) : (
+                      <BusinessAdminOnlyRoute component={PromptsSettings} />
                     ),
                   },
                 ],
@@ -473,11 +484,11 @@ export const dashboardRoutes = [
                     ],
                   },
                   {
-                    path: 'services',
+                    path: 'oauth-config',
                     element: CONFIG.auth.skip ? (
-                      <ServiceSettings />
+                      <OAuthConfig />
                     ) : (
-                      <IndividualOnlyRoute component={ServiceSettings} />
+                      <IndividualOnlyRoute component={OAuthConfig} />
                     ),
                   },
                   {
@@ -494,6 +505,14 @@ export const dashboardRoutes = [
                       <PlatformSettings />
                     ) : (
                       <IndividualOnlyRoute component={PlatformSettings} />
+                    ),
+                  },
+                  {
+                    path: 'prompts',
+                    element: CONFIG.auth.skip ? (
+                      <PromptsSettings />
+                    ) : (
+                      <IndividualOnlyRoute component={PromptsSettings} />
                     ),
                   },
                 ],

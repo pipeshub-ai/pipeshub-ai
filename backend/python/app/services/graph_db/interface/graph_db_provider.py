@@ -469,6 +469,28 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_edges_from_node(
+        self,
+        node_id: str,
+        edge_collection: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Get all edges originating from a specific node.
+
+        Generic method that works with any edge collection.
+
+        Args:
+            node_id (str): Source node ID (e.g., "groups/123")
+            edge_collection (str): Edge collection name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of edge documents
+        """
+        pass
+
+    @abstractmethod
     async def get_related_nodes(
         self,
         node_id: str,
@@ -1819,6 +1841,240 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of failed record documents
+        """
+        pass
+
+    # ==================== Knowledge Hub Operations ====================
+
+    @abstractmethod
+    async def get_knowledge_hub_root_nodes(
+        self,
+        user_key: str,
+        org_id: str,
+        user_app_ids: List[str],
+        skip: int,
+        limit: int,
+        sort_field: str,
+        sort_dir: str,
+        include_kbs: bool,
+        include_apps: bool,
+        only_containers: bool,
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get root level nodes (KBs and Apps) for Knowledge Hub.
+
+        Args:
+            user_key: User's internal key
+            org_id: Organization ID
+            user_app_ids: List of app IDs user has access to
+            skip: Number of items to skip
+            limit: Maximum items to return
+            sort_field: Field to sort by
+            sort_dir: Sort direction (ASC/DESC)
+            include_kbs: Whether to include Knowledge Bases
+            include_apps: Whether to include Apps
+            only_containers: Only return nodes with children
+            transaction: Optional transaction context
+
+        Returns:
+            Dict with 'nodes' list and 'total' count
+        """
+        pass
+
+
+
+    @abstractmethod
+    async def get_knowledge_hub_search_nodes(
+        self,
+        user_key: str,
+        org_id: str,
+        user_app_ids: List[str],
+        skip: int,
+        limit: int,
+        sort_field: str,
+        sort_dir: str,
+        search_query: Optional[str],
+        node_types: Optional[List[str]],
+        record_types: Optional[List[str]],
+        only_containers: bool,
+        origins: Optional[List[str]] = None,
+        connector_ids: Optional[List[str]] = None,
+        kb_ids: Optional[List[str]] = None,
+        indexing_status: Optional[List[str]] = None,
+        created_at: Optional[Dict[str, Optional[int]]] = None,
+        updated_at: Optional[Dict[str, Optional[int]]] = None,
+        size: Optional[Dict[str, Optional[int]]] = None,
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Search across all nodes with filters.
+
+        Args:
+            user_key: User's internal key
+            org_id: Organization ID
+            user_app_ids: List of app IDs user has access to
+            skip: Number of items to skip
+            limit: Maximum items to return
+            sort_field: Field to sort by
+            sort_dir: Sort direction (ASC/DESC)
+            search_query: Full-text search query
+            node_types: Filter by node types
+            record_types: Filter by record types
+            sources: Filter by sources (KB/CONNECTOR)
+            connector_ids: Filter by connector IDs
+            kb_ids: Filter by KB IDs
+            indexing_status: Filter by indexing status
+            created_at: Created date range filter
+            updated_at: Updated date range filter
+            size: Size range filter
+            only_containers: Only return nodes with children
+            transaction: Optional transaction context
+
+        Returns:
+            Dict with 'nodes' list and 'total' count
+        """
+        pass
+
+    @abstractmethod
+    async def get_knowledge_hub_node_permissions(
+        self,
+        user_key: str,
+        node_ids: List[str],
+        node_types: List[str],
+        transaction: Optional[str] = None
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Get user permissions for multiple nodes in batch.
+
+        Args:
+            user_key: User's internal key
+            node_ids: List of node IDs
+            node_types: List of corresponding node types
+            transaction: Optional transaction context
+
+        Returns:
+            Dict mapping node_id to permission info (role, canEdit, canDelete)
+        """
+        pass
+
+    @abstractmethod
+    async def get_knowledge_hub_breadcrumbs(
+        self,
+        node_id: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get breadcrumb trail for a node.
+
+        Args:
+            node_id: Node ID to get breadcrumbs for
+            transaction: Optional transaction context
+
+        Returns:
+            List of breadcrumb items from root to current node
+        """
+        pass
+
+    @abstractmethod
+    async def get_knowledge_hub_context_permissions(
+        self,
+        user_key: str,
+        org_id: str,
+        parent_id: Optional[str],
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get user's context-level permissions (for upload, create folder, etc.).
+
+        Args:
+            user_key: User's internal key
+            org_id: Organization ID
+            parent_id: Parent node ID (None for root)
+            transaction: Optional transaction context
+
+        Returns:
+            Dict with role and capability flags
+        """
+        pass
+
+    @abstractmethod
+    async def get_knowledge_hub_filter_options(
+        self,
+        user_key: str,
+        org_id: str,
+        transaction: Optional[str] = None
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Get available filter options (KBs and Apps) for a user.
+
+        Args:
+            user_key: User's internal key
+            org_id: Organization ID
+            transaction: Optional transaction context
+
+        Returns:
+            Dict with 'kbs' and 'apps' lists containing {id, name}
+        """
+        pass
+
+    @abstractmethod
+    async def is_knowledge_hub_folder(
+        self,
+        record_id: str,
+        folder_mime_types: List[str],
+        transaction: Optional[str] = None
+    ) -> bool:
+        """
+        Check if a record is a folder.
+
+        Args:
+            record_id: Record ID to check
+            folder_mime_types: List of MIME types that indicate folders
+            transaction: Optional transaction context
+
+        Returns:
+            True if record is a folder, False otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_knowledge_hub_node_info(
+        self,
+        node_id: str,
+        folder_mime_types: List[str],
+        transaction: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get node information including type and subtype.
+
+        Args:
+            node_id: Node ID
+            folder_mime_types: List of MIME types that indicate folders
+            transaction: Optional transaction context
+
+        Returns:
+            Dict with id, name, nodeType, subType or None if not found
+        """
+        pass
+
+    @abstractmethod
+    async def get_knowledge_hub_parent_node(
+        self,
+        node_id: str,
+        folder_mime_types: List[str],
+        transaction: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get the parent node of a given node.
+
+        Args:
+            node_id: Node ID
+            folder_mime_types: List of MIME types that indicate folders
+            transaction: Optional transaction context
+
+        Returns:
+            Dict with parent node info or None if at root
         """
         pass
 

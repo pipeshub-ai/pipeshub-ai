@@ -37,6 +37,11 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncPoint,
     generate_record_sync_point_key,
 )
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
 from app.connectors.core.registry.connector_builder import (
     CommonFields,
     ConnectorBuilder,
@@ -45,6 +50,7 @@ from app.connectors.core.registry.connector_builder import (
 )
 from app.connectors.core.registry.filters import (
     FilterCollection,
+    FilterOperator,
     IndexingFilterKey,
     SyncFilterKey,
     load_connector_filters,
@@ -56,6 +62,7 @@ from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 
 # Model imports
 from app.models.entities import (
+    AppUser,
     FileRecord,
     IndexingStatus,
     Record,
@@ -69,7 +76,8 @@ from app.sources.client.dropbox.dropbox_ import (
     DropboxTokenConfig,
 )
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
-from app.utils.streaming import stream_content
+from app.utils.oauth_config import fetch_oauth_config_by_id
+from app.utils.streaming import create_stream_record_response, stream_content
 
 
 # Helper functions (reused from team connector)
@@ -144,10 +152,37 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
 
 @ConnectorBuilder("Dropbox Personal")\
     .in_group("Cloud Storage")\
-    .with_auth_type("OAUTH")\
     .with_description("Sync files and folders from Dropbox Personal account")\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Dropbox Personal",
+            authorize_url="https://www.dropbox.com/oauth2/authorize",
+            token_url="https://api.dropboxapi.com/oauth2/token",
+            redirect_uri="connectors/oauth/callback/Dropbox%20Personal",
+            scopes=OAuthScopeConfig(
+                personal_sync=[
+                    "account_info.read",
+                    "files.content.read",
+                    "files.metadata.read",
+                    "sharing.read",
+                    "sharing.write"
+                ],
+                team_sync=[],
+                agent=[]
+            ),
+            fields=[
+                CommonFields.client_id("Dropbox App Console"),
+                CommonFields.client_secret("Dropbox App Console")
+            ],
+            icon_path="/assets/icons/connectors/dropbox.svg",
+            app_group="Cloud Storage",
+            app_description="OAuth application for accessing Dropbox Personal account API",
+            app_categories=["Storage"],
+            token_access_type="offline"
+        )
+    ])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/dropbox.svg")
         .with_realtime_support(True)
@@ -161,24 +196,12 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
             'https://docs.pipeshub.com/connectors/dropbox/dropbox_personal',
             'pipeshub'
         ))
-        .with_redirect_uri("connectors/oauth/callback/Dropbox%20Personal", True)
-        .with_oauth_urls(
-            "https://www.dropbox.com/oauth2/authorize",
-            "https://api.dropboxapi.com/oauth2/token",
-            [
-                "account_info.read",
-                "files.content.read",
-                "files.metadata.read",
-                "sharing.read",
-                "sharing.write"
-            ]
-        )
-        .add_auth_field(CommonFields.client_id("Dropbox App Console"))
-        .add_auth_field(CommonFields.client_secret("Dropbox App Console"))
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
+        .add_filter_field(CommonFields.file_extension_filter())
         .with_webhook_config(True, ["file.added", "file.modified", "file.deleted"])
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .add_sync_custom_field(CommonFields.batch_size_field())
         .with_sync_support(True)
@@ -254,13 +277,29 @@ class DropboxIndividualConnector(BaseConnector):
         refresh_token = credentials_config.get("refresh_token")
 
         auth_config = config.get("auth")
-        app_key = auth_config.get("clientId")
-        app_secret = auth_config.get("clientSecret")
+        oauth_config_id = auth_config.get("oauthConfigId")
 
-        self.sync_filters, self.indexing_filters = await load_connector_filters(
-            self.config_service, "dropboxpersonal", self.connector_id, self.logger
+        if not oauth_config_id:
+            self.logger.error("Dropbox Individual oauthConfigId not found in auth configuration.")
+            return False
+
+        # Fetch OAuth config
+        oauth_config = await fetch_oauth_config_by_id(
+            oauth_config_id=oauth_config_id,
+            connector_type=Connectors.DROPBOX_PERSONAL.value,
+            config_service=self.config_service,
+            logger=self.logger
         )
 
+        if not oauth_config:
+            self.logger.error(f"OAuth config {oauth_config_id} not found for Dropbox Individual connector.")
+            return False
+
+        # Use credentials from OAuth config
+        oauth_config_data = oauth_config.get("config", {})
+        app_key = oauth_config_data.get("clientId") or oauth_config_data.get("client_id")
+        app_secret = oauth_config_data.get("clientSecret") or oauth_config_data.get("client_secret")
+        self.logger.info(f"Using shared OAuth config {oauth_config_id} for Dropbox Individual connector")
 
         try:
             config = DropboxTokenConfig(
@@ -307,6 +346,33 @@ class DropboxIndividualConnector(BaseConnector):
 
         return self.current_user_id, self.current_user_email
 
+    def _get_current_user_as_app_user(self, account_data) -> AppUser:
+        """
+        Converts the current user's Dropbox account data to an AppUser.
+
+        Args:
+            account_data: The FullAccount object from Dropbox API
+
+        Returns:
+            AppUser object
+        """
+        # Extract display name from account data
+        # FullAccount has a 'name' attribute with display_name
+        full_name = getattr(account_data.name, 'display_name', None) if hasattr(account_data, 'name') else None
+        if not full_name:
+            # Fallback to email if name is not available
+            full_name = account_data.email.split('@')[0]
+
+        return AppUser(
+            app_name=self.connector_name,
+            connector_id=self.connector_id,
+            source_user_id=account_data.account_id,
+            full_name=full_name,
+            email=account_data.email,
+            is_active=True,  # Individual accounts are always active
+            title=None  # Individual accounts don't have roles
+        )
+
 
     async def _process_dropbox_entry(
         self,
@@ -337,11 +403,14 @@ class DropboxIndividualConnector(BaseConnector):
             RecordUpdate object or None if entry should be skipped
         """
         try:
-
             # 0. Apply date filters
             if not self._pass_date_filters(
                 entry, modified_after, modified_before, created_after, created_before
             ):
+                return None
+
+            if not self._pass_extension_filter(entry):
+                self.logger.debug(f"Skipping item {entry.name} (ID: {entry.id}) due to extention filters.")
                 return None
 
             # 1. Handle Deleted Items (Deletion from db not implemented yet)
@@ -356,7 +425,6 @@ class DropboxIndividualConnector(BaseConnector):
                 #         path=entry.path_lower,
                 #     )
 
-                # print("GOING TO RUN ON_RECORD_DELETED 1: ", record["_key"], record["name"])
                 # await self.data_entities_processor.on_record_deleted(
                 #     record_id=record["_key"]
                 # )
@@ -521,6 +589,7 @@ class DropboxIndividualConnector(BaseConnector):
                 parent_external_record_id=parent_external_record_id,
                 size_in_bytes=entry.size if is_file else 0,
                 is_file=is_file,
+                preview_renderable=is_file,
                 extension=get_file_extension(entry.name) if is_file else None,
                 path=entry.path_lower,
                 mime_type=get_mimetype_enum_for_dropbox(entry),
@@ -609,10 +678,11 @@ class DropboxIndividualConnector(BaseConnector):
                     created_after=created_after,
                     created_before=created_before
                 )
-                if record_update:
-                    if record_update.record:
-                        if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                            record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                if record_update and record_update.record:
+                    if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
+                        record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                    if record_update.record.is_shared and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True):
+                        record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
                     yield (record_update.record, record_update.new_permissions or [], record_update)
                 await asyncio.sleep(0)
@@ -685,6 +755,70 @@ class DropboxIndividualConnector(BaseConnector):
                 self.logger.debug(f"Skipping {entry.name}: created {created_date} after cutoff {created_before}")
                 return False
 
+        return True
+
+    def _pass_extension_filter(self, entry: Union[FileMetadata, FolderMetadata, DeletedMetadata]) -> bool:
+        """
+        Checks if the Dropbox entry passes the configured file extensions filter.
+
+        For MULTISELECT filters:
+        - Operator IN: Only allow files with extensions in the selected list
+        - Operator NOT_IN: Allow files with extensions NOT in the selected list
+
+        Folders and deleted items always pass this filter to maintain directory structure.
+
+        Args:
+            entry: The Dropbox file/folder/deleted metadata
+
+        Returns:
+            True if the entry passes the filter (should be kept), False otherwise
+        """
+        # 1. ALWAYS Allow Folders and Deleted items
+        # We must sync folders regardless of extension to ensure the directory structure
+        # exists for any files that might be inside them.
+        # Deleted items should pass through so deletions are processed.
+        if not isinstance(entry, FileMetadata):
+            return True
+
+        # 2. Get the extensions filter
+        extensions_filter = self.sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
+
+        # If no filter configured or filter is empty, allow all files
+        if extensions_filter is None or extensions_filter.is_empty():
+            return True
+
+        # 3. Get the file extension from the entry name
+        # The extension is stored without the dot (e.g., "pdf", "docx")
+        file_extension = None
+        if entry.name and "." in entry.name:
+            file_extension = entry.name.rsplit(".", 1)[-1].lower()
+
+        # 4. Handle files without extensions
+        if file_extension is None:
+            operator = extensions_filter.get_operator()
+            operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+            return operator_str == FilterOperator.NOT_IN
+
+        # 5. Get the list of extensions from the filter value
+        allowed_extensions = extensions_filter.value
+        if not isinstance(allowed_extensions, list):
+            return True  # Invalid filter value, allow the file
+
+        # Normalize extensions (lowercase, without dots)
+        normalized_extensions = [ext.lower().lstrip(".") for ext in allowed_extensions]
+
+        # 6. Apply the filter based on operator
+        operator = extensions_filter.get_operator()
+        operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+
+        if operator_str == FilterOperator.IN:
+            # Only allow files with extensions in the list
+            return file_extension in normalized_extensions
+        elif operator_str == FilterOperator.NOT_IN:
+            # Allow files with extensions NOT in the list
+            return file_extension not in normalized_extensions
+
+        # Unknown operator, default to allowing the file
         return True
 
     def _get_date_filters(self) -> Tuple[Optional[datetime], Optional[datetime], Optional[datetime], Optional[datetime]]:
@@ -854,11 +988,26 @@ class DropboxIndividualConnector(BaseConnector):
         try:
             self.logger.info("🚀 Starting Dropbox Individual Sync")
 
-            # 1. Identify the User
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "dropboxpersonal", self.connector_id, self.logger
+            )
+
+            # 1. Fetch and sync the current user as AppUser
+            self.logger.info("Syncing user...")
+            response = await self.data_source.users_get_current_account()
+
+            if not response or not response.success or not response.data:
+                raise ValueError("Failed to retrieve account information for user sync.")
+
+            app_user = self._get_current_user_as_app_user(response.data)
+            await self.data_entities_processor.on_new_app_users([app_user])
+            self.logger.info(f"Synced user: {app_user.email} ({app_user.source_user_id})")
+
+            # 2. Identify the User (for backward compatibility with existing code)
             user_id, user_email = await self._get_current_user_info()
             self.logger.info(f"Identified current user: {user_email} ({user_id})")
 
-            # 2. Create the 'Drive' (Record Group)
+            # 3. Create the 'Drive' (Record Group)
             display_name = f"Dropbox - {user_email}"
             await self._create_personal_record_group(
                 user_id,
@@ -867,7 +1016,7 @@ class DropboxIndividualConnector(BaseConnector):
             )
             self.logger.info(f"Ensured Record Group exists for: {display_name}")
 
-            # 3. Start the Sync Engine
+            # 4. Start the Sync Engine
             self.logger.info("Starting file traversal...")
             await self._run_sync_with_cursor(user_id, user_email)
 
@@ -941,12 +1090,11 @@ class DropboxIndividualConnector(BaseConnector):
         if not signed_url:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
 
-        return StreamingResponse(
+        return create_stream_record_response(
             stream_content(signed_url),
-            media_type=record.mime_type if record.mime_type else "application/octet-stream",
-            headers={
-                "Content-Disposition": f"attachment; filename={record.record_name}"
-            }
+            filename=record.record_name,
+            mime_type=record.mime_type,
+            fallback_filename=f"record_{record.id}"
         )
 
     async def test_connection_and_access(self) -> bool:

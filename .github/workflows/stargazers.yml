@@ -27,8 +27,9 @@ jobs:
 
       - name: Fetch and notify stargazers and forkers
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_GITHUB_TOKEN }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          PAT_GITHUB_TOKEN: ${{ secrets.PAT_GITHUB_TOKEN }} # secret present in github settings
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }} # secret present in github settings 
+          STARGAZERS_HOURS: ${{ secrets.STARGAZERS_HOURS }} # secret present in github settings
           REPO_OWNER: pipeshub-ai
           REPO_NAME: pipeshub-ai
         run: |

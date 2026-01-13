@@ -239,6 +239,10 @@ record_schema = {
             "isShared": {"type": ["boolean", "null"], "default": False},
             "isDependentNode": {"type": "boolean", "default": False},
             "parentNodeId": {"type": ["string", "null"], "default": None},
+            "hideWeburl": {"type": "boolean", "default": False},
+            "isInternal": {"type": "boolean", "default": False},
+            "md5Checksum": {"type": ["string", "null"]},
+            "sizeInBytes": {"type": ["number", "null"]},
         },
         "required": [
             "recordName",

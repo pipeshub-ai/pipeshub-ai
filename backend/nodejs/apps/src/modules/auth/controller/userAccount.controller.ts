@@ -64,6 +64,7 @@ const {
   WRONG_OTP,
   WRONG_PASSWORD,
   REFRESH_TOKEN,
+  PASSWORD_CHANGED,
 } = userActivitiesType;
 export const SALT_ROUNDS = 10;
 
@@ -208,7 +209,27 @@ export class UserAccountController {
       let result = await this.iamService.getUserByEmail(email, authToken);
 
       if (result.statusCode !== 200) {
-        throw new NotFoundError(result.data);
+        const session = await this.sessionService.createSession({
+          userId: "NOT_FOUND",
+          email: email,
+          orgId: "",
+          authConfig: {},
+          currentStep: 0,
+        });
+        if (!session) {
+          throw new InternalServerError('Failed to create session');
+        }
+        if (session.token) {
+          res.setHeader('x-session-token', session.token);
+        }
+        res.json({
+          currentStep: 0,
+          allowedMethods: ['password'],
+          message: 'Authentication initialized',
+          authProviders: {},
+        });
+        return;
+        // throw new NotFoundError(result.data);
       }
       const user = result.data;
       // const domain = getDomainFromEmail(email);
@@ -388,6 +409,14 @@ export class UserAccountController {
         userCredentialData.ipAddress = ipAddress;
       }
       await userCredentialData.save();
+
+      await UserActivities.create({
+        orgId: orgId,
+        userId: userId,
+        activityType: PASSWORD_CHANGED,
+        ipAddress: ipAddress,
+      });
+
       return { statusCode: 200, data: 'password updated' };
     } catch (error) {
       throw error;
@@ -664,7 +693,27 @@ export class UserAccountController {
         newPassword,
         req.ip || ' ',
       );
-      res.status(200).send({ data: 'password reset' });
+
+      const userFindResult = await this.iamService.getUserById(
+        req.user?.userId,
+        iamUserLookupJwtGenerator(
+          req.user?.userId,
+          req.user?.orgId,
+          this.config.scopedJwtSecret,
+        ),
+      );
+
+      if (userFindResult.statusCode !== 200) {
+        throw new NotFoundError(userFindResult.data);
+      }
+
+      const user = userFindResult.data;
+      const accessToken = await generateAuthToken(user, this.config.jwtSecret);
+
+      res.status(200).send({
+        data: 'password reset',
+        accessToken
+      });
       return;
     } catch (error) {
       next(error);
@@ -927,12 +976,9 @@ export class UserAccountController {
           },
         });
       }
-
       throw new BadRequestError(
-        `Password incorrect. Attempts remaining: ${
-          5 - userCredentials.wrongCredentialCount
-        }`,
-      );
+        "Incorrect password, please try again."
+      )
     } else {
       userCredentials.wrongCredentialCount = 0;
       await userCredentials.save();
@@ -1183,6 +1229,12 @@ export class UserAccountController {
       }
       if (!sessionInfo) {
         throw new NotFoundError('SessionInfo not found');
+      }
+
+      if (sessionInfo.userId === "NOT_FOUND") {
+        throw new BadRequestError(
+          "Incorrect password, please try again.",
+        );
       }
 
       const currentStepConfig = sessionInfo.authConfig[sessionInfo.currentStep];

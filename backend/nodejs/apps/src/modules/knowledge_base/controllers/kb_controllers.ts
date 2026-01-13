@@ -40,6 +40,101 @@ const logger = Logger.getInstance({
   service: 'Knowledge Base Controller',
 });
 
+/**
+ * Get Knowledge Hub nodes (unified browse API)
+ * Supports browsing KBs, apps, folders, record groups, and records
+ */
+export const getKnowledgeHubNodes =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { userId, orgId } = req.user || {};
+      if (!userId || !orgId) {
+        throw new UnauthorizedError('User not authenticated');
+      }
+
+      logger.info('Getting knowledge hub nodes', {
+        userId,
+        orgId,
+        query: req.query,
+      });
+
+      // Build query string from request query params
+      const queryParams = new URLSearchParams();
+
+      // Map query params (camelCase to snake_case for Python backend)
+      const paramMapping: { [key: string]: string } = {
+        parentId: 'parent_id',
+        view: 'view',
+        page: 'page',
+        limit: 'limit',
+        sortBy: 'sort_by',
+        sortOrder: 'sort_order',
+        q: 'q',
+        nodeTypes: 'node_types',
+        recordTypes: 'record_types',
+        sources: 'sources',
+        connectorIds: 'connector_ids',
+        kbIds: 'kb_ids',
+        indexingStatus: 'indexing_status',
+        createdAt: 'created_at',
+        updatedAt: 'updated_at',
+        size: 'size',
+        include: 'include',
+      };
+
+      for (const [key, snakeKey] of Object.entries(paramMapping)) {
+        const value = req.query[key];
+        if (value) {
+          queryParams.append(snakeKey, value as string);
+        }
+      }
+
+      if (req.query.onlyContainers !== undefined) {
+        queryParams.append(
+          'only_containers',
+          String(req.query.onlyContainers),
+        );
+      }
+
+      const { parentType, parentId } = req.params;
+      let url = `${appConfig.connectorBackend}/api/v2/knowledge-hub/nodes`;
+
+      if (parentType && parentId) {
+        url += `/${parentType}/${parentId}`;
+      }
+
+      url += `?${queryParams.toString()}`;
+
+      const response = await executeConnectorCommand(
+        url,
+        HttpMethod.GET,
+        req.headers as Record<string, string>, // Forwards auth headers
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Getting knowledge hub nodes',
+        'Failed to get nodes',
+      );
+    } catch (error: any) {
+      logger.error('Error getting knowledge hub nodes', {
+        error: error.message,
+        stack: error.stack,
+      });
+      const handleError = handleBackendError(
+        error,
+        'get knowledge hub nodes',
+      );
+      next(handleError);
+    }
+  };
+
 // Types and helpers for active connector validation
 interface ConnectorInfo {
   _key: string;
@@ -94,6 +189,12 @@ export const createKnowledgeBase =
 
       if (!userId || !orgId) {
         throw new UnauthorizedError('User authentication required');
+      }
+
+      // Validate kbName for XSS and format specifiers
+      if (kbName) {
+        validateNoXSS(kbName, 'Knowledge base name');
+        validateNoFormatSpecifiers(kbName, 'Knowledge base name');
       }
 
       logger.info(`Creating knowledge base '${kbName}' for user ${userId}`);
@@ -325,6 +426,12 @@ export const updateKnowledgeBase =
         throw new UnauthorizedError('User authentication required');
       }
 
+      // Validate kbName for XSS and format specifiers
+      if (kbName) {
+        validateNoXSS(kbName, 'Knowledge base name');
+        validateNoFormatSpecifiers(kbName, 'Knowledge base name');
+      }
+
       logger.info(`Updating knowledge base ${kbId}`);
 
       const response = await executeConnectorCommand(
@@ -400,6 +507,12 @@ export const createRootFolder =
         throw new UnauthorizedError('User authentication required');
       }
 
+      // Validate folderName for XSS and format specifiers
+      if (folderName) {
+        validateNoXSS(folderName, 'Folder name');
+        validateNoFormatSpecifiers(folderName, 'Folder name');
+      }
+
       logger.info(`Creating folder '${folderName}' in KB ${kbId}`);
 
       const response = await executeConnectorCommand(
@@ -446,6 +559,12 @@ export const createNestedFolder =
         throw new UnauthorizedError('User authentication required');
       }
 
+      // Validate folderName for XSS and format specifiers
+      if (folderName) {
+        validateNoXSS(folderName, 'Folder name');
+        validateNoFormatSpecifiers(folderName, 'Folder name');
+      }
+
       logger.info(`Creating folder '${folderName}' in folder ${folderId}`);
 
       const response = await executeConnectorCommand(
@@ -489,6 +608,12 @@ export const updateFolder =
       const { folderName } = req.body;
       if (!userId) {
         throw new UnauthorizedError('User authentication required');
+      }
+
+      // Validate folderName for XSS and format specifiers
+      if (folderName) {
+        validateNoXSS(folderName, 'Folder name');
+        validateNoFormatSpecifiers(folderName, 'Folder name');
       }
 
       logger.info(`Updating folder ${folderId} in KB ${kbId}`);
@@ -661,7 +786,8 @@ export const uploadRecordsToKB =
           version: 1,
           webUrl: webUrl,
           mimeType: correctMimeType,
-          connectorId: kbId
+          connectorId: kbId,
+          sizeInBytes: size,
         };
 
         const fileRecord: IFileRecordDocument = {
@@ -957,6 +1083,13 @@ export const updateRecord =
         logger.info('No custom name provided');
       }
 
+      // Validate recordName for XSS and format specifiers
+      // This validation happens after we've determined the final recordName value
+      if (recordName) {
+        validateNoXSS(recordName, 'Record name');
+        validateNoFormatSpecifiers(recordName, 'Record name');
+      }
+
       // Prepare update data with timestamp
       const updatedData = {
         recordName,
@@ -978,7 +1111,11 @@ export const updateRecord =
         if (originalname && originalname.includes('.')) {
           const lastDotIndex = originalname.lastIndexOf('.');
           if (lastDotIndex > 0) {
-            updatedData.recordName = originalname.substring(0, lastDotIndex);
+            const fileNameWithoutExt = originalname.substring(0, lastDotIndex);
+            // Validate the filename (without extension) for XSS
+            validateNoXSS(fileNameWithoutExt, 'Record name');
+            validateNoFormatSpecifiers(fileNameWithoutExt, 'Record name');
+            updatedData.recordName = fileNameWithoutExt;
             logger.info('Setting record name from file', {
               recordName: updatedData.recordName,
               originalFileName: originalname,

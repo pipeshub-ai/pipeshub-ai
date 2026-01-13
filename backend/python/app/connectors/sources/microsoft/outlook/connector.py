@@ -26,6 +26,7 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncPoint,
     generate_record_sync_point_key,
 )
+from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -37,9 +38,9 @@ from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
     FilterField,
-    FilterOperator,
     FilterType,
     IndexingFilterKey,
+    OptionSourceType,
     SyncFilterKey,
     load_connector_filters,
 )
@@ -71,9 +72,22 @@ from app.sources.external.microsoft.users_groups.users_groups import (
     UsersGroupsDataSource,
     UsersGroupsResponse,
 )
+from app.utils.streaming import create_stream_record_response
 
 # Thread detection constants
 THREAD_ROOT_EMAIL_CONVERSATION_INDEX_LENGTH = 22  # Length (in bytes) of conversation_index for root email in a thread
+
+# Standard Outlook folder names
+STANDARD_OUTLOOK_FOLDERS = [
+    "Inbox",
+    "Sent Items",
+    "Drafts",
+    "Deleted Items",
+    "Junk Email",
+    "Archive",
+    "Outbox",
+    "Conversation History"
+]
 
 
 @dataclass
@@ -86,10 +100,50 @@ class OutlookCredentials:
 
 @ConnectorBuilder("Outlook")\
     .in_group("Microsoft 365")\
-    .with_auth_type("OAUTH_ADMIN_CONSENT")\
     .with_description("Sync emails from Outlook")\
     .with_categories(["Email"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH_ADMIN_CONSENT).fields([
+            AuthField(
+                name="clientId",
+                display_name="Application (Client) ID",
+                placeholder="Enter your Azure AD Application ID",
+                description="The Application (Client) ID from Azure AD App Registration"
+            ),
+            AuthField(
+                name="clientSecret",
+                display_name="Client Secret",
+                placeholder="Enter your Azure AD Client Secret",
+                description="The Client Secret from Azure AD App Registration",
+                field_type="PASSWORD",
+                is_secret=True
+            ),
+            AuthField(
+                name="tenantId",
+                display_name="Directory (Tenant) ID",
+                placeholder="Enter your Azure AD Tenant ID",
+                description="The Directory (Tenant) ID from Azure AD"
+            ),
+            AuthField(
+                name="hasAdminConsent",
+                display_name="Has Admin Consent",
+                description="Check if admin consent has been granted for the application",
+                field_type="CHECKBOX",
+                required=True,
+                default_value=False
+            ),
+            AuthField(
+                name="redirectUri",
+                display_name="Redirect URI",
+                placeholder="connectors/Outlook/oauth/callback",
+                description="The redirect URI for OAuth authentication",
+                field_type="URL",
+                required=False,
+                max_length=2000
+            )
+        ])
+    ])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/outlook.svg")
         .add_documentation_link(DocumentationLink(
@@ -102,57 +156,29 @@ class OutlookCredentials:
             'https://docs.pipeshub.com/connectors/microsoft-365/outlook',
             'pipeshub'
         ))
-        .with_redirect_uri("connectors/Outlook/oauth/callback", False)
-        .add_auth_field(AuthField(
-            name="clientId",
-            display_name="Application (Client) ID",
-            placeholder="Enter your Azure AD Application ID",
-            description="The Application (Client) ID from Azure AD App Registration"
-        ))
-        .add_auth_field(AuthField(
-            name="clientSecret",
-            display_name="Client Secret",
-            placeholder="Enter your Azure AD Client Secret",
-            description="The Client Secret from Azure AD App Registration",
-            field_type="PASSWORD",
-            is_secret=True
-        ))
-        .add_auth_field(AuthField(
-            name="tenantId",
-            display_name="Directory (Tenant) ID",
-            placeholder="Enter your Azure AD Tenant ID",
-            description="The Directory (Tenant) ID from Azure AD"
-        ))
-        .add_auth_field(AuthField(
-            name="hasAdminConsent",
-            display_name="Has Admin Consent",
-            description="Check if admin consent has been granted for the application",
-            field_type="CHECKBOX",
-            required=True,
-            default_value=False
-        ))
-        .add_auth_field(AuthField(
-            name="redirectUri",
-            display_name="Redirect URI",
-            placeholder="connectors/Outlook/oauth/callback",
-            description="The redirect URI for OAuth authentication",
-            field_type="URL",
-            required=False,
-            max_length=2000
-        ))
         .add_conditional_display("redirectUri", "hasAdminConsent", "equals", False)
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .add_filter_field(FilterField(
-            name="folders",
-            display_name="Folders",
-            description="Filter emails by folder names (e.g., Inbox, Sent Items). Leave empty to sync all folders.",
-            filter_type=FilterType.LIST,
+            name=SyncFilterKey.FOLDERS.value,
+            display_name="Standard Folders",
+            description="Select standard Outlook folders to sync emails from.",
+            filter_type=FilterType.MULTISELECT,
             category=FilterCategory.SYNC,
-            default_value=[]
+            default_value=[],
+            option_source_type=OptionSourceType.STATIC,
+            options=STANDARD_OUTLOOK_FOLDERS
         ))
         .add_filter_field(FilterField(
-            name="received_date",
+            name=SyncFilterKey.CUSTOM_FOLDERS.value,
+            display_name="Custom Folders",
+            description="Include custom/non-standard email folders",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.SYNC,
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name=SyncFilterKey.RECEIVED_DATE.value,
             display_name="Received Date",
             description="Filter emails by received date.",
             filter_type=FilterType.DATETIME,
@@ -160,7 +186,7 @@ class OutlookCredentials:
         ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .add_filter_field(FilterField(
-            name="mails",
+            name=IndexingFilterKey.MAILS.value,
             display_name="Index Emails",
             filter_type=FilterType.BOOLEAN,
             category=FilterCategory.INDEXING,
@@ -168,7 +194,7 @@ class OutlookCredentials:
             default_value=True
         ))
         .add_filter_field(FilterField(
-            name="attachments",
+            name=IndexingFilterKey.ATTACHMENTS.value,
             display_name="Index Attachments",
             filter_type=FilterType.BOOLEAN,
             category=FilterCategory.INDEXING,
@@ -448,23 +474,8 @@ class OutlookConnector(BaseConnector):
         try:
             user_id = user.source_user_id
 
-            # Extract folder filter parameters for API-level filtering
-            folder_names: Optional[List[str]] = None
-            folder_filter_mode: Optional[str] = None
-
-            folders_filter = self.sync_filters.get(SyncFilterKey.FOLDERS)
-            if folders_filter and not folders_filter.is_empty():
-                filter_value = folders_filter.get_value()
-                filter_operator = folders_filter.get_operator()
-
-                if filter_value and isinstance(filter_value, list):
-                    folder_names = filter_value
-                    if filter_operator == FilterOperator.IN:
-                        folder_filter_mode = "include"
-                        self.logger.info(f"Filtering to include folders: {folder_names}")
-                    elif filter_operator == FilterOperator.NOT_IN:
-                        folder_filter_mode = "exclude"
-                        self.logger.info(f"Filtering to exclude folders: {folder_names}")
+            # Determine folder filtering strategy based on user's filter selections
+            folder_names, folder_filter_mode = self._determine_folder_filter_strategy()
 
             # Get folders for this user with optional filtering
             folders = await self._get_all_folders_for_user(
@@ -474,7 +485,8 @@ class OutlookConnector(BaseConnector):
             )
 
             if not folders:
-                return f"No folders found for {user.email}" + (" after applying filters" if folder_names else "")
+                filter_msg = " after applying filters" if folder_names else ""
+                return f"No folders found for {user.email}{filter_msg}"
 
             total_processed = 0
             folder_results = []
@@ -593,13 +605,148 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error creating all thread edges for user {user.email}: {e}")
             return 0
 
+    def _determine_folder_filter_strategy(self) -> Tuple[Optional[List[str]], Optional[str]]:
+        """Determine the folder filtering strategy based on user's filter selections.
+
+        Retrieves filter settings and determines the appropriate filtering strategy:
+
+        5 Scenarios:
+        1. Nothing selected + custom enabled → Sync ALL folders (standard + custom)
+        2. Nothing selected + custom disabled → Sync ONLY standard folders
+        3. Standard folders selected + custom disabled → Sync ONLY selected standard folders
+        4. Standard folders selected + custom enabled → Sync selected standard + ALL custom folders
+        5. All standard folders selected + custom enabled → Sync ALL folders
+
+        Returns:
+            Tuple of (folder_names, filter_mode):
+            - (None, None) = No filter, sync all folders
+            - (list, "include") = Sync only these folders
+            - (list, "exclude") = Sync all except these folders
+        """
+        # Get selected standard folders from filter
+        selected_folders = []
+        folders_filter = self.sync_filters.get(SyncFilterKey.FOLDERS)
+        if folders_filter and not folders_filter.is_empty():
+            filter_value = folders_filter.get_value()
+            if filter_value and isinstance(filter_value, list):
+                selected_folders = filter_value
+
+        # Get sync_custom_folders boolean (default: True)
+        sync_custom_folders = True
+        sync_custom_folders_filter = self.sync_filters.get(SyncFilterKey.CUSTOM_FOLDERS)
+        if sync_custom_folders_filter and not sync_custom_folders_filter.is_empty():
+            sync_custom_folders = sync_custom_folders_filter.get_value()
+
+        # Determine strategy
+        has_selection = bool(selected_folders)
+
+        if not has_selection:
+            # No folders selected - behavior depends on sync_custom_folders
+            if sync_custom_folders:
+                # Scenario 1: Sync everything (default behavior)
+                self.logger.info("No folders selected, custom enabled - syncing all folders")
+                return None, None
+            else:
+                # Scenario 2: Sync only standard folders
+                self.logger.info("No folders selected, custom disabled - syncing only standard folders")
+                return STANDARD_OUTLOOK_FOLDERS, "include"
+
+        if not sync_custom_folders:
+            # Scenario 3: Only selected standard folders
+            self.logger.info(f"Syncing only selected standard folders: {selected_folders}")
+            return selected_folders, "include"
+
+        # Custom folders are enabled and some standard folders are selected
+        all_standard_selected = set(selected_folders) == set(STANDARD_OUTLOOK_FOLDERS)
+
+        if all_standard_selected:
+            # Scenario 4: All standard folders + custom = everything
+            self.logger.info("All standard folders selected + custom enabled - syncing all folders")
+            return None, None
+
+        # Scenario 5: Selected standard + all custom folders
+        # Strategy: Exclude the non-selected standard folders
+        non_selected = [f for f in STANDARD_OUTLOOK_FOLDERS if f not in selected_folders]
+        self.logger.info(
+            f"Syncing selected standard folders {selected_folders} + all custom folders "
+            f"(excluding non-selected standard: {non_selected})"
+        )
+        return non_selected, "exclude"
+
+    async def _get_child_folders_recursive(
+        self,
+        user_id: str,
+        parent_folder: Dict
+    ) -> List[Dict]:
+        """Recursively get all child folders of a parent folder.
+
+        Args:
+            user_id: User identifier
+            parent_folder: Parent folder dictionary
+
+        Returns:
+            Flattened list of all child folders (including nested children)
+        """
+        try:
+            parent_folder_id = self._safe_get_attr(parent_folder, 'id')
+            parent_folder_name = self._safe_get_attr(parent_folder, 'display_name', 'Unknown')
+
+            if not parent_folder_id:
+                return []
+
+            # Check if folder has children
+            child_folder_count = self._safe_get_attr(parent_folder, 'child_folder_count', 0)
+            if child_folder_count == 0:
+                self.logger.debug(f"Folder '{parent_folder_name}' has no child folders")
+                return []
+
+            # Fetch child folders using the API
+            if not self.external_outlook_client:
+                raise Exception("External Outlook client not initialized")
+
+            response: OutlookMailFoldersResponse = await self.external_outlook_client.users_mail_folders_list_child_folders(
+                user_id=user_id,
+                mailFolder_id=parent_folder_id
+            )
+
+            if not response.success:
+                self.logger.warning(
+                    f"Failed to get child folders for '{parent_folder_name}': {response.error}"
+                )
+                return []
+
+            data = response.data or {}
+            child_folders = data.get('value', [])
+
+            if not child_folders:
+                return []
+
+            self.logger.info(
+                f"Found {len(child_folders)} child folder(s) under '{parent_folder_name}'"
+            )
+
+            # Recursively process each child folder
+            all_descendants = []
+            for child in child_folders:
+                all_descendants.append(child)
+                # Recursively get grandchildren
+                grandchildren = await self._get_child_folders_recursive(user_id, child)
+                all_descendants.extend(grandchildren)
+
+            return all_descendants
+
+        except Exception as e:
+            parent_name = self._safe_get_attr(parent_folder, 'display_name', 'Unknown')
+            self.logger.error(f"Error getting child folders for '{parent_name}': {e}")
+            return []
+
     async def _get_all_folders_for_user(
         self,
         user_id: str,
         folder_names: Optional[List[str]] = None,
         folder_filter_mode: Optional[str] = None
     ) -> List[Dict]:
-        """Get all top-level folders for a user with optional filtering.
+        """Get all folders for a user with optional filtering and nested folder support.
 
         Args:
             user_id: User identifier
@@ -607,13 +754,13 @@ class OutlookConnector(BaseConnector):
             folder_filter_mode: 'include' to whitelist or 'exclude' to blacklist folder_names
 
         Returns:
-            List of folder dictionaries
+            List of folder dictionaries (includes nested folders by default)
         """
         try:
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
-            # Use API-level filtering with eq/ne operators
+            # Get top-level folders with API-level filtering
             response: OutlookMailFoldersResponse = await self.external_outlook_client.users_list_mail_folders(
                 user_id=user_id,
                 folder_names=folder_names,
@@ -625,9 +772,27 @@ class OutlookConnector(BaseConnector):
                 return []
 
             data = response.data or {}
-            folders = data.get('value', [])
+            top_level_folders = data.get('value', [])
 
-            return folders
+            # Always include nested folders (no filter needed, it's always enabled)
+            all_folders = []
+            for folder in top_level_folders:
+                all_folders.append(folder)
+                # Recursively get child folders
+                child_folders = await self._get_child_folders_recursive(user_id, folder)
+                all_folders.extend(child_folders)
+
+            total_nested = len(all_folders) - len(top_level_folders)
+            if total_nested > 0:
+                self.logger.info(
+                    f"Retrieved {len(top_level_folders)} top-level folders + "
+                    f"{total_nested} nested folders = {len(all_folders)} total folders"
+                )
+            else:
+                self.logger.info(f"Retrieved {len(top_level_folders)} folders (no nested folders found)")
+
+            return all_folders
+
         except Exception as e:
             self.logger.error(f"Error getting folders for user {user_id}: {e}")
             return []
@@ -1018,12 +1183,18 @@ class OutlookConnector(BaseConnector):
             parent_weburl: Web URL of the parent mail
 
         Returns:
-            FileRecord: Created attachment record
+            FileRecord: Created attachment record, or None if attachment should be skipped
         """
         attachment_id = self._safe_get_attr(attachment, 'id')
         is_new = existing_record is None
 
-        content_type = self._safe_get_attr(attachment, 'content_type', 'application/octet-stream')
+        # Check if content_type is available, skip attachment if not
+        content_type = self._safe_get_attr(attachment, 'content_type')
+        if not content_type:
+            file_name = self._safe_get_attr(attachment, 'name', 'Unknown')
+            self.logger.warning(f"Skipping attachment '{file_name}' (id: {attachment_id}) - no content_type available")
+            return None
+
         mime_type = self._get_mime_type_enum(content_type)
 
         file_name = self._safe_get_attr(attachment, 'name', 'Unnamed Attachment')
@@ -1102,6 +1273,10 @@ class OutlookConnector(BaseConnector):
                 attachment_record = await self._create_attachment_record(
                     org_id, attachment, message_id, folder_id, existing_record, parent_weburl
                 )
+
+                # Skip if attachment was filtered out (e.g., no content_type)
+                if not attachment_record:
+                    continue
 
                 attachment_updates.append(RecordUpdate(
                     record=attachment_record,
@@ -1202,12 +1377,13 @@ class OutlookConnector(BaseConnector):
                 async def generate_attachment() -> AsyncGenerator[bytes, None]:
                     yield attachment_data
 
-                # Set proper filename and content type
                 filename = record.record_name or "attachment"
-                headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
-                media_type = record.mime_type or 'application/octet-stream'
-
-                return StreamingResponse(generate_attachment(), media_type=media_type, headers=headers)
+                return create_stream_record_response(
+                    generate_attachment(),
+                    filename=filename,
+                    mime_type=record.mime_type,
+                    fallback_filename=f"record_{record.id}"
+                )
 
             else:
                 raise HTTPException(status_code=400, detail="Unsupported record type for streaming")
@@ -1545,6 +1721,10 @@ class OutlookConnector(BaseConnector):
             attachment_record = await self._create_attachment_record(
                 org_id, attachment, parent_message_id, folder_id, existing_record=record, parent_weburl=parent_weburl
             )
+
+            # Return None if attachment was filtered out
+            if not attachment_record:
+                return None
 
             return (attachment_record, email_permissions)
 

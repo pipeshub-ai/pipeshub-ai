@@ -158,6 +158,10 @@ const AuthMethodsList: React.FC<AuthMethodsListProps> = ({
   });
   const [checkingConfigs, setCheckingConfigs] = useState(true);
   const [lastConfigured, setLastConfigured] = useState<string | null>(null);
+  const [azureAdConfigData, setAzureAdConfigData] = useState<{
+    clientId?: string;
+    tenantId?: string;
+  } | null>(null);
 
   // Check authentication configurations on component mount and when configUpdated changes
   useEffect(() => {
@@ -183,11 +187,23 @@ const AuthMethodsList: React.FC<AuthMethodsListProps> = ({
           !!results[1].value.clientId &&
           !!results[1].value.tenantId;
 
-        const azureConfigured =
-          results[2].status === 'fulfilled' &&
-          results[2].value &&
-          !!results[2].value.clientId &&
-          !!results[2].value.tenantId;
+        // Store Azure AD config data for more robust checking
+        const azureConfigResult = results[2];
+        const azureConfigValue =
+          azureConfigResult.status === 'fulfilled' ? azureConfigResult.value : null;
+        
+        // Store the raw config data
+        setAzureAdConfigData(azureConfigValue);
+
+        // Ensure azureConfigured is always a boolean
+        const azureConfigured = Boolean(
+          azureConfigResult.status === 'fulfilled' &&
+          azureConfigValue &&
+          !!azureConfigValue.clientId &&
+          !!azureConfigValue.tenantId &&
+          azureConfigValue.clientId.trim() !== '' &&
+          azureConfigValue.tenantId.trim() !== ''
+        );
 
         // Fixed SAML check - making sure it returns a boolean
         const samlConfigured =
@@ -466,7 +482,27 @@ const AuthMethodsList: React.FC<AuthMethodsListProps> = ({
       </Box>
 
       <Grid container spacing={2}>
-        {AUTH_METHODS_CONFIG.map((methodConfig) => {
+        {AUTH_METHODS_CONFIG.filter((methodConfig) => {
+          // Hide Azure AD unless it's configured or enabled (for backward compatibility)
+          if (methodConfig.type === 'azureAd') {
+            const currentMethod = authMethods.find((m) => m.type === 'azureAd');
+            const isEnabled = currentMethod?.enabled || false;
+            
+            // Check if Azure AD has actual configuration data (not just empty strings)
+            const hasConfigData =
+              azureAdConfigData &&
+              azureAdConfigData.clientId &&
+              azureAdConfigData.tenantId &&
+              azureAdConfigData.clientId.trim() !== '' &&
+              azureAdConfigData.tenantId.trim() !== '';
+            
+            // Show Azure AD if:
+            // 1. It's enabled (backward compatibility for active users)
+            // 2. It has configuration data (backward compatibility for configured but not enabled)
+            return isEnabled || hasConfigData || configStatus.azureAd;
+          }
+          return true;
+        }).map((methodConfig) => {
           const currentMethod = authMethods.find((m) => m.type === methodConfig.type);
           const isEnabled = currentMethod?.enabled || false;
           const isDisabled = isMethodDisabled(methodConfig.type, isEnabled);

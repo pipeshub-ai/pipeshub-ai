@@ -71,5 +71,5 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     label: 'Enable Beta Connectors',
     description: 'Allow usage of beta connector integrations that may be unstable.',
     defaultEnabled: false,
-  },
+  }
 ];

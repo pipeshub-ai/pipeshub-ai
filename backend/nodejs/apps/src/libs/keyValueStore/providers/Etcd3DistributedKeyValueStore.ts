@@ -66,4 +66,33 @@ export class Etcd3DistributedKeyValueStore<T> implements DistributedKeyValueStor
   async listKeysInDirectory(directory: string): Promise<string[]> {
     return await this.client.getAll().prefix(directory).keys();
   }
+
+  async compareAndSet(key: string, expectedValue: T | null, newValue: T): Promise<boolean> {
+    const newBuffer = this.serializer(newValue);
+    const expectedBuffer = expectedValue !== null ? this.serializer(expectedValue) : null;
+
+    try {
+      // Get current value
+      const currentValue = await this.client.get(key).buffer();
+      
+      // Compare buffers directly for exact match
+      const valuesMatch = 
+        (expectedValue === null && currentValue === null) ||
+        (expectedBuffer !== null && currentValue !== null && expectedBuffer.equals(currentValue));
+
+      if (!valuesMatch) {
+        // Values don't match, CAS failed
+        return false;
+      }
+
+      await this.client.put(key).value(newBuffer);
+      
+      // Verify the update succeeded by reading back
+      const updatedValue = await this.client.get(key).buffer();
+      return updatedValue !== null && updatedValue.equals(newBuffer);
+    } catch (error) {
+      // If update fails, return false
+      return false;
+    }
+  }
 }

@@ -19,7 +19,11 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+from app.config.constants.arangodb import (
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+)
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -30,6 +34,11 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
     generate_record_sync_point_key,
+)
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
 )
 from app.connectors.core.registry.connector_builder import (
     CommonFields,
@@ -69,6 +78,7 @@ from app.sources.client.confluence.confluence import (
     ConfluenceClient as ExternalConfluenceClient,
 )
 from app.sources.external.confluence.confluence import ConfluenceDataSource
+from app.utils.streaming import create_stream_record_response
 
 # Confluence Cloud OAuth URLs
 AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
@@ -90,13 +100,38 @@ CONTENT_EXPAND_PARAMS = (
     "childTypes.comment"
 )
 
+# Constant for pseudo-user group prefix
+PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 
 @ConnectorBuilder("Confluence")\
     .in_group("Atlassian")\
-    .with_auth_type("OAUTH")\
     .with_description("Sync pages, spaces, and users from Confluence Cloud")\
     .with_categories(["Knowledge Management", "Collaboration"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Confluence",
+            authorize_url=AUTHORIZE_URL,
+            token_url=TOKEN_URL,
+            redirect_uri="connectors/oauth/callback/Confluence",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=AtlassianScope.get_confluence_read_access(),
+                agent=AtlassianScope.get_confluence_read_access()
+            ),
+            fields=[
+                CommonFields.client_id("Atlassian OAuth App"),
+                CommonFields.client_secret("Atlassian OAuth App")
+            ],
+            icon_path="/assets/icons/connectors/confluence.svg",
+            app_group="Atlassian",
+            app_description="OAuth application for accessing Confluence Cloud API and collaboration features",
+            app_categories=["Knowledge Management", "Collaboration"]
+        ),
+        # AuthBuilder.type(AuthType.API_TOKEN).fields([
+        #     CommonFields.api_token("Atlassian API Token")
+        # ])
+    ])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/confluence.svg")
         .with_realtime_support(False)
@@ -110,10 +145,6 @@ CONTENT_EXPAND_PARAMS = (
             'https://docs.pipeshub.com/connectors/confluence/confluence',
             'pipeshub'
         ))
-        .with_redirect_uri("connectors/oauth/callback/Confluence", True)
-        .with_oauth_urls(AUTHORIZE_URL, TOKEN_URL, AtlassianScope.get_confluence_read_access())
-        .add_auth_field(CommonFields.client_id("Atlassian OAuth App"))
-        .add_auth_field(CommonFields.client_secret("Atlassian OAuth App"))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
@@ -443,6 +474,7 @@ class ConfluenceConnector(BaseConnector):
                     # Skip if no email
                     email = user_data.get("email", "").strip()
                     if not email:
+                        self.logger.warning(f"Skipping user creation with name : {user_data.get('displayName')}, Reason: No email found for the user")
                         total_skipped += 1
                         continue
 
@@ -456,12 +488,26 @@ class ConfluenceConnector(BaseConnector):
                     total_synced += len(app_users)
                     self.logger.info(f"Synced {len(app_users)} users (batch starting at {start})")
 
+                    # For each user with email, migrate pseudo-group permissions (Confluence-specific)
+                    for user in app_users:
+                        if user.email and "@" in user.email and user.source_user_id:
+                            try:
+                                await self._migrate_pseudo_group_permissions_to_user(user)
+                            except Exception as e:
+                                # Log error but continue with other users
+                                self.logger.warning(
+                                    f"Failed to migrate pseudo-group permissions for user {user.email}: {e}",
+                                    exc_info=True
+                                )
+                                continue
+
                 # Move to next page
                 start += batch_size
 
                 # Check if we've reached the end
-                total_size = response_data.get("totalSize", 0)
-                if start >= total_size:
+                # FIX: Do not rely on totalSize as it returns incorrect values (e.g. 100) for /search/user
+                # Instead, stop if we received fewer results than requested
+                if len(users_data) < batch_size:
                     break
 
             self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email): {total_skipped}")
@@ -853,6 +899,8 @@ class ConfluenceConnector(BaseConnector):
                         # Fetch page permissions
                         permissions = await self._fetch_page_permissions(item_id)
                         total_permissions_synced += len(permissions)
+                        if len(permissions) > 0:
+                            webpage_record.inherit_permissions = False
 
                         # Add item to batch
                         records_with_permissions.append((webpage_record, permissions))
@@ -1140,6 +1188,7 @@ class ConfluenceConnector(BaseConnector):
         total_synced = 0
         total_skipped = 0
         total_permissions = 0
+        has_failures = False
 
         for i in range(0, len(titles), batch_size):
             batch_titles = titles[i:i + batch_size]
@@ -1183,7 +1232,8 @@ class ConfluenceConnector(BaseConnector):
                             continue
 
                         # Check if record exists in database (respects sync filters)
-                        existing_record = await self.data_store.get_record_by_external_id(
+                        existing_record = await self.data_entities_processor.get_record_by_external_id(
+                            connector_id=self.connector_id,
                             external_record_id=item_id
                         )
 
@@ -1207,12 +1257,16 @@ class ConfluenceConnector(BaseConnector):
                         permissions = await self._fetch_page_permissions(item_id)
                         total_permissions += len(permissions)
 
+                        if len(permissions) > 0:
+                            webpage_record.inherit_permissions = False
+
                         # Add to batch for update
                         records_with_permissions.append((webpage_record, permissions))
                         total_synced += 1
 
                     except Exception as item_error:
                         self.logger.error(f"❌ Failed to sync permissions for {item_data.get('title')}: {item_error}")
+                        has_failures = True
                         continue
 
                 # Update batch in database
@@ -1222,7 +1276,11 @@ class ConfluenceConnector(BaseConnector):
 
             except Exception as batch_error:
                 self.logger.error(f"❌ Failed to process titles batch: {batch_error}")
+                has_failures = True
                 continue
+
+        if has_failures:
+            raise ValueError("Failed to sync permissions for some content items")
 
         if total_skipped > 0:
             self.logger.info(f"🔍 Skipped {total_skipped} items not in database (filtered during sync)")
@@ -1686,7 +1744,8 @@ class ConfluenceConnector(BaseConnector):
         self,
         principal_type: str,
         principal_id: str,
-        permission_type: PermissionType
+        permission_type: PermissionType,
+        create_pseudo_group_if_missing: bool = False
     ) -> Optional[Permission]:
         """
         Create Permission object from principal data (user or group).
@@ -1697,6 +1756,8 @@ class ConfluenceConnector(BaseConnector):
             principal_type: "user" or "group"
             principal_id: accountId for users, groupId for groups
             permission_type: Mapped PermissionType enum
+            create_pseudo_group_if_missing: If True and user not found, create a
+                pseudo-group to preserve the permission. Used for record-level
 
         Returns:
             Permission object or None if principal not found in DB
@@ -1710,15 +1771,37 @@ class ConfluenceConnector(BaseConnector):
                         source_user_id=principal_id,
                         connector_id=self.connector_id,
                     )
-                    if not user:
-                        self.logger.debug(f"  ⚠️ User {principal_id} not found in DB, skipping permission")
-                        return None
+                    if user:
+                        return Permission(
+                            email=user.email,
+                            type=permission_type,
+                            entity_type=entity_type
+                        )
 
-                    return Permission(
-                        email=user.email,
-                        type=permission_type,
-                        entity_type=entity_type
-                    )
+                    # User not found - check if pseudo-group exists or should be created
+                    if create_pseudo_group_if_missing:
+                        # Check for existing pseudo-group
+                        pseudo_group = await tx_store.get_user_group_by_external_id(
+                            connector_id=self.connector_id,
+                            external_id=principal_id,
+                        )
+
+                        if not pseudo_group:
+                            # Create pseudo-group on-the-fly
+                            pseudo_group = await self._create_pseudo_group(principal_id)
+
+                        if pseudo_group:
+                            self.logger.debug(
+                                f"Using pseudo-group for user {principal_id} (no email available)"
+                            )
+                            return Permission(
+                                external_id=pseudo_group.source_user_group_id,
+                                type=permission_type,
+                                entity_type=EntityType.GROUP
+                            )
+
+                    self.logger.debug(f"  ⚠️ User {principal_id} not found in DB, skipping permission")
+                    return None
 
             elif principal_type == "group":
                 entity_type = EntityType.GROUP
@@ -1742,6 +1825,38 @@ class ConfluenceConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to create permission from principal: {e}")
+            return None
+
+    async def _create_pseudo_group(self, account_id: str) -> Optional[AppUserGroup]:
+        """
+        Create a pseudo-group for a user without email.
+
+        This preserves permissions for users who don't have email addresses yet.
+        The pseudo-group uses the user's accountId as source_user_group_id.
+
+        Args:
+            account_id: Confluence user accountId
+
+        Returns:
+            Created AppUserGroup or None if creation fails
+        """
+        try:
+            pseudo_group = AppUserGroup(
+                app_name=Connectors.CONFLUENCE,
+                connector_id=self.connector_id,
+                source_user_group_id=account_id,
+                name=f"{PSEUDO_USER_GROUP_PREFIX} {account_id}",
+                org_id=self.data_entities_processor.org_id,
+            )
+
+            # Save to database (empty members list)
+            await self.data_entities_processor.on_new_user_groups([(pseudo_group, [])])
+            self.logger.info(f"Created pseudo-group for user without email: {account_id}")
+
+            return pseudo_group
+
+        except Exception as e:
+            self.logger.error(f"Failed to create pseudo-group for {account_id}: {e}")
             return None
 
     async def _transform_space_permission(self, perm_data: Dict[str, Any]) -> Optional[Permission]:
@@ -1858,6 +1973,7 @@ class ConfluenceConnector(BaseConnector):
     ) -> List[Permission]:
         """
         Transform page restriction data (from v1 API) to Permission objects.
+        Creates pseudo-groups for users without email to preserve permissions.
 
         The v1 API returns restrictions in this format:
         {
@@ -1890,7 +2006,7 @@ class ConfluenceConnector(BaseConnector):
 
             restrictions = restriction_data.get("restrictions", {})
 
-            # Process user restrictions
+            # Process user restrictions - create pseudo-group if user not found
             user_restrictions = restrictions.get("user", {})
             user_results = user_restrictions.get("results", [])
 
@@ -1901,7 +2017,8 @@ class ConfluenceConnector(BaseConnector):
                     permission = await self._create_permission_from_principal(
                         "user",
                         principal_id,
-                        permission_type
+                        permission_type,
+                        create_pseudo_group_if_missing=True  # Enable pseudo-group creation for record-level permissions
                     )
                     if permission:
                         permissions.append(permission)
@@ -1916,7 +2033,8 @@ class ConfluenceConnector(BaseConnector):
                     permission = await self._create_permission_from_principal(
                         "group",
                         principal_id,
-                        permission_type
+                        permission_type,
+                        create_pseudo_group_if_missing=False  # Groups don't need pseudo-groups
                     )
                     if permission:
                         permissions.append(permission)
@@ -2304,6 +2422,8 @@ class ConfluenceConnector(BaseConnector):
                     email = member_data.get("email", "").strip()
                     if email:
                         member_emails.append(email)
+                    else:
+                        self.logger.warning(f"Skipping member creation with name : {member_data.get('displayName')}, Reason: No email found for the member")
 
                 # Move to next page
                 start += batch_size
@@ -2496,13 +2616,12 @@ class ConfluenceConnector(BaseConnector):
                 )
 
             elif record.record_type == RecordType.FILE:
-                media_type = record.mime_type or 'application/octet-stream'
                 filename = record.record_name or f"{record.external_record_id}"
-
-                return StreamingResponse(
+                return create_stream_record_response(
                     self._fetch_attachment_content(record),
-                    media_type=media_type,
-                    headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+                    filename=filename,
+                    mime_type=record.mime_type,
+                    fallback_filename=f"record_{record.id}"
                 )
 
             else:
@@ -2827,6 +2946,8 @@ class ConfluenceConnector(BaseConnector):
 
             # Fetch fresh permissions
             permissions = await self._fetch_page_permissions(page_id)
+            if len(permissions) > 0:
+                webpage_record.inherit_permissions = False
 
             return (webpage_record, permissions)
 
@@ -2876,6 +2997,8 @@ class ConfluenceConnector(BaseConnector):
 
             # Fetch fresh permissions
             permissions = await self._fetch_page_permissions(blogpost_id)
+            if len(permissions) > 0:
+                webpage_record.inherit_permissions = False
 
             return (webpage_record, permissions)
 
@@ -3020,6 +3143,58 @@ class ConfluenceConnector(BaseConnector):
         """Cleanup resources."""
         self.logger.info("Cleaning up Confluence connector resources")
         # Add cleanup logic if needed
+
+    async def _migrate_pseudo_group_permissions_to_user(self, user: AppUser) -> None:
+        """
+        Migrate permissions from a user's pseudo-group to the user directly.
+
+        When a user is synced with an email, if they have a pseudo-group, this method:
+        1. Finds the pseudo-group
+        2. Delegates to data_entities_processor to migrate permissions
+        3. Deletes the pseudo-group
+
+        Args:
+            user: The user with email
+        """
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                # Check if pseudo-group exists for this user's source_user_id
+                pseudo_group = await tx_store.get_user_group_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=user.source_user_id,
+                )
+
+                # Only process if it's a pseudo-group (not a real group)
+                if not pseudo_group or not pseudo_group.name.startswith(PSEUDO_USER_GROUP_PREFIX):
+                    return
+
+                self.logger.info(
+                    f"Migrating pseudo-group '{pseudo_group.name}' ({pseudo_group.id}) "
+                    f"to user '{user.email}'"
+                )
+
+                # Use generic migration method from data_entities_processor
+                migrated_count, skipped_count = await self.data_entities_processor.migrate_group_permissions_to_user(
+                    group_id=pseudo_group.id,
+                    user_email=user.email,
+                    connector_id=self.connector_id
+                )
+
+                # Delete the pseudo-group (this will also delete all its edges)
+                await tx_store.delete_user_group_by_id(pseudo_group.id)
+
+                self.logger.info(
+                    f"✅ Migrated {migrated_count} permissions from pseudo-group '{pseudo_group.name}' "
+                    f"to user {user.email} (skipped {skipped_count} duplicates), deleted pseudo-group"
+                )
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to migrate pseudo-group permissions for user {user.email}: {e}",
+                exc_info=True
+            )
+            raise  # Re-raise to trigger transaction rollback
+
 
     async def get_filter_options(
         self,

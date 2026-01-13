@@ -77,6 +77,7 @@ from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import get_oauth_config
+from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = create_logger("connector_service")
@@ -743,12 +744,11 @@ async def download_file(
                             )
                         finally:
                             file_buffer.close()
-                    headers = {
-                        "Content-Disposition": f'attachment; filename="{record.record_name}"'
-                    }
-
-                    return StreamingResponse(
-                        file_stream(google_workspace_export_formats[mime_type]), media_type=google_workspace_export_formats[mime_type], headers=headers
+                    return create_stream_record_response(
+                        file_stream(google_workspace_export_formats[mime_type]),
+                        filename=record.record_name,
+                        mime_type=google_workspace_export_formats[mime_type],
+                        fallback_filename=f"record_{record_id}"
                     )
 
                 # Enhanced logging for regular file download as a default fallback
@@ -790,12 +790,11 @@ async def download_file(
                         file_buffer.close()
 
                 # Return streaming response with proper headers
-                headers = {
-                    "Content-Disposition": f'attachment; filename="{record.record_name}"'
-                }
-
-                return StreamingResponse(
-                    file_stream(), media_type=mime_type, headers=headers
+                return create_stream_record_response(
+                    file_stream(),
+                    filename=record.record_name,
+                    mime_type=mime_type,
+                    fallback_filename=f"record_{record_id}"
                 )
 
             elif connector_type.lower() == Connectors.GOOGLE_MAIL.value.lower():
@@ -1148,13 +1147,14 @@ async def stream_record(
                     }
 
                     response_media_type, file_ext = export_media_types.get(export_mime_type, (export_mime_type, ""))
+
                     file_name_with_ext = file_name if file_name.endswith(file_ext) else f"{file_name}{file_ext}"
 
-                    headers = {"Content-Disposition": f'attachment; filename="{file_name_with_ext}"'}
-                    return StreamingResponse(
+                    return create_stream_record_response(
                         _stream_google_api_request(request, error_context="Google Workspace file export"),
-                        media_type=response_media_type,
-                        headers=headers
+                        filename=file_name_with_ext,
+                        mime_type=response_media_type,
+                        fallback_filename=f"record_{record_id}"
                     )
 
                 # Check if PDF conversion is requested (for regular files only, Google Workspace handled above)
@@ -1283,9 +1283,11 @@ async def stream_record(
 
 
                 # Return streaming response with proper headers
-                headers = {"Content-Disposition": f'attachment; filename="{file_name}"'}
-                return StreamingResponse(
-                    file_stream(), media_type=mime_type, headers=headers
+                return create_stream_record_response(
+                    file_stream(),
+                    filename=file_name,
+                    mime_type=mime_type,
+                    fallback_filename=f"record_{record_id}"
                 )
 
             elif connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
@@ -1626,10 +1628,6 @@ async def stream_record(
                                 )
 
 
-                        headers = {
-                            "Content-Disposition": f'attachment; filename="{file_name}"'
-                        }
-
                         # Use the same streaming logic as Drive downloads
                         async def file_stream() -> AsyncGenerator[bytes, None]:
                             try:
@@ -1679,8 +1677,11 @@ async def stream_record(
                             finally:
                                 buffer.close()
 
-                        return StreamingResponse(
-                            file_stream(), media_type=mime_type, headers=headers
+                        return create_stream_record_response(
+                            file_stream(),
+                            filename=file_name,
+                            mime_type=mime_type,
+                            fallback_filename=f"record_{record_id}"
                         )
 
                     except Exception as drive_error:
@@ -1785,12 +1786,11 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
                                 detail="Error reading converted PDF file",
                             )
 
-                    return StreamingResponse(
+                    return create_stream_record_response(
                         file_iterator(),
-                        media_type="application/pdf",
-                        headers={
-                            "Content-Disposition": f"attachment; filename={pdf_filename}"
-                        },
+                        filename=pdf_filename,
+                        mime_type="application/pdf",
+                        fallback_filename="converted_file.pdf"
                     )
 
                 except FileNotFoundError as e:
@@ -2878,6 +2878,272 @@ async def get_configured_connector_instances(
 # Instance Configuration Endpoints
 # ============================================================================
 
+async def _handle_oauth_config_creation(
+    connector_type: str,
+    auth_config: Dict[str, Any],
+    instance_name: str,
+    user_id: str,
+    org_id: str,
+    is_admin: bool,
+    config_service: ConfigurationService,
+    oauth_config_id: Optional[str],
+    auth_type: str,
+    base_url: str,
+    logger
+) -> Optional[str]:
+    """
+    Handle OAuth config creation or update for a new connector instance.
+
+    Checks for name conflicts BEFORE attempting to create/update OAuth config.
+
+    Args:
+        connector_type: Type of connector
+        auth_config: Authentication configuration from request
+        instance_name: Name of the connector instance
+        user_id: User ID
+        org_id: Organization ID
+        is_admin: Whether user is admin
+        config_service: Configuration service instance
+        oauth_config_id: Existing OAuth config ID (if updating)
+        auth_type: Authentication type (from connector instance)
+        base_url: Base URL for OAuth redirects
+        logger: Logger instance
+
+    Returns:
+        OAuth config ID if created/updated, None otherwise
+    """
+    # Only handle OAUTH type (not OAUTH_ADMIN_CONSENT or others)
+    if auth_type.upper() != "OAUTH":
+        logger.debug(f"Skipping OAuth config creation for {connector_type} - authType is {auth_type}, not OAUTH")
+        return None
+
+    # Get OAuth app ID (from auth config or parameter)
+    oauth_app_id = auth_config.get("oauthConfigId") or oauth_config_id
+
+    # Check if OAuth credential fields are present
+    oauth_field_names = _get_oauth_field_names_from_registry(connector_type)
+    has_oauth_credentials = any(
+        auth_config.get(field_name) or
+        auth_config.get(field_name.replace("Id", "_id").replace("Secret", "_secret"))
+        for field_name in oauth_field_names
+    )
+
+    if not has_oauth_credentials:
+        if oauth_app_id:
+            logger.info(f"No OAuth credentials provided, using existing OAuth config for {connector_type}")
+            return oauth_app_id
+        else:
+            logger.info(f"No OAuth credentials provided and no oauthConfigId specified for {connector_type} - skipping OAuth config creation")
+            logger.debug(f"Expected OAuth fields for {connector_type}: {oauth_field_names}")
+            logger.debug(f"Received auth config keys: {list(auth_config.keys())}")
+            return None
+
+    # Get existing OAuth configs
+    oauth_config_path = _get_oauth_config_path(connector_type)
+    existing_oauth_configs = await config_service.get_config(oauth_config_path, default=[])
+
+    if not isinstance(existing_oauth_configs, list):
+        existing_oauth_configs = []
+
+    # Determine OAuth instance name
+    oauth_instance_name_from_request = auth_config.get("oauthInstanceName", "").strip()
+
+    # If creating new (no oauth_app_id)
+    if not oauth_app_id:
+        # Use provided name or fall back to connector instance name
+        oauth_instance_name = oauth_instance_name_from_request or instance_name
+        _check_oauth_name_conflict(existing_oauth_configs, oauth_instance_name, org_id)
+        logger.info(f"Creating new OAuth config '{oauth_instance_name}' for {connector_type}")
+    # If updating existing (has oauth_app_id)
+    else:
+        # Find the existing config being updated
+        config_index = None
+        existing_config = None
+        for idx, cfg in enumerate(existing_oauth_configs):
+            if cfg.get("_id") == oauth_app_id and cfg.get("orgId") == org_id:
+                config_index = idx
+                existing_config = cfg
+                break
+
+        if config_index is not None and existing_config:
+            # When updating: if name is empty/not provided, keep existing name
+            if oauth_instance_name_from_request:
+                oauth_instance_name = oauth_instance_name_from_request
+                # Only check conflict if name is actually changing
+                existing_name = existing_config.get("oauthInstanceName", "")
+                if oauth_instance_name != existing_name:
+                    _check_oauth_name_conflict(
+                        existing_oauth_configs, oauth_instance_name, org_id, exclude_index=config_index
+                    )
+                    logger.info(f"Updating OAuth config {oauth_app_id} with new name '{oauth_instance_name}'")
+                else:
+                    logger.info(f"Updating OAuth config {oauth_app_id} (name unchanged)")
+            else:
+                # Keep existing name when updating
+                oauth_instance_name = existing_config.get("oauthInstanceName", instance_name)
+                logger.info(f"Updating OAuth config {oauth_app_id} with existing name '{oauth_instance_name}'")
+        else:
+            # Config not found, create new instead
+            logger.warning(f"OAuth config {oauth_app_id} not found, will create new one")
+            oauth_app_id = None
+            oauth_instance_name = oauth_instance_name_from_request or instance_name
+            _check_oauth_name_conflict(existing_oauth_configs, oauth_instance_name, org_id)
+
+    # Create or update OAuth config
+    return await _create_or_update_oauth_config(
+        connector_type=connector_type,
+        auth_config=auth_config,
+        instance_name=oauth_instance_name,
+        user_id=user_id,
+        org_id=org_id,
+        is_admin=is_admin,
+        config_service=config_service,
+        base_url=base_url,
+        oauth_app_id=oauth_app_id,
+        logger=logger
+    )
+
+
+async def _prepare_connector_config(
+    config: Dict[str, Any],
+    connector_type: str,
+    scope: str,
+    oauth_config_id: Optional[str],
+    metadata: Dict[str, Any],
+    selected_auth_type: str,
+    user_id: str,
+    org_id: str,
+    is_admin: bool,
+    config_service: ConfigurationService,
+    base_url: str,
+    logger
+) -> Dict[str, Any]:
+    """
+    Prepare connector configuration for storage in etcd.
+
+    Args:
+        config: Raw configuration from request
+        connector_type: Type of connector
+        scope: Connector scope (personal/team)
+        oauth_config_id: OAuth config ID if applicable
+        metadata: Connector metadata from registry
+        selected_auth_type: Selected authentication type
+        user_id: User ID
+        org_id: Organization ID
+        is_admin: Whether user is admin
+        config_service: Configuration service instance
+        base_url: Base URL for OAuth redirects
+        logger: Logger instance
+
+    Returns:
+        Prepared configuration dictionary
+    """
+    # ============================================================
+    # 1. Filter OAuth Credential Fields from Auth Config
+    # Only filter for OAUTH type - other auth types need these fields
+    # ============================================================
+    auth_config_clean = {}
+    if config and config.get("auth"):
+        auth_config_raw = config.get("auth", {})
+        auth_type = selected_auth_type.upper() if selected_auth_type else "NONE"
+
+        if auth_type == "OAUTH":
+            # Only filter OAuth credential fields when authType is OAUTH
+            # For OAUTH, credentials are stored in OAuth config registry, only reference ID is kept
+            oauth_field_names = _get_oauth_field_names_from_registry(connector_type)
+
+            for key, value in auth_config_raw.items():
+                # Keep OAuth references and metadata
+                if key in ["oauthConfigId", "oauthInstanceName", "authType", "connectorScope"]:
+                    auth_config_clean[key] = value
+                # Keep non-OAuth credential fields (skip OAuth credential fields like clientId, clientSecret, etc.)
+                elif key not in oauth_field_names:
+                    auth_config_clean[key] = value
+                # OAuth credential fields are intentionally excluded - they're stored in OAuth config registry
+        else:
+            # For non-OAUTH auth types, keep all fields as they may be needed
+            # (e.g., clientId/clientSecret for OAUTH_ADMIN_CONSENT, API_TOKEN, etc.)
+            auth_config_clean = auth_config_raw.copy()
+
+    prepared_config = {
+        "auth": auth_config_clean,
+        "sync": config.get("sync", {}) if config else {},
+        "filters": config.get("filters", {}) if config else {},
+        "credentials": None,
+        "oauth": None
+    }
+
+    # ============================================================
+    # 2. Fetch and Reference OAuth Config if Provided
+    # ============================================================
+    if oauth_config_id:
+        oauth_config_path = _get_oauth_config_path(connector_type)
+        oauth_configs = await config_service.get_config(oauth_config_path, default=[])
+
+        if not isinstance(oauth_configs, list):
+            oauth_configs = []
+
+        # Find OAuth config with access control
+        oauth_config = None
+        for oauth_cfg in oauth_configs:
+            if oauth_cfg.get("_id") == oauth_config_id:
+                oauth_config = oauth_cfg
+                break
+
+        if not oauth_config:
+            logger.error(f"OAuth config {oauth_config_id} not found or access denied")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"OAuth config {oauth_config_id} not found or access denied"
+            )
+
+        # Store only reference, not sensitive credentials
+        if "auth" not in prepared_config:
+            prepared_config["auth"] = {}
+        prepared_config["auth"]["oauthConfigId"] = oauth_config_id
+        logger.info(f"Referenced OAuth config {oauth_config_id}")
+
+    # ============================================================
+    # 3. Add Auth Metadata from Registry
+    # ============================================================
+    prepared_config["auth"]["connectorType"] = connector_type
+
+    auth_type = selected_auth_type.upper() if selected_auth_type else "NONE"
+    auth_metadata = metadata.get("config", {}).get("auth", {})
+    auth_schemas = auth_metadata.get("schemas", {})
+    selected_auth_schema = auth_schemas.get(auth_type, {}) if auth_type != "NONE" else {}
+
+    # Add OAuth infrastructure fields for OAUTH type
+    if auth_type == "OAUTH":
+        oauth_configs = auth_metadata.get("oauthConfigs", {})
+        oauth_config = oauth_configs.get(auth_type, {}) if oauth_configs else {}
+
+        # Get and prepare redirect URI
+        redirect_uri = selected_auth_schema.get("redirectUri", "")
+        if redirect_uri:
+            if base_url:
+                redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+            else:
+                endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
+                fallback_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
+                redirect_uri = f"{fallback_url.rstrip('/')}/{redirect_uri}"
+
+        prepared_config["auth"].update({
+            "authorizeUrl": oauth_config.get("authorizeUrl", ""),
+            "tokenUrl": oauth_config.get("tokenUrl", ""),
+            "scopes": oauth_config.get("scopes", []),
+            "redirectUri": redirect_uri
+        })
+
+    # Store auth type and connector scope
+    prepared_config["auth"].update({
+        "authType": auth_type,
+        "connectorScope": scope
+    })
+
+    return prepared_config
+
+
 @router.post("/api/v1/connectors/")
 async def create_connector_instance(
     request: Request,
@@ -2903,14 +3169,17 @@ async def create_connector_instance(
     """
     container = request.app.container
     logger = container.logger()
+    config_service = container.config_service()
     connector_registry = request.app.state.connector_registry
-    logger.info("Creating connector instance")
+
     try:
+        # ============================================================
+        # 1. Authentication & Parse Request Body
+        # ============================================================
         user_id = request.state.user.get("userId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
-        logger.info(f"Is admin: {is_admin}")
-        logger.info(f"Headers: {request.headers}")
         org_id = request.state.user.get("orgId")
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+
         if not user_id or not org_id:
             raise HTTPException(
                 status_code=HttpStatusCode.UNAUTHORIZED.value,
@@ -2920,83 +3189,144 @@ async def create_connector_instance(
         body = await request.json()
         connector_type = body.get("connectorType")
         instance_name = (body.get("instanceName") or "").strip()
-        config = body.get("config", {})
-        # Trim whitespace from config values
-        if config:
-            config = _trim_connector_config(config)
+        config = _trim_connector_config(body.get("config", {})) if body.get("config") else {}
+        oauth_config_id = body.get("oauthConfigId")
+        selected_auth_type = body.get("authType")
         base_url = body.get("baseUrl", "")
         scope = (body.get("scope") or "personal").lower()
 
-        if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value]:
-            logger.error(f"Invalid scope: {scope}")
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail="Invalid scope. Must be 'personal' or 'team'"
-            )
-
+        # ============================================================
+        # 2. Validate Request Parameters
+        # ============================================================
         if not connector_type or not instance_name:
-            logger.error(f"connector_type and instance_name are required: {connector_type} {instance_name}")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="connector_type and instance_name are required"
             )
 
-        # Get account type for beta connector validation
+        if scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value]:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Invalid scope. Must be 'personal' or 'team'"
+            )
+
+        # ============================================================
+        # 3. Verify Connector Type & Get Metadata
+        # ============================================================
+        metadata = await connector_registry.get_connector_metadata(connector_type)
+        if not metadata:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector type '{connector_type}' not found in registry"
+            )
+
+        # ============================================================
+        # 4. Beta Connector Validation
+        # ============================================================
         account_type = None
         try:
             account_type = await arango_service.get_account_type(org_id)
         except Exception as e:
             logger.debug(f"Could not get account type: {e}")
 
-        # Verify connector type exists in registry
-        metadata = await connector_registry.get_connector_metadata(connector_type)
-        if not metadata:
-            logger.error(f"Connector type '{connector_type}' not found in registry")
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail=f"Connector type '{connector_type}' not found in registry"
-            )
-
-        # Check if this is a beta connector
-        # Use the same normalization logic as the registry
         normalized_connector_type = connector_registry._normalize_connector_name(connector_type)
         beta_names = connector_registry._get_beta_connector_names()
         is_beta_connector = normalized_connector_type in beta_names
 
-        # Validate: Beta connectors cannot be created for team scope in enterprise accounts
         if is_beta_connector and account_type and account_type.lower() in ['enterprise', 'business'] and scope == ConnectorScope.TEAM.value:
-            logger.error(
-                f"Beta connector '{connector_type}' cannot be created for team scope in enterprise accounts. "
-                f"Beta connectors are only available for personal scope in enterprise accounts or team scope in individual accounts."
-            )
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
-                detail=(
-                    f"Beta connector '{connector_type}' cannot be created for team scope in enterprise accounts. "
-                )
+                detail=f"Beta connector '{connector_type}' cannot be created for team scope in enterprise accounts."
             )
 
         await check_beta_connector_access(connector_type, request)
 
-        # Check if connector supports requested scope
+        # ============================================================
+        # 5. Validate Scope & Permissions
+        # ============================================================
         supported_scopes = metadata.get("scope", [ConnectorScope.PERSONAL])
         if scope not in supported_scopes:
-            logger.error(f"Connector '{connector_type}' does not support scope '{scope}'")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=f"Connector '{connector_type}' does not support scope '{scope}'"
             )
 
-        # Validate team scope creation permission
-        if scope == ConnectorScope.TEAM.value:
-            if not is_admin:
-                logger.error("Only administrators can create team connectors")
+        if scope == ConnectorScope.TEAM.value and not is_admin:
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only administrators can create team connectors"
+            )
+
+        # ============================================================
+        # 6. Validate & Determine Auth Type
+        # ============================================================
+        supported_auth_types = metadata.get("supportedAuthTypes", [])
+
+        if not selected_auth_type:
+            selected_auth_type = supported_auth_types[0] if supported_auth_types else "NONE"
+            logger.info(f"Using auto-selected auth type: {selected_auth_type}")
+
+        # Validate auth type compatibility
+        if supported_auth_types and selected_auth_type not in supported_auth_types:
+            if not (selected_auth_type.upper() == "NONE" and len(supported_auth_types) == 0):
                 raise HTTPException(
-                    status_code=HttpStatusCode.FORBIDDEN.value,
-                    detail="Only administrators can create team connectors"
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail=f"Auth type '{selected_auth_type}' is not supported. Supported: {', '.join(supported_auth_types)}"
                 )
 
-        # Create instance in database
+        # ============================================================
+        # 7. Pre-validate OAuth Config (if applicable)
+        # ============================================================
+        # Check for OAuth name conflicts BEFORE creating connector instance
+        # This prevents orphaned connector instances if OAuth name validation fails
+        if is_admin and config and config.get("auth") and selected_auth_type and selected_auth_type.upper() == "OAUTH":
+            oauth_field_names = _get_oauth_field_names_from_registry(connector_type)
+            has_oauth_credentials = any(
+                config.get("auth", {}).get(field_name) or
+                config.get("auth", {}).get(field_name.replace("Id", "_id").replace("Secret", "_secret"))
+                for field_name in oauth_field_names
+            )
+
+            if has_oauth_credentials:
+                # Determine OAuth instance name
+                oauth_instance_name = config.get("auth", {}).get("oauthInstanceName", "").strip() or instance_name
+
+                # Get existing OAuth configs to check for name conflicts
+                oauth_config_path = _get_oauth_config_path(connector_type)
+                existing_oauth_configs = await config_service.get_config(oauth_config_path, default=[])
+
+                if not isinstance(existing_oauth_configs, list):
+                    existing_oauth_configs = []
+
+                # Check if we're updating an existing OAuth config or creating a new one
+                provided_oauth_config_id = oauth_config_id or config.get("auth", {}).get("oauthConfigId")
+
+                if provided_oauth_config_id:
+                    # Updating existing - check conflict excluding the config being updated
+                    config_index = None
+                    for idx, cfg in enumerate(existing_oauth_configs):
+                        if cfg.get("_id") == provided_oauth_config_id and cfg.get("orgId") == org_id:
+                            config_index = idx
+                            break
+
+                    if config_index is not None:
+                        # Conflict check excluding the config being updated
+                        _check_oauth_name_conflict(
+                            existing_oauth_configs, oauth_instance_name, org_id, exclude_index=config_index
+                        )
+                        logger.debug(f"Pre-validation: OAuth config {provided_oauth_config_id} can be updated with name '{oauth_instance_name}'")
+                    else:
+                        # Config not found, will create new one instead - check as new
+                        _check_oauth_name_conflict(existing_oauth_configs, oauth_instance_name, org_id)
+                        logger.debug(f"Pre-validation: OAuth config {provided_oauth_config_id} not found, will create new config with name '{oauth_instance_name}'")
+                else:
+                    # Creating new - check for any name conflicts
+                    _check_oauth_name_conflict(existing_oauth_configs, oauth_instance_name, org_id)
+                    logger.debug(f"Pre-validation: New OAuth config with name '{oauth_instance_name}' can be created")
+
+        # ============================================================
+        # 8. Create Connector Instance in Database
+        # ============================================================
         try:
             instance = await connector_registry.create_connector_instance_on_configuration(
                 connector_type=connector_type,
@@ -3004,18 +3334,16 @@ async def create_connector_instance(
                 scope=scope,
                 created_by=user_id,
                 org_id=org_id,
-                is_admin=is_admin
+                is_admin=is_admin,
+                selected_auth_type=selected_auth_type
             )
         except ValueError as e:
-            # Handle name uniqueness validation error
-            logger.error(f"Name uniqueness validation failed: {str(e)}")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=str(e)
             )
 
         if not instance:
-            logger.error("Failed to create connector instance")
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail="Failed to create connector instance"
@@ -3023,57 +3351,71 @@ async def create_connector_instance(
 
         connector_id = instance.get("_key")
 
-        # Store initial configuration in etcd if provided
-        if config:
+        # ============================================================
+        # 9. Store Initial Configuration
+        # ============================================================
+        if config or oauth_config_id:
             logger.info(f"Storing initial config for instance {connector_id}")
-            config_service = container.config_service()
-            config_path = _get_config_path_for_instance(connector_id)
 
-            # Prepare configuration
-            prepared_config = {
-                "auth": config.get("auth", {}),
-                "sync": config.get("sync", {}),
-                "filters": config.get("filters", {}),
-                "credentials": None,
-                "oauth": None
-            }
-            auth_metadata = metadata.get("config", {}).get("auth", {})
+            # Handle OAuth config creation/update if admin provides credentials
+            if is_admin and config and config.get("auth"):
+                logger.info(f"Admin provided auth config, attempting OAuth config creation/update for {connector_type}")
+                logger.debug(f"Auth config keys: {list(config.get('auth', {}).keys())}")
+                logger.debug(f"Connector authType: {selected_auth_type}")
 
-            redirect_uri = auth_metadata.get("redirectUri", "")
-            if base_url:
-                redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+                created_oauth_id = await _handle_oauth_config_creation(
+                    connector_type=connector_type,
+                    auth_config=config.get("auth"),
+                    instance_name=instance_name,
+                    user_id=user_id,
+                    org_id=org_id,
+                    is_admin=is_admin,
+                    config_service=config_service,
+                    oauth_config_id=oauth_config_id,
+                    auth_type=selected_auth_type,
+                    base_url=base_url,
+                    logger=logger
+                )
+
+                if created_oauth_id:
+                    oauth_config_id = created_oauth_id
+                    if "auth" not in config:
+                        config["auth"] = {}
+                    config["auth"]["oauthConfigId"] = created_oauth_id
+                    logger.info(f"OAuth config created/updated for connector {connector_id}")
+                else:
+                    logger.info(f"No OAuth config created for connector {connector_id} (credentials not provided or existing ID used)")
+            elif config and config.get("auth"):
+                logger.debug(f"Non-admin user provided auth config for {connector_id} - skipping OAuth config creation")
             else:
-                endpoints = await config_service.get_config(
-                    "/services/endpoints",
-                    use_cache=False
-                )
-                base_url = endpoints.get(
-                    "frontendPublicUrl",
-                    "http://localhost:3001"
-                )
-                redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+                logger.debug(f"No auth config provided for {connector_id}")
 
-            # Add OAuth metadata from registry if OAuth-based
-            auth_type = metadata.get("authType", "").upper()
-            if auth_type in ["OAUTH", "OAUTH_ADMIN_CONSENT"]:
-                prepared_config["auth"].update({
-                    "authorizeUrl": auth_metadata.get("authorizeUrl", ""),
-                    "tokenUrl": auth_metadata.get("tokenUrl", ""),
-                    "scopes": auth_metadata.get("scopes", []),
-                    "redirectUri": redirect_uri
-                })
-
-            prepared_config["auth"].update({
-                "authType": auth_type,
-                "connectorScope": scope
-            })
+            # Prepare configuration for storage
+            config_path = _get_config_path_for_instance(connector_id)
+            prepared_config = await _prepare_connector_config(
+                config=config,
+                connector_type=connector_type,
+                scope=scope,
+                oauth_config_id=oauth_config_id,
+                metadata=metadata,
+                selected_auth_type=selected_auth_type or "NONE",
+                user_id=user_id,
+                org_id=org_id,
+                is_admin=is_admin,
+                config_service=config_service,
+                base_url=base_url,
+                logger=logger
+            )
 
             await config_service.set_config(config_path, prepared_config)
             logger.info(f"Stored initial config for instance {connector_id}")
 
+        # ============================================================
+        # 10. Return Success Response
+        # ============================================================
         logger.info(
-            f"Created connector instance '{instance_name}' of type {connector_type} "
-            f"with scope {scope} for user {user_id} with key {connector_id}"
+            f"Created connector '{instance_name}' ({connector_type}) "
+            f"with scope '{scope}' for user {user_id}"
         )
 
         return {
@@ -3085,8 +3427,8 @@ async def create_connector_instance(
                 "created": True,
                 "scope": scope,
                 "createdBy": user_id,
-                "isAuthenticated": False,  # Will be set to True when user enables the connector
-                "isConfigured": bool(config)  # True if config was provided during creation
+                "isAuthenticated": False,
+                "isConfigured": bool(config)
             },
             "message": "Connector instance created successfully."
         }
@@ -3230,10 +3572,22 @@ async def get_connector_instance_config(
         if not config:
             config = {"auth": {}, "sync": {}, "filters": {}}
 
-        # Remove sensitive data
+        # Remove sensitive data and internal fields
         config = config.copy()
         config.pop("credentials", None)
         config.pop("oauth", None)
+
+        # Clean auth section in config (remove redundant OAuth fields that aren't needed)
+        if "auth" in config:
+            auth_config = config["auth"].copy()
+            # Remove OAuth-specific fields that are fetched from OAuth config registry when needed
+            # These are stored in etcd but not needed in the response
+            auth_config.pop("authorizeUrl", None)
+            auth_config.pop("tokenUrl", None)
+            auth_config.pop("scopes", None)
+            # oauthConfigs is not needed in config response (OAuth configs are fetched separately)
+            auth_config.pop("oauthConfigs", None)
+            config["auth"] = auth_config
 
         # Build response
         response_data = {
@@ -3339,16 +3693,157 @@ async def update_connector_instance_auth_config(
             existing_config = {}
 
         # Merge new auth configuration with existing config
+        # Filter out OAuth credential fields - only store reference ID
         new_config = existing_config.copy() if existing_config else {}
-        new_config["auth"] = body["auth"]
+        auth_config_raw = body.get("auth", {})
+
+        # Auto-create or update OAuth config if OAuth fields are provided and user is admin
+        # This happens when admin updates connector auth with OAuth credentials directly
+        auth_type = instance.get("authType", "").upper()
+        oauth_app_id = auth_config_raw.get("oauthConfigId")
+
+        # Only OAUTH type supports OAuth configs, not OAUTH_ADMIN_CONSENT
+        if is_admin and auth_type == "OAUTH":
+            # ============================================================
+            # Step 1: Determine OAuth instance name and check credentials
+            # ============================================================
+            oauth_field_names = _get_oauth_field_names_from_registry(connector_type)
+            has_oauth_credentials = any(
+                auth_config_raw.get(field_name) or
+                auth_config_raw.get(field_name.replace("Id", "_id").replace("Secret", "_secret"))
+                for field_name in oauth_field_names
+            )
+
+            if has_oauth_credentials:
+                logger.info(f"OAuth credentials detected for {connector_type}, proceeding with OAuth config creation/update")
+                logger.debug(f"OAuth field names from registry: {oauth_field_names}")
+                logger.debug(f"Auth config keys received: {list(auth_config_raw.keys())}")
+
+                # ============================================================
+                # Step 2: Get existing OAuth configs and determine name
+                # ============================================================
+                oauth_config_path = _get_oauth_config_path(connector_type)
+                existing_oauth_configs = await config_service.get_config(oauth_config_path, default=[])
+
+                if not isinstance(existing_oauth_configs, list):
+                    existing_oauth_configs = []
+
+                # Determine OAuth instance name
+                instance_name = instance.get("name", f"{connector_type} Connector")
+                oauth_instance_name_from_request = auth_config_raw.get("oauthInstanceName", "").strip()
+
+                # If creating new (no oauth_app_id)
+                if not oauth_app_id:
+                    # Use provided name or fall back to connector instance name
+                    oauth_instance_name = oauth_instance_name_from_request or instance_name
+                    _check_oauth_name_conflict(existing_oauth_configs, oauth_instance_name, org_id)
+                    logger.info(f"Creating new OAuth config '{oauth_instance_name}' for {connector_type}")
+                # If updating existing (has oauth_app_id)
+                else:
+                    # Find the existing config being updated
+                    config_index = None
+                    existing_config = None
+                    for idx, cfg in enumerate(existing_oauth_configs):
+                        if cfg.get("_id") == oauth_app_id and cfg.get("orgId") == org_id:
+                            config_index = idx
+                            existing_config = cfg
+                            break
+
+                    if config_index is not None and existing_config:
+                        # When updating: if name is empty/not provided, keep existing name
+                        if oauth_instance_name_from_request:
+                            oauth_instance_name = oauth_instance_name_from_request
+                            # Only check conflict if name is actually changing
+                            existing_name = existing_config.get("oauthInstanceName", "")
+                            if oauth_instance_name != existing_name:
+                                _check_oauth_name_conflict(
+                                    existing_oauth_configs, oauth_instance_name, org_id, exclude_index=config_index
+                                )
+                                logger.info(f"Updating OAuth config {oauth_app_id} with new name '{oauth_instance_name}'")
+                            else:
+                                logger.info(f"Updating OAuth config {oauth_app_id} (name unchanged)")
+                        else:
+                            # Keep existing name when updating
+                            oauth_instance_name = existing_config.get("oauthInstanceName", instance_name)
+                            logger.info(f"Updating OAuth config {oauth_app_id} with existing name '{oauth_instance_name}'")
+                    else:
+                        # Config not found, create new instead
+                        logger.warning(f"OAuth config {oauth_app_id} not found, will create new one")
+                        oauth_app_id = None
+                        oauth_instance_name = oauth_instance_name_from_request or instance_name
+                        _check_oauth_name_conflict(existing_oauth_configs, oauth_instance_name, org_id)
+
+                # ============================================================
+                # Step 3: Create or update OAuth config
+                # ============================================================
+                created_or_updated_oauth_app_id = await _create_or_update_oauth_config(
+                    connector_type=connector_type,
+                    auth_config=auth_config_raw,
+                    instance_name=oauth_instance_name,
+                    user_id=user_id,
+                    org_id=org_id,
+                    is_admin=is_admin,
+                    config_service=config_service,
+                    base_url=base_url,
+                    oauth_app_id=oauth_app_id,
+                    logger=logger
+                )
+
+                if created_or_updated_oauth_app_id:
+                    oauth_app_id = created_or_updated_oauth_app_id
+                    action = "Updated" if oauth_app_id else "Created"
+                    logger.info(f"{action} OAuth config for connector {connector_id}")
+                else:
+                    logger.error("Failed to create/update OAuth config")
+                    raise HTTPException(
+                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                        detail="Failed to create/update OAuth configuration"
+                    )
+            elif oauth_app_id:
+                # No credentials provided but has oauth_app_id - just use existing config
+                logger.info(f"Using existing OAuth config for {connector_type} without credential updates")
+            else:
+                # No credentials and no oauth_app_id
+                logger.info(f"No OAuth credentials or oauthConfigId provided for {connector_type} - skipping OAuth config operations")
+                logger.debug(f"Expected OAuth fields: {oauth_field_names}")
+                logger.debug(f"Received auth config keys: {list(auth_config_raw.keys())}")
+
+        # Filter out OAuth credential fields from auth config - only for OAUTH type
+        # For other auth types (OAUTH_ADMIN_CONSENT, API_TOKEN, etc.), keep all fields
+        # as they may be needed for those authentication methods
+        auth_config_clean = {}
+
+        if auth_type == "OAUTH":
+            # Only filter OAuth credential fields when authType is OAUTH
+            # For OAUTH, credentials are stored in OAuth config registry, only reference ID is kept
+            oauth_field_names = _get_oauth_field_names_from_registry(connector_type)
+            for key, value in auth_config_raw.items():
+                # Keep OAuth app ID references and metadata fields
+                if key in ["oauthConfigId", "oauthInstanceName", "authType", "connectorScope"]:
+                    auth_config_clean[key] = value
+                # Keep non-OAuth credential fields (skip OAuth credential fields like clientId, clientSecret, etc.)
+                elif key not in oauth_field_names:
+                    auth_config_clean[key] = value
+                # OAuth credential fields are intentionally excluded - they're stored in OAuth config registry
+
+            # Ensure OAuth app ID is set if it was created/updated
+            if oauth_app_id:
+                auth_config_clean["oauthConfigId"] = oauth_app_id
+        else:
+            # For non-OAUTH auth types, keep all fields as they may be needed
+            # (e.g., clientId/clientSecret for OAUTH_ADMIN_CONSENT, API_TOKEN, etc.)
+            auth_config_clean = auth_config_raw.copy()
+
+        new_config["auth"] = auth_config_clean
 
         # Clear credentials and OAuth state when auth config is updated
         new_config["credentials"] = None
         new_config["oauth"] = None
 
         # Add OAuth metadata from registry if applicable
+        # Only OAUTH type supports OAuth configs, not OAUTH_ADMIN_CONSENT
         auth_type = instance.get("authType", "").upper()
-        if auth_type in ["OAUTH", "OAUTH_ADMIN_CONSENT"]:
+        if auth_type == "OAUTH":
             metadata = await connector_registry.get_connector_metadata(connector_type)
             auth_metadata = metadata.get("config", {}).get("auth", {})
 
@@ -3361,19 +3856,21 @@ async def update_connector_instance_auth_config(
                     "/services/endpoints",
                     use_cache=False
                 )
-                base_url = endpoints.get(
-                    "frontendPublicUrl",
-                    "http://localhost:3001"
-                )
+                base_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
                 redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
-            new_config["auth"].update({
-                "authorizeUrl": auth_metadata.get("authorizeUrl", ""),
-                "tokenUrl": auth_metadata.get("tokenUrl", ""),
+            # Only use registry defaults if user hasn't provided these values
+            oauth_updates = {
                 "scopes": auth_metadata.get("scopes", []),
                 "redirectUri": redirect_uri,
                 "authType": auth_type,
-            })
+            }
+            # Preserve user-provided authorizeUrl and tokenUrl if they exist
+            if not new_config["auth"].get("authorizeUrl"):
+                oauth_updates["authorizeUrl"] = auth_metadata.get("authorizeUrl", "")
+            if not new_config["auth"].get("tokenUrl"):
+                oauth_updates["tokenUrl"] = auth_metadata.get("tokenUrl", "")
+            new_config["auth"].update(oauth_updates)
 
         # Save configuration
         await config_service.set_config(config_path, new_config)
@@ -3597,6 +4094,7 @@ async def update_connector_instance_config(
         connector_type = instance.get("type", "")
         body = await request.json()
         base_url = body.get("baseUrl", "")
+        oauth_config_id = body.get("oauthConfigId")  # Reference to stored OAuth config
 
         # Trim whitespace from config values before processing
         body = _trim_connector_config(body)
@@ -3655,37 +4153,106 @@ async def update_connector_instance_config(
             new_config["oauth"] = None
 
 
+        # Prevent auth type changes after connector creation
+        # Check both body.auth.authType and body.authType (for backward compatibility)
+        if auth_updated:
+            new_auth_type = None
+            if "auth" in body and "authType" in body.get("auth", {}):
+                new_auth_type = body["auth"].get("authType", "").upper()
+            elif "authType" in body:
+                new_auth_type = body.get("authType", "").upper()
+
+            if new_auth_type:
+                existing_auth_type = instance.get("authType", "").upper()
+                if new_auth_type != existing_auth_type:
+                    logger.error(f"Cannot change auth type from '{existing_auth_type}' to '{new_auth_type}'. Auth type cannot be changed after connector creation.")
+                    raise HTTPException(
+                        status_code=HttpStatusCode.BAD_REQUEST.value,
+                        detail=f"Cannot change auth type from '{existing_auth_type}' to '{new_auth_type}'. Auth type is locked after connector creation."
+                    )
+
         # Add OAuth metadata from registry if applicable (only if auth is being updated)
         if auth_updated:
+            # Use existing auth type from instance (cannot be changed)
             auth_type = instance.get("authType", "").upper()
             if auth_type in ["OAUTH", "OAUTH_ADMIN_CONSENT"]:
+                # If oauth_config_id is provided, fetch and merge OAuth config from etcd
+                if oauth_config_id:
+                    try:
+                        oauth_config_path = _get_oauth_config_path(connector_type)
+                        oauth_configs = await config_service.get_config(oauth_config_path, default=[])
+
+                        if not isinstance(oauth_configs, list):
+                            oauth_configs = []
+
+                        # Find the OAuth config (all users in org can use published OAuth configs)
+                        oauth_config = None
+                        for oauth_cfg in oauth_configs:
+                            if oauth_cfg.get("_id") == oauth_config_id:
+                                oauth_org_id = oauth_cfg.get("orgId")
+                                # All users in the same org can use published OAuth configs
+                                if oauth_org_id == org_id:
+                                    oauth_config = oauth_cfg
+                                    break
+
+                        if not oauth_config:
+                            logger.error(f"OAuth config {oauth_config_id} not found or access denied")
+                            raise HTTPException(
+                                status_code=HttpStatusCode.NOT_FOUND.value,
+                                detail=f"OAuth config {oauth_config_id} not found or access denied"
+                            )
+
+                        # Store only the reference to OAuth config, not the sensitive fields
+                        # The actual client_id/client_secret will be fetched during OAuth flow
+                        if "auth" not in new_config:
+                            new_config["auth"] = {}
+                        # Store only the reference and metadata, not sensitive credentials
+                        new_config["auth"]["oauthConfigId"] = oauth_config_id
+                        new_config["auth"]["oauthInstanceName"] = oauth_config.get("oauthInstanceName")
+                        logger.info(f"Referenced OAuth config {oauth_config_id} for connector auth config")
+
+                    except HTTPException:
+                        raise
+                    except Exception as e:
+                        logger.error(f"Error fetching OAuth config {oauth_config_id}: {e}")
+                        raise HTTPException(
+                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                            detail=f"Failed to fetch OAuth configuration: {str(e)}"
+                        )
+
                 metadata = await connector_registry.get_connector_metadata(connector_type)
                 auth_metadata = metadata.get("config", {}).get("auth", {})
 
                 if "auth" not in new_config:
                     new_config["auth"] = {}
 
-                # Determine redirect URI
-                redirect_uri = auth_metadata.get("redirectUri", "")
-                if base_url:
-                    redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
-                else:
-                    endpoints = await config_service.get_config(
-                        "/services/endpoints",
-                        use_cache=False
-                    )
-                    base_url = endpoints.get(
-                        "frontendPublicUrl",
-                        "http://localhost:3001"
-                    )
-                    redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+                # Get auth schema and OAuth config for the existing auth type
+                auth_schemas = auth_metadata.get("schemas", {})
+                selected_auth_schema = auth_schemas.get(auth_type, {}) if auth_schemas else {}
+                oauth_configs = auth_metadata.get("oauthConfigs", {})
+                oauth_config = oauth_configs.get(auth_type, {}) if oauth_configs else {}
+
+                # Get redirect URI from the auth type's schema
+                redirect_uri = selected_auth_schema.get("redirectUri", "")
+
+                if redirect_uri:
+                    if base_url:
+                        redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+                    else:
+                        endpoints = await config_service.get_config(
+                            "/services/endpoints",
+                            use_cache=False
+                        )
+                        base_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
+                        redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+
 
                 new_config["auth"].update({
-                    "authorizeUrl": auth_metadata.get("authorizeUrl", ""),
-                    "tokenUrl": auth_metadata.get("tokenUrl", ""),
-                    "scopes": auth_metadata.get("scopes", []),
+                    "authorizeUrl": oauth_config.get("authorizeUrl", ""),
+                    "tokenUrl": oauth_config.get("tokenUrl", ""),
+                    "scopes": oauth_config.get("scopes", []),
                     "redirectUri": redirect_uri,
-                    "authType": auth_type,
+                    "authType": auth_type,  # Keep existing auth type (cannot be changed)
                 })
 
         # Save configuration
@@ -3984,8 +4551,362 @@ async def update_connector_instance_name(
 
 
 # ============================================================================
+# Common Helper Functions
+# ============================================================================
+
+def _get_user_context(request: Request) -> Dict[str, Any]:
+    """
+    Extract and validate user authentication context from request.
+
+    Args:
+        request: FastAPI request object
+
+    Returns:
+        Dictionary with user_id, org_id, and is_admin
+
+    Raises:
+        HTTPException: If user is not authenticated
+    """
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+
+    if not user_id or not org_id:
+        raise HTTPException(
+            status_code=HttpStatusCode.UNAUTHORIZED.value,
+            detail="User not authenticated"
+        )
+
+    return {
+        "user_id": user_id,
+        "org_id": org_id,
+        "is_admin": is_admin
+    }
+
+
+def _validate_admin_only(is_admin: bool, action: str = "perform this action") -> None:
+    """
+    Validate that user is an administrator.
+
+    Args:
+        is_admin: Whether user is admin
+        action: Action being performed (for error message)
+
+    Raises:
+        HTTPException: If user is not admin
+    """
+    if not is_admin:
+        raise HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value,
+            detail=f"Only administrators can {action}"
+        )
+
+
+def _validate_connector_permissions(
+    instance: Dict[str, Any],
+    user_id: str,
+    is_admin: bool,
+    action: str = "access"
+) -> None:
+    """
+    Validate user permissions for connector instance operations.
+
+    Validates based on connector scope (team/personal) and user role.
+
+    Args:
+        instance: Connector instance dictionary
+        user_id: User ID performing the action
+        is_admin: Whether user is admin
+        action: Action being performed (for error messages)
+
+    Raises:
+        HTTPException: If user doesn't have permission
+    """
+    scope = instance.get("scope")
+    created_by = instance.get("createdBy")
+
+    # Team connectors require admin access
+    if scope == ConnectorScope.TEAM.value and not is_admin:
+        raise HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value,
+            detail=f"Only administrators can {action} team connectors"
+        )
+
+    # Personal connectors: creator or admin can access
+    if scope == ConnectorScope.PERSONAL.value:
+        if created_by != user_id and not is_admin:
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail=f"Only the creator can {action} this connector"
+            )
+    # For any scope: non-creator non-admins cannot access
+    elif created_by != user_id and not is_admin:
+        raise HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value,
+            detail=f"Only the creator or an administrator can {action} this connector"
+        )
+
+
+async def _get_and_validate_connector_instance(
+    connector_id: str,
+    user_context: Dict[str, Any],
+    connector_registry,
+    logger
+) -> Dict[str, Any]:
+    """
+    Retrieve connector instance and validate access.
+
+    Args:
+        connector_id: Connector instance ID
+        user_context: User context from _get_user_context
+        connector_registry: Connector registry instance
+        logger: Logger instance
+
+    Returns:
+        Connector instance dictionary
+
+    Raises:
+        HTTPException: If instance not found or access denied
+    """
+    instance = await connector_registry.get_connector_instance(
+        connector_id=connector_id,
+        user_id=user_context["user_id"],
+        org_id=user_context["org_id"],
+        is_admin=user_context["is_admin"]
+    )
+
+    if not instance:
+        logger.error(f"Connector instance {connector_id} not found or access denied")
+        raise HTTPException(
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail=f"Connector instance {connector_id} not found or access denied"
+        )
+
+    return instance
+
+
+async def _find_oauth_config_in_list(
+    oauth_configs: List[Dict[str, Any]],
+    config_id: str,
+    org_id: str,
+    logger
+) -> tuple[Optional[Dict[str, Any]], Optional[int]]:
+    """
+    Find OAuth config by ID in list with access control.
+
+    Args:
+        oauth_configs: List of OAuth configs
+        config_id: Config ID to find
+        org_id: Organization ID for filtering
+        logger: Logger instance
+
+    Returns:
+        Tuple of (config dict, index) if found, (None, None) otherwise
+    """
+    for idx, config in enumerate(oauth_configs):
+        if config.get("_id") == config_id:
+            config_org_id = config.get("orgId")
+            if config_org_id == org_id:
+                return config, idx
+
+    return None, None
+
+
+def _check_oauth_name_conflict(
+    oauth_configs: List[Dict[str, Any]],
+    name: str,
+    org_id: str,
+    exclude_index: Optional[int] = None
+) -> None:
+    """
+    Check if OAuth config name conflicts with existing configs.
+
+    Args:
+        oauth_configs: List of existing OAuth configs
+        name: Name to check
+        org_id: Organization ID for filtering
+        exclude_index: Index to exclude from check (for updates)
+
+    Raises:
+        HTTPException: If name conflict exists
+    """
+    for idx, config in enumerate(oauth_configs):
+        if idx == exclude_index:
+            continue
+
+        if (config.get("oauthInstanceName") == name and
+            config.get("orgId") == org_id):
+            raise HTTPException(
+                status_code=HttpStatusCode.CONFLICT.value,
+                detail=f"An OAuth configuration with the name '{name}' already exists. Please use a different name."
+            )
+
+
+async def _update_oauth_infrastructure_fields(
+    oauth_config: Dict[str, Any],
+    connector_type: str,
+    config_service: ConfigurationService,
+    base_url: str
+) -> None:
+    """
+    Ensure OAuth infrastructure fields are present from registry.
+
+    Updates the config dict in-place with missing infrastructure fields.
+
+    Args:
+        oauth_config: OAuth config dictionary to update
+        connector_type: Type of connector
+        config_service: Configuration service for endpoints
+        base_url: Base URL for OAuth redirects
+    """
+    from app.connectors.core.registry.oauth_config_registry import (
+        get_oauth_config_registry,
+    )
+
+    oauth_registry = get_oauth_config_registry()
+    oauth_registry_config = oauth_registry.get_config(connector_type)
+
+    if not oauth_registry_config:
+        return
+
+    # Update OAuth infrastructure fields if missing
+    if "authorizeUrl" not in oauth_config:
+        oauth_config["authorizeUrl"] = oauth_registry_config.authorize_url
+
+    if "tokenUrl" not in oauth_config:
+        oauth_config["tokenUrl"] = oauth_registry_config.token_url
+
+    if "redirectUri" not in oauth_config:
+        redirect_uri_path = oauth_registry_config.redirect_uri
+        if redirect_uri_path:
+            if base_url:
+                oauth_config["redirectUri"] = f"{base_url.rstrip('/')}/{redirect_uri_path}"
+            else:
+                endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
+                fallback_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
+                oauth_config["redirectUri"] = f"{fallback_url.rstrip('/')}/{redirect_uri_path}"
+        else:
+            oauth_config["redirectUri"] = ""
+
+    if "scopes" not in oauth_config:
+        oauth_config["scopes"] = oauth_registry_config.scopes.to_dict()
+
+    if "tokenAccessType" not in oauth_config and oauth_registry_config.token_access_type:
+        oauth_config["tokenAccessType"] = oauth_registry_config.token_access_type
+
+    if "additionalParams" not in oauth_config and oauth_registry_config.additional_params:
+        oauth_config["additionalParams"] = oauth_registry_config.additional_params
+
+    # Update metadata fields if missing
+    if "iconPath" not in oauth_config:
+        oauth_config["iconPath"] = oauth_registry_config.icon_path
+    if "appGroup" not in oauth_config:
+        oauth_config["appGroup"] = oauth_registry_config.app_group
+    if "appDescription" not in oauth_config:
+        oauth_config["appDescription"] = oauth_registry_config.app_description
+    if "appCategories" not in oauth_config:
+        oauth_config["appCategories"] = oauth_registry_config.app_categories
+
+
+# ============================================================================
 # OAuth Endpoints
 # ============================================================================
+
+async def _build_oauth_flow_config(
+    auth_config: Dict[str, Any],
+    connector_type: str,
+    org_id: str,
+    config_service: ConfigurationService,
+    logger
+) -> Dict[str, Any]:
+    """
+    Build OAuth flow configuration from either shared OAuth config or direct auth config.
+
+    Args:
+        auth_config: Connector's auth configuration
+        connector_type: Type of connector
+        org_id: Organization ID for access control
+        config_service: Configuration service instance
+        logger: Logger instance
+
+    Returns:
+        OAuth flow configuration dictionary with all necessary fields
+    Raises:
+        HTTPException: If shared OAuth config is referenced but not found
+    """
+    oauth_config_id = auth_config.get("oauthConfigId")
+
+    # Use shared OAuth config if available
+    if oauth_config_id:
+        oauth_config_path = _get_oauth_config_path(connector_type)
+        oauth_configs = await config_service.get_config(oauth_config_path, default=[])
+
+        if not isinstance(oauth_configs, list):
+            oauth_configs = []
+
+        # Find the OAuth config for this organization
+        shared_oauth_config = None
+        for oauth_cfg in oauth_configs:
+            if oauth_cfg.get("_id") == oauth_config_id and oauth_cfg.get("orgId") == org_id:
+                shared_oauth_config = oauth_cfg
+                break
+
+        if not shared_oauth_config:
+            logger.error(f"OAuth config {oauth_config_id} not found or access denied")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"OAuth config {oauth_config_id} not found or access denied"
+            )
+
+        # Build flow config from shared OAuth config
+        oauth_flow_config = {
+            "authorizeUrl": shared_oauth_config.get("authorizeUrl", ""),
+            "tokenUrl": shared_oauth_config.get("tokenUrl", ""),
+            "redirectUri": shared_oauth_config.get("redirectUri", ""),
+        }
+
+        # Convert scopes from dict to list based on connector scope
+        connector_scope = auth_config.get("connectorScope", "team").lower()
+        scopes_data = shared_oauth_config.get("scopes", {})
+
+        if isinstance(scopes_data, dict):
+            scope_key_map = {"personal": "personal_sync", "team": "team_sync", "agent": "agent"}
+            scope_key = scope_key_map.get(connector_scope, "team_sync")
+            scope_list = scopes_data.get(scope_key, [])
+            oauth_flow_config["scopes"] = scope_list if isinstance(scope_list, list) else []
+        else:
+            oauth_flow_config["scopes"] = scopes_data if isinstance(scopes_data, list) else []
+
+        # Add optional fields
+        if "tokenAccessType" in shared_oauth_config:
+            oauth_flow_config["tokenAccessType"] = shared_oauth_config["tokenAccessType"]
+        if "additionalParams" in shared_oauth_config:
+            oauth_flow_config["additionalParams"] = shared_oauth_config["additionalParams"]
+
+        # Get OAuth credential fields from config section
+        oauth_config_data = shared_oauth_config.get("config", {})
+        if oauth_config_data:
+            oauth_config_copy = oauth_config_data.copy()
+            # Normalize field names
+            if "client_id" in oauth_config_copy and "clientId" not in oauth_config_copy:
+                oauth_config_copy["clientId"] = oauth_config_copy.pop("client_id")
+            if "client_secret" in oauth_config_copy and "clientSecret" not in oauth_config_copy:
+                oauth_config_copy["clientSecret"] = oauth_config_copy.pop("client_secret")
+            oauth_flow_config.update(oauth_config_copy)
+
+        # Preserve connector-specific settings
+        if "authType" in auth_config:
+            oauth_flow_config["authType"] = auth_config["authType"]
+        if "connectorScope" in auth_config:
+            oauth_flow_config["connectorScope"] = auth_config["connectorScope"]
+
+        logger.info(f"Using shared OAuth config {oauth_config_id}")
+    else:
+        # Use connector's auth config directly
+        oauth_flow_config = auth_config.copy()
+
+    return oauth_flow_config
+
 
 @router.get("/api/v1/connectors/{connector_id}/oauth/authorize")
 async def get_oauth_authorization_url(
@@ -4011,19 +4932,24 @@ async def get_oauth_authorization_url(
     """
     container = request.app.container
     logger = container.logger()
+    config_service = container.config_service()
     connector_registry = request.app.state.connector_registry
 
     try:
+        # ============================================================
+        # 1. Authentication & Authorization
+        # ============================================================
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+
         if not user_id or not org_id:
-            logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
                 status_code=HttpStatusCode.UNAUTHORIZED.value,
                 detail="User not authenticated"
             )
-        # Get instance
+
+        # Get connector instance
         instance = await connector_registry.get_connector_instance(
             connector_id=connector_id,
             user_id=user_id,
@@ -4031,66 +4957,72 @@ async def get_oauth_authorization_url(
             is_admin=is_admin
         )
         if not instance:
-            logger.error(f"Connector instance {connector_id} not found or access denied")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail=f"Connector instance {connector_id} not found or access denied"
             )
 
-        connector_type = instance.get("type", "").replace(" ","").upper()
+        connector_type = instance.get("type", "").replace(" ", "").upper()
         await check_beta_connector_access(connector_type, request)
 
-        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
-            logger.error("Only administrators can get OAuth authorization URL for team connectors")
+        # Verify permissions based on scope
+        is_team_connector = instance.get("scope") == ConnectorScope.TEAM.value
+        is_creator = instance.get("createdBy") == user_id
+
+        if is_team_connector and not is_admin:
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only administrators can get OAuth authorization URL for team connectors"
             )
-        if instance.get("createdBy") != user_id and not is_admin:
-            logger.error("Only the creator or an administrator can get OAuth authorization URL for this connector")
+        if not is_creator and not is_admin:
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator or an administrator can get OAuth authorization URL for this connector"
-            )
-        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
-            logger.error("Only the creator can get OAuth authorization URL for this connector")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only the creator can get OAuth authorization URL for this connector"
             )
 
         # Verify OAuth support
         auth_type = (instance.get("authType") or "").upper()
         if auth_type not in ["OAUTH", "OAUTH_ADMIN_CONSENT"]:
-            logger.error("Connector instance does not support OAuth")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Connector instance does not support OAuth"
             )
 
-        # Get configuration
-        config_service = container.config_service()
+        # ============================================================
+        # 2. Configuration Retrieval
+        # ============================================================
         config_path = _get_config_path_for_instance(connector_id)
         config = await config_service.get_config(config_path)
 
         if not config or not config.get("auth"):
-            logger.error("OAuth configuration not found. Please configure first.")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="OAuth configuration not found. Please configure first."
             )
 
         auth_config = config["auth"]
+        connector_scope = auth_config.get("connectorScope", "team").lower()
 
-        # Determine redirect URI - use the exact URI from config
-        redirect_uri = auth_config.get("redirectUri", "")
 
-        logger.info(f"Redirect URI: {redirect_uri}")
+        # ============================================================
+        # 3. Build OAuth Flow Configuration
+        # ============================================================
+        oauth_flow_config = await _build_oauth_flow_config(
+            auth_config=auth_config,
+            connector_type=connector_type,
+            org_id=org_id,
+            config_service=config_service,
+            logger=logger
+        )
 
-        # Create OAuth configuration
-        oauth_config = get_oauth_config(instance.get("type", ""), auth_config)
+        logger.info(f"Redirect URI: {oauth_flow_config.get('redirectUri', '')}")
 
-        # Create OAuth provider
+        # ============================================================
+        # 4. Generate Authorization URL
+        # ============================================================
+        oauth_config = get_oauth_config(oauth_flow_config)
+        logger.info(f"Using {connector_scope} with scopes: {oauth_config.scope}")
+
         oauth_provider = OAuthProvider(
             config=oauth_config,
             key_value_store=container.key_value_store(),
@@ -4098,20 +5030,10 @@ async def get_oauth_authorization_url(
         )
 
         try:
-            # Add provider-specific parameters
-            extra_params = {}
+            # Generate base authorization URL
+            auth_url = await oauth_provider.start_authorization()
 
-            if connector_type in ["DRIVE", "GMAIL", "CALENDAR", "MEET", "DOCS", "SHEETS", "SLIDES", "FORMS"]:
-                extra_params.update({
-                    "access_type": "offline",
-                    "prompt": "consent",
-                    "include_granted_scopes": "true"
-                })
-
-            # Generate authorization URL
-            auth_url = await oauth_provider.start_authorization(**extra_params)
-
-            # Add Microsoft-specific parameters
+            # Apply provider-specific URL modifications
             if connector_type == "ONEDRIVE":
                 parsed_url = urlparse(auth_url)
                 params = parse_qs(parsed_url.query)
@@ -4120,12 +5042,9 @@ async def get_oauth_authorization_url(
                 if auth_type == "OAUTH_ADMIN_CONSENT":
                     params["prompt"] = ["admin_consent"]
 
-                auth_url = (
-                    f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}?"
-                    f"{urlencode(params, doseq=True)}"
-                )
+                auth_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}?{urlencode(params, doseq=True)}"
 
-            # Extract and encode state with connector_id
+            # Encode state with connector_id for callback routing
             parsed_url = urlparse(auth_url)
             query_params = parse_qs(parsed_url.query)
             original_state = query_params.get("state", [None])[0]
@@ -4133,15 +5052,10 @@ async def get_oauth_authorization_url(
             if not original_state:
                 raise ValueError("No state parameter in authorization URL")
 
-            # Encode state with connector_id
             encoded_state = _encode_state_with_instance(original_state, connector_id)
-
-            # Replace state in URL
             query_params["state"] = [encoded_state]
-            final_auth_url = (
-                f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}?"
-                f"{urlencode(query_params, doseq=True)}"
-            )
+
+            final_auth_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}?{urlencode(query_params, doseq=True)}"
 
             return {
                 "success": True,
@@ -4194,56 +5108,62 @@ async def handle_oauth_callback(
     connector_registry = request.app.state.connector_registry
 
     settings_base_path = await _get_settings_base_path(arango_service)
+    connector_id = None  # For error handling
 
-    # Normalize error values
-    if error in ["null", "undefined", "None", ""]:
-        error = None
-
-    # Check for OAuth errors
-    if error:
-        logger.error(f"OAuth error: {error}")
-        error_url = f"{base_url or ''}/connectors/oauth/callback?oauth_error={error}"
-        return {
-            "success": False,
-            "error": error,
-            "redirect_url": error_url
-        }
-
-    if not code or not state:
-        logger.error("Missing OAuth parameters")
-        error_url = f"{base_url or ''}/connectors/oauth/callback?oauth_error=missing_parameters"
-        return {
-            "success": False,
-            "error": "missing_parameters",
-            "redirect_url": error_url
-        }
-
-
-    user_id = request.state.user.get("userId")
-    org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
-    if not user_id or not org_id:
-        logger.error(f"User not authenticated: {user_id} {org_id}")
-        raise HTTPException(
-            status_code=HttpStatusCode.UNAUTHORIZED.value,
-            detail="User not authenticated"
-        )
     try:
-        # Decode state to get connector_id
+        # ============================================================
+        # 1. Validate OAuth Parameters
+        # ============================================================
+        # Normalize error values
+        if error in ["null", "undefined", "None", ""]:
+            error = None
+
+        if error:
+            logger.error(f"OAuth error: {error}")
+            return {
+                "success": False,
+                "error": error,
+                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error={error}"
+            }
+
+        if not code or not state:
+            logger.error("Missing OAuth parameters")
+            return {
+                "success": False,
+                "error": "missing_parameters",
+                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=missing_parameters"
+            }
+
+        # ============================================================
+        # 2. Authentication & Decode State
+        # ============================================================
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+
+        if not user_id or not org_id:
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
+
+        # Decode state to extract connector_id
         try:
             state_data = _decode_state_with_instance(state)
             original_state = state_data["state"]
             connector_id = state_data["connector_id"]
         except ValueError as e:
             logger.error(f"Invalid state format: {e}")
-            error_url = f"{base_url or ''}/connectors/oauth/callback?oauth_error=invalid_state"
             return {
                 "success": False,
                 "error": "invalid_state",
-                "redirect_url": error_url
+                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=invalid_state"
             }
 
-        # Get instance
+        # ============================================================
+        # 3. Authorization & Configuration Retrieval
+        # ============================================================
+        # Get connector instance
         instance = await connector_registry.get_connector_instance(
             connector_id=connector_id,
             user_id=user_id,
@@ -4252,33 +5172,29 @@ async def handle_oauth_callback(
         )
         if not instance:
             logger.error(f"Instance {connector_id} not found or access denied")
-            error_url = f"{base_url or ''}/connectors/oauth/callback?oauth_error=instance_not_found"
             return {
                 "success": False,
                 "error": "instance_not_found",
-                "redirect_url": error_url
+                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=instance_not_found"
             }
 
-        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
-            logger.error("Only administrators can handle OAuth callback for team connectors")
+        connector_type = instance.get("type", "").replace(" ", "")
+        await check_beta_connector_access(connector_type, request)
+
+        # Verify permissions based on scope
+        is_team_connector = instance.get("scope") == ConnectorScope.TEAM.value
+        is_creator = instance.get("createdBy") == user_id
+
+        if is_team_connector and not is_admin:
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only administrators can handle OAuth callback for team connectors"
             )
-        if instance.get("createdBy") != user_id and not is_admin:
-            logger.error("Only the creator or an administrator can handle OAuth callback for this connector")
+        if not is_creator and not is_admin:
             raise HTTPException(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator or an administrator can handle OAuth callback for this connector"
             )
-        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
-            logger.error("Only the creator can handle OAuth callback for this connector")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only the creator can handle OAuth callback for this connector"
-            )
-        connector_type = instance.get("type", "").replace(" ","")
-        await check_beta_connector_access(connector_type, request)
 
         # Get configuration
         config_path = _get_config_path_for_instance(connector_id)
@@ -4286,24 +5202,38 @@ async def handle_oauth_callback(
 
         if not config or not config.get("auth"):
             logger.error(f"No OAuth config for instance {connector_id}")
-            error_url = f"{base_url or ''}/connectors/oauth/callback?oauth_error=config_not_found"
             return {
                 "success": False,
                 "error": "config_not_found",
-                "redirect_url": error_url
+                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=config_not_found"
             }
 
         auth_config = config["auth"]
 
-        # Determine redirect URI - must match exactly what was used in authorization URL
-        redirect_uri = auth_config.get("redirectUri", "")
+        # ============================================================
+        # 4. Build OAuth Flow Configuration
+        # ============================================================
+        try:
+            oauth_flow_config = await _build_oauth_flow_config(
+                auth_config=auth_config,
+                connector_type=connector_type,
+                org_id=org_id,
+                config_service=config_service,
+                logger=logger
+            )
+        except HTTPException:
+            return {
+                "success": False,
+                "error": "oauth_config_fetch_error",
+                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=oauth_config_fetch_error"
+            }
 
-        logger.info(f"Callback redirect URI: {redirect_uri}")
+        logger.info(f"Callback redirect URI: {oauth_flow_config.get('redirectUri', '')}")
 
-        # Create OAuth configuration - use auth_config for all OAuth settings
-        oauth_config = get_oauth_config(connector_type, auth_config)
-
-        # Create OAuth provider and exchange code
+        # ============================================================
+        # 5. Exchange Code for Token
+        # ============================================================
+        oauth_config = get_oauth_config(oauth_flow_config)
         oauth_provider = OAuthProvider(
             config=oauth_config,
             key_value_store=container.key_value_store(),
@@ -4311,23 +5241,39 @@ async def handle_oauth_callback(
         )
 
         try:
-            # Pass the original state (not the encoded one) to the OAuth provider
             token = await oauth_provider.handle_callback(code, original_state)
         finally:
             await oauth_provider.close()
 
-        # Validate token
         if not token or not token.access_token:
             logger.error(f"Invalid token received for instance {connector_id}")
-            error_url = f"{base_url}{settings_base_path}?oauth_error=invalid_token"
             return {
                 "success": False,
                 "error": "invalid_token",
-                "redirect_url": error_url
+                "redirect_url": f"{base_url}{settings_base_path}?oauth_error=invalid_token"
             }
+
+        # Log token information after OAuth callback completes
+        logger.info(
+            f"OAuth token exchange completed for instance {connector_id} (connector_type: {connector_type}). "
+            f"Token details - has_access_token: {bool(token.access_token)}, "
+            f"has_refresh_token: {bool(token.refresh_token)}, "
+            f"token_type: {token.token_type}, "
+            f"expires_in: {token.expires_in}, "
+            f"refresh_token_expires_in: {token.refresh_token_expires_in}, "
+            f"scope: {token.scope}, "
+            f"has_id_token: {bool(token.id_token)}, "
+            f"uid: {token.uid}, "
+            f"account_id: {token.account_id}, "
+            f"team_id: {token.team_id}, "
+            f"created_at: {token.created_at}"
+        )
 
         logger.info(f"OAuth tokens stored successfully for instance {connector_id}")
 
+        # ============================================================
+        # 6. Post-Processing: Cache, Token Refresh, Status Update
+        # ============================================================
         # Refresh configuration cache
         try:
             kv_store = container.key_value_store()
@@ -4338,27 +5284,25 @@ async def handle_oauth_callback(
         except Exception as cache_err:
             logger.warning(f"Could not refresh config cache: {cache_err}")
 
-        # Schedule token refresh using the singleton service instance
+        # Schedule token refresh
         try:
             from app.connectors.core.base.token_service.startup_service import (
                 startup_service,
             )
             refresh_service = startup_service.get_token_refresh_service()
+
             if refresh_service:
                 await refresh_service.schedule_token_refresh(connector_id, connector_type, token)
                 logger.info(f"✅ Scheduled token refresh for instance {connector_id}")
             else:
-                logger.warning(f"⚠️ Token refresh service not initialized, cannot schedule refresh for {connector_id}")
-                # Fallback: create temporary service to schedule refresh
+                # Fallback: create temporary service
+                logger.warning("⚠️ Token refresh service not initialized, using temporary service")
                 from app.connectors.core.base.token_service.token_refresh_service import (
                     TokenRefreshService,
                 )
-                temp_service = TokenRefreshService(
-                    container.key_value_store(),
-                    arango_service
-                )
+                temp_service = TokenRefreshService(container.key_value_store(), arango_service)
                 await temp_service.schedule_token_refresh(connector_id, connector_type, token)
-                logger.info(f"✅ Scheduled token refresh using temporary service for instance {connector_id}")
+                logger.info("✅ Scheduled token refresh using temporary service")
         except Exception as sched_err:
             logger.error(f"❌ Could not schedule token refresh for {connector_id}: {sched_err}", exc_info=True)
 
@@ -4367,36 +5311,44 @@ async def handle_oauth_callback(
             "isAuthenticated": True,
             "updatedAtTimestamp": get_epoch_timestamp_in_ms()
         }
-        await connector_registry.update_connector_instance(connector_id=connector_id, updates=updates, user_id=user_id, org_id=org_id, is_admin=is_admin)
+        await connector_registry.update_connector_instance(
+            connector_id=connector_id,
+            updates=updates,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin
+        )
         logger.info(f"Instance {connector_id} marked as authenticated")
-
-        # Build redirect URL
-        redirect_url = f"{base_url}{settings_base_path}/{connector_id}"
 
         return {
             "success": True,
-            "redirect_url": redirect_url
+            "redirect_url": f"{base_url}{settings_base_path}/{connector_id}"
         }
 
     except Exception as e:
         logger.error(f"Error handling OAuth callback: {e}")
 
         # Update instance authentication status on error
-        try:
-            if 'connector_id' in locals():
+        if connector_id:
+            try:
                 updates = {
                     "isAuthenticated": False,
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms()
                 }
-                await connector_registry.update_connector_instance(connector_id=connector_id, updates=updates, user_id=user_id, org_id=org_id, is_admin=is_admin)
-        except Exception:
-            pass
+                await connector_registry.update_connector_instance(
+                    connector_id=connector_id,
+                    updates=updates,
+                    user_id=user_id,
+                    org_id=org_id,
+                    is_admin=is_admin
+                )
+            except Exception:
+                pass
 
-        error_url = f"{base_url or ''}/connectors/oauth/callback?oauth_error=server_error"
         return {
             "success": False,
             "error": "server_error",
-            "redirect_url": error_url
+            "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=server_error"
         }
 
 
@@ -4699,49 +5651,22 @@ async def get_connector_instance_filters(
     connector_registry = request.app.state.connector_registry
 
     try:
-        user_id = request.state.user.get("userId")
-        org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
-        if not user_id or not org_id:
-            logger.error(f"User not authenticated: {user_id} {org_id}")
-            raise HTTPException(
-                status_code=HttpStatusCode.UNAUTHORIZED.value,
-                detail="User not authenticated"
-            )
-        # Get instance
-        instance = await connector_registry.get_connector_instance(connector_id=connector_id,
-            user_id=user_id,
-            org_id=org_id,
-            is_admin=is_admin
+        # Get and validate user context
+        user_context = _get_user_context(request)
+
+        # Get and validate connector instance
+        instance = await _get_and_validate_connector_instance(
+            connector_id, user_context, connector_registry, logger
         )
-        if not instance:
-            logger.error(f"Connector instance {connector_id} not found or access denied")
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail=f"Connector instance {connector_id} not found or access denied"
-            )
 
         connector_type = instance.get("type", "")
         await check_beta_connector_access(connector_type, request)
 
-        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
-            logger.error("Only administrators can get filter options for team connectors")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only administrators can get filter options for team connectors"
-            )
-        if instance.get("createdBy") != user_id and not is_admin:
-            logger.error("Only the creator or an administrator can get filter options for this connector")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only the creator or an administrator can get filter options for this connector"
-            )
-        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
-            logger.error("Only the creator can get filter options for this connector")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only the creator can get filter options for this connector"
-            )
+        # Validate permissions
+        _validate_connector_permissions(
+            instance, user_context["user_id"], user_context["is_admin"],
+            "get filter options for"
+        )
 
         # Get connector metadata
         connector_config = await connector_registry.get_connector_metadata(connector_type)
@@ -4853,34 +5778,16 @@ async def get_filter_field_options(
     connector_registry = request.app.state.connector_registry
 
     try:
-        # Authentication
-        user_id = request.state.user.get("userId")
-        org_id = request.state.user.get("orgId")
-        x_is_admin_header = request.headers.get("X-Is-Admin", "false")
-        is_admin = x_is_admin_header.lower() == "true"
+        # Get and validate user context
+        user_context = _get_user_context(request)
 
-        if not user_id or not org_id:
-            raise HTTPException(
-                status_code=HttpStatusCode.UNAUTHORIZED.value,
-                detail="User not authenticated"
-            )
-
-        # Get connector instance from database
-        instance = await connector_registry.get_connector_instance(
-            connector_id=connector_id,
-            user_id=user_id,
-            org_id=org_id,
-            is_admin=is_admin
+        # Get and validate connector instance
+        instance = await _get_and_validate_connector_instance(
+            connector_id, user_context, connector_registry, logger
         )
 
-        if not instance:
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail=f"Connector instance {connector_id} not found or access denied"
-            )
-
         # Check if connector is configured (has credentials)
-        if not instance.get("isAuthenticated", False):
+        if instance.get("authType", "") == "OAUTH" and not instance.get("isAuthenticated", False):
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Connector is not authenticated. Please configure the connector with valid credentials first."
@@ -4889,19 +5796,11 @@ async def get_filter_field_options(
         connector_type = instance.get("type", "")
         await check_beta_connector_access(connector_type, request)
 
-        # Permission checks
-        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only administrators can access filter options for team connectors"
-            )
-
-        if instance.get("scope") == ConnectorScope.PERSONAL.value:
-            if instance.get("createdBy") != user_id and not is_admin:
-                raise HTTPException(
-                    status_code=HttpStatusCode.FORBIDDEN.value,
-                    detail="Only the creator can access filter options for this connector"
-                )
+        # Validate permissions
+        _validate_connector_permissions(
+            instance, user_context["user_id"], user_context["is_admin"],
+            "access filter options for"
+        )
 
         # Get connector metadata
         metadata = await connector_registry.get_connector_metadata(connector_type)
@@ -4938,9 +5837,9 @@ async def get_filter_field_options(
                 connector_type=connector_type,
                 connector_registry=connector_registry,
                 arango_service=arango_service,
-                user_id=user_id,
-                org_id=org_id,
-                is_admin=is_admin,
+                user_id=user_context["user_id"],
+                org_id=user_context["org_id"],
+                is_admin=user_context["is_admin"],
                 logger=logger
             )
 
@@ -5032,59 +5931,31 @@ async def save_connector_instance_filters(
     connector_registry = request.app.state.connector_registry
 
     try:
-        user_id = request.state.user.get("userId")
-        org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
-        if not user_id or not org_id:
-            logger.error(f"User not authenticated: {user_id} {org_id}")
-            raise HTTPException(
-                status_code=HttpStatusCode.UNAUTHORIZED.value,
-                detail="User not authenticated"
-            )
+        # Get and validate user context
+        user_context = _get_user_context(request)
+
         body = await request.json()
         filter_selections = body.get("filters", {})
 
         if not filter_selections:
-            logger.error("No filter selections provided")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="No filter selections provided"
             )
 
-        # Verify instance exists
-        instance = await connector_registry.get_connector_instance(connector_id=connector_id,
-            user_id=user_id,
-            org_id=org_id,
-            is_admin=is_admin
+        # Get and validate connector instance
+        instance = await _get_and_validate_connector_instance(
+            connector_id, user_context, connector_registry, logger
         )
-        if not instance:
-            logger.error(f"Connector instance {connector_id} not found or access denied")
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail=f"Connector instance {connector_id} not found or access denied"
-            )
 
         connector_type = instance.get("type", "")
         await check_beta_connector_access(connector_type, request)
 
-        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
-            logger.error("Only administrators can save filter options for team connectors")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only administrators can save filter options for team connectors"
-            )
-        if instance.get("createdBy") != user_id and not is_admin:
-            logger.error("Only the creator or an administrator can save filter options for this connector")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only the creator or an administrator can save filter options for this connector"
-            )
-        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
-            logger.error("Only the creator can save filter options for this connector")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only the creator can save filter options for this connector"
-            )
+        # Validate permissions
+        _validate_connector_permissions(
+            instance, user_context["user_id"], user_context["is_admin"],
+            "save filter options for"
+        )
         # Get current config
         config_service = container.config_service()
         config_path = _get_config_path_for_instance(connector_id)
@@ -5215,7 +6086,7 @@ async def _ensure_connector_initialized(
         # Test connection
         logger.info(f"Testing connection for connector {connector_id}")
         try:
-            connection_ok = connector.test_connection_and_access()
+            connection_ok = await connector.test_connection_and_access()
             if not connection_ok:
                 error_msg = "Connection test failed. Please verify your credentials have proper access."
                 logger.error(f"❌ {error_msg}")
@@ -5525,6 +6396,52 @@ async def toggle_connector_instance(
 # Schema Endpoint
 # ============================================================================
 
+def _clean_schema_for_response(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Clean schema response by removing internal/redundant fields.
+
+    Removes:
+    - _oauth_configs: Internal OAuth config storage (not needed in schema)
+    - Top-level OAuth fields in auth (authorizeUrl, tokenUrl, scopes, oauthConfigs)
+      These are redundant - OAuth configs are fetched separately from OAuth config registry
+      when needed (using oauth_config_id stored in etcd)
+
+    Keeps:
+    - redirectUri and displayRedirectUri in auth type's schema (needed for form display)
+    - All schema fields and structure needed for form rendering
+    - supportedAuthTypes (needed for auth type selection)
+
+    Args:
+        schema: Raw schema from metadata
+
+    Returns:
+        Cleaned schema without redundant fields
+    """
+    import copy
+    cleaned = copy.deepcopy(schema)
+
+    # Remove internal OAuth configs storage
+    cleaned.pop("_oauth_configs", None)
+
+    # Clean auth section
+    if "auth" in cleaned:
+        auth = cleaned["auth"]
+
+        # Remove top-level OAuth fields (these are redundant)
+        # OAuth configs are fetched from OAuth config registry when needed
+        # using the oauth_config_id stored in etcd
+        auth.pop("authorizeUrl", None)
+        auth.pop("tokenUrl", None)
+        auth.pop("scopes", None)
+        auth.pop("oauthConfigs", None)
+
+        # Keep redirectUri and displayRedirectUri at top level for backward compatibility
+        # but they should primarily come from the auth type's schema
+        # The auth type's schema is the source of truth for redirectUri
+
+    return cleaned
+
+
 @router.get("/api/v1/connectors/registry/{connector_type}/schema")
 async def get_connector_schema(
     connector_type: str,
@@ -5538,7 +6455,7 @@ async def get_connector_schema(
         request: FastAPI request object
 
     Returns:
-        Dictionary with connector schema
+        Dictionary with connector schema (cleaned of redundant fields)
 
     Raises:
         HTTPException: 404 if connector type not found
@@ -5557,11 +6474,12 @@ async def get_connector_schema(
                 detail=f"Connector type {connector_type} not found"
             )
 
-        schema = metadata.get("config", {})
+        raw_schema = metadata.get("config", {})
+        cleaned_schema = _clean_schema_for_response(raw_schema)
 
         return {
             "success": True,
-            "schema": schema
+            "schema": cleaned_schema
         }
 
     except HTTPException:
@@ -5633,4 +6551,989 @@ async def get_active_agent_instances(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get active agent instances: {str(e)}"
+        )
+
+
+# ============================================================================
+# OAuth Config Management Endpoints
+# ============================================================================
+
+@router.get("/api/v1/oauth/registry")
+async def get_oauth_config_registry(
+    request: Request,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=200),
+    search: Optional[str] = Query(None, description="Search by name/group/description"),
+) -> Dict[str, Any]:
+    """
+    Get all available connector/toolset types that have OAuth configurations registered.
+
+    This endpoint returns connector/toolset types from the OAuth config registry that can be used
+    to create OAuth config instances. It includes auth schema fields needed for creating OAuth configs.
+
+    Args:
+        request: FastAPI request object
+        page: Page number (1-indexed)
+        limit: Number of items per page
+        search: Optional search query
+
+    Returns:
+        Dictionary with success status and list of available OAuth-enabled connectors/toolsets
+        Each connector includes auth schema fields for OAuth configuration
+
+    Raises:
+        HTTPException: 500 if error occurs
+    """
+    container = request.app.container
+    logger = container.logger()
+
+    try:
+        from app.connectors.core.registry.oauth_config_registry import (
+            get_oauth_config_registry,
+        )
+
+        # Get OAuth config registry (completely independent, no connector registry required)
+        oauth_registry = get_oauth_config_registry()
+
+        # Get paginated and filtered connectors from registry
+        # This uses only OAuth config metadata and auth fields, making it generic and independent
+        result = await oauth_registry.get_oauth_config_registry_connectors(
+            page=page,
+            limit=limit,
+            search=search
+        )
+
+        return {
+            "success": True,
+            **result
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting OAuth config registry: {str(e)}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Error getting OAuth config registry: {str(e)}"
+        )
+
+
+@router.get("/api/v1/oauth/registry/{connector_type}")
+async def get_oauth_config_registry_by_type(
+    connector_type: str,
+    request: Request,
+) -> Dict[str, Any]:
+    """
+    Get OAuth registry information for a specific connector type.
+
+    This endpoint returns the OAuth configuration details for a single connector type,
+    including auth fields, documentation links, and other metadata. This is more efficient
+    than fetching the entire registry when you only need one connector's information.
+
+    Args:
+        connector_type: Type of connector (e.g., "Gmail", "Drive")
+        request: FastAPI request object
+
+    Returns:
+        Dictionary with success status and connector registry information
+
+    Raises:
+        HTTPException: 404 if connector type not found, 500 if error occurs
+    """
+    container = request.app.container
+    logger = container.logger()
+
+    try:
+        from app.connectors.core.registry.oauth_config_registry import (
+            get_oauth_config_registry,
+        )
+
+        # Get OAuth config registry (completely independent, no connector registry required)
+        oauth_registry = get_oauth_config_registry()
+
+        # Get connector registry info for the specific connector type
+        connector_info = oauth_registry.get_connector_registry_info(connector_type)
+
+        if not connector_info:
+            logger.warning(f"OAuth config registry info not found for connector type: {connector_type}")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"OAuth configuration not found for connector type: {connector_type}"
+            )
+
+        return {
+            "success": True,
+            "connector": connector_info
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting OAuth config registry for {connector_type}: {str(e)}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Error getting OAuth config registry: {str(e)}"
+        )
+
+
+@router.get("/api/v1/oauth")
+@inject
+async def get_all_oauth_configs(
+    request: Request,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=200),
+    search: Optional[str] = Query(None, description="Search by instance name/group/description"),
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
+) -> Dict[str, Any]:
+    """
+    Get all OAuth configurations across all connector types with pagination and search.
+
+    Optimized implementation:
+    - Parallel etcd fetches using asyncio.gather
+    - Early filtering by org_id during extraction
+    - Efficient list comprehension for search
+    - Optimized sorting with tuple key
+
+    Args:
+        request: FastAPI request object
+        page: Page number (1-indexed)
+        limit: Number of items per page
+        search: Optional search query
+        config_service: Injected configuration service
+
+    Returns:
+        Dictionary with list of OAuth configs and pagination info
+    """
+    container = request.app.container
+    logger = container.logger()
+
+    try:
+        # Get and validate user context
+        user_context = _get_user_context(request)
+
+        # Get all connector types that support OAuth from registry (completely independent)
+        from app.connectors.core.registry.oauth_config_registry import (
+            get_oauth_config_registry,
+        )
+        oauth_registry = get_oauth_config_registry()
+
+        # Get all OAuth-enabled connector types
+        oauth_connector_names = oauth_registry.get_oauth_connectors()
+
+        if not oauth_connector_names:
+            return {
+                "success": True,
+                "oauthConfigs": [],
+                "pagination": {
+                    "page": page,
+                    "limit": limit,
+                    "search": search,
+                    "totalItems": 0,
+                    "totalPages": 0,
+                    "hasNext": False,
+                    "hasPrev": False
+                }
+            }
+
+        # Fetch OAuth configs for all connector types in PARALLEL
+        # This is the key optimization - all etcd calls happen concurrently
+        async def fetch_configs_for_type(connector_type: str) -> List[Dict[str, Any]]:
+            """Fetch and filter configs for a single connector type"""
+            try:
+                oauth_configs = await _get_oauth_configs_from_etcd(connector_type, config_service)
+                # Filter by org and extract fields in one pass
+                filtered_configs = []
+                for config in oauth_configs:
+                    if config.get("orgId") == user_context["org_id"]:
+                        config_info = _extract_essential_oauth_fields(config, connector_type)
+                        filtered_configs.append(config_info)
+                return filtered_configs
+            except Exception as e:
+                logger.warning(f"Error fetching OAuth configs for {connector_type}: {e}")
+                return []
+
+        # Execute all etcd fetches in parallel
+        results = await asyncio.gather(*[
+            fetch_configs_for_type(connector_type)
+            for connector_type in oauth_connector_names
+        ], return_exceptions=True)
+
+        # Flatten results efficiently - filter out exceptions and extend in one pass
+        all_configs = []
+        for result in results:
+            if isinstance(result, list):
+                all_configs.extend(result)
+            elif isinstance(result, Exception):
+                logger.warning(f"Error in parallel fetch: {result}", exc_info=result)
+
+        # Apply search filter if provided (optimized single-pass filter)
+        if search:
+            search_lower = search.lower()
+            all_configs = [
+                config for config in all_configs
+                if (
+                    search_lower in (config.get("oauthInstanceName") or "").lower() or
+                    search_lower in (config.get("appGroup") or "").lower() or
+                    search_lower in (config.get("appDescription") or "").lower() or
+                    search_lower in (config.get("connectorType") or "").lower() or
+                    any(search_lower in (cat or "").lower() for cat in (config.get("appCategories") or []))
+                )
+            ]
+
+        # Sort by updated timestamp (newest first) - single pass with tuple key
+        all_configs.sort(
+            key=lambda x: (
+                -(x.get("updatedAtTimestamp") or x.get("createdAtTimestamp") or 0),
+                (x.get("oauthInstanceName") or "").lower()
+            )
+        )
+
+        # Apply pagination
+        total_items = len(all_configs)
+        total_pages = (total_items + limit - 1) // limit
+        start_idx = (page - 1) * limit
+        end_idx = start_idx + limit
+        paginated_configs = all_configs[start_idx:end_idx]
+
+        return {
+            "success": True,
+            "oauthConfigs": paginated_configs,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "search": search,
+                "totalItems": total_items,
+                "totalPages": total_pages,
+                "hasNext": page < total_pages,
+                "hasPrev": page > 1
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting all OAuth configs: {e}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to get all OAuth configurations: {str(e)}"
+        )
+
+
+def _get_oauth_config_path(connector_type: str) -> str:
+    """
+    Get etcd configuration path for OAuth configs of a connector type.
+
+    Args:
+        connector_type: Type of connector (e.g., "GOOGLE_DRIVE", "SLACK")
+
+    Returns:
+        Configuration path in etcd
+    """
+    normalized_type = connector_type.lower().replace(" ", "")
+    return f"/services/oauth/{normalized_type}"
+
+
+def _generate_oauth_config_id() -> str:
+    """Generate a unique ID for OAuth config"""
+    import uuid
+    return str(uuid.uuid4())
+
+
+def _get_oauth_field_names_from_registry(connector_type: str) -> List[str]:
+    """
+    Get OAuth field names from the OAuth config registry for a connector type.
+    This makes the code generic and maintainable - no hardcoded field names.
+
+    Args:
+        connector_type: Type of connector
+
+    Returns:
+        List of OAuth field names (e.g., ["clientId", "clientSecret", "domain", ...])
+    """
+    try:
+        from app.connectors.core.registry.oauth_config_registry import (
+            get_oauth_config_registry,
+        )
+
+        oauth_registry = get_oauth_config_registry()
+        oauth_config = oauth_registry.get_config(connector_type)
+
+        if not oauth_config or not oauth_config.auth_fields:
+            # Return default/common OAuth fields as fallback
+            return ["clientId", "clientSecret"]
+
+        # Extract field names from auth_fields
+        field_names = [field.name for field in oauth_config.auth_fields]
+        return field_names
+    except Exception:
+        # Fallback to common OAuth fields if registry lookup fails
+        return ["clientId", "clientSecret"]
+
+
+async def _create_or_update_oauth_config(
+    connector_type: str,
+    auth_config: Dict[str, Any],
+    instance_name: str,
+    user_id: str,
+    org_id: str,
+    is_admin: bool,
+    config_service: ConfigurationService,
+    base_url: str,
+    oauth_app_id: Optional[str] = None,
+    logger = None
+) -> Optional[str]:
+    """
+    Create or update an OAuth config based on auth_config fields.
+    This is a reusable function that extracts OAuth fields dynamically from the registry.
+
+    Args:
+        connector_type: Type of connector
+        auth_config: Auth configuration dictionary with OAuth fields
+        instance_name: Name for the OAuth config instance
+        user_id: User ID creating/updating the config
+        org_id: Organization ID
+        is_admin: Whether user is admin
+        config_service: Configuration service instance
+        base_url: Base URL for OAuth redirects
+        oauth_app_id: Optional existing OAuth app ID to update
+        logger: Optional logger instance
+
+    Returns:
+        OAuth config ID if created/updated successfully, None otherwise
+    """
+    if logger is None:
+        import logging
+        logger = logging.getLogger(__name__)
+
+    try:
+        # Get OAuth field names from registry (dynamic, no hardcoding)
+        oauth_field_names = _get_oauth_field_names_from_registry(connector_type)
+
+        # Get OAuth configs for this connector type
+        oauth_config_path = _get_oauth_config_path(connector_type)
+        oauth_configs = await config_service.get_config(oauth_config_path, default=[])
+
+        if not isinstance(oauth_configs, list):
+            oauth_configs = []
+
+        if oauth_app_id:
+            # Update existing OAuth config (when user selects existing OAuth app and provides credentials)
+            # This allows overriding/updating existing OAuth config credentials
+            oauth_config = None
+            for idx, oauth_cfg in enumerate(oauth_configs):
+                if oauth_cfg.get("_id") == oauth_app_id:
+                    # Check permissions
+                    oauth_user_id = oauth_cfg.get("userId")
+                    oauth_org_id = oauth_cfg.get("orgId")
+                    if (is_admin and oauth_org_id == org_id) or (oauth_user_id == user_id and oauth_org_id == org_id):
+                        # Update the config with new credentials from form
+                        if "config" not in oauth_cfg:
+                            oauth_cfg["config"] = {}
+
+                        # Ensure OAuth infrastructure fields are present (if missing, add from registry)
+                        await _update_oauth_infrastructure_fields(oauth_cfg, connector_type, config_service, base_url)
+
+                        # Update all OAuth credential fields dynamically from auth_config
+                        # This allows overriding existing OAuth config credentials
+                        for field_name in oauth_field_names:
+                            # Try both camelCase and snake_case variants
+                            value = auth_config.get(field_name) or auth_config.get(
+                                field_name.replace("Id", "_id").replace("Secret", "_secret")
+                            )
+                            # Update field if value is provided (including empty strings for clearing)
+                            if value is not None:
+                                oauth_cfg["config"][field_name] = value
+                            # If value is None and field exists, keep existing value
+
+                        oauth_cfg["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
+                        oauth_configs[idx] = oauth_cfg
+                        oauth_config = oauth_cfg
+                        logger.info(f"Updated existing OAuth config for connector {connector_type}")
+                        break
+
+            if not oauth_config:
+                logger.warning(f"OAuth config not found or access denied for {connector_type}, will create new one if credentials provided")
+                oauth_app_id = None  # Will create new one below if credentials are provided
+
+        if not oauth_app_id:
+            # Create new OAuth config
+            logger.info(f"Auto-creating OAuth config for connector {connector_type}")
+
+            new_oauth_config = {
+                "_id": _generate_oauth_config_id(),
+                "oauthInstanceName": instance_name,
+                "connectorType": connector_type,
+                "userId": user_id,
+                "orgId": org_id,
+                "config": {},
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            }
+
+            # Store OAuth infrastructure fields from registry (needed for OAuth flow)
+            await _update_oauth_infrastructure_fields(new_oauth_config, connector_type, config_service, base_url)
+
+            # Populate all OAuth credential fields dynamically from auth_config
+            for field_name in oauth_field_names:
+                # Try both camelCase and snake_case variants
+                value = auth_config.get(field_name) or auth_config.get(
+                    field_name.replace("Id", "_id").replace("Secret", "_secret")
+                )
+                if value is not None:
+                    new_oauth_config["config"][field_name] = value
+
+            oauth_configs.append(new_oauth_config)
+            oauth_app_id = new_oauth_config["_id"]
+            logger.info(f"Created new OAuth config for connector {connector_type}")
+
+        # Save OAuth configs
+        await config_service.set_config(oauth_config_path, oauth_configs)
+        logger.info(f"Successfully saved OAuth config for connector {connector_type}")
+        return oauth_app_id
+
+    except Exception as e:
+        logger.error(f"Error creating/updating OAuth config: {e}", exc_info=True)
+        return None
+
+
+async def _get_oauth_configs_from_etcd(
+    connector_type: str,
+    config_service: ConfigurationService
+) -> List[Dict[str, Any]]:
+    """
+    Get OAuth configs from etcd for a connector type.
+    Optimized to use cache when available.
+
+    Args:
+        connector_type: Type of connector
+        config_service: Configuration service instance
+
+    Returns:
+        List of OAuth configs (empty list if none found)
+    """
+    config_path = _get_oauth_config_path(connector_type)
+    # Use cache for faster retrieval (cache is enabled by default)
+    oauth_configs = await config_service.get_config(config_path, default=[], use_cache=True)
+    return oauth_configs if isinstance(oauth_configs, list) else []
+
+
+def _extract_essential_oauth_fields(oauth_config: Dict[str, Any], connector_type: str) -> Dict[str, Any]:
+    """
+    Extract only essential, non-sensitive fields from an OAuth config.
+    Returns camelCase for frontend consistency.
+
+    Args:
+        oauth_config: Full OAuth config dictionary from etcd
+        connector_type: Type of connector (fallback if not in config)
+
+    Returns:
+        Dictionary with only essential fields in camelCase
+    """
+    return {
+        "_id": oauth_config.get("_id"),
+        "oauthInstanceName": oauth_config.get("oauthInstanceName"),  # camelCase for frontend
+        "iconPath": oauth_config.get("iconPath", "/assets/icons/connectors/default.svg"),
+        "appGroup": oauth_config.get("appGroup", ""),
+        "appDescription": oauth_config.get("appDescription", ""),
+        "appCategories": oauth_config.get("appCategories", []),
+        "connectorType": oauth_config.get("connectorType", connector_type),
+        "createdAtTimestamp": oauth_config.get("createdAtTimestamp"),
+        "updatedAtTimestamp": oauth_config.get("updatedAtTimestamp")
+    }
+
+
+def _find_oauth_config_by_id(
+    oauth_configs: List[Dict[str, Any]],
+    config_id: str,
+    org_id: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Find an OAuth config by ID within the same organization.
+
+    Args:
+        oauth_configs: List of OAuth configs
+        config_id: Config ID to find
+        org_id: Organization ID for filtering
+
+    Returns:
+        OAuth config if found and accessible, None otherwise
+    """
+    for config in oauth_configs:
+        if config.get("_id") == config_id:
+            config_org_id = config.get("orgId")
+            if config_org_id == org_id:
+                return config
+    return None
+
+
+@router.post("/api/v1/oauth/{connector_type}")
+@inject
+async def create_oauth_config(
+    connector_type: str,
+    request: Request,
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
+) -> Dict[str, Any]:
+    """
+    Create a new OAuth configuration for a connector type (Admin only).
+
+    Request body should contain:
+    - oauthInstanceName: Name for this OAuth config instance
+    - config: Dictionary containing all auth fields (client_id, client_secret, etc.)
+
+    Args:
+        connector_type: Type of connector (e.g., "GOOGLE_DRIVE", "SLACK")
+        request: FastAPI request object
+        config_service: Injected configuration service
+
+    Returns:
+        Dictionary with created OAuth config details (essential fields only)
+
+    Raises:
+        HTTPException: 400 for invalid data, 403 if not admin, 409 if name already exists
+    """
+    container = request.app.container
+    logger = container.logger()
+
+    try:
+        # Get and validate user context (admin only)
+        user_context = _get_user_context(request)
+        _validate_admin_only(user_context["is_admin"], "create OAuth configurations")
+
+        body = await request.json()
+        oauth_instance_name = (body.get("oauthInstanceName") or "").strip()
+        config = body.get("config", {})
+        base_url = body.get("baseUrl", "")
+
+        if not oauth_instance_name:
+            logger.error("oauthInstanceName is required")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="oauthInstanceName is required"
+            )
+
+        if not config:
+            logger.error("config is required")
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="config is required"
+            )
+
+        # Get OAuth config from registry (completely independent)
+        # OAuth configs are self-contained and don't depend on connector/toolset registries
+        from app.connectors.core.registry.oauth_config_registry import (
+            get_oauth_config_registry,
+        )
+        oauth_registry = get_oauth_config_registry()
+
+        # Get metadata
+        metadata = oauth_registry.get_metadata(connector_type)
+        icon_path = metadata.get("iconPath", "/assets/icons/connectors/default.svg")
+        app_group = metadata.get("appGroup", "")
+        app_description = metadata.get("appDescription", "")
+        app_categories = metadata.get("appCategories", [])
+
+        # Get existing OAuth configs for this connector type
+        existing_configs = await _get_oauth_configs_from_etcd(connector_type, config_service)
+
+        # Check if name already exists (within same org)
+        _check_oauth_name_conflict(
+            existing_configs, oauth_instance_name, user_context["org_id"]
+        )
+
+        # Create new OAuth config
+        new_config = {
+            "_id": _generate_oauth_config_id(),
+            "oauthInstanceName": oauth_instance_name,
+            "userId": user_context["user_id"],
+            "orgId": user_context["org_id"],
+            "config": config,  # Full config with sensitive fields
+            "iconPath": icon_path,
+            "appGroup": app_group,
+            "appDescription": app_description,
+            "appCategories": app_categories,
+            "connectorType": connector_type,
+            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            "createdBy": user_context["user_id"],
+            "updatedBy": user_context["user_id"]
+        }
+
+        # Store OAuth infrastructure fields from registry (needed for OAuth flow)
+        await _update_oauth_infrastructure_fields(new_config, connector_type, config_service, base_url)
+
+        # Add to existing configs
+        existing_configs.append(new_config)
+
+        # Save to etcd
+        config_path = _get_oauth_config_path(connector_type)
+        success = await config_service.set_config(config_path, existing_configs)
+
+        if not success:
+            logger.error(f"Failed to save OAuth config for {connector_type}")
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail="Failed to save OAuth configuration"
+            )
+
+        logger.info(f"Created OAuth config '{oauth_instance_name}' for {connector_type}")
+
+        # Return only essential fields (no sensitive config data) - camelCase for frontend
+        return {
+            "success": True,
+            "oauthConfig": _extract_essential_oauth_fields(new_config, connector_type),
+            "message": "OAuth configuration created successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating OAuth config for {connector_type}: {e}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to create OAuth configuration: {str(e)}"
+        )
+
+
+@router.get("/api/v1/oauth/{connector_type}")
+@inject
+async def list_oauth_configs(
+    connector_type: str,
+    request: Request,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=200),
+    search: Optional[str] = Query(None, description="Search by instance name/group/description"),
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
+) -> Dict[str, Any]:
+    """
+    List all OAuth configurations for a connector type with pagination and search.
+
+    Args:
+        connector_type: Type of connector
+        request: FastAPI request object
+        page: Page number (1-indexed)
+        limit: Number of items per page
+        search: Optional search query
+        config_service: Injected configuration service
+
+    Returns:
+        Dictionary with list of OAuth configs and pagination info
+
+    Security & Performance:
+        - Admins automatically receive full config details (includes credentials)
+        - Non-admins receive only essential fields (credentials excluded)
+        - Decision is made server-side based on authentication, not client request
+        - This eliminates the need for a second API call for admins, improving performance
+    """
+    container = request.app.container
+    logger = container.logger()
+
+    try:
+        # Get and validate user context (from authentication headers, not query params!)
+        user_context = _get_user_context(request)
+
+        # Get OAuth configs for this connector type
+        oauth_configs = await _get_oauth_configs_from_etcd(connector_type, config_service)
+
+        # Get OAuth config registry and use its pagination/search logic (completely independent)
+        from app.connectors.core.registry.oauth_config_registry import (
+            get_oauth_config_registry,
+        )
+        oauth_registry = get_oauth_config_registry()
+
+        # Security: Backend automatically decides what data to return based on user role
+        # Admins get full config (performance optimization - no second API call needed)
+        # Non-admins get only essential fields (credentials are always excluded)
+        result = await oauth_registry.get_oauth_configs_for_connector(
+            connector_type=connector_type,
+            oauth_configs=oauth_configs,
+            org_id=user_context["org_id"],
+            page=page,
+            limit=limit,
+            search=search,
+            include_full_config=True,  # Always true - registry method filters based on is_admin
+            is_admin=user_context["is_admin"]  # Server-side authorization check
+        )
+
+        # Return camelCase for frontend consistency
+        return {
+            "success": True,
+            "oauthConfigs": result.get("oauthConfigs", []),
+            "pagination": result.get("pagination", {})
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing OAuth configs for {connector_type}: {e}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to list OAuth configurations: {str(e)}"
+        )
+
+
+@router.get("/api/v1/oauth/{connector_type}/{config_id}")
+@inject
+async def get_oauth_config_by_id(
+    connector_type: str,
+    config_id: str,
+    request: Request,
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
+) -> Dict[str, Any]:
+    """
+    Get a specific OAuth configuration by ID.
+
+    For admins: Returns full config including sensitive fields (clientId, clientSecret, etc.)
+    For regular users: Returns only essential metadata (no sensitive config data)
+
+    Args:
+        connector_type: Type of connector
+        config_id: OAuth config ID
+        request: FastAPI request object
+        config_service: Injected configuration service
+
+    Returns:
+        Dictionary with OAuth config details
+        - For admins: Includes full config with sensitive fields
+        - For regular users: Only essential metadata
+
+    Raises:
+        HTTPException: 404 if config not found
+    """
+    container = request.app.container
+    logger = container.logger()
+
+    try:
+        # Get and validate user context
+        user_context = _get_user_context(request)
+
+        # Get OAuth configs for this connector type
+        oauth_configs = await _get_oauth_configs_from_etcd(connector_type, config_service)
+
+        # Find the config with matching ID (all users in org can view)
+        oauth_config, _ = await _find_oauth_config_in_list(
+            oauth_configs, config_id, user_context["org_id"], logger
+        )
+
+        if not oauth_config:
+            logger.error(f"OAuth config {config_id} not found or access denied")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"OAuth config {config_id} not found or access denied"
+            )
+
+        logger.info(f"oauth_config: {oauth_config}")
+
+        # For admins: return full config including sensitive fields (camelCase for frontend)
+        if user_context["is_admin"]:
+            return {
+                "success": True,
+                "oauthConfig": {
+                    "_id": oauth_config.get("_id"),
+                    "oauthInstanceName": oauth_config.get("oauthInstanceName"),  # camelCase
+                    "iconPath": oauth_config.get("iconPath", "/assets/icons/connectors/default.svg"),
+                    "appGroup": oauth_config.get("appGroup", ""),
+                    "appDescription": oauth_config.get("appDescription", ""),
+                    "appCategories": oauth_config.get("appCategories", []),
+                    "connectorType": oauth_config.get("connectorType", connector_type),
+                    "createdAtTimestamp": oauth_config.get("createdAtTimestamp"),
+                    "updatedAtTimestamp": oauth_config.get("updatedAtTimestamp"),
+                    "config": oauth_config.get("config", {})  # Include full config with sensitive fields
+                }
+            }
+
+        # For regular users: return only essential fields (no sensitive config data)
+        return {
+            "success": True,
+            "oauthConfig": _extract_essential_oauth_fields(oauth_config, connector_type)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting OAuth config {config_id} for {connector_type}: {e}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to get OAuth configuration: {str(e)}"
+        )
+
+
+@router.put("/api/v1/oauth/{connector_type}/{config_id}")
+@inject
+async def update_oauth_config(
+    connector_type: str,
+    config_id: str,
+    request: Request,
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
+) -> Dict[str, Any]:
+    """
+    Update an existing OAuth configuration.
+
+    Request body can contain:
+    - oauthInstanceName: Updated name (optional)
+    - config: Updated config dictionary (optional)
+
+    Args:
+        connector_type: Type of connector
+        config_id: OAuth config ID
+        request: FastAPI request object
+        config_service: Injected configuration service
+
+    Returns:
+        Dictionary with updated OAuth config details
+
+    Raises:
+        HTTPException: 404 if config not found, 400 for invalid data
+    """
+    container = request.app.container
+    logger = container.logger()
+
+    try:
+        # Get and validate user context (admin only)
+        user_context = _get_user_context(request)
+        _validate_admin_only(user_context["is_admin"], "update OAuth configurations")
+
+        body = await request.json()
+        new_name = body.get("oauthInstanceName")
+        new_config = body.get("config")
+        base_url = body.get("baseUrl", "")
+
+        # Get OAuth configs for this connector type
+        oauth_configs = await _get_oauth_configs_from_etcd(connector_type, config_service)
+
+        # Find the config with matching ID (admin can update any config in their org)
+        oauth_config, config_index = await _find_oauth_config_in_list(
+            oauth_configs, config_id, user_context["org_id"], logger
+        )
+
+        if not oauth_config or config_index is None:
+            logger.error(f"OAuth config {config_id} not found or access denied")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"OAuth config {config_id} not found or access denied"
+            )
+
+        # Check if new name conflicts with existing configs (within same org)
+        if new_name and new_name.strip() != oauth_config.get("oauthInstanceName"):
+            new_name = new_name.strip()
+            _check_oauth_name_conflict(
+                oauth_configs, new_name, user_context["org_id"], exclude_index=config_index
+            )
+
+        # Update config
+        if new_name:
+            oauth_config["oauthInstanceName"] = new_name.strip()
+        if new_config:
+            oauth_config["config"] = new_config
+
+        # Ensure OAuth infrastructure fields are present (if missing, add from registry)
+        await _update_oauth_infrastructure_fields(oauth_config, connector_type, config_service, base_url)
+
+        oauth_config["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
+        oauth_config["updatedBy"] = user_context["user_id"]
+
+        # Update in array
+        oauth_configs[config_index] = oauth_config
+
+        # Save to etcd
+        config_path = _get_oauth_config_path(connector_type)
+        success = await config_service.set_config(config_path, oauth_configs)
+
+        if not success:
+            logger.error(f"Failed to update OAuth config {config_id} for {connector_type}")
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail="Failed to update OAuth configuration"
+            )
+
+        logger.info(f"Updated OAuth config {config_id} for {connector_type}")
+
+        # Return only essential fields (no sensitive config data) - camelCase for frontend
+        return {
+            "success": True,
+            "oauthConfig": _extract_essential_oauth_fields(oauth_config, connector_type),
+            "message": "OAuth configuration updated successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating OAuth config {config_id} for {connector_type}: {e}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to update OAuth configuration: {str(e)}"
+        )
+
+
+@router.delete("/api/v1/oauth/{connector_type}/{config_id}")
+@inject
+async def delete_oauth_config(
+    connector_type: str,
+    config_id: str,
+    request: Request,
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
+) -> Dict[str, Any]:
+    """
+    Delete an OAuth configuration.
+
+    Args:
+        connector_type: Type of connector
+        config_id: OAuth config ID
+        request: FastAPI request object
+        config_service: Injected configuration service
+
+    Returns:
+        Dictionary with success status
+
+    Raises:
+        HTTPException: 404 if config not found
+    """
+    container = request.app.container
+    logger = container.logger()
+
+    try:
+        # Get and validate user context (admin only)
+        user_context = _get_user_context(request)
+        _validate_admin_only(user_context["is_admin"], "delete OAuth configurations")
+
+        # Get OAuth configs for this connector type
+        oauth_configs = await _get_oauth_configs_from_etcd(connector_type, config_service)
+
+        # Find and remove the config with matching ID (admin can delete any config in their org)
+        oauth_config, config_index = await _find_oauth_config_in_list(
+            oauth_configs, config_id, user_context["org_id"], logger
+        )
+
+        if not oauth_config or config_index is None:
+            logger.error(f"OAuth config {config_id} not found or access denied")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"OAuth config {config_id} not found or access denied"
+            )
+
+        # Remove from array
+        oauth_configs.pop(config_index)
+
+        # Save to etcd (if empty array, still save it)
+        config_path = _get_oauth_config_path(connector_type)
+        success = await config_service.set_config(config_path, oauth_configs)
+
+        if not success:
+            logger.error(f"Failed to delete OAuth config {config_id} for {connector_type}")
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail="Failed to delete OAuth configuration"
+            )
+
+        logger.info(f"Deleted OAuth config {config_id} for {connector_type}")
+
+        return {
+            "success": True,
+            "message": f"OAuth configuration {config_id} deleted successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting OAuth config {config_id} for {connector_type}: {e}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to delete OAuth configuration: {str(e)}"
         )

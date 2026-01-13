@@ -1134,7 +1134,7 @@ export default function KnowledgeBaseSideBar({
         </FilterHeader>
         <FilterContent in={expandedSections.permissions || false}>
           <FormGroup>
-            {['READER', 'WRITER', 'OWNER', 'COMMENTER', 'ORGANIZER', 'FILEORGANIZER'].map(
+            {['READER', 'WRITER', 'OWNER'].map(
               (permission) => {
                 const isChecked = (localFilters.permissions || []).includes(permission);
 

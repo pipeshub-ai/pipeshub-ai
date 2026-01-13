@@ -92,8 +92,8 @@ class IndexingAppContainer(BaseAppContainer):
 
     # Parsers
     parsers = providers.Resource(container_utils.create_parsers, logger=logger)
-    domain_extractor = providers.Resource(container_utils.create_domain_extractor, logger=logger, arango_service=arango_service, config_service=config_service)
-    # Processor - depends on domain_extractor, indexing_pipeline, and arango_service
+
+    # Processor - depends on indexing_pipeline, and arango_service
     processor = providers.Resource(
         container_utils.create_processor,
         logger=logger,
@@ -103,7 +103,6 @@ class IndexingAppContainer(BaseAppContainer):
         parsers=parsers,
         document_extractor=document_extractor,
         sink_orchestrator=sink_orchestrator,
-        domain_extractor=domain_extractor,
     )
 
     event_processor = providers.Resource(
@@ -123,8 +122,7 @@ class IndexingAppContainer(BaseAppContainer):
     # Indexing-specific wiring configuration
     wiring_config = containers.WiringConfiguration(
         modules=[
-            "app.indexing_main",
-            "app.modules.extraction.domain_extraction",
+            "app.indexing_main"
         ]
     )
 

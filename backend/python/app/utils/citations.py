@@ -128,13 +128,11 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
                 flattened_final_results.append(doc)
                 block_number_to_index[f"R{record_number}-{block_index}"] = len(flattened_final_results) - 1
 
-
+    new_citation_num = 1
     for i, old_citation_key in enumerate(unique_citations):
-        new_citation_num = i + 1
 
         # Get the corresponding chunk from final_results
         if old_citation_key in block_number_to_index:
-            citation_mapping[old_citation_key] = new_citation_num
             chunk_index = block_number_to_index[old_citation_key]
 
             if 0 <= chunk_index < len(flattened_final_results):
@@ -146,6 +144,8 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
                     "metadata": doc.get("metadata", {}),
                     "citationType": "vectordb|document",
                 })
+                citation_mapping[old_citation_key] = new_citation_num
+                new_citation_num += 1
         else:
             # Safely parse citation key like "R<record>-<block>"
             key_match = re.match(r"R(\d+)-(\d+)", old_citation_key)
@@ -191,7 +191,8 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
                 "metadata": enhanced_metadata,
                 "citationType": "vectordb|document",
             })
-        citation_mapping[old_citation_key] = new_citation_num
+            citation_mapping[old_citation_key] = new_citation_num
+            new_citation_num += 1
 
     # Replace citation numbers in answer text - always use regular brackets for output
     def replace_citation(match) -> str:

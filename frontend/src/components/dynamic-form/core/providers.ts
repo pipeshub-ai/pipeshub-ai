@@ -453,13 +453,3 @@ export const SMTP_PROVIDERS: readonly ProviderConfig[] = [
     fields: ['host', 'port', 'fromEmail', 'username', 'password'],
   },
 ] as const;
-
-// URL PROVIDERS
-export const URL_PROVIDERS: readonly ProviderConfig[] = [
-  {
-    id: 'urls',
-    label: 'Public URLs',
-    description: 'Configure the public URLs for your services.',
-    fields: ['frontendUrl', { name: 'connectorUrl', required: false, defaultValue: '' }],
-  },
-] as const;

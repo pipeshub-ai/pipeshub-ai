@@ -427,9 +427,15 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
         searchTimeoutRefs.current[field.name] = null;
       }
       
-      // Keep search term visible so user knows what was searched
-      // User can manually clear if needed
-      // Do NOT clear search term from state - let user clear it manually
+      // Clear search term and reset to paginated view when closing
+      if (fieldOptions?.searchTerm) {
+        delete inputValuesRef.current[field.name];
+        setDynamicOptions((prev) => {
+          const { [field.name]: _, ...rest } = prev;
+          return rest;
+        });
+        scrollPositionsRef.current[field.name] = 0;
+      }
     };
     
     const handleInputChange = (event: any, newInputValue: string, reason: string) => {
@@ -485,8 +491,24 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
           searchTimeoutRefs.current[field.name] = null;
         }, 300); // 300ms debounce - faster response, less lag
       } else if (reason === 'reset') {
-        // Option selected - keep input value for user to see what they searched
-        // They can manually clear if needed
+        // Option selected - clear search term and reset to paginated view
+        delete inputValuesRef.current[field.name];
+        
+        // Clear any pending timeout
+        if (searchTimeoutRefs.current[field.name]) {
+          clearTimeout(searchTimeoutRefs.current[field.name]!);
+          searchTimeoutRefs.current[field.name] = null;
+        }
+        
+        // Reset to paginated view if there was a search
+        if (fieldOptions?.searchTerm) {
+          setDynamicOptions((prev) => {
+            const { [field.name]: _, ...rest } = prev;
+            return rest;
+          });
+          scrollPositionsRef.current[field.name] = 0;
+          fetchDynamicOptions(field.name, '');
+        }
       }
     };
 

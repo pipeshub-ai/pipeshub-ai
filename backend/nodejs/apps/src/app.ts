@@ -19,6 +19,7 @@ import {
 } from './modules/enterprise_search/routes/es.routes';
 import { EnterpriseSearchAgentContainer } from './modules/enterprise_search/container/es.container';
 import { requestContextMiddleware } from './libs/middlewares/request.context';
+import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
 
 import { createUserAccountRouter } from './modules/auth/routes/userAccount.routes';
 import { UserManagerContainer } from './modules/user_management/container/userManager.container';
@@ -34,6 +35,7 @@ import { ConfigurationManagerContainer } from './modules/configuration_manager/c
 import { MailServiceContainer } from './modules/mail/container/mailService.container';
 import { createMailServiceRouter } from './modules/mail/routes/mail.routes';
 import { createConnectorRouter } from './modules/tokens_manager/routes/connectors.routes';
+import { createOAuthRouter } from './modules/tokens_manager/routes/oauth.routes';
 import { PrometheusService } from './libs/services/prometheus/prometheus.service';
 import { StorageContainer } from './modules/storage/container/storage.container';
 import { NotificationContainer } from './modules/notification/container/notification.container';
@@ -53,6 +55,9 @@ import { CrawlingManagerContainer } from './modules/crawling_manager/container/c
 import createCrawlingManagerRouter from './modules/crawling_manager/routes/cm_routes';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
 import { createTeamsRouter } from './modules/user_management/routes/teams.routes';
+import { registerAuthSwagger } from './modules/auth/docs/swagger';
+import { registerConfigurationManagerSwagger } from './modules/configuration_manager/docs/swagger';
+import { registerCrawlingManagerSwagger } from './modules/crawling_manager/docs/swagger';
 
 const loggerConfig = {
   service: 'Application',
@@ -268,6 +273,7 @@ export class Application {
     // Body parsing
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true }));
+    this.app.use(xssSanitizationMiddleware);
 
     // Logging
     this.app.use(
@@ -346,6 +352,12 @@ export class Application {
     this.app.use(
       '/api/v1/connectors',
       createConnectorRouter(this.tokenManagerContainer),
+    );
+
+    // OAuth config routes
+    this.app.use(
+      '/api/v1/oauth',
+      createOAuthRouter(this.tokenManagerContainer),
     );
 
     // knowledge base routes
@@ -460,6 +472,12 @@ export class Application {
 
       // Register module documentation
       registerStorageSwagger(swaggerService);
+
+      registerAuthSwagger(swaggerService);
+
+      registerConfigurationManagerSwagger(swaggerService);
+
+      registerCrawlingManagerSwagger(swaggerService);
       // Register other modules as needed
 
       // Setup the Swagger UI routes
