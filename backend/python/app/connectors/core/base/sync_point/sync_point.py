@@ -37,23 +37,18 @@ class SyncPoint(ISyncPoint):
 
         # Initialize encryption service for delta links
         secret_key = os.getenv("SECRET_KEY")
-        if secret_key:
-            hashed_key = hashlib.sha256(secret_key.encode()).digest()
-            hex_key = hashed_key.hex()
-            self.encryption_service = EncryptionService.get_instance(
-                "aes-256-gcm", hex_key, logging.getLogger("sync_point")
-            )
-        else:
-            self.encryption_service = None
-            logging.error("SECRET_KEY environment variable is not set. Encryption for sync point delta links will be disabled. Sensitive data may be stored unencrypted.")
+        if not secret_key:
+            raise ValueError("SECRET_KEY environment variable is required for encrypting sensitive sync point data")
+
+        hashed_key = hashlib.sha256(secret_key.encode()).digest()
+        hex_key = hashed_key.hex()
+        self.encryption_service = EncryptionService.get_instance(
+            "aes-256-gcm", hex_key, logging.getLogger("sync_point")
+        )
 
     def _encrypt_sensitive_fields(self, data: Dict[str, Any], fields_to_encrypt: List[str]) -> Dict[str, Any]:
         """Encrypt specified fields before storage."""
         if not fields_to_encrypt:
-            return data
-
-        if not self.encryption_service:
-            logging.error(f"Encryption service not available. Fields {fields_to_encrypt} will be stored unencrypted. Ensure SECRET_KEY environment variable is set.")
             return data
 
         encrypted_data = data.copy()
@@ -71,7 +66,7 @@ class SyncPoint(ISyncPoint):
 
     def _decrypt_sensitive_fields(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Decrypt fields marked as encrypted when reading from storage."""
-        if not self.encryption_service or not data:
+        if not data:
             return data
 
         decrypted_data = data.copy()

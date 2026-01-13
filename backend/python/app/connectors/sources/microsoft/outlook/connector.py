@@ -845,8 +845,8 @@ class OutlookConnector(BaseConnector):
                 try:
                     dt = datetime.fromisoformat(last_sync_timestamp.replace('Z', '+00:00'))
                     last_sync_timestamp = dt.strftime('%Y-%m-%dT%H:%M:%S') + 'Z'
-                except Exception as e:
-                    self.logger.warning(f"Failed to parse timestamp: {e}")
+                except (ValueError, AttributeError) as e:
+                    self.logger.warning(f"Failed to parse timestamp '{last_sync_timestamp}': {e}. Will perform full sync for this group.")
                     last_sync_timestamp = None
 
             # Get threads updated since last sync (server-side filter)
