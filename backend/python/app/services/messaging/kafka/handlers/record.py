@@ -111,6 +111,13 @@ class RecordEventHandler(BaseEventService):
                 record_id, CollectionNames.RECORDS.value
             )
 
+            if record is None:
+                self.logger.error(f"❌ Record {record_id} not found in database")
+                return
+
+            if virtual_record_id is None:
+                virtual_record_id = record.get("virtualRecordId")
+
             self.logger.info(
                 f"Processing record {record_id} with event type: {event_type}. "
                 f"Virtual Record ID: {virtual_record_id} "
@@ -127,10 +134,6 @@ class RecordEventHandler(BaseEventService):
 
             if event_type == EventTypes.UPDATE_RECORD.value:
                 await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
-
-            if record is None:
-                self.logger.error(f"❌ Record {record_id} not found in database")
-                return
 
             doc = dict(record)
 
@@ -153,7 +156,9 @@ class RecordEventHandler(BaseEventService):
                             f"⏭️ Skipping indexing for record {record_id}: "
                             f"connector instance {connector_id} not found (possibly deleted)."
                         )
-                        return True
+                        yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+                        yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                        return
                     if not connector_instance.get("isActive", False):
                         self.logger.info(
                             f"⏭️ Skipping indexing for record {record_id}: "
@@ -163,8 +168,7 @@ class RecordEventHandler(BaseEventService):
                         yield {"event": "indexing_complete", "data": {"record_id": record_id}}
                         return
 
-            if virtual_record_id is None:
-                virtual_record_id = record.get("virtualRecordId")
+
 
             # Fallback: Get mimeType from database record if payload has empty/unknown value
             if mime_type == "unknown" or not mime_type:

@@ -573,12 +573,12 @@ class GraphDataStore(DataStoreProvider):
 
         """
         # Begin transaction - returns transaction ID (str) for HTTP provider
-        self.logger.info("🔄 Beginning transaction...")
+        self.logger.debug("🔄 Beginning transaction...")
         txn = await self.graph_provider.begin_transaction(
             read=read_collections,
             write=write_collections
         )
-        self.logger.info(f"✅ Transaction started with ID: {txn}")
+        self.logger.debug(f"✅ Transaction started with ID: {txn}")
 
         tx_store = GraphTransactionStore(self.graph_provider, txn)
 
@@ -587,12 +587,9 @@ class GraphDataStore(DataStoreProvider):
         except Exception as e:
             self.logger.error(f"❌ Transaction error, rolling back: {str(e)}")
             await tx_store.rollback()
-            self.logger.info(f"🔄 Transaction {txn} rolled back")
             raise
         else:
-            self.logger.info(f"💾 Committing transaction {txn}...")
             await tx_store.commit()
-            self.logger.info(f"✅ Transaction {txn} committed successfully")
 
     async def execute_in_transaction(self, func, *args, **kwargs) -> None:
         """Execute function within graph database transaction"""
