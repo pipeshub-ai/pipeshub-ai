@@ -134,8 +134,6 @@ export interface TicketRecord {
   _rev: string;
   orgId: string;
   name: string;
-  summary: string;
-  description: string | null;
   status: string;
   priority: string;
   assignee: string | null;
