@@ -587,12 +587,9 @@ class GraphDataStore(DataStoreProvider):
         except Exception as e:
             self.logger.error(f"❌ Transaction error, rolling back: {str(e)}")
             await tx_store.rollback()
-            self.logger.debug(f"🔄 Transaction {txn} rolled back")
             raise
         else:
-            self.logger.debug(f"💾 Committing transaction {txn}...")
             await tx_store.commit()
-            self.logger.debug(f"✅ Transaction {txn} committed successfully")
 
     async def execute_in_transaction(self, func, *args, **kwargs) -> None:
         """Execute function within graph database transaction"""
