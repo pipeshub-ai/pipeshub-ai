@@ -269,21 +269,21 @@ class RecordRelations(Enum):
 
 class LinkRelationshipTag(str, Enum):
     """Standard relationship tags for LINKED_TO edges in ticket relationships"""
-    RELATES_TO = "RELATES_TO"  # General relationship
-    BLOCKS = "BLOCKS"  # This ticket blocks the linked ticket
-    BLOCKED_BY = "BLOCKED_BY"  # This ticket is blocked by the linked ticket
-    DUPLICATES = "DUPLICATES"  # This ticket duplicates the linked ticket
-    DUPLICATED_BY = "DUPLICATED_BY"  # This ticket is duplicated by the linked ticket
-    DEPENDS_ON = "DEPENDS_ON"  # This ticket depends on the linked ticket
-    REQUIRED_BY = "REQUIRED_BY"  # This ticket is required by the linked ticket
-    CLONES = "CLONES"  # This ticket clones the linked ticket
-    CLONED_FROM = "CLONED_FROM"  # This ticket is cloned from the linked ticket
-    PARENT = "PARENT"  # This ticket is parent of the linked ticket (for subtasks/epics)
-    CHILD = "CHILD"  # This ticket is child of the linked ticket (for subtasks/epics)
-    RELATED = "RELATED"  # General related ticket
-    SPLIT_FROM = "SPLIT_FROM"  # This ticket was split from the linked ticket
-    MERGED_INTO = "MERGED_INTO"  # This ticket was merged into the linked ticket
-    UNKNOWN = "UNKNOWN"  # Unknown or unmapped relationship type
+    RELATES_TO = "RELATES_TO"
+    BLOCKS = "BLOCKS"
+    BLOCKED_BY = "BLOCKED_BY"
+    DUPLICATES = "DUPLICATES"
+    DUPLICATED_BY = "DUPLICATED_BY"
+    DEPENDS_ON = "DEPENDS_ON"
+    REQUIRED_BY = "REQUIRED_BY"
+    CLONES = "CLONES"
+    CLONED_FROM = "CLONED_FROM"
+    PARENT = "PARENT"
+    CHILD = "CHILD"
+    RELATED = "RELATED"
+    SPLIT_FROM = "SPLIT_FROM"
+    MERGED_INTO = "MERGED_INTO"
+    UNKNOWN = "UNKNOWN"
 
 
 class TicketEdgeTypes(Enum):

@@ -2,7 +2,6 @@ from enum import Enum
 from typing import List, Type
 
 from app.config.constants.arangodb import (
-    LinkRelationshipTag,
     RecordRelations,
     TicketEdgeTypes,
 )
@@ -25,8 +24,7 @@ record_relations_schema = {
             },
             "customRelationshipTag": {
                 "type": "string",
-                "enum": _get_enum_values(LinkRelationshipTag),
-                "description": "Required when relationshipType is LINKED_TO. Standard tag describing the ticket linking relationship."
+                "description": "Required when relationshipType is LINKED_TO. Standard tag describing the ticket linking relationship"
             },
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
