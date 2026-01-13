@@ -43,6 +43,7 @@ import {
   getUserById,
   deleteUserLogo,
   uploadUserLogo,
+  getUserLogo,
   changePassword,
   getUserIdFromToken,
   getUserEmailFromToken,
@@ -306,9 +307,11 @@ export default function PersonalProfile() {
       setUploading(true);
       const userId = await getUserIdFromToken();
       await uploadUserLogo(userId, formData);
+      // Fetch the processed logo from server (with EXIF metadata stripped) instead of using original file
+      const processedLogoUrl = await getUserLogo(userId);
+      setLogo(processedLogoUrl);
       setSnackbar({ open: true, message: 'Photo updated successfully', severity: 'success' });
       setUploading(false);
-      setLogo(URL.createObjectURL(file));
     } catch (err) {
       setError('Failed to upload photo');
       setUploading(false);

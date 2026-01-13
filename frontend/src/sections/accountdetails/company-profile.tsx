@@ -256,9 +256,11 @@ export default function CompanyProfile() {
       setUploading(true);
       const orgId = await getOrgIdFromToken();
       await uploadOrgLogo(formData);
+      // Fetch the processed logo from server (with EXIF metadata stripped) instead of using original file
+      const processedLogoUrl = await getOrgLogo(orgId);
+      setLogo(processedLogoUrl);
       setSnackbar({ open: true, message: 'Logo updated successfully!', severity: 'success' });
       setUploading(false);
-      setLogo(URL.createObjectURL(file));
     } catch (err) {
       setError('Failed to upload logo');
       // setSnackbar({ open: true, message: 'Failed to upload logo', severity: 'error' });
