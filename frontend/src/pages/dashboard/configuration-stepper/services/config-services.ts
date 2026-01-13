@@ -1,6 +1,5 @@
 import type {
   LlmFormValues,
-  UrlFormValues,
   SmtpFormValues,
   StorageFormValues,
   EmbeddingFormValues,
@@ -94,22 +93,6 @@ export const getUniversalConfig = async (configType: string): Promise<any | null
             storageType: 'local',
             mountName: '',
             baseUrl: '',
-          };
-        }
-      }
-
-      case 'url': {
-        try {
-          const frontendResponse = await axios.get(`${API_BASE}/frontendPublicUrl`);
-          console.log('frontendResponse', frontendResponse);
-          return {
-            providerType: 'urls',
-            frontendUrl: frontendResponse.data?.url || '',
-          };
-        } catch (error) {
-          return {
-            providerType: 'urls',
-            frontendUrl: '',
           };
         }
       }
@@ -244,28 +227,6 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
         return await axios.post(`${API_BASE}/storageConfig`, storageConfig);
       }
 
-      case 'url': {
-        const { providerType, _provider, frontendUrl, ...rest } = config;
-        const normalizeUrl = (url?: string) => {
-          if (!url) return '';
-          const trimmed = String(url).trim();
-          return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
-        };
-        const normalizedFrontend = normalizeUrl(frontendUrl);
-        const apiCalls = [];
-
-        // Only save URLs that have values
-        if (normalizedFrontend) {
-          apiCalls.push(axios.post(`${API_BASE}/frontendPublicUrl`, { url: normalizedFrontend }));
-        }
-
-        // Execute all API calls
-        if (apiCalls.length > 0) {
-          return await Promise.all(apiCalls);
-        }
-        return await Promise.resolve();
-      }
-
       case 'smtp': {
         const { providerType, _provider, ...cleanConfig } = config;
 
@@ -385,9 +346,6 @@ export const updateEmbeddingConfig = (config: EmbeddingFormValues) =>
 export const getStorageConfig = () => getUniversalConfig('storage');
 export const updateStorageConfig = (config: StorageFormValues) =>
   updateUniversalConfig('storage', config);
-
-export const getUrlConfig = () => getUniversalConfig('url');
-export const updateUrlConfig = (config: UrlFormValues) => updateUniversalConfig('url', config);
 
 export const getSmtpConfig = () => getUniversalConfig('smtp');
 export const updateSmtpConfig = (config: SmtpFormValues) => updateUniversalConfig('smtp', config);

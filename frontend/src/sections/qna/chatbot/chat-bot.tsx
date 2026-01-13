@@ -35,8 +35,8 @@ import { CONFIG } from 'src/config-global';
 import { ORIGIN } from 'src/sections/knowledgebase/constants/knowledge-search';
 import { useConnectors } from 'src/sections/accountdetails/connectors/context';
 import { KnowledgeBaseAPI } from 'src/sections/knowledgebase/services/api';
-import { getConnectorPublicUrl } from 'src/sections/accountdetails/account-settings/services/utils/services-configuration-service';
 
+import { ConnectorApiService } from 'src/sections/accountdetails/connectors/services/api';
 import ChatInput from './components/chat-input';
 import ChatSidebar from './components/chat-sidebar';
 import HtmlViewer from './components/html-highlighter';
@@ -1803,7 +1803,7 @@ const ChatInterface = () => {
             handleLargePPTFile(record);
           }
 
-          const publicConnectorUrlResponse = await getConnectorPublicUrl();
+          const publicConnectorUrlResponse = await ConnectorApiService.getConnectorPublicUrl();
           let connectorResponse;
           if (publicConnectorUrlResponse && publicConnectorUrlResponse.url) {
             const CONNECTOR_URL = publicConnectorUrlResponse.url;

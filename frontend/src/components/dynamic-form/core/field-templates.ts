@@ -190,19 +190,6 @@ export const FIELD_TEMPLATES = {
     gridSize: { xs: 12, sm: 6 },
   },
 
-  // URL FIELDS
-  frontendUrl: {
-    name: 'frontendUrl',
-    label: 'Frontend URL',
-    type: 'url' as const,
-    placeholder: 'https://yourdomain.com',
-    icon: linkIcon,
-    required: true,
-    validation: z
-      .string()
-      .refine((val) => val === '' || /^https?:\/\/.+/.test(val), 'Please enter a valid URL'),
-  },
-
   // STORAGE FIELDS - S3
   s3AccessKeyId: {
     name: 's3AccessKeyId',
