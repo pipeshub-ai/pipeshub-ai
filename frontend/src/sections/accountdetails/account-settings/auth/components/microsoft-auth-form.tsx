@@ -72,7 +72,7 @@ const MicrosoftAuthForm = forwardRef<MicrosoftAuthFormRef, MicrosoftAuthFormProp
     } | null>(null);
     const [formData, setFormData] = useState({
       clientId: '',
-      tenantId: 'common',
+      tenantId: '',
       redirectUri:
         redirectUris?.recommendedRedirectUri || `${window.location.origin}/auth/microsoft/callback`,
     });
@@ -138,7 +138,7 @@ const MicrosoftAuthForm = forwardRef<MicrosoftAuthFormRef, MicrosoftAuthFormProp
           setFormData((prev) => ({
             ...prev,
             clientId: config?.clientId || '',
-            tenantId: config?.tenantId || 'common',
+            tenantId: config?.tenantId || '',
           }));
         } catch (error) {
           // showErrorSnackbar('Failed to load Microsoft authentication configuration');
