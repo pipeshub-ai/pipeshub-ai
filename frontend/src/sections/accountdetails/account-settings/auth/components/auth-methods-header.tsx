@@ -118,8 +118,9 @@ const getMethodName = (type: string): string => {
     otp: 'One-Time Password',
     google: 'Google',
     microsoft: 'Microsoft',
-    azureAd: 'Azure AD',
+    azureAd: 'Azure AD', // Kept for backward compatibility
     samlSso: 'SAML SSO',
+    oauth: 'OAuth',
   };
 
   return methodNames[type] || type;
