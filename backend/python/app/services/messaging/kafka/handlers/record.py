@@ -114,7 +114,7 @@ class RecordEventHandler(BaseEventService):
             if record is None:
                 self.logger.error(f"❌ Record {record_id} not found in database")
                 return
-            
+
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
 
@@ -168,7 +168,7 @@ class RecordEventHandler(BaseEventService):
                         yield {"event": "indexing_complete", "data": {"record_id": record_id}}
                         return
 
-            
+
 
             # Fallback: Get mimeType from database record if payload has empty/unknown value
             if mime_type == "unknown" or not mime_type:
