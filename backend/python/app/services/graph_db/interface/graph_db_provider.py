@@ -10,6 +10,8 @@ All methods support optional transaction parameter for atomic operations.
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+from app.models.entities import Person
+
 if TYPE_CHECKING:
     from app.models.entities import (
         AppRole,
@@ -982,6 +984,24 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of user groups
+        """
+        pass
+
+    @abstractmethod
+    async def batch_upsert_people(
+        self,
+        people: List[Person],
+        transaction: Optional[str] = None
+    ) -> None:
+        """
+        Upsert people to PEOPLE collection.
+
+        Args:
+            people (List[Person]): List of Person entities
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            None
         """
         pass
 

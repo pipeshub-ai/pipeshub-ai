@@ -1819,6 +1819,7 @@ class UsersGroupsDataSource:
 
     async def users_user_list_user(
         self,
+        next_url: Optional[str] = None,
         ConsistencyLevel: Optional[str] = None,
         dollar_orderby: Optional[List[str]] = None,
         dollar_select: Optional[List[str]] = None,
@@ -1833,61 +1834,57 @@ class UsersGroupsDataSource:
         headers: Optional[Dict[str, str]] = None,
         **kwargs
     ) -> UsersGroupsResponse:
-        """List users.
+        """List users with pagination support.
         Users Groups operation: GET /users
         Operation type: users
         Args:
-            ConsistencyLevel (str, optional): Indicates the requested consistency level. Documentation URL: https://docs.microsoft.com/graph/aad-advanced-queries
-            dollar_orderby (List[str], optional): Order items by property values
-            dollar_select (List[str], optional): Select properties to be returned
-            dollar_expand (List[str], optional): Expand related entities
+            next_url (str, optional): Next link URL for pagination
+            ConsistencyLevel (str, optional): Indicates the requested consistency level
             select (optional): Select specific properties to return
-            expand (optional): Expand related entities (e.g., manager, memberOf, directReports)
             filter (optional): Filter the results using OData syntax
-            orderby (optional): Order the results by specified properties
-            search (optional): Search for users, groups, or directory objects by content
             top (optional): Limit number of results returned
             skip (optional): Skip number of results for pagination
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            UsersGroupsResponse: Users Groups response wrapper with success/data/error
+            UsersGroupsResponse: Users Groups response wrapper with success/data/error and odata_next_link
         """
-        # Build query parameters including OData for Users Groups
         try:
-            # Use typed query parameters
-            query_params = UsersRequestBuilder.UsersRequestBuilderGetQueryParameters()
+            if next_url:
+                # Use nextLink URL for pagination
+                response = await self.client.users.with_url(next_url).get()
+            else:
+                # Build query parameters for initial request
+                query_params = UsersRequestBuilder.UsersRequestBuilderGetQueryParameters()
 
-            # Set query parameters using typed object properties
-            if select:
-                query_params.select = select if isinstance(select, list) else [select]
-            if expand:
-                query_params.expand = expand if isinstance(expand, list) else [expand]
-            if filter:
-                query_params.filter = filter
-            if orderby:
-                query_params.orderby = orderby
-            if search:
-                query_params.search = search
-            if top is not None:
-                query_params.top = top
-            if skip is not None:
-                query_params.skip = skip
+                if select:
+                    query_params.select = select if isinstance(select, list) else [select]
+                if expand:
+                    query_params.expand = expand if isinstance(expand, list) else [expand]
+                if filter:
+                    query_params.filter = filter
+                if orderby:
+                    query_params.orderby = orderby
+                if search:
+                    query_params.search = search
+                if top is not None:
+                    query_params.top = top
+                if skip is not None:
+                    query_params.skip = skip
 
-            # Create proper typed request configuration
-            config = UsersRequestBuilder.UsersRequestBuilderGetRequestConfiguration()
-            config.query_parameters = query_params
+                config = UsersRequestBuilder.UsersRequestBuilderGetRequestConfiguration()
+                config.query_parameters = query_params
 
-            if headers:
-                config.headers = headers
+                if headers:
+                    config.headers = headers
 
-            # Add consistency level for search operations in Users Groups
-            if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                if search:
+                    if not config.headers:
+                        config.headers = {}
+                    config.headers['ConsistencyLevel'] = 'eventual'
 
-            response = await self.client.users.get(request_configuration=config)
+                response = await self.client.users.get(request_configuration=config)
+
             return self._handle_users_groups_response(response)
         except Exception as e:
             return UsersGroupsResponse(
@@ -7791,6 +7788,80 @@ class UsersGroupsDataSource:
                 error=f"Users Groups API call failed: {str(e)}",
             )
 
+    async def groups_list_groups(
+        self,
+        next_url: Optional[str] = None,
+        ConsistencyLevel: Optional[str] = None,
+        dollar_orderby: Optional[List[str]] = None,
+        dollar_select: Optional[List[str]] = None,
+        dollar_expand: Optional[List[str]] = None,
+        select: Optional[List[str]] = None,
+        expand: Optional[List[str]] = None,
+        filter: Optional[str] = None,
+        orderby: Optional[str] = None,
+        search: Optional[str] = None,
+        top: Optional[int] = None,
+        skip: Optional[int] = None,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> UsersGroupsResponse:
+        """List groups with pagination support.
+        Users Groups operation: GET /groups
+        Operation type: groups
+        Args:
+            next_url (str, optional): Next link URL for pagination
+            select (optional): Select specific properties to return
+            filter (optional): Filter the results using OData syntax
+            search (optional): Search for groups by content
+            top (optional): Limit number of results returned
+            headers (optional): Additional headers for the request
+            **kwargs: Additional query parameters
+        Returns:
+            UsersGroupsResponse: Users Groups response wrapper with success/data/error and odata_next_link
+        """
+        try:
+            if next_url:
+                # Use nextLink URL for pagination
+                response = await self.client.groups.with_url(next_url).get()
+            else:
+                # Build query parameters for initial request
+                query_params = GroupsRequestBuilder.GroupsRequestBuilderGetQueryParameters()
+
+                if select:
+                    query_params.select = select if isinstance(select, list) else [select]
+                if expand:
+                    query_params.expand = expand if isinstance(expand, list) else [expand]
+                if filter:
+                    query_params.filter = filter
+                if orderby:
+                    query_params.orderby = orderby
+                if search:
+                    query_params.search = search
+                if top is not None:
+                    query_params.top = top
+                if skip is not None:
+                    query_params.skip = skip
+
+                config = GroupsRequestBuilder.GroupsRequestBuilderGetRequestConfiguration()
+                config.query_parameters = query_params
+
+                if headers:
+                    config.headers = headers
+
+                if search:
+                    if not config.headers:
+                        config.headers = {}
+                    config.headers['ConsistencyLevel'] = 'eventual'
+
+                response = await self.client.groups.get(request_configuration=config)
+
+            return self._handle_users_groups_response(response)
+        except Exception as e:
+            return UsersGroupsResponse(
+                success=False,
+                error=f"Users Groups API call failed: {str(e)}",
+            )
+
     async def groups_validate_properties(
         self,
         select: Optional[List[str]] = None,
@@ -10076,6 +10147,7 @@ class UsersGroupsDataSource:
     async def groups_list_transitive_members(
         self,
         group_id: str,
+        next_url: Optional[str] = None,
         ConsistencyLevel: Optional[str] = None,
         dollar_orderby: Optional[List[str]] = None,
         dollar_select: Optional[List[str]] = None,
@@ -10090,62 +10162,56 @@ class UsersGroupsDataSource:
         headers: Optional[Dict[str, str]] = None,
         **kwargs
     ) -> UsersGroupsResponse:
-        """List group transitive members.
+        """List group transitive members with pagination support.
         Users Groups operation: GET /groups/{group-id}/transitiveMembers
         Operation type: groups
         Args:
             group_id (str, required): Users Groups group id identifier
-            ConsistencyLevel (str, optional): Indicates the requested consistency level. Documentation URL: https://docs.microsoft.com/graph/aad-advanced-queries
-            dollar_orderby (List[str], optional): Order items by property values
-            dollar_select (List[str], optional): Select properties to be returned
-            dollar_expand (List[str], optional): Expand related entities
+            next_url (str, optional): Next link URL for pagination
             select (optional): Select specific properties to return
-            expand (optional): Expand related entities (e.g., manager, memberOf, directReports)
             filter (optional): Filter the results using OData syntax
-            orderby (optional): Order the results by specified properties
-            search (optional): Search for users, groups, or directory objects by content
             top (optional): Limit number of results returned
-            skip (optional): Skip number of results for pagination
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            UsersGroupsResponse: Users Groups response wrapper with success/data/error
+            UsersGroupsResponse: Users Groups response wrapper with success/data/error and odata_next_link
         """
-        # Build query parameters including OData for Users Groups
         try:
-            # Use typed query parameters
-            query_params = GroupsRequestBuilder.GroupsRequestBuilderGetQueryParameters()
+            if next_url:
+                # Use nextLink URL for pagination
+                response = await self.client.groups.by_group_id(group_id).transitive_members.with_url(next_url).get()
+            else:
+                # Build query parameters for initial request
+                query_params = GroupsRequestBuilder.GroupsRequestBuilderGetQueryParameters()
 
-            # Set query parameters using typed object properties
-            if select:
-                query_params.select = select if isinstance(select, list) else [select]
-            if expand:
-                query_params.expand = expand if isinstance(expand, list) else [expand]
-            if filter:
-                query_params.filter = filter
-            if orderby:
-                query_params.orderby = orderby
-            if search:
-                query_params.search = search
-            if top is not None:
-                query_params.top = top
-            if skip is not None:
-                query_params.skip = skip
+                if select:
+                    query_params.select = select if isinstance(select, list) else [select]
+                if expand:
+                    query_params.expand = expand if isinstance(expand, list) else [expand]
+                if filter:
+                    query_params.filter = filter
+                if orderby:
+                    query_params.orderby = orderby
+                if search:
+                    query_params.search = search
+                if top is not None:
+                    query_params.top = top
+                if skip is not None:
+                    query_params.skip = skip
 
-            # Create proper typed request configuration
-            config = GroupsRequestBuilder.GroupsRequestBuilderGetRequestConfiguration()
-            config.query_parameters = query_params
+                config = GroupsRequestBuilder.GroupsRequestBuilderGetRequestConfiguration()
+                config.query_parameters = query_params
 
-            if headers:
-                config.headers = headers
+                if headers:
+                    config.headers = headers
 
-            # Add consistency level for search operations in Users Groups
-            if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                if search:
+                    if not config.headers:
+                        config.headers = {}
+                    config.headers['ConsistencyLevel'] = 'eventual'
 
-            response = await self.client.groups.by_group_id(group_id).transitive_members.get(request_configuration=config)
+                response = await self.client.groups.by_group_id(group_id).transitive_members.get(request_configuration=config)
+
             return self._handle_users_groups_response(response)
         except Exception as e:
             return UsersGroupsResponse(

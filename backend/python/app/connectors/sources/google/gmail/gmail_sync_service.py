@@ -461,8 +461,14 @@ class BaseGmailSyncService(ABC):
                     len(emails_needing_people)
                 )
 
+                timestamp = get_epoch_timestamp_in_ms()
                 people_docs = [
-                    {"_key": str(uuid.uuid4()), "email": email}
+                    {
+                        "_key": str(uuid.uuid5(uuid.NAMESPACE_DNS, email.lower())),
+                        "email": email.lower(),
+                        "createdAtTimestamp": timestamp,
+                        "updatedAtTimestamp": timestamp,
+                    }
                     for email in emails_needing_people
                 ]
 

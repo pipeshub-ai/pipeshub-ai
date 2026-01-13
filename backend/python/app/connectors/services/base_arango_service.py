@@ -54,6 +54,7 @@ from app.schema.arango.documents import (
     file_record_schema,
     mail_record_schema,
     orgs_schema,
+    people_schema,
     record_group_schema,
     record_schema,
     team_schema,
@@ -86,7 +87,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.MAILS.value, mail_record_schema),
     (CollectionNames.WEBPAGES.value, webpage_record_schema),
     (CollectionNames.COMMENTS.value, comment_record_schema),
-    (CollectionNames.PEOPLE.value, None),
+    (CollectionNames.PEOPLE.value, people_schema),
     (CollectionNames.USERS.value, user_schema),
     (CollectionNames.GROUPS.value, None),
     (CollectionNames.ROLES.value, app_role_schema),
@@ -5360,16 +5361,12 @@ class BaseArangoService:
         """
         record_type = record_dict.get("recordType")
 
-        # Check if this record type has a type collection
         if not type_doc or record_type not in RECORD_TYPE_COLLECTION_MAPPING:
-            # No type collection or no type doc - use base Record
             return Record.from_arango_base_record(record_dict)
 
         try:
-            # Determine which collection this type uses
             collection = RECORD_TYPE_COLLECTION_MAPPING[record_type]
 
-            # Map collections to their corresponding Record classes
             if collection == CollectionNames.FILES.value:
                 return FileRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.MAILS.value:
@@ -5408,7 +5405,19 @@ class BaseArangoService:
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
                 FILTER record._key == @id
-                RETURN record
+
+                LET typeDoc = (
+                    FOR edge IN {CollectionNames.IS_OF_TYPE.value}
+                        FILTER edge._from == record._id
+                        LET doc = DOCUMENT(edge._to)
+                        FILTER doc != null
+                        RETURN doc
+                )[0]
+
+                RETURN {{
+                    record: record,
+                    typeDoc: typeDoc
+                }}
             """
 
             db = transaction if transaction else self.db
@@ -5421,7 +5430,10 @@ class BaseArangoService:
                 self.logger.info(
                     "✅ Successfully retrieved internal key for id %s", id
                 )
-                return Record.from_arango_base_record(result)
+                return self._create_typed_record_from_arango(
+                    result["record"],
+                    result.get("typeDoc")
+                )
             else:
                 self.logger.warning(
                     "⚠️ No internal key found for id %s", id
@@ -7749,11 +7761,22 @@ class BaseArangoService:
                 self.logger.info(
                     "➕ Entity does not exist, saving to people collection"
                 )
+                timestamp = get_epoch_timestamp_in_ms()
                 self.db.collection(CollectionNames.PEOPLE.value).insert(
-                    {"_key": entity_id, "email": email}
+                    {
+                        "_key": entity_id,
+                        "email": email,
+                        "createdAtTimestamp": timestamp,
+                        "updatedAtTimestamp": timestamp,
+                    }
                 )
                 self.logger.info("✅ Entity %s saved to people collection", entity_id)
-                return {"_key": entity_id, "email": email}
+                return {
+                    "_key": entity_id,
+                    "email": email,
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                }
             else:
                 self.logger.info(
                     "⏩ Entity %s already exists in people collection", entity_id

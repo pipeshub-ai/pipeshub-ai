@@ -1703,7 +1703,7 @@ async def stream_record(
                 buffer = await connector.stream_record(record)
                 return buffer
         except Exception as e:
-            logger.error(f"Error downloading file: {str(e)}")
+            logger.error(f"Error downloading file: {str(e)}", exc_info=True)
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Error downloading file: {str(e)}"
             )
