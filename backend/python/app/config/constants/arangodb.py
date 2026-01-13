@@ -266,7 +266,7 @@ class RecordRelations(Enum):
     SIBLING = "SIBLING"
     ATTACHMENT = "ATTACHMENT"
     DUPLICATE = "DUPLICATE"
-    OTHER = "OTHERS"
+    OTHERS = "OTHERS"
     LINKED_TO = "LINKED_TO"  # For ticket linking relationships
 
 
