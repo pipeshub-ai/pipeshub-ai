@@ -32,7 +32,7 @@ from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.sources.google.drive.individual.connector import (
-    GoogleDriveConnectorIndividual,
+    GoogleDriveIndividualConnector,
 )
 from app.services.kafka_consumer import KafkaConsumerManager
 from app.utils.logger import create_logger
@@ -130,7 +130,7 @@ async def test_run() -> None:
     }
 
     await key_value_store.create_key("/services/connectors/google_drive/config", config)
-    connector: BaseConnector = await GoogleDriveConnectorIndividual.create_connector(
+    connector: BaseConnector = await GoogleDriveIndividualConnector.create_connector(
         logger, data_store_provider, config_service, "google_drive"
     )
     await connector.init()

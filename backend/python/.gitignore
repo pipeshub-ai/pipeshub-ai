@@ -8,5 +8,4 @@ google_test
 celerybeat-schedule.*
 .env
 cleanup.sh
-cred.json
 __pycache__/

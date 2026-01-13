@@ -15,6 +15,7 @@ from googleapiclient.http import MediaIoBaseDownload
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    CollectionNames,
     Connectors,
     ExtensionTypes,
     MimeTypes,
@@ -2379,16 +2380,32 @@ class GoogleDriveEnterpriseConnector(BaseConnector):
                 )
             self.logger.info(f"Streaming Drive file: {file_id}, convertTo: {convertTo}")
 
-            # Get user email from user_id if provided
+            # Get user email from user_id if provided, otherwise get user with permission to node
             user_email = None
-            if user_id:
+            if user_id and user_id != "None":
                 async with self.data_store_provider.transaction() as tx_store:
                     user = await tx_store.get_user_by_user_id(user_id)
                     if user:
                         user_email = user.get("email")
                         self.logger.info(f"Retrieved user email {user_email} for user_id {user_id}")
                     else:
-                        self.logger.warning(f"User not found for user_id {user_id}, falling back to service account")
+                        self.logger.warning(f"User not found for user_id {user_id}, trying to get user with permission to node")
+                        # Fall through to get user with permission
+            else:
+                self.logger.info("user_id not provided or is None, getting user with permission to node")
+
+            # If we don't have user_email yet, get user with permission to the node
+            if not user_email:
+                user_with_permission = None
+                async with self.data_store_provider.transaction() as tx_store:
+                    user_with_permission = await tx_store.get_first_user_with_permission_to_node(
+                        record.id, CollectionNames.RECORDS.value
+                    )
+                if user_with_permission:
+                    user_email = user_with_permission.email
+                    self.logger.info(f"Retrieved user email {user_email} from user with permission to node")
+                else:
+                    self.logger.warning(f"No user found with permission to node: {record.id}, falling back to service account")
 
             drive_service = await self._get_drive_service_for_user(user_email)
 
@@ -2530,7 +2547,148 @@ class GoogleDriveEnterpriseConnector(BaseConnector):
 
     async def reindex_records(self, records: List[Record]) -> None:
         """Reindex records for Google Drive enterprise."""
-        raise NotImplementedError("reindex_records is not yet implemented for Google Drive enterprise")
+        try:
+            if not records:
+                self.logger.info("No records to reindex")
+                return
+
+            self.logger.info(f"Starting reindex for {len(records)} Google Drive enterprise records")
+
+            if not self.drive_data_source:
+                self.logger.error("Drive data source not initialized. Call init() first.")
+                raise Exception("Drive data source not initialized. Call init() first.")
+
+            # Check records at source for updates
+            org_id = self.data_entities_processor.org_id
+            updated_records = []
+            non_updated_records = []
+            for record in records:
+                try:
+                    updated_record_data = await self._check_and_fetch_updated_record(org_id, record)
+                    if updated_record_data:
+                        updated_record, permissions = updated_record_data
+                        updated_records.append((updated_record, permissions))
+                    else:
+                        non_updated_records.append(record)
+                except Exception as e:
+                    self.logger.error(f"Error checking record {record.id} at source: {e}")
+                    continue
+
+            # Update DB only for records that changed at source
+            if updated_records:
+                await self.data_entities_processor.on_new_records(updated_records)
+                self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
+
+            # Publish reindex events for non updated records
+            if non_updated_records:
+                await self.data_entities_processor.reindex_existing_records(non_updated_records)
+                self.logger.info(f"Published reindex events for {len(non_updated_records)} non updated records")
+        except Exception as e:
+            self.logger.error(f"Error during Google Drive enterprise reindex: {e}", exc_info=True)
+            raise
+
+    async def _check_and_fetch_updated_record(
+        self, org_id: str, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch record from Google Drive and return data for reindexing if changed."""
+        try:
+            file_id = record.external_record_id
+            record_group_id = record.external_record_group_id
+
+            if not file_id:
+                self.logger.warning(f"Missing file_id for record {record.id}")
+                return None
+
+            # Get user with permission to the node
+            user_with_permission = None
+            async with self.data_store_provider.transaction() as tx_store:
+                user_with_permission = await tx_store.get_first_user_with_permission_to_node(
+                    record.id, CollectionNames.RECORDS.value
+                )
+
+            if not user_with_permission:
+                self.logger.warning(f"No user found with permission to node: {record.id}")
+                return None
+
+            user_email = user_with_permission.email
+            if not user_email:
+                self.logger.warning(f"User found but email is missing for record {record.id}")
+                return None
+
+            # Create drive service with user impersonation
+            drive_service = await self._get_drive_service_for_user(user_email)
+
+            # Wrap drive service in GoogleDriveDataSource to use files_get method
+            user_drive_data_source = GoogleDriveDataSource(drive_service)
+
+            # Get user information (permissionId) from the user-specific drive service
+            fields = 'user(displayName,emailAddress,permissionId)'
+            user_about = await user_drive_data_source.about_get(fields=fields)
+            user_id = user_about.get('user', {}).get('permissionId')
+            user_email_from_api = user_about.get('user', {}).get('emailAddress')
+
+            if not user_id:
+                self.logger.warning(f"Failed to get user permissionId for {user_email}")
+                # Fallback to using source_user_id if available
+                user_id = user_with_permission.source_user_id
+                if not user_id:
+                    self.logger.warning(f"Could not determine user_id for record {record.id}")
+                    return None
+
+            # Use user_email from API if available, otherwise use the one from database
+            if user_email_from_api:
+                user_email = user_email_from_api
+
+            # Use record_group_id if available, otherwise use user_id (for personal drive)
+            if not record_group_id:
+                record_group_id = user_email
+
+            # Fetch fresh file from Google Drive API
+            try:
+                file_metadata = await user_drive_data_source.files_get(
+                    fileId=file_id,
+                    supportsAllDrives=True
+                )
+            except HttpError as e:
+                if e.resp.status == HttpStatusCode.NOT_FOUND.value:
+                    self.logger.warning(f"File {file_id} not found at source")
+                    return None
+                raise
+
+            if not file_metadata:
+                self.logger.warning(f"File {file_id} not found at source")
+                return None
+
+            # Determine if it's a shared drive (check if driveId is present in metadata)
+            is_shared_drive = 'driveId' in file_metadata
+
+            # Use existing logic to detect changes and transform to FileRecord
+            record_update = await self._process_drive_item(
+                file_metadata,
+                user_id,
+                user_email,
+                record_group_id,
+                is_shared_drive=is_shared_drive,
+                drive_data_source=user_drive_data_source
+            )
+
+            if not record_update or record_update.is_deleted:
+                return None
+
+            # Only return data if there's an actual update (metadata, content, or permissions)
+            if record_update.is_updated:
+                self.logger.info(f"Record {file_id} has changed at source. Updating.")
+                # Ensure we keep the internal DB ID
+                record_update.record.id = record.id
+                return (record_update.record, record_update.new_permissions)
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Error checking Google Drive enterprise record {record.id} at source: {e}")
+            return None
+
+
 
     async def get_filter_options(
         self,

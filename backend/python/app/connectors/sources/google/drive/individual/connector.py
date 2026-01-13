@@ -286,7 +286,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             self.logger.error(f"❌ Error initializing Google Drive connector: {ex}", exc_info=True)
             raise
 
-    async def _process_drive_file(
+    async def _process_drive_item(
         self,
         metadata: dict,
         user_id: str,
@@ -613,7 +613,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
         for file_metadata in files:
             try:
-                record_update = await self._process_drive_file(
+                record_update = await self._process_drive_item(
                     file_metadata,
                     user_id,
                     user_email,
@@ -1405,7 +1405,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 return None
 
             # Use existing logic to detect changes and transform to FileRecord
-            record_update = await self._process_drive_file(
+            record_update = await self._process_drive_item(
                 file_metadata,
                 user_id,
                 user_email,

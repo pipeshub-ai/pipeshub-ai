@@ -562,6 +562,7 @@ async def stream_record_internal(
                 status_code=HttpStatusCode.UNAUTHORIZED.value,
                 detail="Missing or invalid Authorization header",
             )
+
         # Extract the token
         token = auth_header.split(" ")[1]
         secret_keys = await config_service.get_config(
@@ -1410,8 +1411,8 @@ async def stream_record(
                         status_code=HttpStatusCode.NOT_FOUND.value,
                         detail=f"Connector '{connector_id}' not found"
                     )
-                # Pass convertTo parameter if provided
 
+                # Pass user_id for google drive
                 if connector.get_app_name() == Connectors.GOOGLE_DRIVE:
                     buffer = await connector.stream_record(record, user_id)
                     return buffer
