@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any, Dict, List, Optional, Type, TypeVar
+from typing import Any, Dict, List, Optional, Type, TypeVar, Union
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -86,6 +86,32 @@ class TicketStatus(str, Enum):
     BLOCKED = "BLOCKED"
     DONE = "DONE"
     UNKNOWN = "UNKNOWN"  # For unmapped or missing status values
+
+
+class TicketType(str, Enum):
+    """Standard ticket type values for all ticketing connectors"""
+    TASK = "TASK"  # General task
+    BUG = "BUG"  # Bug/defect
+    STORY = "STORY"  # User story
+    EPIC = "EPIC"  # Epic/large feature
+    FEATURE = "FEATURE"  # Feature request
+    SUBTASK = "SUBTASK"  # Subtask
+    INCIDENT = "INCIDENT"  # Incident/outage
+    IMPROVEMENT = "IMPROVEMENT"  # Improvement/enhancement
+    QUESTION = "QUESTION"  # Question/inquiry
+    DOCUMENTATION = "DOCUMENTATION"  # Documentation task
+    TEST = "TEST"  # Test case
+    UNKNOWN = "UNKNOWN"  # Unknown or unmapped ticket type
+
+
+class TicketDeliveryStatus(str, Enum):
+    """Standard ticket delivery status values for all ticketing connectors"""
+    ON_TRACK = "ON_TRACK"  # On track - progressing as expected
+    AT_RISK = "AT_RISK"  # At risk - some concerns but manageable
+    OFF_TRACK = "OFF_TRACK"  # Off track - significant issues or delays
+    HIGH_RISK = "HIGH_RISK"  # High risk - major concerns (Jira Align)
+    SOME_RISK = "SOME_RISK"  # Some risk - minor concerns (Jira Align)
+    UNKNOWN = "UNKNOWN"  # Unknown or unmapped delivery status
 
 class Record(BaseModel):
     # Core record properties
@@ -544,9 +570,10 @@ class CommentRecord(Record):
         )
 
 class TicketRecord(Record):
-    status: Optional[TicketStatus] = None
-    priority: Optional[TicketPriority] = None
-    type: Optional[str] = None
+    status: Optional[Union[TicketStatus, str]] = None
+    priority: Optional[Union[TicketPriority, str]] = None
+    type: Optional[Union[TicketType, str]] = None
+    delivery_status: Optional[Union[TicketDeliveryStatus, str]] = None
     assignee: Optional[str] = None
     reporter_email: Optional[str] = None
     assignee_email: Optional[str] = None
@@ -555,22 +582,32 @@ class TicketRecord(Record):
     creator_name: Optional[str] = None
 
     def to_arango_record(self) -> Dict:
+        def _get_value(field_value: Optional[Union[Enum, str]]) -> Optional[str]:
+            """Extract string value from enum or return original string"""
+            if field_value is None:
+                return None
+            if isinstance(field_value, Enum):
+                return field_value.value
+            return str(field_value)
+
         return {
             "_key": self.id,
             "orgId": self.org_id,
-            "status": self.status.value if self.status else None,
-            "priority": self.priority.value if self.priority else None,
-            "type": self.type,
+            "status": _get_value(self.status),
+            "priority": _get_value(self.priority),
+            "type": _get_value(self.type),
+            "deliveryStatus": _get_value(self.delivery_status),
             "assignee": self.assignee,
             "reporterEmail": self.reporter_email,
+            "reporterName": self.reporter_name,
             "assigneeEmail": self.assignee_email,
             "creatorEmail": self.creator_email,
             "creatorName": self.creator_name,
         }
 
     @staticmethod
-    def _safe_enum_parse(value: Optional[str], enum_class: Type[EnumType]) -> Optional[EnumType]:
-        """Safely parse enum value, returning None if invalid"""
+    def _safe_enum_parse(value: Optional[str], enum_class: Type[EnumType]) -> Optional[Union[EnumType, str]]:
+        """Safely parse enum value, returning original string if invalid (preserves connector-specific values)"""
         if not value:
             return None
         try:
@@ -581,10 +618,8 @@ class TicketRecord(Record):
             for enum_item in enum_class:
                 if enum_item.value.upper() == value_upper:
                     return enum_item
-            # If still no match, return UNKNOWN if available, else None
-            if hasattr(enum_class, "UNKNOWN"):
-                return enum_class.UNKNOWN
-            return None
+            # If still no match, return original value instead of UNKNOWN to preserve connector-specific values
+            return value
 
     @staticmethod
     def from_arango_record(ticket_doc: Dict, record_doc: Dict) -> "TicketRecord":
@@ -620,7 +655,8 @@ class TicketRecord(Record):
             parent_node_id=record_doc.get("parentNodeId", None),
             status=TicketRecord._safe_enum_parse(ticket_doc.get("status"), TicketStatus),
             priority=TicketRecord._safe_enum_parse(ticket_doc.get("priority"), TicketPriority),
-            type=ticket_doc.get("type"),
+            type=TicketRecord._safe_enum_parse(ticket_doc.get("type"), TicketType),
+            delivery_status=TicketRecord._safe_enum_parse(ticket_doc.get("deliveryStatus"), TicketDeliveryStatus),
             assignee=ticket_doc.get("assignee"),
             reporter_email=ticket_doc.get("reporterEmail"),
             assignee_email=ticket_doc.get("assigneeEmail"),
