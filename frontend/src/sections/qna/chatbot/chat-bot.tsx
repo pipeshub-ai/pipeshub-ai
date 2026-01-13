@@ -588,6 +588,41 @@ const getEngagingStatusMessage = (event: string, data: any): string | null => {
   }
 };
 
+/**
+ * Parses error message from a fetch Response object
+ * Handles various error response formats (JSON, nested objects, plain text)
+ * @param response - The fetch Response object
+ * @returns A promise that resolves to the parsed error message
+ */
+async function parseErrorFromResponse(response: Response): Promise<string> {
+  let errorMessage = `HTTP error! status: ${response.status}`;
+  try {
+    const errorText = await response.text();
+    if (errorText) {
+      try {
+        const errorJson = JSON.parse(errorText);
+        // Handle nested error objects (e.g., { error: { message: "..." } })
+        if (errorJson.error && typeof errorJson.error === 'object') {
+          errorMessage = errorJson.error.message || errorJson.error.error || errorMessage;
+        } else if (typeof errorJson.error === 'string') {
+          errorMessage = errorJson.error;
+        } else if (errorJson.message) {
+          errorMessage = errorJson.message;
+        } else if (typeof errorJson === 'string') {
+          errorMessage = errorJson;
+        }
+      } catch {
+        // If not JSON, use the text as is
+        errorMessage = errorText || errorMessage;
+      }
+    }
+  } catch (parseError) {
+    // If we can't parse the error, use the default message
+    console.error('Failed to parse error response:', parseError);
+  }
+  return errorMessage;
+}
+
 const ChatInterface = () => {
   const [inputValue, setInputValue] = useState<string>('');
   const [isLoadingConversation, setIsLoadingConversation] = useState<boolean>(false);
@@ -1100,32 +1135,8 @@ const ChatInterface = () => {
         });
 
         if (!response.ok) {
-          // Try to read the error response body to get the actual error message
-          let errorMessage = `HTTP error! status: ${response.status}`;
-          try {
-            const errorText = await response.text();
-            if (errorText) {
-              try {
-                const errorJson = JSON.parse(errorText);
-                // Handle nested error objects (e.g., { error: { message: "..." } })
-                if (errorJson.error && typeof errorJson.error === 'object') {
-                  errorMessage = errorJson.error.message || errorJson.error.error || errorMessage;
-                } else if (typeof errorJson.error === 'string') {
-                  errorMessage = errorJson.error;
-                } else if (errorJson.message) {
-                  errorMessage = errorJson.message;
-                } else if (typeof errorJson === 'string') {
-                  errorMessage = errorJson;
-                }
-              } catch {
-                // If not JSON, use the text as is
-                errorMessage = errorText || errorMessage;
-              }
-            }
-          } catch (parseError) {
-            // If we can't parse the error, use the default message
-            console.error('Failed to parse error response:', parseError);
-          }
+          // Parse error message from response
+          const errorMessage = await parseErrorFromResponse(response);
 
           // Create an error message in the UI before throwing
           if (!hasCreatedMessage.current) {
@@ -2074,32 +2085,8 @@ const ChatInterface = () => {
         );
 
         if (!response.ok) {
-          // Try to read the error response body to get the actual error message
-          let errorMessage = `HTTP error! status: ${response.status}`;
-          try {
-            const errorText = await response.text();
-            if (errorText) {
-              try {
-                const errorJson = JSON.parse(errorText);
-                // Handle nested error objects (e.g., { error: { message: "..." } })
-                if (errorJson.error && typeof errorJson.error === 'object') {
-                  errorMessage = errorJson.error.message || errorJson.error.error || errorMessage;
-                } else if (typeof errorJson.error === 'string') {
-                  errorMessage = errorJson.error;
-                } else if (errorJson.message) {
-                  errorMessage = errorJson.message;
-                } else if (typeof errorJson === 'string') {
-                  errorMessage = errorJson;
-                }
-              } catch {
-                // If not JSON, use the text as is
-                errorMessage = errorText || errorMessage;
-              }
-            }
-          } catch (parseError) {
-            // If we can't parse the error, use the default message
-            console.error('Failed to parse error response:', parseError);
-          }
+          // Parse error message from response
+          const errorMessage = await parseErrorFromResponse(response);
 
           // Show error in the message
           streamingManager.updateConversationMessages(conversationKey, (prevMessages) =>

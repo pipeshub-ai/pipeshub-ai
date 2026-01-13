@@ -95,12 +95,7 @@ function validateNoXSS(value: any, path: string = ''): void {
 
   // Handle plain objects - validate each property
   // Check for plain objects (not class instances, Buffers, Dates, etc.)
-  if (
-    typeof value === 'object' &&
-    value.constructor === Object &&
-    !(value instanceof Buffer) &&
-    !(value instanceof Date)
-  ) {
+  if (Object.prototype.toString.call(value) === '[object Object]') {
     for (const key in value) {
       if (Object.prototype.hasOwnProperty.call(value, key)) {
         const propValue = value[key];
@@ -165,12 +160,7 @@ function sanitizeValue(value: any): any {
 
   // Handle plain objects - sanitize each property
   // Check for plain objects (not class instances, Buffers, Dates, etc.)
-  if (
-    typeof value === 'object' &&
-    value.constructor === Object &&
-    !(value instanceof Buffer) &&
-    !(value instanceof Date)
-  ) {
+  if (Object.prototype.toString.call(value) === '[object Object]') {
     const sanitized: Record<string, any> = {};
     for (const key in value) {
       if (Object.prototype.hasOwnProperty.call(value, key)) {
