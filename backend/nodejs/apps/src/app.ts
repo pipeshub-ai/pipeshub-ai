@@ -19,6 +19,7 @@ import {
 } from './modules/enterprise_search/routes/es.routes';
 import { EnterpriseSearchAgentContainer } from './modules/enterprise_search/container/es.container';
 import { requestContextMiddleware } from './libs/middlewares/request.context';
+import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
 
 import { createUserAccountRouter } from './modules/auth/routes/userAccount.routes';
 import { UserManagerContainer } from './modules/user_management/container/userManager.container';
@@ -272,6 +273,7 @@ export class Application {
     // Body parsing
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true }));
+    this.app.use(xssSanitizationMiddleware);
 
     // Logging
     this.app.use(
