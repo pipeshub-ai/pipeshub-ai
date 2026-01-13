@@ -23,6 +23,40 @@ PRIORITY_MEDIUM = 3
 PRIORITY_LOW = 4
 PRIORITY_LOWEST_THRESHOLD = 5
 
+# Default mappings for common relationship tags (module-level constant for performance)
+DEFAULT_TAG_MAPPINGS: Dict[str, LinkRelationshipTag] = {
+    "relates to": LinkRelationshipTag.RELATES_TO,
+    "relates_to": LinkRelationshipTag.RELATES_TO,
+    "relatesto": LinkRelationshipTag.RELATES_TO,
+    "blocks": LinkRelationshipTag.BLOCKS,
+    "blocked by": LinkRelationshipTag.BLOCKED_BY,
+    "blocked_by": LinkRelationshipTag.BLOCKED_BY,
+    "blockedby": LinkRelationshipTag.BLOCKED_BY,
+    "duplicates": LinkRelationshipTag.DUPLICATES,
+    "duplicated by": LinkRelationshipTag.DUPLICATED_BY,
+    "duplicated_by": LinkRelationshipTag.DUPLICATED_BY,
+    "duplicatedby": LinkRelationshipTag.DUPLICATED_BY,
+    "depends on": LinkRelationshipTag.DEPENDS_ON,
+    "depends_on": LinkRelationshipTag.DEPENDS_ON,
+    "dependson": LinkRelationshipTag.DEPENDS_ON,
+    "required by": LinkRelationshipTag.REQUIRED_BY,
+    "required_by": LinkRelationshipTag.REQUIRED_BY,
+    "requiredby": LinkRelationshipTag.REQUIRED_BY,
+    "clones": LinkRelationshipTag.CLONES,
+    "cloned from": LinkRelationshipTag.CLONED_FROM,
+    "cloned_from": LinkRelationshipTag.CLONED_FROM,
+    "clonedfrom": LinkRelationshipTag.CLONED_FROM,
+    "parent": LinkRelationshipTag.PARENT,
+    "child": LinkRelationshipTag.CHILD,
+    "related": LinkRelationshipTag.RELATED,
+    "split from": LinkRelationshipTag.SPLIT_FROM,
+    "split_from": LinkRelationshipTag.SPLIT_FROM,
+    "splitfrom": LinkRelationshipTag.SPLIT_FROM,
+    "merged into": LinkRelationshipTag.MERGED_INTO,
+    "merged_into": LinkRelationshipTag.MERGED_INTO,
+    "mergedinto": LinkRelationshipTag.MERGED_INTO,
+}
+
 
 class TicketValueMapper:
     """Maps connector-specific ticket values to standard enum values"""
@@ -321,40 +355,6 @@ def map_link_relationship_tag(api_tag: Optional[str], custom_mappings: Optional[
     """
     if not api_tag:
         return None
-
-    # Default mappings for common relationship tags
-    DEFAULT_TAG_MAPPINGS: Dict[str, LinkRelationshipTag] = {
-        "relates to": LinkRelationshipTag.RELATES_TO,
-        "relates_to": LinkRelationshipTag.RELATES_TO,
-        "relatesto": LinkRelationshipTag.RELATES_TO,
-        "blocks": LinkRelationshipTag.BLOCKS,
-        "blocked by": LinkRelationshipTag.BLOCKED_BY,
-        "blocked_by": LinkRelationshipTag.BLOCKED_BY,
-        "blockedby": LinkRelationshipTag.BLOCKED_BY,
-        "duplicates": LinkRelationshipTag.DUPLICATES,
-        "duplicated by": LinkRelationshipTag.DUPLICATED_BY,
-        "duplicated_by": LinkRelationshipTag.DUPLICATED_BY,
-        "duplicatedby": LinkRelationshipTag.DUPLICATED_BY,
-        "depends on": LinkRelationshipTag.DEPENDS_ON,
-        "depends_on": LinkRelationshipTag.DEPENDS_ON,
-        "dependson": LinkRelationshipTag.DEPENDS_ON,
-        "required by": LinkRelationshipTag.REQUIRED_BY,
-        "required_by": LinkRelationshipTag.REQUIRED_BY,
-        "requiredby": LinkRelationshipTag.REQUIRED_BY,
-        "clones": LinkRelationshipTag.CLONES,
-        "cloned from": LinkRelationshipTag.CLONED_FROM,
-        "cloned_from": LinkRelationshipTag.CLONED_FROM,
-        "clonedfrom": LinkRelationshipTag.CLONED_FROM,
-        "parent": LinkRelationshipTag.PARENT,
-        "child": LinkRelationshipTag.CHILD,
-        "related": LinkRelationshipTag.RELATED,
-        "split from": LinkRelationshipTag.SPLIT_FROM,
-        "split_from": LinkRelationshipTag.SPLIT_FROM,
-        "splitfrom": LinkRelationshipTag.SPLIT_FROM,
-        "merged into": LinkRelationshipTag.MERGED_INTO,
-        "merged_into": LinkRelationshipTag.MERGED_INTO,
-        "mergedinto": LinkRelationshipTag.MERGED_INTO,
-    }
 
     # Merge with custom mappings if provided
     tag_mappings = {**DEFAULT_TAG_MAPPINGS, **(custom_mappings or {})}
