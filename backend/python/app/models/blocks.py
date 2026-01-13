@@ -1,10 +1,12 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 
+if TYPE_CHECKING:
+    from app.models.entities import RecordType
 
 class Point(BaseModel):
     x: float
@@ -35,6 +37,9 @@ class BlockType(str, Enum):
     QUOTE = "quote"
     DIVIDER = "divider"
 
+class BlockSubType(str, Enum):
+    CHILD_RECORD = "child_record"
+
 class DataFormat(str, Enum):
     TXT = "txt"
     BIN = "bin"
@@ -60,7 +65,7 @@ class BlockComment(BaseModel):
     updated_at: Optional[datetime] = Field(default=None, description="Timestamp when the comment was updated in Linear")
     attachments: Optional[List[CommentAttachment]] = Field(default=None, description="List of attachments associated with the comment")
     quoted_text: Optional[str] = Field(default=None, description="Quoted text for inline comments")
-    
+
 class CitationMetadata(BaseModel):
     """Citation-specific metadata for referencing source locations"""
     # All File formatsspecific
@@ -112,11 +117,28 @@ class TableCellMetadata(BaseModel):
     column_header: Optional[bool] = None
     row_header: Optional[bool] = None
 
+class ChildType(str, Enum):
+    """Type of child reference"""
+    RECORD = "record"
+    USER = "user"
+
+class ChildRecord(BaseModel):
+    """Metadata for child references (records or users)"""
+    child_type: ChildType = Field(description="Type of child: 'record' or 'user'")
+    # For records
+    record_id: Optional[str] = Field(default=None, description="ArangoDB record ID (for records)")
+    record_name: Optional[str] = Field(default=None, description="Record name (for records)")
+    record_type: Optional["RecordType"] = Field(default=None, description="Record type (for records)")
+    # For users
+    user_id: Optional[str] = Field(default=None, description="Notion user ID (for users)")
+    user_name: Optional[str] = Field(default=None, description="User name (for users)")
+
 class TableRowMetadata(BaseModel):
     """Metadata specific to table row blocks"""
     row_number: Optional[int] = None
     row_span: Optional[int] = None
     is_header: bool = False
+    children_records: Optional[List[ChildRecord]] = None
 
 class TableMetadata(BaseModel):
     """Metadata specific to table blocks"""
@@ -198,6 +220,7 @@ class GroupSubType(str, Enum):
     MILESTONE = "milestone"
     UPDATE = "update"
     PROJECT_CONTENT = "project_content"
+    CHILD_RECORD = "child_record"
 
 class SemanticMetadata(BaseModel):
     entities: Optional[List[Dict[str, Any]]] = None
@@ -220,6 +243,7 @@ class Block(BaseModel):
     index: int = None
     parent_index: Optional[int] = Field(default=None, description="Index of the parent block group")
     type: BlockType
+    sub_type: Optional[BlockSubType] = None
     name: Optional[str] = None
     format: DataFormat = None
     comments: List[BlockComment] = Field(default_factory=list)
@@ -277,7 +301,7 @@ class BlockGroup(BaseModel):
     format: Optional[DataFormat] = None
     weburl: Optional[HttpUrl] = Field(default=None, description="Web URL for the original source context (e.g., Linear project page). This will be used as primary webUrl in citations for all generated blocks")
     comments: List[List[BlockComment]] = Field(default_factory=list, description="2D list of comments grouped by thread_id, with each thread's comments sorted by created_at")
-    
+
 class BlockGroups(BaseModel):
     block_groups: List[BlockGroup] = Field(default_factory=list)
 

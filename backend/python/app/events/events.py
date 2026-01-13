@@ -339,6 +339,20 @@ class EventProcessor:
                     yield event
                 return
 
+            if mime_type == MimeTypes.BLOCKS.value:
+                self.logger.info("🚀 Processing Blocks Container")
+                async for event in self.processor.process_blocks(
+                    recordName=record_name,
+                    recordId=record_id,
+                    version=record_version,
+                    source=connector,
+                    orgId=org_id,
+                    blocks_data=file_content,
+                    virtual_record_id=virtual_record_id,
+                ):
+                    yield event
+                return
+
             if extension == ExtensionTypes.PDF.value or mime_type == MimeTypes.PDF.value:
                 # Check if document needs OCR before using docling
 

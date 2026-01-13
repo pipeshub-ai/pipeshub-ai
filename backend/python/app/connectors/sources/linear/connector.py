@@ -52,15 +52,16 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.linear.common.apps import LinearApp
 from app.models.blocks import (
-    Block,
     BlockComment,
     BlockGroup,
     BlocksContainer,
-    BlockType,
+    ChildRecord,
+    ChildType,
     CommentAttachment,
     DataFormat,
-    GroupType,
     GroupSubType,
+    GroupType,
+    TableRowMetadata,
 )
 from app.models.entities import (
     AppUser,
@@ -1025,8 +1026,6 @@ class LinearConnector(BaseConnector):
                             )
                             batch_records.extend(file_records)
 
-                        # because Linear doesn't update issue.updatedAt when attachments are added
-
                     except Exception as e:
                         issue_id = issue_data.get("id", "unknown")
                         self.logger.error(f"❌ Error processing issue {issue_id}: {e}", exc_info=True)
@@ -1510,32 +1509,30 @@ class LinearConnector(BaseConnector):
                             external_id=project_id
                         )
 
-                        # Prepare project BlockGroups and process related records (links, documents, issues)
-                        (
-                            blocks_container,
-                            project_batch_records,
-                            issues_data
-                        ) = await self._prepare_project_blocks_and_related_records(
+                        # Transform project to ProjectRecord FIRST (without BlocksContainer - created only during streaming)
+                        # This ensures project_record.id exists before processing related records
+                        project_record = self._transform_to_project_record(
+                            full_project_data, team_id, existing_record
+                        )
+
+                        # Process related records (links, documents) using project_record.id as parent
+                        project_batch_records = await self._prepare_project_related_records(
                             full_project_data=full_project_data,
                             project_id=project_id,
-                            existing_record=existing_record,
+                            existing_record=project_record,  # Use project_record instead of existing_record
                             team_id=team_id,
                             tx_store=tx_store
                         )
-                        
+
                         # Add project-related records to batch
                         batch_records.extend(project_batch_records)
-
-                        # Transform project to ProjectRecord with BlockGroup
-                        project_record = self._transform_to_project_record(
-                            full_project_data, team_id, existing_record, blocks_container
-                        )
 
                         # Set indexing status based on filters
                         if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.PROJECTS):
                             project_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
-                        # Add linked issues to related_external_records on ProjectRecord (for LINKED_TO edges)
+                        # Extract issues data directly from full_project_data and add to related_external_records
+                        issues_data = full_project_data.get("issues", {}).get("nodes", [])
                         if issues_data:
                             from app.models.entities import RelatedExternalRecord
                             project_record.related_external_records = [
@@ -1671,99 +1668,64 @@ class LinearConnector(BaseConnector):
 
         return comment_records
 
-    async def _prepare_project_blocks_and_related_records(
+    async def _prepare_project_related_records(
         self,
         full_project_data: Dict[str, Any],
         project_id: str,
         existing_record: Optional[Record],
         team_id: str,
         tx_store
-    ) -> Tuple[BlocksContainer, List[Tuple[Record, List[Permission]]], List[Dict[str, Any]]]:
+    ) -> List[Tuple[Record, List[Permission]]]:
         """
-        Prepare project BlockGroups and process related records (links, documents, issues).
+        Prepare project-related records (links, documents) for sync.
 
-        This function:
-        1. Gets project weburl and node_id
-        2. Collects issue external IDs
-        3. Processes project external links and documents
-        4. Collects all related external record IDs
-        5. Parses project data into BlockGroups with process_docling=True
+        This method processes external links and documents without creating BlockGroups
+        (BlockGroups are only created during streaming, not during sync).
+
+        Args:
+            full_project_data: Full project data from Linear API
+            project_id: Project external ID
+            existing_record: Existing project record (if any)
+            team_id: Team ID for external_record_group_id
+            tx_store: Transaction store for looking up existing records
 
         Returns:
-            Tuple containing:
-            - blocks_container: BlocksContainer with BlockGroups
-            - batch_records: List of (Record, permissions) tuples for links and documents
-            - issues_data: List of issue data dictionaries
+            List of (Record, permissions) tuples
         """
-        # Get project weburl for BlockGroup
-        project_weburl = full_project_data.get("url")
-        if not project_weburl:
-            # Fallback: construct URL from project ID
-            project_weburl = f"https://linear.app/project/{project_id}"
+        project_batch_records: List[Tuple[Record, List[Permission]]] = []
 
-        # Get project_node_id (use existing record ID if available, otherwise will be set after project_record creation)
-        project_node_id = existing_record.id if existing_record else None
+        # Get project node ID (use existing record ID if available, otherwise will be set after record creation)
+        project_node_id = existing_record.id if existing_record else ""
 
-        # Collect issue external IDs (will be added to related_external_records for LINKED_TO edges)
-        issues_data = full_project_data.get("issues", {}).get("nodes", [])
-        issue_external_ids = [
-            issue.get("id") for issue in issues_data if issue.get("id")
-        ]
-
-        # Process project external links and collect their external IDs
+        # Extract external links data
         external_links_data = full_project_data.get("externalLinks", {}).get("nodes", [])
-        link_external_ids: List[str] = []
-        batch_records: List[Tuple[Record, List[Permission]]] = []
-        
         if external_links_data:
-            link_records = await self._process_project_external_links(
+            # Process external links (without creating block groups for sync)
+            link_records, _ = await self._process_project_external_links(
                 external_links_data=external_links_data,
                 project_id=project_id,
                 project_node_id=project_node_id,
                 team_id=team_id,
-                tx_store=tx_store
+                tx_store=tx_store,
+                create_block_groups=False
             )
-            # Collect external IDs from link records
-            for link_record, _ in link_records:
-                if link_record.external_record_id:
-                    link_external_ids.append(link_record.external_record_id)
-            batch_records.extend(link_records)
+            project_batch_records.extend(link_records)
 
-        # Process project documents and collect their external IDs
+        # Extract documents data
         documents_data = full_project_data.get("documents", {}).get("nodes", [])
-        document_external_ids: List[str] = []
         if documents_data:
-            document_records = await self._process_project_documents(
+            # Process documents (without creating block groups for sync)
+            document_records, _ = await self._process_project_documents(
                 documents_data=documents_data,
                 project_id=project_id,
                 project_node_id=project_node_id,
                 team_id=team_id,
-                tx_store=tx_store
+                tx_store=tx_store,
+                create_block_groups=False  # No block groups during sync
             )
-            # Collect external IDs from document records
-            for doc_record, _ in document_records:
-                if doc_record.external_record_id:
-                    document_external_ids.append(doc_record.external_record_id)
-            batch_records.extend(document_records)
+            project_batch_records.extend(document_records)
 
-        # Collect all related external record IDs for BlockGroup
-        related_external_record_ids: List[str] = []
-        related_external_record_ids.extend(issue_external_ids)
-        related_external_record_ids.extend(link_external_ids)
-        related_external_record_ids.extend(document_external_ids)
-
-        # Parse project data into BlockGroup (with process_docling=True)
-        blocks_container = await self._parse_project_to_blocks(
-            full_project_data,
-            weburl=project_weburl,
-            related_external_record_ids=related_external_record_ids if related_external_record_ids else None
-        )
-
-        return (
-            blocks_container,
-            batch_records,
-            issues_data
-        )
+        return project_batch_records
 
     async def _process_project_external_links(
         self,
@@ -1771,10 +1733,11 @@ class LinearConnector(BaseConnector):
         project_id: str,
         project_node_id: str,
         team_id: str,
-        tx_store
-    ) -> List[Tuple[Record, List[Permission]]]:
+        tx_store,
+        create_block_groups: bool = False
+    ) -> Tuple[List[Tuple[Record, List[Permission]]], List[BlockGroup]]:
         """
-        Process project external links and create LinkRecords.
+        Process project external links and create LinkRecords. Optionally create BlockGroups.
 
         Args:
             external_links_data: List of external link data from Linear API
@@ -1782,11 +1745,13 @@ class LinearConnector(BaseConnector):
             project_node_id: Internal record ID of project
             team_id: Team ID for external_record_group_id
             tx_store: Transaction store for looking up existing records
+            create_block_groups: If True, also create BlockGroups (for streaming). Default False (for sync).
 
         Returns:
-            List of (LinkRecord, permissions) tuples
+            Tuple of (List of (LinkRecord, permissions) tuples, List of BlockGroups)
         """
         link_records: List[Tuple[Record, List[Permission]]] = []
+        block_groups: List[BlockGroup] = []
 
         for link_data in external_links_data:
             try:
@@ -1803,7 +1768,7 @@ class LinearConnector(BaseConnector):
                 # Transform external link to LinkRecord (reuse attachment transform function)
                 link_record = self._transform_attachment_to_link_record(
                     attachment_data=link_data,
-                    issue_id=project_id,  # Use project_id as parent
+                    issue_id=project_id,
                     parent_node_id=project_node_id,
                     team_id=team_id,
                     existing_record=existing_link,
@@ -1829,12 +1794,37 @@ class LinearConnector(BaseConnector):
 
                 link_records.append((link_record, []))
 
+                # Create BlockGroup only if requested (for streaming)
+                if create_block_groups:
+                    child_record = ChildRecord(
+                        child_type=ChildType.RECORD,
+                        record_id=link_record.id,
+                        record_name=link_record.record_name,
+                        record_type=RecordType.LINK
+                    )
+
+                    block_group = BlockGroup(
+                        id=str(uuid4()),
+                        index=len(block_groups),
+                        name=link_record.record_name,
+                        type=GroupType.TEXT_SECTION,
+                        group_subtype=GroupSubType.CHILD_RECORD,
+                        description=f"External Link: {link_record.record_name}",
+                        source_group_id=link_id,
+                        weburl=link_record.weburl,
+                        requires_processing=False,  # No data to process, just a child record reference
+                        table_row_metadata=TableRowMetadata(
+                            children_records=[child_record]
+                        )
+                    )
+                    block_groups.append(block_group)
+
             except Exception as e:
                 link_id = link_data.get("id", "unknown")
                 self.logger.error(f"❌ Error processing project external link {link_id}: {e}", exc_info=True)
                 continue
 
-        return link_records
+        return link_records, block_groups
 
     async def _process_project_documents(
         self,
@@ -1842,10 +1832,11 @@ class LinearConnector(BaseConnector):
         project_id: str,
         project_node_id: str,
         team_id: str,
-        tx_store
-    ) -> List[Tuple[Record, List[Permission]]]:
+        tx_store,
+        create_block_groups: bool = False
+    ) -> Tuple[List[Tuple[Record, List[Permission]]], List[BlockGroup]]:
         """
-        Process project documents and create WebpageRecords.
+        Process project documents and create WebpageRecords. Optionally create BlockGroups.
 
         Args:
             documents_data: List of document data from Linear API
@@ -1853,11 +1844,13 @@ class LinearConnector(BaseConnector):
             project_node_id: Internal record ID of project
             team_id: Team ID for external_record_group_id
             tx_store: Transaction store for looking up existing records
+            create_block_groups: If True, also create BlockGroups (for streaming). Default False (for sync).
 
         Returns:
-            List of (WebpageRecord, permissions) tuples
+            Tuple of (List of (WebpageRecord, permissions) tuples, List of BlockGroups)
         """
         document_records: List[Tuple[Record, List[Permission]]] = []
+        block_groups: List[BlockGroup] = []
 
         for document_data in documents_data:
             try:
@@ -1874,7 +1867,7 @@ class LinearConnector(BaseConnector):
                 # Transform document to WebpageRecord (reuse existing transform function)
                 webpage_record = self._transform_document_to_webpage_record(
                     document_data=document_data,
-                    issue_id=project_id,  # Use project_id as parent
+                    issue_id=project_id,
                     parent_node_id=project_node_id,
                     team_id=team_id,
                     existing_record=existing_document,
@@ -1887,12 +1880,37 @@ class LinearConnector(BaseConnector):
 
                 document_records.append((webpage_record, []))
 
+                # Create BlockGroup only if requested (for streaming)
+                if create_block_groups:
+                    child_record = ChildRecord(
+                        child_type=ChildType.RECORD,
+                        record_id=webpage_record.id,
+                        record_name=webpage_record.record_name,
+                        record_type=RecordType.WEBPAGE
+                    )
+
+                    block_group = BlockGroup(
+                        id=str(uuid4()),
+                        index=len(block_groups),
+                        name=webpage_record.record_name,
+                        type=GroupType.TEXT_SECTION,
+                        group_subtype=GroupSubType.CHILD_RECORD,
+                        description=f"Document: {webpage_record.record_name}",
+                        source_group_id=document_id,
+                        weburl=webpage_record.weburl,
+                        requires_processing=False,  # No data to process, just a child record reference
+                        table_row_metadata=TableRowMetadata(
+                            children_records=[child_record]
+                        )
+                    )
+                    block_groups.append(block_group)
+
             except Exception as e:
                 document_id = document_data.get("id", "unknown")
                 self.logger.error(f"❌ Error processing project document {document_id}: {e}", exc_info=True)
                 continue
 
-        return document_records
+        return document_records, block_groups
 
     async def _extract_files_from_markdown(
         self,
@@ -2205,8 +2223,7 @@ class LinearConnector(BaseConnector):
         self,
         project_data: Dict[str, Any],
         team_id: str,
-        existing_record: Optional[Record] = None,
-        blocks_container: Optional[BlocksContainer] = None
+        existing_record: Optional[Record] = None
     ) -> ProjectRecord:
         """
         Transform Linear project to ProjectRecord.
@@ -2215,7 +2232,6 @@ class LinearConnector(BaseConnector):
             project_data: Raw project data from Linear API
             team_id: Team ID for external_record_group_id
             existing_record: Existing record from DB (if any) for version handling
-            blocks_container: Blocks container with project content
 
         Returns:
             ProjectRecord: Transformed project record
@@ -2285,7 +2301,7 @@ class LinearConnector(BaseConnector):
             origin=OriginTypes.CONNECTOR.value,
             connector_name=Connectors.LINEAR,
             connector_id=self.connector_id,
-            mime_type=MimeTypes.MARKDOWN.value,
+            mime_type=MimeTypes.BLOCKS.value,
             weburl=weburl,
             created_at=get_epoch_timestamp_in_ms(),
             updated_at=get_epoch_timestamp_in_ms(),
@@ -2302,9 +2318,6 @@ class LinearConnector(BaseConnector):
             parent_node_id=None,
         )
 
-        # Add blocks container if provided
-        if blocks_container:
-            project.block_containers = blocks_container
 
         return project
 
@@ -2337,7 +2350,6 @@ class LinearConnector(BaseConnector):
         if not comment_id:
             raise ValueError("Comment data missing required 'id' field")
 
-        comment_data.get("body", "")
         user = comment_data.get("user", {})
         author_source_id = user.get("id", "") if user else ""
         author_name = user.get("displayName") or user.get("name") or "Unknown"
@@ -2523,7 +2535,6 @@ class LinearConnector(BaseConnector):
             raise ValueError(f"Document {document_id} missing required 'url' field")
 
         title = document_data.get("title", "")
-        document_data.get("slugId", "")
 
         # Timestamps
         created_at = self._parse_linear_datetime(document_data.get("createdAt", "")) or 0
@@ -2643,7 +2654,7 @@ class LinearConnector(BaseConnector):
             created_at=get_epoch_timestamp_in_ms(),
             updated_at=get_epoch_timestamp_in_ms(),
             source_created_at=parent_created_at,
-            source_updated_at=parent_updated_at ,
+            source_updated_at=parent_updated_at,
             preview_renderable=True,
             is_dependent_node=True,
             parent_node_id=parent_node_id,
@@ -3219,17 +3230,17 @@ class LinearConnector(BaseConnector):
     ) -> List[List[BlockComment]]:
         """
         Organize comments into a 2D list grouped by thread_id, with each thread sorted by created_at.
-        
+
         Args:
             comments: List of BlockComment objects
-            
+
         Returns:
             List of lists, where each inner list contains comments for one thread,
             sorted by created_at (oldest first)
         """
         if not comments:
             return []
-        
+
         # Group comments by thread_id
         threads_dict: Dict[str, List[BlockComment]] = {}
         for comment in comments:
@@ -3237,9 +3248,8 @@ class LinearConnector(BaseConnector):
             if thread_id not in threads_dict:
                 threads_dict[thread_id] = []
             threads_dict[thread_id].append(comment)
-        
+
         # Sort each thread's comments by created_at (oldest first)
-        # Comments without created_at will be placed at the end
         organized_comments: List[List[BlockComment]] = []
         for thread_id, thread_comments in threads_dict.items():
             sorted_thread = sorted(
@@ -3247,12 +3257,12 @@ class LinearConnector(BaseConnector):
                 key=lambda c: c.created_at if c.created_at else datetime.max.replace(tzinfo=timezone.utc)
             )
             organized_comments.append(sorted_thread)
-        
+
         # Sort threads by the first comment's created_at (oldest thread first)
         organized_comments.sort(
             key=lambda thread: thread[0].created_at if thread[0].created_at else datetime.max.replace(tzinfo=timezone.utc)
         )
-        
+
         return organized_comments
 
     def _create_blockgroup(
@@ -3271,7 +3281,7 @@ class LinearConnector(BaseConnector):
     ) -> BlockGroup:
         """
         Create a BlockGroup object directly without using BlockGroupBuilder.
-        
+
         Args:
             name: Name of the block group
             weburl: Web URL for the original source context (e.g., Linear project page)
@@ -3284,10 +3294,10 @@ class LinearConnector(BaseConnector):
             index: Optional index for the block group
             requires_processing: Whether this block group requires further processing (defaults to True)
             comments: Optional 2D list of BlockComment objects (grouped by thread_id, sorted by created_at)
-            
+
         Returns:
             BlockGroup instance
-            
+
         Raises:
             ValueError: If weburl or data is not provided
         """
@@ -3295,7 +3305,7 @@ class LinearConnector(BaseConnector):
             raise ValueError("weburl is required when creating BlockGroup")
         if not data:
             raise ValueError("data is required when creating BlockGroup")
-        
+
         return BlockGroup(
             name=name,
             type=group_type,
@@ -3325,8 +3335,6 @@ class LinearConnector(BaseConnector):
         - Each Project Milestone (if exists) - One BlockGroup per milestone
         - Each Project Update (if exists) - One BlockGroup per update with update comments as BlockComments
 
-        Each BlockGroup will be automatically converted to Blocks by Docling during indexing,
-
         Args:
             project_data: Full project data from Linear API (with nested data)
             weburl: Project web URL (required for docling BlockGroups)
@@ -3349,11 +3357,11 @@ class LinearConnector(BaseConnector):
         # Include both description and content: description first, then content below
         content = project_data.get("content", "")
         description_sections = []
-        
+
         # Add description first (if exists)
         if project_description:
             description_sections.append(f"# Project Description\n\n{project_description}")
-        
+
         # Add content below description (if exists)
         if content:
             if description_sections:
@@ -3362,11 +3370,11 @@ class LinearConnector(BaseConnector):
             else:
                 # If no description, content becomes the main section
                 description_sections.append(f"# Project Content\n\n{content}")
-        
+
         # Create BlockGroup if we have either description or content
         if description_sections:
             combined_content = "\n".join(description_sections)
-            
+
             # Build project comments as BlockComments
             block_comments: List[BlockComment] = []
             comments = project_data.get("comments", {}).get("nodes", [])
@@ -3380,24 +3388,24 @@ class LinearConnector(BaseConnector):
                         comment_url = comment_data.get("url", "")
                         comment_created_at_str = comment_data.get("createdAt", "")
                         comment_updated_at_str = comment_data.get("updatedAt", "")
-                        
+
                         # Parse datetime strings to datetime objects
                         comment_created_at = self._parse_linear_datetime_to_datetime(comment_created_at_str)
                         comment_updated_at = self._parse_linear_datetime_to_datetime(comment_updated_at_str)
-                        
+
                         # Format comment with author and timestamp for better tracking
                         formatted_comment_text = f"**{author_name}**"
                         if comment_created_at_str:
                             formatted_comment_text += f" ({comment_created_at_str})"
                         formatted_comment_text += f":\n{comment_body}"
-                        
+
                         # Handle quoted_text if present
                         quoted_text = comment_data.get("quotedText") or comment_data.get("quoted_text")
-                        
+
                         # Get thread_id from parent comment id, or use comment's own id if top-level
                         parent_comment = comment_data.get("parent", {})
                         thread_id = parent_comment.get("id") if parent_comment else comment_id
-                        
+
                         block_comments.append(
                             BlockComment(
                                 text=formatted_comment_text,
@@ -3409,10 +3417,10 @@ class LinearConnector(BaseConnector):
                                 quoted_text=quoted_text,
                             )
                         )
-            
+
             # Organize comments by thread_id and sort by created_at
             organized_comments = self._organize_comments_by_thread(block_comments)
-            
+
             content_block_group = self._create_blockgroup(
                 name=f"{project_name} - Description & Content" if project_name else "Project Description & Content",
                 weburl=weburl,
@@ -3423,10 +3431,10 @@ class LinearConnector(BaseConnector):
                 source_group_id=f"{project_id}_description_content",
                 format=DataFormat.MARKDOWN,
                 index=block_group_index,
-                requires_processing=False,
+                requires_processing=True,
                 comments=organized_comments,
             )
-            
+
             block_groups.append(content_block_group)
             block_group_index += 1
 
@@ -3436,7 +3444,7 @@ class LinearConnector(BaseConnector):
             milestone_id = milestone_data.get("id", "")
             milestone_name = milestone_data.get("name", "")
             milestone_description = milestone_data.get("description", "")
-            
+
             if milestone_name or milestone_description:
                 # Build markdown content for this milestone with project context for searchability
                 milestone_markdown = f"# Project: {project_name}\n\n## Milestone: {milestone_name}\n"
@@ -3466,13 +3474,13 @@ class LinearConnector(BaseConnector):
         for update_data in project_updates:
             update_id = update_data.get("id", "")
             update_body = update_data.get("body", "")
-            
+
             if update_body:
                 # Build markdown content for this update with project context for searchability
                 author = update_data.get("user", {})
                 author_name = author.get("displayName") or author.get("name", "Unknown")
                 update_created_at = update_data.get("createdAt", "")
-                
+
                 update_markdown = f"# Project: {project_name}\n\n## Project Update by {author_name}\n"
                 if update_created_at:
                     update_markdown += f"*Created: {update_created_at}*\n"
@@ -3494,17 +3502,17 @@ class LinearConnector(BaseConnector):
                             comment_url = comment_data.get("url", "")
                             comment_created_at_str = comment_data.get("createdAt", "")
                             comment_updated_at_str = comment_data.get("updatedAt", "")
-                            
+
                             # Parse datetime strings to datetime objects
                             comment_created_at = self._parse_linear_datetime_to_datetime(comment_created_at_str)
                             comment_updated_at = self._parse_linear_datetime_to_datetime(comment_updated_at_str)
-                            
+
                             # Format comment with author and timestamp for better tracking
                             formatted_comment_text = f"**{comment_author_name}**"
                             if comment_created_at_str:
                                 formatted_comment_text += f" ({comment_created_at_str})"
                             formatted_comment_text += f":\n{comment_body}"
-                            
+
                             # Extract attachments from comment body (excluding images) using existing function
                             attachments = None
                             if comment_body:
@@ -3515,14 +3523,14 @@ class LinearConnector(BaseConnector):
                                         for file_info in file_urls
                                         if file_info.get("filename")
                                     ]
-                            
+
                             # Handle quoted_text if present
                             quoted_text = comment_data.get("quotedText") or comment_data.get("quoted_text")
-                            
+
                             # Get thread_id from parent comment id, or use comment's own id if top-level
                             parent_comment = comment_data.get("parent", {})
                             thread_id = parent_comment.get("id") if parent_comment else comment_id
-                            
+
                             update_block_comments.append(
                                 BlockComment(
                                     text=formatted_comment_text,
@@ -3575,6 +3583,88 @@ class LinearConnector(BaseConnector):
             block_groups.append(minimal_block_group)
 
         return BlocksContainer(blocks=[], block_groups=block_groups)
+
+    async def _process_project_blockgroups_for_streaming(self, record: Record) -> bytes:
+        """
+        Process project BlockGroups for streaming by creating BlocksContainer on-demand.
+
+        This function:
+        1. Fetches project data from Linear API
+        2. Parses project content to BlockGroups (description, milestones, updates)
+        3. Processes external links and documents with BlockGroups
+        4. Combines everything into BlocksContainer
+        5. Serializes BlocksContainer to JSON bytes for streaming
+
+        Args:
+            record: ProjectRecord to stream
+
+        Returns:
+            bytes: Serialized BlocksContainer as JSON bytes
+
+        Raises:
+            Exception: If project data cannot be fetched or processed
+        """
+        record_id = record.external_record_id
+        datasource = await self._get_fresh_datasource()
+        project_response = await datasource.project(id=record_id)
+
+        if not project_response.success:
+            raise Exception(f"Failed to fetch project content: {project_response.message}")
+
+        project_data = project_response.data.get("project", {}) if project_response.data else {}
+        if not project_data:
+            raise Exception(f"No project data found for ID: {record_id}")
+
+        # Get project weburl for BlockGroup
+        project_weburl = project_data.get("url") or f"https://linear.app/project/{record_id}"
+
+        # Parse project content to BlockGroups
+        blocks_container = await self._parse_project_to_blocks(
+            project_data,
+            weburl=project_weburl,
+            related_external_record_ids=None  # Not needed for streaming
+        )
+
+        # Get external links and documents from API and create BlockGroups for them
+        external_links_data = project_data.get("externalLinks", {}).get("nodes", [])
+        documents_data = project_data.get("documents", {}).get("nodes", [])
+
+        link_block_groups: List[BlockGroup] = []
+        document_block_groups: List[BlockGroup] = []
+
+        # Use data_store_provider to look up existing records
+        async with self.data_store_provider.transaction() as tx_store:
+            if external_links_data:
+                # Process external links and create BlockGroups (with create_block_groups=True)
+                link_records, link_block_groups = await self._process_project_external_links(
+                    external_links_data=external_links_data,
+                    project_id=record_id,
+                    project_node_id=record.id,
+                    team_id=record.external_record_group_id or "",
+                    tx_store=tx_store,
+                    create_block_groups=True
+                )
+
+            if documents_data:
+                # Process documents and create BlockGroups (with create_block_groups=True)
+                document_records, document_block_groups = await self._process_project_documents(
+                    documents_data=documents_data,
+                    project_id=record_id,
+                    project_node_id=record.id,
+                    team_id=record.external_record_group_id or "",
+                    tx_store=tx_store,
+                    create_block_groups=True
+                )
+
+        # Add BlockGroups for external links and documents to the blocks container
+        base_index = len(blocks_container.block_groups)
+        for i, block_group in enumerate(link_block_groups + document_block_groups):
+            block_group.index = base_index + i
+            blocks_container.block_groups.append(block_group)
+
+        # Serialize BlocksContainer to JSON bytes
+        blocks_json = blocks_container.model_dump_json(indent=2)
+        return blocks_json.encode('utf-8')
 
     # ==================== CONTENT STREAMING HELPERS ====================
 
@@ -3676,58 +3766,14 @@ class LinearConnector(BaseConnector):
                 await self.init()
 
             if record.record_type == RecordType.PROJECT:
-                # Project: Fetch and stream from blocks
-                record_id = record.external_record_id
-                datasource = await self._get_fresh_datasource()
-                project_response = await datasource.project(id=record_id)
-
-                if not project_response.success:
-                    raise Exception(f"Failed to fetch project content: {project_response.message}")
-
-                project_data = project_response.data.get("project", {}) if project_response.data else {}
-                if not project_data:
-                    raise Exception(f"No project data found for ID: {record_id}")
-
-                # Get project weburl for BlockGroup
-                project_weburl = project_data.get("url") or f"https://linear.app/project/{record_id}"
-
-                # Parse to BlockGroup (for streaming, we'll extract content from BlockGroup.data)
-                blocks_container = await self._parse_project_to_blocks(
-                    project_data,
-                    weburl=project_weburl,
-                    related_external_record_ids=None  # Not needed for streaming
-                )
-
-                # For streaming, extract content from BlockGroup.data (which contains all markdown)
-                content = ""
-                if blocks_container.block_groups:
-                    # Get content from the BlockGroup's data field
-                    block_group = blocks_container.block_groups[0]
-                    content = block_group.data or ""
-                elif blocks_container.blocks:
-                    # Fallback: if blocks exist (legacy format), use them
-                    content_parts = []
-                    for block in blocks_container.blocks:
-                        if block.type == BlockType.TEXT:
-                            if block.name:
-                                content_parts.append(f"## {block.name}\n\n")
-                            content_parts.append(block.data or "")
-                            content_parts.append("\n\n")
-                            if block.comments:
-                                content_parts.append("### Comments:\n\n")
-                                for comment in block.comments:
-                                    content_parts.append(f"{comment.text}\n\n")
-                        elif block.type == BlockType.IMAGE:
-                            image_url = block.data if isinstance(block.data, str) else block.weburl
-                            if image_url:
-                                content_parts.append(f"![{block.name or 'Image'}]({image_url})\n\n")
-                    content = "".join(content_parts)
+                # Project: Fetch and stream BlocksContainer (create on-demand, serialize to JSON)
+                blocks_json_bytes = await self._process_project_blockgroups_for_streaming(record)
 
                 return StreamingResponse(
-                    iter([content.encode('utf-8')]),
-                    media_type=MimeTypes.MARKDOWN.value,
+                    iter([blocks_json_bytes]),
+                    media_type=MimeTypes.BLOCKS.value,
                     headers={
-                        "Content-Disposition": f'inline; filename="{record.external_record_id}.md"'
+                        "Content-Disposition": f'inline; filename="{record.external_record_id}_blocks.json"'
                     }
                 )
 
@@ -4091,7 +4137,12 @@ class LinearConnector(BaseConnector):
     async def _check_and_fetch_updated_project(
         self, record: Record
     ) -> Optional[Tuple[Record, List[Permission]]]:
-        """Fetch project from source for reindexing."""
+        """
+        Fetch project from source for reindexing.
+
+        Note: Projects use lazy block creation - blocks are created only during streaming,
+        not during sync/reindexing. This method only updates the project record metadata.
+        """
         try:
             project_id = record.external_record_id
 
@@ -4128,39 +4179,16 @@ class LinearConnector(BaseConnector):
                 self.logger.warning(f"Project {project_id} has no team_id, cannot reindex")
                 return None
 
-            # Get project weburl for BlockGroup
-            project_weburl = project_data.get("url")
-            if not project_weburl:
-                project_weburl = f"https://linear.app/project/{project_id}"
-
-            # Collect related external record IDs (for reference only - edges created during sync)
-            related_external_record_ids: List[str] = []
-            issues_data = project_data.get("issues", {}).get("nodes", [])
-            if issues_data:
-                related_external_record_ids.extend([issue.get("id") for issue in issues_data if issue.get("id")])
-            external_links_data = project_data.get("externalLinks", {}).get("nodes", [])
-            if external_links_data:
-                related_external_record_ids.extend([link.get("id") for link in external_links_data if link.get("id")])
-            documents_data = project_data.get("documents", {}).get("nodes", [])
-            if documents_data:
-                related_external_record_ids.extend([doc.get("id") for doc in documents_data if doc.get("id")])
-
-            # Parse project data into BlockGroup (with process_docling=True)
-            blocks_container = await self._parse_project_to_blocks(
-                project_data,
-                weburl=project_weburl,
-                related_external_record_ids=related_external_record_ids if related_external_record_ids else None
-            )
-
-            # Transform project to ProjectRecord
+            # Transform project to ProjectRecord (without BlocksContainer - created only during streaming)
             project_record = self._transform_to_project_record(
-                project_data, team_id, record, blocks_container
+                project_data, team_id, record
             )
 
-            # Extract permissions (empty list for now)
-            permissions = []
+            # Set indexing status based on filters
+            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.PROJECTS):
+                project_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
-            # Add linked issues to related_external_records on ProjectRecord
+            # Extract issues data directly from project_data and add to related_external_records
             issues_data = project_data.get("issues", {}).get("nodes", [])
             if issues_data:
                 from app.models.entities import RelatedExternalRecord
@@ -4173,6 +4201,9 @@ class LinearConnector(BaseConnector):
                     for issue in issues_data
                     if issue.get("id")
                 ]
+
+            # Records inherit permissions from RecordGroup (team), so pass empty list
+            permissions = []
 
             return (project_record, permissions)
 
