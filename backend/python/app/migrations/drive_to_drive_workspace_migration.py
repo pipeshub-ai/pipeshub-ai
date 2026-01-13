@@ -156,7 +156,8 @@ class DriveToDriveWorkspaceMigrationService:
                 if not connector_key:
                     continue
 
-                # Update the connector type
+                # Update the connector type to "Drive Workspace" (the registered connector name)
+                # This matches the @ConnectorBuilder("Drive Workspace") decorator name
                 update_query = f"""
                     UPDATE {{ _key: @connector_key }} WITH {{ type: @new_type }}
                     IN {CollectionNames.APPS.value}
@@ -168,7 +169,7 @@ class DriveToDriveWorkspaceMigrationService:
                     update_query,
                     bind_vars={
                         "connector_key": connector_key,
-                        "new_type": Connectors.GOOGLE_DRIVE_WORKSPACE.value
+                        "new_type": "Drive Workspace"  # Use registered name, not enum value
                     }
                 )
                 updated = list(cursor)
