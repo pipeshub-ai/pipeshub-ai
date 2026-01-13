@@ -72,11 +72,6 @@ export default function Sidebar() {
       path: `${baseUrl}/settings/connector`,
     },
     {
-      name: 'Services',
-      icon: accountServiceIcon,
-      path: `${baseUrl}/settings/services`,
-    },
-    {
       name: 'AI Models',
       icon: robotIcon,
       path: `${baseUrl}/settings/ai-models`,

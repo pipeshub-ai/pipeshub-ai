@@ -191,6 +191,12 @@ export const createKnowledgeBase =
         throw new UnauthorizedError('User authentication required');
       }
 
+      // Validate kbName for XSS and format specifiers
+      if (kbName) {
+        validateNoXSS(kbName, 'Knowledge base name');
+        validateNoFormatSpecifiers(kbName, 'Knowledge base name');
+      }
+
       logger.info(`Creating knowledge base '${kbName}' for user ${userId}`);
 
       const response = await executeConnectorCommand(
@@ -420,6 +426,12 @@ export const updateKnowledgeBase =
         throw new UnauthorizedError('User authentication required');
       }
 
+      // Validate kbName for XSS and format specifiers
+      if (kbName) {
+        validateNoXSS(kbName, 'Knowledge base name');
+        validateNoFormatSpecifiers(kbName, 'Knowledge base name');
+      }
+
       logger.info(`Updating knowledge base ${kbId}`);
 
       const response = await executeConnectorCommand(
@@ -495,6 +507,12 @@ export const createRootFolder =
         throw new UnauthorizedError('User authentication required');
       }
 
+      // Validate folderName for XSS and format specifiers
+      if (folderName) {
+        validateNoXSS(folderName, 'Folder name');
+        validateNoFormatSpecifiers(folderName, 'Folder name');
+      }
+
       logger.info(`Creating folder '${folderName}' in KB ${kbId}`);
 
       const response = await executeConnectorCommand(
@@ -541,6 +559,12 @@ export const createNestedFolder =
         throw new UnauthorizedError('User authentication required');
       }
 
+      // Validate folderName for XSS and format specifiers
+      if (folderName) {
+        validateNoXSS(folderName, 'Folder name');
+        validateNoFormatSpecifiers(folderName, 'Folder name');
+      }
+
       logger.info(`Creating folder '${folderName}' in folder ${folderId}`);
 
       const response = await executeConnectorCommand(
@@ -584,6 +608,12 @@ export const updateFolder =
       const { folderName } = req.body;
       if (!userId) {
         throw new UnauthorizedError('User authentication required');
+      }
+
+      // Validate folderName for XSS and format specifiers
+      if (folderName) {
+        validateNoXSS(folderName, 'Folder name');
+        validateNoFormatSpecifiers(folderName, 'Folder name');
       }
 
       logger.info(`Updating folder ${folderId} in KB ${kbId}`);
@@ -1053,6 +1083,13 @@ export const updateRecord =
         logger.info('No custom name provided');
       }
 
+      // Validate recordName for XSS and format specifiers
+      // This validation happens after we've determined the final recordName value
+      if (recordName) {
+        validateNoXSS(recordName, 'Record name');
+        validateNoFormatSpecifiers(recordName, 'Record name');
+      }
+
       // Prepare update data with timestamp
       const updatedData = {
         recordName,
@@ -1074,7 +1111,11 @@ export const updateRecord =
         if (originalname && originalname.includes('.')) {
           const lastDotIndex = originalname.lastIndexOf('.');
           if (lastDotIndex > 0) {
-            updatedData.recordName = originalname.substring(0, lastDotIndex);
+            const fileNameWithoutExt = originalname.substring(0, lastDotIndex);
+            // Validate the filename (without extension) for XSS
+            validateNoXSS(fileNameWithoutExt, 'Record name');
+            validateNoFormatSpecifiers(fileNameWithoutExt, 'Record name');
+            updatedData.recordName = fileNameWithoutExt;
             logger.info('Setting record name from file', {
               recordName: updatedData.recordName,
               originalFileName: originalname,

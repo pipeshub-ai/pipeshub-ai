@@ -276,6 +276,13 @@ export class ConnectorApiService {
     };
   }
 
+
+  static async getConnectorPublicUrl(): Promise<{ url: string }> {
+    const response = await axios.get(`/api/v1/configurationManager/connectorPublicUrl`);
+    if (!response.data) throw new Error('Failed to fetch connector public URL');
+    return response.data;
+  }
+
   // ============================================================================
   // OAuth Config APIs
   // ============================================================================

@@ -11,7 +11,7 @@ import uuid
 from abc import abstractmethod
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
@@ -57,6 +57,9 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.streaming import stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+# Default connector endpoint for signed URL generation
+DEFAULT_CONNECTOR_ENDPOINT = "http://localhost:8000"
 
 
 def get_file_extension(key: str) -> Optional[str]:
@@ -126,6 +129,33 @@ def get_parent_path_for_s3(parent_external_id: str) -> Optional[str]:
         return None
 
 
+def parse_parent_external_id(parent_external_id: str) -> Tuple[str, Optional[str]]:
+    """Parse parent_external_id to extract bucket_name and normalized path.
+
+    This helper method extracts the common parsing logic for parent_external_id
+    used by both S3 and MinIO connectors to generate parent web URLs.
+
+    Args:
+        parent_external_id: External ID in format "bucket_name/path" or just "bucket_name"
+
+    Returns:
+        A tuple of (bucket_name, normalized_path) where normalized_path is None
+        if parent_external_id contains only a bucket name, otherwise it's the
+        path normalized (leading slashes removed, trailing slash added if not present).
+    """
+    if "/" in parent_external_id:
+        parts = parent_external_id.split("/", 1)
+        bucket_name = parts[0]
+        path = parts[1]
+        path = path.lstrip("/")
+        if path and not path.endswith("/"):
+            path = path + "/"
+        return bucket_name, path
+    else:
+        bucket_name = parent_external_id
+        return bucket_name, None
+
+
 def get_mimetype_for_s3(key: str, is_folder: bool = False) -> str:
     """Determines the correct MimeTypes string value for an S3 object."""
     if is_folder:
@@ -148,10 +178,15 @@ class S3CompatibleDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        base_console_url: str = "https://s3.console.aws.amazon.com"
+        base_console_url: str = "https://s3.console.aws.amazon.com",
+        parent_url_generator: Optional[Callable[[str], str]] = None,
     ) -> None:
         super().__init__(logger, data_store_provider, config_service)
         self.base_console_url = base_console_url
+        # Default to S3 format if no generator provided (for backward compatibility)
+        self.parent_url_generator = parent_url_generator or (
+            lambda parent_external_id: get_parent_weburl_for_s3(parent_external_id, base_console_url)
+        )
 
     def _create_placeholder_parent_record(
         self,
@@ -162,15 +197,15 @@ class S3CompatibleDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         """
         Create a placeholder parent record with S3-specific weburl and path.
 
-        Overrides the base implementation to use S3 helper functions for generating
-        weburl and path when creating placeholder parent records.
+        Overrides the base implementation to use connector-specific URL generation
+        for parent folder URLs.
         """
         parent_record = super()._create_placeholder_parent_record(
             parent_external_id, parent_record_type, record
         )
 
         if parent_record_type == RecordType.FILE and isinstance(parent_record, FileRecord):
-            weburl = get_parent_weburl_for_s3(parent_external_id, self.base_console_url)
+            weburl = self.parent_url_generator(parent_external_id)
             path = get_parent_path_for_s3(parent_external_id)
             parent_record.weburl = weburl
             parent_record.path = path
@@ -269,6 +304,11 @@ class S3CompatibleBaseConnector(BaseConnector):
     @abstractmethod
     def _generate_web_url(self, bucket_name: str, normalized_key: str) -> str:
         """Generate the web URL for an object. Must be implemented by subclasses."""
+        pass
+
+    @abstractmethod
+    def _generate_parent_web_url(self, parent_external_id: str) -> str:
+        """Generate the web URL for a parent folder/directory. Must be implemented by subclasses."""
         pass
 
     async def run_sync(self) -> None:
@@ -480,6 +520,21 @@ class S3CompatibleBaseConnector(BaseConnector):
             return False
 
         return True
+
+    async def _get_signed_url_route(self, record_id: str) -> str:
+        """Generate the signed URL route for a record.
+
+        Args:
+            record_id: The record ID
+
+        Returns:
+            The signed URL route string
+        """
+        endpoints = await self.config_service.get_config(
+            config_node_constants.ENDPOINTS.value
+        )
+        connector_endpoint = endpoints.get("connectors", {}).get("endpoint", DEFAULT_CONNECTOR_ENDPOINT)
+        return f"{connector_endpoint}/api/v1/internal/stream/record/{record_id}"
 
     async def _get_bucket_region(self, bucket_name: str) -> str:
         """Get the region for a bucket, using cache if available."""
@@ -751,13 +806,7 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
 
-            endpoints = await self.config_service.get_config(
-                config_node_constants.ENDPOINTS.value
-            )
-            connector_endpoint = endpoints.get("connectors", {}).get("endpoint", "http://localhost:8000")
-            signed_url_route = (
-                f"{connector_endpoint}/api/v1/internal/stream/record/{record_id}"
-            )
+            signed_url_route = await self._get_signed_url_route(record_id)
 
             record_name = normalized_key.rstrip("/").split("/")[-1] or normalized_key.rstrip("/")
 
@@ -1172,13 +1221,7 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             web_url = self._generate_web_url(bucket_name, normalized_key)
 
-            endpoints = await self.config_service.get_config(
-                config_node_constants.ENDPOINTS.value
-            )
-            connector_endpoint = endpoints.get("connectors", {}).get("endpoint", "http://localhost:8000")
-            signed_url_route = (
-                f"{connector_endpoint}/api/v1/internal/stream/record/{record.id}"
-            )
+            signed_url_route = await self._get_signed_url_route(record.id)
 
             record_name = normalized_key.rstrip("/").split("/")[-1] or normalized_key.rstrip("/")
 
