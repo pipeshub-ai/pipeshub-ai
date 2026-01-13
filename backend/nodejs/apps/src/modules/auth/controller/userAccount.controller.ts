@@ -207,7 +207,27 @@ export class UserAccountController {
       let result = await this.iamService.getUserByEmail(email, authToken);
 
       if (result.statusCode !== 200) {
-        throw new NotFoundError(result.data);
+        const session = await this.sessionService.createSession({
+          userId: "NOT_FOUND",
+          email: email,
+          orgId: "",
+          authConfig: {},
+          currentStep: 0,
+        });
+        if (!session) {
+          throw new InternalServerError('Failed to create session');
+        }
+        if (session.token) {
+          res.setHeader('x-session-token', session.token);
+        }
+        res.json({
+          currentStep: 0,
+          allowedMethods: ['password'],
+          message: 'Authentication initialized',
+          authProviders: {},
+        });
+        return;
+        // throw new NotFoundError(result.data);
       }
       const user = result.data;
       // const domain = getDomainFromEmail(email);
@@ -911,12 +931,9 @@ export class UserAccountController {
           },
         });
       }
-
       throw new BadRequestError(
-        `Password incorrect. Attempts remaining: ${
-          5 - userCredentials.wrongCredentialCount
-        }`,
-      );
+        "Incorrect password, please try again."
+      )
     } else {
       userCredentials.wrongCredentialCount = 0;
       await userCredentials.save();
@@ -1150,6 +1167,12 @@ export class UserAccountController {
       }
       if (!sessionInfo) {
         throw new NotFoundError('SessionInfo not found');
+      }
+
+      if (sessionInfo.userId === "NOT_FOUND") {
+        throw new BadRequestError(
+          "Incorrect password, please try again.",
+        );
       }
 
       const currentStepConfig = sessionInfo.authConfig[sessionInfo.currentStep];
