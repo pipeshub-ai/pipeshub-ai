@@ -185,6 +185,32 @@ class TicketStatus(str, Enum):
     DONE = "DONE"
     UNKNOWN = "UNKNOWN"  # For unmapped or missing status values
 
+
+class TicketType(str, Enum):
+    """Standard ticket type values for all ticketing connectors"""
+    TASK = "TASK"  # General task
+    BUG = "BUG"  # Bug/defect
+    STORY = "STORY"  # User story
+    EPIC = "EPIC"  # Epic/large feature
+    FEATURE = "FEATURE"  # Feature request
+    SUBTASK = "SUBTASK"  # Subtask
+    INCIDENT = "INCIDENT"  # Incident/outage
+    IMPROVEMENT = "IMPROVEMENT"  # Improvement/enhancement
+    QUESTION = "QUESTION"  # Question/inquiry
+    DOCUMENTATION = "DOCUMENTATION"  # Documentation task
+    TEST = "TEST"  # Test case
+    UNKNOWN = "UNKNOWN"  # Unknown or unmapped ticket type
+
+
+class TicketDeliveryStatus(str, Enum):
+    """Standard ticket delivery status values for all ticketing connectors"""
+    ON_TRACK = "ON_TRACK"  # On track - progressing as expected
+    AT_RISK = "AT_RISK"  # At risk - some concerns but manageable
+    OFF_TRACK = "OFF_TRACK"  # Off track - significant issues or delays
+    HIGH_RISK = "HIGH_RISK"  # High risk - major concerns (Jira Align)
+    SOME_RISK = "SOME_RISK"  # Some risk - minor concerns (Jira Align)
+    UNKNOWN = "UNKNOWN"  # Unknown or unmapped delivery status
+
 class Record(BaseModel):
     # Core record properties
     id: str = Field(description="Unique identifier for the record", default_factory=lambda: str(uuid4()))

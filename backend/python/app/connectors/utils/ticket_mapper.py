@@ -314,10 +314,6 @@ class TicketValueMapper:
 _default_mapper = TicketValueMapper()
 
 
-# Default mapper instance for convenience functions (performance optimization)
-_default_mapper = TicketValueMapper()
-
-
 # Convenience function for quick mapping without creating a mapper instance
 def map_ticket_status(api_status: Optional[str], custom_mappings: Optional[Dict[str, TicketStatus]] = None) -> Optional[Union[TicketStatus, str]]:
     """Quick function to map status without creating a mapper instance"""
