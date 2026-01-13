@@ -230,10 +230,22 @@ export default function UserProfile() {
       setUploading(true);
 
       await uploadUserLogo(userId, formData);
+      
       // Fetch the processed logo from server (with EXIF metadata stripped) instead of using original file
-      const processedLogoUrl = await getUserLogo(userId);
-      setLogo(processedLogoUrl);
-      setSnackbar({ open: true, message: 'Photo updated successfully', severity: 'success' });
+      try {
+        const processedLogoUrl = await getUserLogo(userId);
+        setLogo(processedLogoUrl);
+        setSnackbar({ open: true, message: 'Photo updated successfully', severity: 'success' });
+      } catch (fetchErr) {
+        // Upload succeeded but fetching failed - show warning but don't fail completely
+        setSnackbar({
+          open: true,
+          message: 'Photo uploaded successfully, but failed to refresh. Please refresh the page.',
+          severity: 'warning',
+        });
+        // Fallback to original file preview (user can refresh to see processed version)
+        setLogo(URL.createObjectURL(file));
+      }
       setUploading(false);
     } catch (err) {
       setError('Failed to upload photo');
