@@ -222,7 +222,8 @@ class DataSourceEntitiesProcessor:
     async def _handle_updated_record(self, record: Record, existing_record: Record, tx_store: TransactionStore) -> None:
         # Set org_id for the record
         record.org_id = self.org_id
-        self.logger.info("Updating existing record: %s, version %d -> %d",record.record_name, existing_record.version, record.version)
+        self.logger.info("Updating existing record: %s, version %d -> %d",
+        record.record_name, existing_record.version, record.version)
         await tx_store.batch_upsert_records([record])
 
     async def _handle_record_permissions(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> None:
