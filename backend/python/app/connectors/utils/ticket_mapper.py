@@ -8,6 +8,7 @@ enums. This ensures consistency across all ticketing connectors.
 
 from typing import Dict, Optional, Union
 
+from app.config.constants.arangodb import LinkRelationshipTag
 from app.models.entities import (
     TicketDeliveryStatus,
     TicketPriority,
@@ -303,3 +304,72 @@ def map_ticket_delivery_status(api_delivery_status: Optional[str], custom_mappin
         mapper = TicketValueMapper(delivery_status_mappings=custom_mappings)
         return mapper.map_delivery_status(api_delivery_status)
     return _default_mapper.map_delivery_status(api_delivery_status)
+
+
+def map_link_relationship_tag(api_tag: Optional[str], custom_mappings: Optional[Dict[str, LinkRelationshipTag]] = None) -> Optional[Union[LinkRelationshipTag, str]]:
+    """
+    Map connector API relationship tag value to standard LinkRelationshipTag enum.
+
+    If no match is found, returns the original string value to preserve connector-specific tags.
+
+    Args:
+        api_tag: The relationship tag value from the connector API (e.g., "relates to", "blocks")
+        custom_mappings: Optional connector-specific mappings to override defaults
+
+    Returns:
+        Standard LinkRelationshipTag enum value, original string if no match found, or None if api_tag is None/empty
+    """
+    if not api_tag:
+        return None
+
+    # Default mappings for common relationship tags
+    DEFAULT_TAG_MAPPINGS: Dict[str, LinkRelationshipTag] = {
+        "relates to": LinkRelationshipTag.RELATES_TO,
+        "relates_to": LinkRelationshipTag.RELATES_TO,
+        "relatesto": LinkRelationshipTag.RELATES_TO,
+        "blocks": LinkRelationshipTag.BLOCKS,
+        "blocked by": LinkRelationshipTag.BLOCKED_BY,
+        "blocked_by": LinkRelationshipTag.BLOCKED_BY,
+        "blockedby": LinkRelationshipTag.BLOCKED_BY,
+        "duplicates": LinkRelationshipTag.DUPLICATES,
+        "duplicated by": LinkRelationshipTag.DUPLICATED_BY,
+        "duplicated_by": LinkRelationshipTag.DUPLICATED_BY,
+        "duplicatedby": LinkRelationshipTag.DUPLICATED_BY,
+        "depends on": LinkRelationshipTag.DEPENDS_ON,
+        "depends_on": LinkRelationshipTag.DEPENDS_ON,
+        "dependson": LinkRelationshipTag.DEPENDS_ON,
+        "required by": LinkRelationshipTag.REQUIRED_BY,
+        "required_by": LinkRelationshipTag.REQUIRED_BY,
+        "requiredby": LinkRelationshipTag.REQUIRED_BY,
+        "clones": LinkRelationshipTag.CLONES,
+        "cloned from": LinkRelationshipTag.CLONED_FROM,
+        "cloned_from": LinkRelationshipTag.CLONED_FROM,
+        "clonedfrom": LinkRelationshipTag.CLONED_FROM,
+        "parent": LinkRelationshipTag.PARENT,
+        "child": LinkRelationshipTag.CHILD,
+        "related": LinkRelationshipTag.RELATED,
+        "split from": LinkRelationshipTag.SPLIT_FROM,
+        "split_from": LinkRelationshipTag.SPLIT_FROM,
+        "splitfrom": LinkRelationshipTag.SPLIT_FROM,
+        "merged into": LinkRelationshipTag.MERGED_INTO,
+        "merged_into": LinkRelationshipTag.MERGED_INTO,
+        "mergedinto": LinkRelationshipTag.MERGED_INTO,
+    }
+
+    # Merge with custom mappings if provided
+    tag_mappings = {**DEFAULT_TAG_MAPPINGS, **(custom_mappings or {})}
+
+    # Normalize the input: lowercase and strip whitespace
+    normalized = api_tag.lower().strip()
+
+    # Try exact match first
+    if normalized in tag_mappings:
+        return tag_mappings[normalized]
+
+    # Try to find partial match (e.g., "relates to" matches "relates_to")
+    for key, value in tag_mappings.items():
+        if key.replace("_", " ") == normalized or normalized.replace(" ", "_") == key:
+            return value
+
+    # If no match found, return original value to preserve connector-specific tag
+    return api_tag
