@@ -1063,16 +1063,7 @@ export const useConnectorConfig = ({
     let maxStep = 0;
     
     // Sync Settings mode: filters (if available) -> sync (skip auth)
-    if (syncSettingsMode) {
-      maxStep = hasFilters ? 1 : 0; // Filters (0) -> Sync (1) or just Sync (0)
-      if (hasFilters) {
-        currentSection = activeStep === 0 ? 'filters' : 'sync';
-      } else {
-        currentSection = 'sync';
-      }
-    }
-    // Enable mode: filters -> sync (skip auth)
-    else if (enableMode) {
+    if (syncSettingsMode || enableMode) {
       maxStep = hasFilters ? 1 : 0; // Filters (0) -> Sync (1) or just Sync (0)
       if (hasFilters) {
         currentSection = activeStep === 0 ? 'filters' : 'sync';
