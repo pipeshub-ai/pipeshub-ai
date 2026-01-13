@@ -58,12 +58,10 @@ export const TurnstileWidget = memo(({
     // Check if Turnstile script is loaded
     const checkTurnstile = () => {
       if (window.turnstile) {
-        console.log('Turnstile script loaded successfully');
         if (isMountedRef.current) {
           setIsReady(true);
         }
       } else {
-        console.log('Turnstile script not yet loaded, retrying...');
         // Retry after a short delay
         if (isMountedRef.current) {
           setTimeout(checkTurnstile, 100);
@@ -84,32 +82,25 @@ export const TurnstileWidget = memo(({
       return undefined;
     }
 
-    console.log('Attempting to render Turnstile widget...');
-
     // Render Turnstile widget
     if (window.turnstile && containerRef.current) {
       try {
         const widgetId = window.turnstile.render(containerRef.current, {
           sitekey: siteKey,
           callback: (token) => {
-            console.log('Turnstile success:', token);
             onSuccess(token);
           },
           'error-callback': () => {
-            console.error('Turnstile error');
             if (onError) onError();
           },
           'expired-callback': () => {
-            console.warn('Turnstile expired');
             if (onExpire) onExpire();
           },
           theme,
           size,
         });
         widgetIdRef.current = widgetId;
-        console.log('Turnstile widget rendered with ID:', widgetId);
       } catch (error) {
-        console.error('Error rendering Turnstile widget:', error);
       }
     }
 
@@ -120,7 +111,7 @@ export const TurnstileWidget = memo(({
           window.turnstile.remove(widgetIdRef.current);
           widgetIdRef.current = null;
         } catch (error) {
-          console.error('Error removing Turnstile widget:', error);
+          
         }
       }
     };

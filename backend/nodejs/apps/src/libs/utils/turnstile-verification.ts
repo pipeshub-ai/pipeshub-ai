@@ -55,12 +55,7 @@ export async function verifyTurnstileToken(
 
     const response = await axios.post<TurnstileVerificationResponse>(
       'https://challenges.cloudflare.com/turnstile/v0/siteverify',
-      requestData,
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-      },
+      requestData
     );
 
     const result = response.data;
