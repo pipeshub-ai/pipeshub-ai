@@ -14,7 +14,6 @@ from qdrant_client.http.models import PointStruct
 from spacy.language import Language
 from spacy.tokens import Doc
 
-from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
@@ -33,7 +32,6 @@ from app.utils.aimodels import (
     get_embedding_model,
 )
 from app.utils.llm import get_llm
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Module-level shared spaCy pipeline to avoid repeated heavy loads
 _SHARED_NLP: Optional[Language] = None

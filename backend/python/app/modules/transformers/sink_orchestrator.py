@@ -32,5 +32,5 @@ class SinkOrchestrator(Transformer):
                 return
 
             await self.arango.apply(ctx)
-        
+
         return
