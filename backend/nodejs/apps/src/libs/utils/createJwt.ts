@@ -26,7 +26,7 @@ export const jwtGeneratorForForgotPasswordLink = (
       scopes: [TokenScopes.PASSWORD_RESET],
     },
     scopedJwtSecret,
-    { expiresIn: '1h' },
+    { expiresIn: '20m' },
   );
   const mailAuthToken = jwt.sign(
     {

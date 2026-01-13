@@ -201,6 +201,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     ValidationMiddleware.validate(UserIdValidationSchema),
     metricsMiddleware(container),
+    userAdminCheck,
     userExists,
     async (
       req: AuthenticatedUserRequest,

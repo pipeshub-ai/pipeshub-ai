@@ -658,13 +658,6 @@ export class UserAccountController {
         req.ip || ' ',
       );
 
-      await UserActivities.create({
-        orgId: req.user?.orgId,
-        userId: req.user?.userId,
-        activityType: PASSWORD_CHANGED,
-        ipAddress: req.ip,
-      });
-
       const userFindResult = await this.iamService.getUserById(
         req.user?.userId,
         iamUserLookupJwtGenerator(
