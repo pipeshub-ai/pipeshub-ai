@@ -1,9 +1,10 @@
+import asyncio
 from datetime import datetime
+from io import BytesIO
 from logging import Logger
-from typing import Optional
+from typing import Any, AsyncGenerator, Dict, Optional
 
 import aiohttp  # type: ignore
-from tenacity import retry, stop_after_attempt, wait_exponential  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -15,6 +16,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordTypes,
 )
+from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import IndexingError
@@ -24,28 +26,6 @@ from app.services.messaging.kafka.handlers.entity import BaseEventService
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
-
-
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=15))
-async def make_signed_url_api_call(signed_url: str) -> dict:
-    """
-    Make an API call with the JWT token.
-
-    Args:
-        signed_url (str): The signed URL to send the request to
-
-    Returns:
-        dict: The response from the API
-    """
-    try:
-        async with aiohttp.ClientSession() as session:
-            url = signed_url
-            # Make the request
-            async with session.get(url) as response:
-                data = await response.read()
-                return data
-    except Exception:
-        raise Exception("Failed to make signed URL API call")
 
 
 class RecordEventHandler(BaseEventService):
@@ -99,8 +79,14 @@ class RecordEventHandler(BaseEventService):
                 self.logger.warning(f"Failed to update queued duplicates status: {str(e)}")
 
 
+    async def process_event(self, event_type: str, payload: dict) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process record events, yielding phase completion events.
 
-    async def process_event(self, event_type: str, payload: dict) -> bool:
+        Yields:
+            Dict with 'event' key:
+            - {'event': 'parsing_complete', 'data': {...}}
+            - {'event': 'indexing_complete', 'data': {...}}
+        """
         start_time = datetime.now()
         record_id = None
         message_id = f"{event_type}-unknown"
@@ -115,11 +101,11 @@ class RecordEventHandler(BaseEventService):
             message_id = f"{event_type}-{record_id}"
             if not event_type:
                 self.logger.error(f"Missing event_type in message {payload}")
-                return False
+                return
 
             if not record_id:
                 self.logger.error(f"Missing record_id in message {payload}")
-                return False
+                return
 
             record = await self.event_processor.arango_service.get_document(
                 record_id, CollectionNames.RECORDS.value
@@ -131,23 +117,28 @@ class RecordEventHandler(BaseEventService):
                 f"Extension: {extension}, Mime Type: {mime_type}"
             )
 
-            # Handle delete event
+            # Handle delete event - no parsing/indexing phases
             if event_type == EventTypes.DELETE_RECORD.value:
                 await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
-                return True
+                # Yield both events since delete is complete
+                yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+                yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                return
 
             if event_type == EventTypes.UPDATE_RECORD.value:
                 await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
 
             if record is None:
                 self.logger.error(f"❌ Record {record_id} not found in database")
-                return False
+                return
 
             doc = dict(record)
 
             if event_type == EventTypes.NEW_RECORD.value and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
                 self.logger.info(f"🔍 Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")
-                return True
+                yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+                yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                return
 
             # Check if record is from a connector and if the connector is active
             if event_type == EventTypes.NEW_RECORD.value:
@@ -162,7 +153,9 @@ class RecordEventHandler(BaseEventService):
                             f"⏭️ Skipping indexing for record {record_id}: "
                             f"connector instance {connector_id} is inactive"
                         )
-                        return True
+                        yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+                        yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                        return
 
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
@@ -250,20 +243,12 @@ class RecordEventHandler(BaseEventService):
                     docs, CollectionNames.RECORDS.value
                 )
 
-                return True
+                # Yield both events for unsupported file types
+                yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+                yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                return
 
-            # Update with new metadata fields
-            doc.update(
-                {
-                    "indexingStatus": ProgressStatus.IN_PROGRESS.value,
-                    "extractionStatus": ProgressStatus.IN_PROGRESS.value,
-                }
-            )
 
-            docs = [doc]
-            await self.event_processor.arango_service.batch_upsert_nodes(
-                docs, CollectionNames.RECORDS.value
-            )
 
             # Signed URL handling
             if payload and payload.get("signedUrlRoute"):
@@ -289,17 +274,24 @@ class RecordEventHandler(BaseEventService):
 
                     if response.get("is_json"):
                         signed_url = response["data"]["signedUrl"]
-                        event_data_for_processor["payload"]["signedUrl"] = signed_url
+                        buffer = await self._download_from_signed_url(signed_url=signed_url, record_id=record_id, doc=doc)
+                        if not buffer:
+                            raise Exception("Failed to download file from signed URL")
+
+                        event_data_for_processor["payload"]["buffer"] = buffer
                     else:
                         event_data_for_processor["payload"]["buffer"] = response["data"]
 
-                    await self.event_processor.on_event(event_data_for_processor)
+                    # Yield events from the event processor
+                    async for event in self.event_processor.on_event(event_data_for_processor):
+                        yield event
+
                     processing_time = (datetime.now() - start_time).total_seconds()
                     self.logger.info(
                         f"✅ Successfully processed document for event: {event_type}. "
                         f"Record: {record_id}, Time: {processing_time:.2f}s"
                     )
-                    return True
+                    return
                 except Exception as e:
                     error_occurred = True
                     error_msg = f"Failed to process signed URL: {str(e)}"
@@ -307,20 +299,25 @@ class RecordEventHandler(BaseEventService):
 
             elif payload and payload.get("signedUrl"):
                 try:
-                    response = await make_signed_url_api_call(signed_url=payload["signedUrl"])
-                    if response:
-                        payload["buffer"] = response
+                    response = await self._download_from_signed_url(signed_url=payload["signedUrl"], record_id=record_id, doc=doc)
+                    if not response:
+                        raise Exception("Failed to download file from signed URL")
+
+                    payload["buffer"] = response
                     event_data_for_processor = {
                         "eventType": event_type,
                         "payload": payload # The original payload
                     }
-                    await self.event_processor.on_event(event_data_for_processor)
+                    # Yield events from the event processor
+                    async for event in self.event_processor.on_event(event_data_for_processor):
+                        yield event
+
                     processing_time = (datetime.now() - start_time).total_seconds()
                     self.logger.info(
                         f"✅ Successfully processed document for event: {event_type}. "
                         f"Record: {record_id}, Time: {processing_time:.2f}s"
                     )
-                    return True
+                    return
                 except Exception as e:
                     error_occurred = True
                     error_msg = f"Failed to process signed URL: {str(e)}"
@@ -348,13 +345,16 @@ class RecordEventHandler(BaseEventService):
 
                     event_data_for_processor["payload"]["buffer"] = response["data"]
 
-                    await self.event_processor.on_event(event_data_for_processor)
+                    # Yield events from the event processor
+                    async for event in self.event_processor.on_event(event_data_for_processor):
+                        yield event
+
                     processing_time = (datetime.now() - start_time).total_seconds()
                     self.logger.info(
                         f"✅ Successfully processed document for event: {event_type}. "
                         f"Record: {record_id}, Time: {processing_time:.2f}s"
                     )
-                    return True
+                    return
                 except Exception as e:
                     error_occurred = True
                     error_msg = f"Failed to process signed URL: {str(e)}"
@@ -386,7 +386,7 @@ class RecordEventHandler(BaseEventService):
                 virtual_record_id = record.get("virtualRecordId") if record else None
                 self.logger.info(f"🔄 Current record {record_id} has failed, triggering next queued duplicate")
                 await self._trigger_next_queued_duplicate(record_id,virtual_record_id)
-                return False
+                return
 
             if record is None:
                 return
@@ -449,3 +449,113 @@ class RecordEventHandler(BaseEventService):
             self.logger.error(f"❌ Failed to update document status: {str(e)}")
             return None
 
+    async def _download_from_signed_url(
+        self, signed_url: str, record_id: str, doc: dict
+    ) -> bytes|None:
+        """
+        Download file from signed URL with exponential backoff retry
+
+        Args:
+            signed_url: The signed URL to download from
+            record_id: Record ID for logging
+            doc: Document object for status updates
+
+        Returns:
+            bytes: The downloaded file content
+        """
+        chunk_size = 1024 * 1024 * 3  # 3MB chunks
+        max_retries = 3
+        base_delay = 1  # Start with 1 second delay
+
+        timeout = aiohttp.ClientTimeout(
+            total=1200,  # 20 minutes total
+            connect=120,  # 2 minutes for initial connection
+            sock_read=1200,  # 20 minutes per chunk read
+        )
+
+        # Generate JWT token for authentication if config_service is available
+        headers = {}
+        if self.config_service:
+            try:
+                org_id = doc.get("orgId")
+                if org_id:
+                    jwt_payload = {
+                        "orgId": org_id,
+                        "scopes": ["connector:signedUrl"],
+                    }
+                    jwt_token = await generate_jwt(self.config_service, jwt_payload)
+                    headers["Authorization"] = f"Bearer {jwt_token}"
+                    self.logger.debug(f"Generated JWT token for downloading signed URL for record {record_id}")
+            except Exception as e:
+                self.logger.warning(f"Failed to generate JWT token for signed URL download: {e}")
+
+        for attempt in range(max_retries):
+            delay = base_delay * (2**attempt)  # Exponential backoff
+            file_buffer = BytesIO()
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    try:
+                        async with session.get(signed_url, headers=headers) as response:
+                            if response.status != HttpStatusCode.SUCCESS.value:
+                                raise aiohttp.ClientError(
+                                    f"Failed to download file: {response.status}"
+                                )
+
+                            content_length = response.headers.get("Content-Length")
+                            if content_length:
+                                self.logger.info(
+                                    f"Expected file size: {int(content_length) / (1024*1024):.2f} MB"
+                                )
+
+                            last_logged_size = 0
+                            total_size = 0
+                            log_interval = chunk_size
+
+                            self.logger.info("Starting chunked download...")
+                            try:
+                                async for chunk in response.content.iter_chunked(
+                                    chunk_size
+                                ):
+                                    file_buffer.write(chunk)
+                                    total_size += len(chunk)
+                                    if total_size - last_logged_size >= log_interval:
+                                        self.logger.debug(
+                                            f"Total size so far: {total_size / (1024*1024):.2f} MB"
+                                        )
+                                        last_logged_size = total_size
+                            except IOError as io_err:
+                                raise aiohttp.ClientError(
+                                    f"IO error during chunk download: {str(io_err)}"
+                                )
+
+                            file_content = file_buffer.getvalue()
+                            self.logger.info(
+                                f"✅ Download complete. Total size: {total_size / (1024*1024):.2f} MB"
+                            )
+                            return file_content
+
+                    except aiohttp.ServerDisconnectedError as sde:
+                        raise aiohttp.ClientError(f"Server disconnected: {str(sde)}")
+                    except aiohttp.ClientConnectorError as cce:
+                        raise aiohttp.ClientError(f"Connection error: {str(cce)}")
+
+            except (aiohttp.ClientError, asyncio.TimeoutError, IOError) as e:
+                error_type = type(e).__name__
+                self.logger.warning(
+                    f"Download attempt {attempt + 1} failed with {error_type}: {str(e)}. "
+                    f"Retrying in {delay} seconds..."
+                )
+
+                if attempt == max_retries - 1:  # Last attempt failed
+                    self.logger.error(
+                        f"❌ All download attempts failed for record {record_id}. "
+                        f"Error type: {error_type}, Details: {repr(e)}"
+                    )
+                    raise Exception(
+                        f"Download failed after {max_retries} attempts. "
+                        f"Error: {error_type} - {str(e)}. File id: {record_id}"
+                    )
+                await asyncio.sleep(delay)
+            finally:
+                if not file_buffer.closed:
+                    file_buffer.close()
