@@ -4,6 +4,7 @@ import { CONFIG } from 'src/config-global';
 
 import { STORAGE_KEY } from './constant';
 import { setSession, setSessionToken } from './utils';
+import { getAccessTokenFromCookie } from './cookie-utils';
 
 // ----------------------------------------------------------------------
 
@@ -104,7 +105,7 @@ export const OrgExists = async (): Promise<orgExistsReponse> => {
     const response = await axios.get(`${CONFIG.authUrl}/api/v1/org/exists`);
     return response.data;
   } catch (error) {
-    throw new Error('Error in resetting password', error);
+    throw new Error('Error checking if organization exists');
   }
 };
 
@@ -151,10 +152,10 @@ export const VerifyOtp = async ({ email, otp }: SignInOtpParams): Promise<AuthRe
 
     const response = res.data as AuthResponse;
 
-    // Check if this is the final step with tokens
-    if (response.accessToken && response.refreshToken) {
-      setSession(response.accessToken, response.refreshToken);
-    }
+        // Check if this is the final step with tokens
+        if (response.accessToken && response.refreshToken) {
+          setSession(response.accessToken, response.refreshToken);
+        }
 
     return response;
   } catch (error) {
@@ -208,10 +209,10 @@ export const signInWithPassword = async ({
 
     const response = res.data as AuthResponse;
 
-    // Check if this is the final step with tokens
-    if (response.accessToken && response.refreshToken) {
-      setSession(response.accessToken, response.refreshToken);
-    }
+        // Check if this is the final step with tokens
+        if (response.accessToken && response.refreshToken) {
+          setSession(response.accessToken, response.refreshToken);
+        }
 
     return response;
   } catch (error) {
@@ -236,10 +237,10 @@ export const SignInWithGoogle = async ({
 
     const response = res.data as AuthResponse;
 
-    // Check if this is the final step with tokens
-    if (response.accessToken && response.refreshToken) {
-      setSession(response.accessToken, response.refreshToken);
-    }
+        // Check if this is the final step with tokens
+        if (response.accessToken && response.refreshToken) {
+          setSession(response.accessToken, response.refreshToken);
+        }
 
     return response;
   } catch (error) {
@@ -261,10 +262,10 @@ export const SignInWithAzureAd = async (credential: AzureCredientals): Promise<A
 
     const response = res.data as AuthResponse;
 
-    // Check if this is the final step with tokens
-    if (response.accessToken && response.refreshToken) {
-      setSession(response.accessToken, response.refreshToken);
-    }
+        // Check if this is the final step with tokens
+        if (response.accessToken && response.refreshToken) {
+          setSession(response.accessToken, response.refreshToken);
+        }
 
     return response;
   } catch (error) {
@@ -288,10 +289,10 @@ export const SignInWithMicrosoft = async (
 
     const response = res.data as AuthResponse;
 
-    // Check if this is the final step with tokens
-    if (response.accessToken && response.refreshToken) {
-      setSession(response.accessToken, response.refreshToken);
-    }
+        // Check if this is the final step with tokens
+        if (response.accessToken && response.refreshToken) {
+          setSession(response.accessToken, response.refreshToken);
+        }
 
     return response;
   } catch (error) {
@@ -313,10 +314,10 @@ export const SignInWithOAuth = async (credential: OAuthCredentials): Promise<Aut
 
     const response = res.data as AuthResponse;
 
-    // Check if this is the final step with tokens
-    if (response.accessToken && response.refreshToken) {
-      setSession(response.accessToken, response.refreshToken);
-    }
+        // Check if this is the final step with tokens
+        if (response.accessToken && response.refreshToken) {
+          setSession(response.accessToken, response.refreshToken);
+        }
 
     return response;
   } catch (error) {
@@ -389,7 +390,7 @@ export const signUp = async ({
  *************************************** */
 export const signOut = async (): Promise<void> => {
   try {
-    const accessToken = localStorage.getItem(STORAGE_KEY);
+    const accessToken = getAccessTokenFromCookie();
     
     if (accessToken) {
       try {

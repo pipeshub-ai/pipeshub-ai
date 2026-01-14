@@ -3,7 +3,7 @@ import axios from 'src/utils/axios';
 import { CONFIG } from 'src/config-global';
 
 import { jwtDecode } from 'src/auth/context/jwt';
-import { STORAGE_KEY } from 'src/auth/context/jwt/constant';
+import { clearAuthCookies, getAccessTokenFromCookie } from 'src/auth/context/jwt/cookie-utils';
 
 import type { UserData } from './types/user-data';
 import type { OrganizationData } from './types/organization-data';
@@ -125,7 +125,7 @@ export const updateOrg = async (orgId: string, orgData: any) => {
 
 export const changePassword = async ({ currentPassword, newPassword, 'cf-turnstile-response': turnstileToken }: PasswordChangeRequest) => {
   try {
-    const accessToken = localStorage.getItem(STORAGE_KEY);
+    const accessToken = getAccessTokenFromCookie();
     const response = await axios.post(
       `${CONFIG.authUrl}/api/v1/userAccount/password/reset`,
       {
@@ -314,21 +314,30 @@ export const fetchAllUsers = async () => {
 };
 
 export const getOrgIdFromToken = (): string => {
-  const accessToken = localStorage.getItem(STORAGE_KEY);
+  const accessToken = getAccessTokenFromCookie();
+  if (!accessToken) {
+    throw new Error('No access token found');
+  }
   const decodedToken = jwtDecode(accessToken);
   const { orgId } = decodedToken;
   return orgId;
 };
 
 export const getUserIdFromToken = (): string => {
-  const accessToken = localStorage.getItem(STORAGE_KEY);
+  const accessToken = getAccessTokenFromCookie();
+  if (!accessToken) {
+    throw new Error('No access token found');
+  }
   const decodedToken = jwtDecode(accessToken);
   const { userId } = decodedToken;
   return userId;
 };
 
 export const getUserEmailFromToken = (): string => {
-  const accessToken = localStorage.getItem(STORAGE_KEY);
+  const accessToken = getAccessTokenFromCookie();
+  if (!accessToken) {
+    throw new Error('No access token found');
+  }
   const decodedToken = jwtDecode(accessToken);
   const { email } = decodedToken;
   return email;
@@ -336,11 +345,14 @@ export const getUserEmailFromToken = (): string => {
 
 export const logout = async (): Promise<void> => {
   try {
-    // Simply remove the JWT token from localStorage
-    localStorage.removeItem(STORAGE_KEY);
-
-    // Refresh the page
-    window.location.reload();
+    // Clear cookies
+    clearAuthCookies();
+    
+    // Clear axios default header
+    delete axios.defaults.headers.common.Authorization;
+    
+    // Redirect to login page
+    window.location.href = '/auth/sign-in';
   } catch (error) {
     console.error('Error during logout:', error);
     throw new Error(

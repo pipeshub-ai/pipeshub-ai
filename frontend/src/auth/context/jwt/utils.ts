@@ -5,6 +5,7 @@ import axios from 'src/utils/axios';
 import { CONFIG } from 'src/config-global';
 
 import { STORAGE_KEY, SESSION_TOKEN_KEY, STORAGE_KEY_REFRESH } from './constant';
+import { getAccessTokenFromCookie, getRefreshTokenFromCookie, setTokensInCookies, clearAuthCookies } from './cookie-utils';
 
 // ----------------------------------------------------------------------
 
@@ -34,7 +35,12 @@ export function jwtDecode(token: string | null) {
 
 // ----------------------------------------------------------------------
 
-export async function isValidToken(accessToken: string): Promise<boolean> {
+export async function isValidToken(accessToken: string | null): Promise<boolean> {
+  if (!accessToken) {
+    // Try to get from cookie
+    accessToken = getAccessTokenFromCookie();
+  }
+  
   if (!accessToken) {
     return false;
   }
@@ -49,8 +55,10 @@ export async function isValidToken(accessToken: string): Promise<boolean> {
     const currentTime = Date.now() / 1000;
 
     if (decoded.exp < currentTime) {
-      const refreshToken = localStorage.getItem(STORAGE_KEY_REFRESH);
+      // Token is expired, try to refresh it
+      const refreshToken = getRefreshTokenFromCookie();
       if (!refreshToken) return false;
+      
       try {
         const res = await axios.post(
           `${CONFIG.authUrl}/api/v1/userAccount/refresh/token`,
@@ -61,8 +69,16 @@ export async function isValidToken(accessToken: string): Promise<boolean> {
             },
           }
         );
-        setSession(res.data.accessToken, refreshToken);
-        return true;
+        
+        // Update both tokens from the response
+        if (res.data.accessToken) {
+          // If backend returns a new refresh token, use it; otherwise keep the existing one
+          const newRefreshToken = res.data.refreshToken || refreshToken;
+          setSession(res.data.accessToken, newRefreshToken);
+          return true;
+        }
+        
+        return false;
       } catch (error) {
         return false;
       }
@@ -79,17 +95,19 @@ export async function isValidToken(accessToken: string): Promise<boolean> {
 export function tokenExpired(exp: number): void {
   const currentTime = Date.now();
   const timeLeft = exp * 1000 - currentTime;
-  const refreshTime = timeLeft - 2 * 60 * 1000;
+  const refreshTime = timeLeft - 2 * 60 * 1000; // Refresh 2 minutes before expiry
 
   setTimeout(async () => {
-    const refreshToken = localStorage.getItem(STORAGE_KEY_REFRESH);
+    const refreshToken = getRefreshTokenFromCookie();
 
     if (!refreshToken) {
       console.error('No refresh token found. Unable to refresh access token');
-      alert('session expired please sign in again');
-      localStorage.removeItem(STORAGE_KEY);
+      alert('Session expired, please sign in again');
+      clearAuthCookies();
       window.location.href = paths.auth.jwt.signIn;
+      return;
     }
+    
     try {
       const res = await axios.post(
         `${CONFIG.authUrl}/api/v1/userAccount/refresh/token`,
@@ -100,12 +118,17 @@ export function tokenExpired(exp: number): void {
           },
         }
       );
-      setSession(res.data.accessToken, refreshToken);
+      
+      // Update both tokens from the response
+      if (res.data.accessToken) {
+        // If backend returns a new refresh token, use it; otherwise keep the existing one
+        const newRefreshToken = res.data.refreshToken || refreshToken;
+        setSession(res.data.accessToken, newRefreshToken);
+      }
     } catch (error) {
-      alert('session expired. PLease signin again');
-      localStorage.removeItem(STORAGE_KEY);
+      alert('Session expired. Please sign in again');
+      clearAuthCookies();
       window.location.href = paths.auth.jwt.signIn;
-      throw error;
     }
   }, refreshTime);
 }
@@ -126,15 +149,13 @@ export async function setSessionToken(sessionToken: string | null): Promise<void
   }
 }
 
-export async function setSession(
-  accessToken: string | null,
-  refreshToken: string | null
-): Promise<void> {
+export async function setSession(accessToken: string | null, refreshToken: string | null): Promise<void> {
   try {
     if (accessToken && refreshToken) {
-      localStorage.setItem(STORAGE_KEY, accessToken);
-      localStorage.setItem(STORAGE_KEY_REFRESH, refreshToken);
-
+      // Store tokens in cookies
+      setTokensInCookies(accessToken, refreshToken);
+      
+      // IMPORTANT: Set axios default header so all requests include the token
       axios.defaults.headers.common.Authorization = `Bearer ${accessToken}`;
 
       const decodedToken = jwtDecode(accessToken);
@@ -145,8 +166,8 @@ export async function setSession(
         throw new Error('Invalid access token!');
       }
     } else {
-      localStorage.removeItem(STORAGE_KEY);
-      localStorage.removeItem(STORAGE_KEY_REFRESH);
+      // Clear cookies and auth header
+      clearAuthCookies();
       delete axios.defaults.headers.common.Authorization;
     }
   } catch (error) {
