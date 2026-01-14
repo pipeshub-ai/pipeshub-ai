@@ -31,8 +31,8 @@ from app.config.constants.arangodb import CollectionNames
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
-from app.connectors.sources.google.drive.enterprise.connector import (
-    GoogleDriveEnterpriseConnector,
+from app.connectors.sources.google.drive.team.connector import (
+    GoogleDriveTeamConnector,
 )
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.utils.logger import create_logger
@@ -210,7 +210,7 @@ async def test_run() -> None:
     }
     await key_value_store.create_key(f"/services/connectors/{connector_id}/config", config)
 
-    connector: BaseConnector = await GoogleDriveEnterpriseConnector.create_connector(
+    connector: BaseConnector = await GoogleDriveTeamConnector.create_connector(
         logger, data_store_provider, config_service, connector_id
     )
 

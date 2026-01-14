@@ -161,7 +161,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
         .with_agent_support(True)
     )\
     .build_decorator()
-class GoogleDriveEnterpriseConnector(BaseConnector):
+class GoogleDriveTeamConnector(BaseConnector):
     def __init__(
         self,
         logger: Logger,
@@ -2753,7 +2753,7 @@ class GoogleDriveEnterpriseConnector(BaseConnector):
         )
         await data_entities_processor.initialize()
 
-        return GoogleDriveEnterpriseConnector(
+        return GoogleDriveTeamConnector(
             logger,
             data_entities_processor,
             data_store_provider,

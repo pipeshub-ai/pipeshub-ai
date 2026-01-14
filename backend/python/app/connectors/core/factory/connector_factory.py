@@ -31,8 +31,8 @@ from app.connectors.sources.dropbox.connector import DropboxConnector
 from app.connectors.sources.dropbox_individual.connector import (
     DropboxIndividualConnector,
 )
-from app.connectors.sources.google.drive.enterprise.connector import (
-    GoogleDriveEnterpriseConnector,
+from app.connectors.sources.google.drive.team.connector import (
+    GoogleDriveTeamConnector,
 )
 from app.connectors.sources.google.drive.individual.connector import (
     GoogleDriveIndividualConnector,
@@ -62,7 +62,7 @@ class ConnectorFactory:
         "jira": JiraConnector,
         "box": BoxConnector,
         "drive": GoogleDriveIndividualConnector,
-        "driveworkspace": GoogleDriveEnterpriseConnector,
+        "driveworkspace": GoogleDriveTeamConnector,
         "dropbox": DropboxConnector,
         "dropboxpersonal": DropboxIndividualConnector,
         "servicenow": ServiceNowConnector,
