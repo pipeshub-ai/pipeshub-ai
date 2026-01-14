@@ -347,6 +347,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 if existing_record.external_revision_id != external_revision_id:
                     content_changed = True
                     is_updated = True
+                
+                if existing_record and record_group_id != existing_record.external_record_group_id:
+                    is_updated = True
+                    metadata_changed = True
 
             # Determine if it's a file or folder
             mime_type = metadata.get("mimeType", "")
@@ -403,6 +407,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 md5_hash=metadata.get("md5Checksum", None),
                 is_shared=is_shared,
             )
+
+            if existing_record and not content_changed:
+                self.logger.debug(f"No content change for file {file_record.record_name} setting indexing status as prev value")
+                file_record.indexing_status = existing_record.indexing_status
+                file_record.extraction_status = existing_record.extraction_status
 
             # Handle Permissions
             new_permissions = [

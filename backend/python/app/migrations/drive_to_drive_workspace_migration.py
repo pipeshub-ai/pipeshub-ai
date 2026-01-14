@@ -1,22 +1,31 @@
 """
 Drive to Drive Workspace Migration Service
 
-This migration updates connector instances with type "Drive" and scope "team"
-to have type "DRIVE WORKSPACE", and updates all associated records with
-connectorName "DRIVE" to "DRIVE WORKSPACE".
+This migration handles connector instances with type "Drive" and scope "team"
+differently based on organization account type:
+
+For individual organizations:
+- Only updates scope from "team" to "personal"
+- No connector type change
+- No record updates
+
+For non-individual organizations (enterprise/business):
+- Updates connector type field to "DRIVE WORKSPACE"
+- Finds all records with connectorName="DRIVE"
+- Updates records' connectorName field to "DRIVE WORKSPACE"
 
 Migration Steps:
 1. Find all connectors with type="Drive" and scope="team"
-2. Update connector type field to "DRIVE WORKSPACE"
-3. Find all records with connectorName="DRIVE"
-4. Update records' connectorName field to "DRIVE WORKSPACE"
+2. Separate connectors by organization accountType
+3. For individual orgs: Update scope to "personal" only
+4. For non-individual orgs: Update type to "DRIVE WORKSPACE" and update records
 5. Process in batches to handle large datasets efficiently
 6. Use transactions for atomicity
 """
 
 import asyncio
 import traceback
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, Connectors, ConnectorScopes
@@ -103,18 +112,29 @@ class DriveToDriveWorkspaceMigrationService:
                 "Migration completed but may run again on next startup."
             )
 
-    async def _find_connectors_to_migrate(self) -> List[Dict]:
+    async def _find_connectors_to_migrate(self) -> Tuple[List[Dict], List[Dict]]:
         """
-        Find all connectors that need to be migrated.
+        Find all connectors that need to be migrated, separated by organization account type.
 
         Returns:
-            List[Dict]: List of connector documents with type="Drive" and scope="team"
+            tuple[List[Dict], List[Dict]]: 
+                - First list: connectors from individual orgs (only scope update needed)
+                - Second list: connectors from non-individual orgs (full migration needed)
         """
         try:
             query = f"""
                 FOR app IN {CollectionNames.APPS.value}
                     FILTER app.type == @old_type AND app.scope == @team_scope
-                    RETURN app
+                    LET org_edge = FIRST(
+                        FOR edge IN {CollectionNames.ORG_APP_RELATION.value}
+                            FILTER edge._to == app._id
+                            RETURN edge
+                    )
+                    LET org = org_edge != null ? DOCUMENT(org_edge._from) : null
+                    RETURN {{
+                        app: app,
+                        accountType: org != null ? org.accountType : null
+                    }}
             """
 
             cursor = self.arango.db.aql.execute(
@@ -124,21 +144,91 @@ class DriveToDriveWorkspaceMigrationService:
                     "team_scope": ConnectorScopes.TEAM.value
                 }
             )
-            connectors = list(cursor)
+            results = list(cursor)
+
+            individual_connectors = []
+            non_individual_connectors = []
+
+            for result in results:
+                app = result.get("app", {})
+                account_type = result.get("accountType", "")
+                
+                if account_type == "individual":
+                    individual_connectors.append(app)
+                else:
+                    non_individual_connectors.append(app)
 
             self.logger.info(
-                f"Found {len(connectors)} connector(s) to migrate"
+                f"Found {len(individual_connectors)} connector(s) from individual orgs (scope update only)"
             )
-            return connectors
+            self.logger.info(
+                f"Found {len(non_individual_connectors)} connector(s) from non-individual orgs (full migration)"
+            )
+            return individual_connectors, non_individual_connectors
 
         except Exception as e:
             error_msg = f"Failed to find connectors to migrate: {str(e)}"
             self.logger.error(error_msg)
             raise DriveToDriveWorkspaceMigrationError(error_msg) from e
 
+    async def _update_connectors_scope_batch(self, connectors: List[Dict], transaction) -> Dict:
+        """
+        Update a batch of connectors with the new scope (for individual orgs).
+
+        Args:
+            connectors: List of connector documents to update
+            transaction: Active ArangoDB transaction
+
+        Returns:
+            Dict: Result with batch statistics
+        """
+        connectors_updated = 0
+        failed_updates = []
+
+        for connector in connectors:
+            try:
+                connector_key = connector.get("_key")
+                if not connector_key:
+                    continue
+
+                # Update the connector scope to "personal"
+                update_query = f"""
+                    UPDATE {{ _key: @connector_key }} WITH {{ scope: @new_scope }}
+                    IN {CollectionNames.APPS.value}
+                    OPTIONS {{ keepNull: false, mergeObjects: true }}
+                    RETURN NEW
+                """
+
+                cursor = transaction.aql.execute(
+                    update_query,
+                    bind_vars={
+                        "connector_key": connector_key,
+                        "new_scope": ConnectorScopes.PERSONAL.value
+                    }
+                )
+                updated = list(cursor)
+
+                if updated:
+                    connectors_updated += 1
+
+            except Exception as update_error:
+                self.logger.error(
+                    f"Failed to update connector scope {connector.get('_key', 'unknown')}: {str(update_error)}"
+                )
+                failed_updates.append({
+                    "connector_key": connector.get("_key", "unknown"),
+                    "error": str(update_error)
+                })
+                continue
+
+        return {
+            "connectors_updated": connectors_updated,
+            "failed_updates": failed_updates
+        }
+
     async def _update_connectors_batch(self, connectors: List[Dict], transaction) -> Dict:
         """
-        Update a batch of connectors with the new type.
+        Update a batch of connectors with the new type (for non-individual orgs).
 
         Args:
             connectors: List of connector documents to update
@@ -316,24 +406,24 @@ class DriveToDriveWorkspaceMigrationService:
             self.logger.info("Starting Drive to Drive Workspace Migration")
             self.logger.info("=" * 70)
 
-            # Step 1: Find all connectors to migrate
-            connectors_to_update = await self._find_connectors_to_migrate()
+            # Step 1: Find all connectors to migrate, separated by org account type
+            individual_connectors, non_individual_connectors = await self._find_connectors_to_migrate()
 
             total_connectors_updated = 0
             total_records_updated = 0
             all_failed_connector_updates = []
             all_failed_record_updates = []
 
-            # Step 2: Update connectors in batches
-            if connectors_to_update:
-                self.logger.info(f"Found {len(connectors_to_update)} connector(s) to update")
+            # Step 2a: Update individual org connectors (scope only, no type change, no records)
+            if individual_connectors:
+                self.logger.info(f"Processing {len(individual_connectors)} connector(s) from individual orgs (scope update only)")
 
-                for i in range(0, len(connectors_to_update), self.BATCH_SIZE):
+                for i in range(0, len(individual_connectors), self.BATCH_SIZE):
                     batch_num = (i // self.BATCH_SIZE) + 1
-                    batch_connectors = connectors_to_update[i:i + self.BATCH_SIZE]
+                    batch_connectors = individual_connectors[i:i + self.BATCH_SIZE]
 
                     self.logger.info(
-                        f"Processing connector batch {batch_num} ({len(batch_connectors)} connector(s))..."
+                        f"Processing individual org connector batch {batch_num} ({len(batch_connectors)} connector(s))..."
                     )
 
                     transaction = None
@@ -343,16 +433,16 @@ class DriveToDriveWorkspaceMigrationService:
                             write=[CollectionNames.APPS.value]
                         )
 
-                        # Update batch
-                        batch_result = await self._update_connectors_batch(
+                        # Update batch (scope only)
+                        batch_result = await self._update_connectors_scope_batch(
                             batch_connectors, transaction
                         )
 
                         # Commit transaction
                         await asyncio.to_thread(lambda: transaction.commit_transaction())
                         self.logger.info(
-                            f"✅ Connector batch {batch_num} committed: "
-                            f"{batch_result['connectors_updated']} connector(s) updated"
+                            f"✅ Individual org connector batch {batch_num} committed: "
+                            f"{batch_result['connectors_updated']} connector(s) updated (scope only)"
                         )
 
                         total_connectors_updated += batch_result["connectors_updated"]
@@ -363,24 +453,73 @@ class DriveToDriveWorkspaceMigrationService:
                         if transaction:
                             try:
                                 await asyncio.to_thread(lambda: transaction.abort_transaction())
-                                self.logger.warning(f"Connector batch {batch_num} rolled back due to error")
+                                self.logger.warning(f"Individual org connector batch {batch_num} rolled back due to error")
                             except Exception as rollback_error:
-                                self.logger.error(f"Connector batch {batch_num} rollback failed: {rollback_error}")
+                                self.logger.error(f"Individual org connector batch {batch_num} rollback failed: {rollback_error}")
 
-                        error_msg = f"Connector batch {batch_num} migration failed: {str(batch_error)}"
+                        error_msg = f"Individual org connector batch {batch_num} migration failed: {str(batch_error)}"
                         self.logger.error(error_msg)
                         # Continue with next batch instead of failing entire migration
                         continue
-
             else:
-                self.logger.info("✅ No connectors need updating")
+                self.logger.info("✅ No individual org connectors need updating")
 
-            # Step 3: Update records if any connectors were found
-            if connectors_to_update:
+            # Step 2b: Update non-individual org connectors (type change + records)
+            if non_individual_connectors:
+                self.logger.info(f"Processing {len(non_individual_connectors)} connector(s) from non-individual orgs (full migration)")
+
+                for i in range(0, len(non_individual_connectors), self.BATCH_SIZE):
+                    batch_num = (i // self.BATCH_SIZE) + 1
+                    batch_connectors = non_individual_connectors[i:i + self.BATCH_SIZE]
+
+                    self.logger.info(
+                        f"Processing non-individual org connector batch {batch_num} ({len(batch_connectors)} connector(s))..."
+                    )
+
+                    transaction = None
+                    try:
+                        # Start transaction
+                        transaction = self.arango.db.begin_transaction(
+                            write=[CollectionNames.APPS.value]
+                        )
+
+                        # Update batch (type change)
+                        batch_result = await self._update_connectors_batch(
+                            batch_connectors, transaction
+                        )
+
+                        # Commit transaction
+                        await asyncio.to_thread(lambda: transaction.commit_transaction())
+                        self.logger.info(
+                            f"✅ Non-individual org connector batch {batch_num} committed: "
+                            f"{batch_result['connectors_updated']} connector(s) updated (type change)"
+                        )
+
+                        total_connectors_updated += batch_result["connectors_updated"]
+                        all_failed_connector_updates.extend(batch_result.get("failed_updates", []))
+
+                    except Exception as batch_error:
+                        # Rollback transaction on error
+                        if transaction:
+                            try:
+                                await asyncio.to_thread(lambda: transaction.abort_transaction())
+                                self.logger.warning(f"Non-individual org connector batch {batch_num} rolled back due to error")
+                            except Exception as rollback_error:
+                                self.logger.error(f"Non-individual org connector batch {batch_num} rollback failed: {rollback_error}")
+
+                        error_msg = f"Non-individual org connector batch {batch_num} migration failed: {str(batch_error)}"
+                        self.logger.error(error_msg)
+                        # Continue with next batch instead of failing entire migration
+                        continue
+            else:
+                self.logger.info("✅ No non-individual org connectors need updating")
+
+            # Step 3: Update records if any non-individual connectors were found
+            if non_individual_connectors:
                 # Extract connector keys to find associated records
                 connector_keys = [
                     connector.get("_key")
-                    for connector in connectors_to_update
+                    for connector in non_individual_connectors
                     if connector.get("_key")
                 ]
 
@@ -439,8 +578,9 @@ class DriveToDriveWorkspaceMigrationService:
             self.logger.info("=" * 70)
             self.logger.info("Drive to Drive Workspace Migration Summary")
             self.logger.info("=" * 70)
-            self.logger.info(f"Connectors found: {len(connectors_to_update)}")
-            self.logger.info(f"Connectors updated successfully: {total_connectors_updated}")
+            self.logger.info(f"Individual org connectors found: {len(individual_connectors)}")
+            self.logger.info(f"Non-individual org connectors found: {len(non_individual_connectors)}")
+            self.logger.info(f"Total connectors updated successfully: {total_connectors_updated}")
             self.logger.info(f"Records updated successfully: {total_records_updated}")
 
             if all_failed_connector_updates:
