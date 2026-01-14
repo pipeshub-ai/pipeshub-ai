@@ -66,7 +66,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
         # Build Redis connection URL
         if password:
-            self.client = redis.Redis(
+            self._client = redis.Redis(
                 host=host,
                 port=port,
                 password=password,
@@ -75,7 +75,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                 decode_responses=False,
             )
         else:
-            self.client = redis.Redis(
+            self._client = redis.Redis(
                 host=host,
                 port=port,
                 db=db,
@@ -89,7 +89,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
     def client(self) -> Optional[redis.Redis]:
         """Expose the underlying Redis client for watchers and diagnostics."""
 
-        return self.client
+        return self._client
 
     def _build_key(self, key: str) -> str:
         """Build the full Redis key with prefix."""
@@ -113,17 +113,21 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             full_key = self._build_key(key)
             serialized_value = self.serializer(value)
 
-            if not overwrite:
-                # Check if key exists
-                existing = await self.client.exists(full_key)
-                if existing:
-                    logger.debug("Key exists, skipping creation")
-                    return True
-
-            if ttl:
-                await self.client.set(full_key, serialized_value, ex=ttl)
+            if overwrite:
+                if ttl:
+                    await self._client.set(full_key, serialized_value, ex=ttl)
+                else:
+                    await self._client.set(full_key, serialized_value)
             else:
-                await self.client.set(full_key, serialized_value)
+                # Use nx=True for atomic "set if not exists"
+                was_set = await self._client.set(
+                    full_key, serialized_value, ex=ttl, nx=True
+                )
+                if not was_set:
+                    logger.debug(
+                        "Key '%s' already exists, skipping creation as overwrite is False.", key
+                    )
+                    return True  # Consistent with original behavior
 
             logger.debug("Key created successfully")
 
@@ -144,18 +148,15 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
         try:
             full_key = self._build_key(key)
-
-            # Check if key exists
-            existing = await self.client.exists(full_key)
-            if not existing:
-                raise KeyError(f'Key "{key}" does not exist.')
-
             serialized_value = self.serializer(value)
 
-            if ttl:
-                await self.client.set(full_key, serialized_value, ex=ttl)
-            else:
-                await self.client.set(full_key, serialized_value)
+            # Use xx=True for atomic "set if exists"
+            result = await self._client.set(
+                full_key, serialized_value, ex=ttl, xx=True
+            )
+
+            if not result:
+                raise KeyError(f'Key "{key}" does not exist.')
 
             logger.debug("Key updated successfully")
 
@@ -174,7 +175,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
         try:
             full_key = self._build_key(key)
-            value_bytes = await self.client.get(full_key)
+            value_bytes = await self._client.get(full_key)
 
             if value_bytes is None:
                 logger.debug("No value found for key")
@@ -197,7 +198,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
         try:
             full_key = self._build_key(key)
-            result = await self.client.delete(full_key)
+            result = await self._client.delete(full_key)
 
             if result > 0:
                 # Notify watchers about deletion
@@ -217,7 +218,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             pattern = f"{self.key_prefix}*"
             keys = []
 
-            async for key in self.client.scan_iter(match=pattern):
+            async for key in self._client.scan_iter(match=pattern):
                 # Decode if bytes
                 if isinstance(key, bytes):
                     key = key.decode("utf-8")
@@ -286,7 +287,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             pattern = f"{self.key_prefix}{prefix}*"
 
             keys = []
-            async for key in self.client.scan_iter(match=pattern):
+            async for key in self._client.scan_iter(match=pattern):
                 if isinstance(key, bytes):
                     key = key.decode("utf-8")
                 keys.append(self._strip_prefix(key))
@@ -309,5 +310,5 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         self._watchers.clear()
 
         # Close Redis connection
-        await self.client.close()
+        await self._client.close()
         logger.debug("Redis store closed successfully")

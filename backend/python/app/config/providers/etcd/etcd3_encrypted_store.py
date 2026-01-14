@@ -3,8 +3,8 @@ import json
 import os
 from typing import Callable, Dict, Generic, List, Optional, TypeVar, Union
 
-import dotenv
-import etcd3
+import dotenv  # type: ignore
+import etcd3  # type: ignore
 
 from app.config.constants.service import config_node_constants
 from app.config.constants.store_type import StoreType

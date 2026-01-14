@@ -52,25 +52,27 @@ export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStor
 
   async createKey(key: string, value: T): Promise<void> {
     const fullKey = this.buildKey(key);
-    const existingValue = await this.client.get(fullKey);
+    const result = await this.client.set(
+      fullKey,
+      this.serializer(value),
+      'NX',
+    );
 
-    if (existingValue !== null) {
+    if (result === null) {
       throw new KeyAlreadyExistsError(`Key "${key}" already exists.`);
     }
 
-    await this.client.set(fullKey, this.serializer(value));
     this.notifyWatchers(key, value);
   }
 
   async updateValue(key: string, value: T): Promise<void> {
     const fullKey = this.buildKey(key);
-    const existingValue = await this.client.get(fullKey);
+    const result = await this.client.set(fullKey, this.serializer(value), 'XX');
 
-    if (existingValue === null) {
+    if (result === null) {
       throw new KeyNotFoundError(`Key "${key}" does not exist.`);
     }
 
-    await this.client.set(fullKey, this.serializer(value));
     this.notifyWatchers(key, value);
   }
 
@@ -168,10 +170,12 @@ export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStor
       expectedValue !== null ? this.serializer(expectedValue) : null;
 
     try {
-      // Get current value
+      // Watch the key for any changes.
+      await this.client.watch(fullKey);
+
       const currentBuffer = await this.client.getBuffer(fullKey);
 
-      // Compare buffers directly for exact match
+      // Compare buffers for an exact match.
       const valuesMatch =
         (expectedValue === null && currentBuffer === null) ||
         (expectedBuffer !== null &&
@@ -179,23 +183,24 @@ export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStor
           expectedBuffer.equals(currentBuffer));
 
       if (!valuesMatch) {
-        // Values don't match, CAS failed
+        // Values don't match, abort.
+        await this.client.unwatch();
         return false;
       }
 
-      await this.client.set(fullKey, newBuffer);
+      // Atomically set the new value.
+      const result = await this.client.multi().set(fullKey, newBuffer).exec();
 
-      // Verify the update succeeded by reading back
-      const updatedBuffer = await this.client.getBuffer(fullKey);
-      const success =
-        updatedBuffer !== null && updatedBuffer.equals(newBuffer);
-
-      if (success) {
-        this.notifyWatchers(key, newValue);
+      // If result is null, it means the key was modified by another client
+      // after we started watching it. The transaction was aborted.
+      if (result === null) {
+        return false;
       }
 
-      return success;
-    } catch {
+      this.notifyWatchers(key, newValue);
+      return true;
+    } catch (error) {
+      Logger.getInstance().error(`Error in compareAndSet for key ${key}:`, error);
       // If operation fails, return false
       return false;
     }
