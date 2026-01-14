@@ -1416,6 +1416,9 @@ class GoogleDriveEnterpriseConnector(BaseConnector):
                 is_shared=is_shared,
             )
 
+            if not content_changed and existing_record:
+                file_record.virtual_record_id = existing_record.virtual_record_id
+
             # Handle Permissions - fetch new permissions
             new_permissions = []
             old_permissions = []
