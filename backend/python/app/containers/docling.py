@@ -38,6 +38,12 @@ async def initialize_container(container: DoclingAppContainer) -> bool:
     logger.info("🚀 Initializing Docling service resources")
 
     try:
+        # Check and perform migration from etcd to Redis if needed
+        logger.info("Checking KV store migration status...")
+        key_value_store: EncryptedKeyValueStore = container.key_value_store()
+        await key_value_store.ensure_migrated()
+        logger.info("✅ KV store migration check completed")
+
         # For Docling service, we mainly need configuration and logging
         # No database connections required for the Docling service itself
         logger.info("✅ Docling service configuration initialized")

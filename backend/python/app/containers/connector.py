@@ -1019,6 +1019,12 @@ async def initialize_container(container) -> bool:
 
     logger.info("🚀 Initializing application resources")
     try:
+        # Check and perform migration from etcd to Redis if needed
+        logger.info("Checking KV store migration status...")
+        key_value_store = container.key_value_store()
+        await key_value_store.ensure_migrated()
+        logger.info("✅ KV store migration check completed")
+
         await Health.system_health_check(container)
 
         logger.info("Ensuring ArangoDB service is initialized")

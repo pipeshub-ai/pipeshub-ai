@@ -7,13 +7,22 @@ import dotenv  # type: ignore
 
 from app.config.constants.service import config_node_constants
 from app.config.constants.store_type import StoreType
+from app.config.errors import (
+    ConfigurationInvalidError,
+    ConfigurationMigrationError,
+    ConfigurationNotFoundError,
+)
 from app.config.key_value_store import KeyValueStore
 from app.config.key_value_store_factory import KeyValueStoreFactory, StoreConfig
+from app.config.migration.kv_store_migration import check_and_migrate_if_needed
 from app.utils.encryption.encryption_service import EncryptionService
 
 dotenv.load_dotenv()
 
 T = TypeVar("T")
+
+# Track if migration has been checked (singleton pattern for migration)
+_migration_checked = False
 
 
 class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
@@ -53,10 +62,62 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         store_type_str = os.getenv("KV_STORE_TYPE", "etcd").lower()
         self.logger.debug("KV_STORE_TYPE: %s", store_type_str)
 
+        # Store the store type for migration check
+        self._store_type_str = store_type_str
+
         self.logger.debug("Creating key-value store...")
         self.store = self._create_store(store_type_str)
 
         self.logger.debug("KeyValueStore initialized successfully")
+
+    async def ensure_migrated(self) -> None:
+        """
+        Ensure data migration from etcd to Redis has been performed if using Redis.
+        This should be called during application startup.
+
+        Raises:
+            ConfigurationMigrationError: If migration fails or data is missing
+        """
+        global _migration_checked
+
+        # Only check migration once per application lifecycle
+        if _migration_checked:
+            return
+
+        # Only need to check migration when using Redis
+        if self._store_type_str != "redis":
+            _migration_checked = True
+            return
+
+        self.logger.info("Checking if etcd to Redis migration is needed...")
+
+        result = await check_and_migrate_if_needed()
+
+        if result is None:
+            # Redis already has data, no migration needed
+            self.logger.info("Redis already has configuration data. No migration needed.")
+            _migration_checked = True
+            return
+
+        if result.success:
+            self.logger.info(
+                "Migration completed successfully. Migrated %d keys.",
+                len(result.migrated_keys),
+            )
+            _migration_checked = True
+            return
+
+        # Migration failed or no data available
+        self.logger.error(
+            "CONFIGURATION MIGRATION ERROR: %s. "
+            "Please ensure etcd is running and restart the application, "
+            "or reconfigure all settings manually.",
+            result.error,
+        )
+        raise ConfigurationMigrationError(
+            message=result.error or "Migration failed",
+            failed_keys=result.failed_keys,
+        )
 
     @property
     def client(self) -> object:
@@ -273,6 +334,95 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             self.logger.error("Failed to get config %s: %s", key, str(e))
             self.logger.exception("Detailed error:")
             return None
+
+    async def get_required_config(self, key: str, friendly_name: str = None) -> T:
+        """
+        Get a required configuration value, raising an error if not found.
+
+        Args:
+            key: The configuration key to retrieve
+            friendly_name: Human-readable name for error messages
+
+        Returns:
+            The configuration value
+
+        Raises:
+            ConfigurationNotFoundError: If the configuration is not found
+            ConfigurationInvalidError: If the configuration is invalid/corrupted
+        """
+        display_name = friendly_name or key
+
+        try:
+            value = await self.get_key(key)
+
+            if value is None:
+                self.logger.error(
+                    "CONFIGURATION ERROR: Required configuration '%s' not found. "
+                    "This may indicate missing migration from etcd to Redis or "
+                    "the configuration was never set. Please reconfigure.",
+                    display_name,
+                )
+                raise ConfigurationNotFoundError(
+                    config_key=key,
+                    suggestion=f"Please configure '{display_name}' in the admin panel.",
+                )
+
+            return value
+
+        except ConfigurationNotFoundError:
+            raise
+        except Exception as e:
+            self.logger.error(
+                "CONFIGURATION ERROR: Failed to read configuration '%s': %s. "
+                "The configuration may be corrupted. Please reconfigure.",
+                display_name,
+                str(e),
+            )
+            raise ConfigurationInvalidError(
+                config_key=key,
+                reason=f"Failed to read or decrypt configuration: {str(e)}",
+            )
+
+    async def validate_required_configs(self, required_keys: List[str]) -> Dict[str, bool]:
+        """
+        Validate that all required configurations exist.
+
+        Args:
+            required_keys: List of configuration keys that must exist
+
+        Returns:
+            Dictionary mapping keys to their validation status
+
+        Raises:
+            ConfigurationMigrationError: If any required configurations are missing
+        """
+        results = {}
+        missing_keys = []
+
+        for key in required_keys:
+            try:
+                value = await self.get_key(key)
+                results[key] = value is not None
+                if value is None:
+                    missing_keys.append(key)
+            except Exception as e:
+                self.logger.error("Error validating config key %s: %s", key, str(e))
+                results[key] = False
+                missing_keys.append(key)
+
+        if missing_keys:
+            self.logger.error(
+                "CONFIGURATION ERROR: The following required configurations are missing: %s. "
+                "This may indicate incomplete migration from etcd to Redis. "
+                "Please either run migration or reconfigure these settings.",
+                ", ".join(missing_keys),
+            )
+            raise ConfigurationMigrationError(
+                message="Required configurations are missing",
+                failed_keys=missing_keys,
+            )
+
+        return results
 
     async def delete_key(self, key: str) -> bool:
         return await self.store.delete_key(key)
