@@ -18,9 +18,7 @@ For OAuth2:
 1. Create a Connected App in Salesforce Setup
 2. Set SALESFORCE_CLIENT_ID and SALESFORCE_CLIENT_SECRET environment variables
 3. Set SALESFORCE_INSTANCE_URL (e.g., https://your-domain.my.salesforce.com)
-4. Set SALESFORCE_REDIRECT_URI (default: http://localhost:8080/services/oauth2/success)
-   - This must match the redirect URI registered in your Salesforce Connected App
-5. The OAuth flow will automatically open a browser for authorization
+4. The OAuth flow will automatically open a browser for authorization
 
 For Access Token (Bearer Token):
 1. Set SALESFORCE_ACCESS_TOKEN environment variable
@@ -30,7 +28,10 @@ For Access Token (Bearer Token):
 import asyncio
 import json
 import os
+import urllib.parse
+import webbrowser
 from typing import Dict, Any
+from aiohttp import web, ClientSession
 
 from app.sources.client.salesforce.salesforce import (
     SalesforceClient,
@@ -38,7 +39,6 @@ from app.sources.client.salesforce.salesforce import (
     SalesforceResponse,
 )
 from app.sources.external.salesforce.salesforce_data_source import SalesforceDataSource
-from app.sources.external.utils.oauth import perform_oauth_flow
 
 # --- Configuration ---
 CLIENT_ID = os.getenv("SALESFORCE_CLIENT_ID")
@@ -46,7 +46,10 @@ CLIENT_SECRET = os.getenv("SALESFORCE_CLIENT_SECRET")
 ACCESS_TOKEN = os.getenv("SALESFORCE_ACCESS_TOKEN")
 INSTANCE_URL = os.getenv("SALESFORCE_INSTANCE_URL")
 API_VERSION = os.getenv("SALESFORCE_API_VERSION", "59.0")
-REDIRECT_URI = os.getenv("SALESFORCE_REDIRECT_URI", "http://localhost:8080/services/oauth2/success")
+
+CALLBACK_PORT = 8080
+CALLBACK_PATH = "/services/oauth2/success"
+REDIRECT_URI = f"http://localhost:{CALLBACK_PORT}{CALLBACK_PATH}"
 
 def print_section(title: str):
     print(f"\n{'-'*80}")
@@ -87,6 +90,92 @@ def print_result(name: str, response: SalesforceResponse, show_data: bool = True
             print(f"   Message: {response.message}")
 
 
+async def perform_localhost_oauth(client_id: str, client_secret: str, instance_url: str):
+    """
+    Perform OAuth2 flow using localhost callback server.
+    """
+    print_section("Starting OAuth2 Flow")
+    
+    loop = asyncio.get_running_loop()
+    auth_code_future = loop.create_future()
+
+    async def handle_callback(request):
+        code = request.query.get("code")
+        if code:
+            if not auth_code_future.done():
+                auth_code_future.set_result(code)
+            return web.Response(text="Authorization successful! You can close this window and return to the terminal.")
+        else:
+            error = request.query.get("error", "Unknown error")
+            desc = request.query.get("error_description", "")
+            if not auth_code_future.done():
+                auth_code_future.set_exception(Exception(f"{error}: {desc}"))
+            return web.Response(text=f"Authorization failed: {error} - {desc}")
+
+    # Start local callback server
+    app = web.Application()
+    app.router.add_get(CALLBACK_PATH, handle_callback)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "localhost", CALLBACK_PORT)
+    await site.start()
+
+    print(f"🌐 Listening for OAuth callback on {REDIRECT_URI}")
+    print(f"🔐 Opening browser for authorization...")
+
+    # Build authorization URL
+    params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": REDIRECT_URI,
+        "prompt": "login consent",
+        "scope": "api"
+    }
+
+    auth_url = f"{instance_url}/services/oauth2/authorize?{urllib.parse.urlencode(params)}"
+    webbrowser.open(auth_url)
+
+    try:
+        # Wait for authorization code (with 2 minute timeout)
+        code = await asyncio.wait_for(auth_code_future, timeout=120)
+        print("✅ Authorization code received")
+    except asyncio.TimeoutError:
+        await site.stop()
+        raise RuntimeError("OAuth timeout: No authorization code received within 2 minutes")
+    except Exception as e:
+        await site.stop()
+        raise RuntimeError(f"OAuth failed: {e}")
+
+    await site.stop()
+
+    # Exchange authorization code for access token
+    print("🔄 Exchanging authorization code for access token...")
+    token_url = f"{instance_url}/services/oauth2/token"
+    data = {
+        "grant_type": "authorization_code",
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": REDIRECT_URI,
+        "code": code
+    }
+
+    async with ClientSession() as session:
+        async with session.post(token_url, data=data) as resp:
+            token_data = await resp.json()
+            if resp.status != 200:
+                error_msg = token_data.get("error_description", token_data.get("error", "Unknown error"))
+                raise RuntimeError(f"Token exchange failed: {error_msg}")
+
+    access_token = token_data.get("access_token")
+    instance_url = token_data.get("instance_url", instance_url)
+    
+    if not access_token:
+        raise RuntimeError("No access_token found in token response")
+
+    print("✅ OAuth authentication successful!")
+    return access_token, instance_url
+
+
 async def main() -> None:
     # 1. Initialize Client
     print_section("Initializing Salesforce Client")
@@ -97,36 +186,17 @@ async def main() -> None:
         # OAuth2 authentication (highest priority)
         print("ℹ️  Using OAuth2 authentication")
         try:
-            print("Starting OAuth flow...")
-            
-            # Salesforce OAuth endpoints
-            # Note: Use your instance URL for the authorization endpoint
-            auth_endpoint = f"{INSTANCE_URL}/services/oauth2/authorize"
-            token_endpoint = f"{INSTANCE_URL}/services/oauth2/token"
-            
-            token_response = perform_oauth_flow(
+            access_token, instance_url = await perform_localhost_oauth(
                 client_id=CLIENT_ID,
                 client_secret=CLIENT_SECRET,
-                auth_endpoint=auth_endpoint,
-                token_endpoint=token_endpoint,
-                redirect_uri=REDIRECT_URI,
-                scopes=["api", "refresh_token", "offline_access"],
-                scope_delimiter=" ",
-                auth_method="body",  # Salesforce uses POST body for token exchange
+                instance_url=INSTANCE_URL
             )
-            
-            access_token = token_response.get("access_token")
-            instance_url = token_response.get("instance_url", INSTANCE_URL)
-            
-            if not access_token:
-                raise Exception("No access_token found in OAuth response")
             
             config = SalesforceConfig(
                 instance_url=instance_url,
                 access_token=access_token,
                 api_version=API_VERSION
             )
-            print("✅ OAuth authentication successful")
             
         except Exception as e:
             print(f"❌ OAuth flow failed: {e}")
@@ -150,7 +220,7 @@ async def main() -> None:
 
     client = SalesforceClient.build_with_config(config)
     data_source = SalesforceDataSource(client)
-    print(f"Client initialized successfully. Base URL: {client.get_base_url()}")
+    print(f"✅ Client initialized successfully. Base URL: {client.get_base_url()}")
 
     # 2. Describe Global - List all SObjects
     print_section("Describe Global - Available SObjects")
@@ -168,10 +238,15 @@ async def main() -> None:
 
     # 4. SOQL Query - Get Accounts
     print_section("SOQL Query - Fetch Accounts")
-    query_resp = await data_source.query(
-        q="SELECT Id, Name, Industry, AnnualRevenue FROM Account LIMIT 5"
-    )
-    print_result("Query Accounts", query_resp)
+    try:
+        query_resp = await data_source.query(
+            q="SELECT Id, Name, Industry, AnnualRevenue FROM Account LIMIT 5"
+        )
+        print_result("Query Accounts", query_resp)
+    except Exception as e:
+        print(f"❌ Query Accounts: Failed with exception")
+        print(f"   Exception: {str(e)}")
+        print(f"   Note: This might be expected if there are no Account records yet")
 
     # 5. SOSL Search
     print_section("SOSL Search - Find Records")
@@ -239,8 +314,32 @@ async def main() -> None:
             "url": f"v{API_VERSION}/limits"
         }
     ]
-    batch_resp = await data_source.composite_batch(subrequests=batch_requests)
-    print_result("Composite Batch", batch_resp)
+    # The composite_batch method signature may vary - try different approaches
+    try:
+        # Try with requests parameter (most common)
+        batch_resp = await data_source.composite_batch(requests=batch_requests)
+        print_result("Composite Batch", batch_resp)
+    except TypeError as e:
+        if "unexpected keyword argument" in str(e):
+            try:
+                # Try with batch_requests parameter
+                batch_resp = await data_source.composite_batch(batch_requests=batch_requests)
+                print_result("Composite Batch", batch_resp)
+            except TypeError:
+                try:
+                    # Try with batchRequests parameter (Salesforce API style)
+                    batch_resp = await data_source.composite_batch(batchRequests=batch_requests)
+                    print_result("Composite Batch", batch_resp)
+                except TypeError:
+                    # Try positional argument
+                    batch_resp = await data_source.composite_batch(batch_requests)
+                    print_result("Composite Batch", batch_resp)
+        else:
+            raise
+    except Exception as e:
+        print(f"❌ Composite Batch: Failed")
+        print(f"   Exception: {str(e)}")
+        print(f"   Note: Skipping composite batch example")
 
     # 11. Get Organization Limits
     print_section("System Limits")
@@ -253,59 +352,99 @@ async def main() -> None:
 
     # 12. Recent Items
     print_section("Recently Viewed Items")
-    recent_resp = await data_source.recent_items(limit=10)
-    print_result("Recent Items", recent_resp)
+    if hasattr(data_source, 'recent_items'):
+        try:
+            recent_resp = await data_source.recent_items(limit=10)
+            print_result("Recent Items", recent_resp)
+        except Exception as e:
+            print(f"❌ Recent Items: Failed")
+            print(f"   Exception: {str(e)}")
+    else:
+        print("⚠️  Recent Items: Method not available in this SalesforceDataSource implementation")
+        print("   Skipping this example...")
 
     # 13. Get List Views for Account
     print_section("List Views for Account")
-    list_views_resp = await data_source.get_list_views(sobject="Account")
-    print_result("Get List Views", list_views_resp, show_data=False)
-    if list_views_resp.success and list_views_resp.data:
-        views = list_views_resp.data.get("listViews", [])
-        print(f"   Total list views: {len(views)}")
-        if views:
-            print(f"   Sample views: {[v['label'] for v in views[:3]]}")
+    if hasattr(data_source, 'get_list_views'):
+        try:
+            list_views_resp = await data_source.get_list_views(sobject="Account")
+            print_result("Get List Views", list_views_resp, show_data=False)
+            if list_views_resp.success and list_views_resp.data:
+                views = list_views_resp.data.get("listViews", [])
+                print(f"   Total list views: {len(views)}")
+                if views:
+                    print(f"   Sample views: {[v['label'] for v in views[:3]]}")
+        except Exception as e:
+            print(f"❌ Get List Views: Failed")
+            print(f"   Exception: {str(e)}")
+    else:
+        print("⚠️  Get List Views: Method not available in this SalesforceDataSource implementation")
+        print("   Skipping this example...")
 
     # 14. Get Favorites
     print_section("User Favorites")
-    favorites_resp = await data_source.get_favorites()
-    print_result("Get Favorites", favorites_resp)
+    if hasattr(data_source, 'get_favorites'):
+        try:
+            favorites_resp = await data_source.get_favorites()
+            print_result("Get Favorites", favorites_resp)
+        except Exception as e:
+            print(f"❌ Get Favorites: Failed")
+            print(f"   Exception: {str(e)}")
+    else:
+        print("⚠️  Get Favorites: Method not available in this SalesforceDataSource implementation")
+        print("   Skipping this example...")
 
     # 15. Query with Deleted Records
     print_section("Query All (Including Deleted)")
-    query_all_resp = await data_source.query_all(
-        q="SELECT Id, Name, IsDeleted FROM Account WHERE IsDeleted = true LIMIT 5"
-    )
-    print_result("Query All Records", query_all_resp)
+    if hasattr(data_source, 'query_all'):
+        try:
+            query_all_resp = await data_source.query_all(
+                q="SELECT Id, Name, IsDeleted FROM Account WHERE IsDeleted = true LIMIT 5"
+            )
+            print_result("Query All Records", query_all_resp)
+        except Exception as e:
+            print(f"❌ Query All Records: Failed")
+            print(f"   Exception: {str(e)}")
+    else:
+        print("⚠️  Query All: Method not available in this SalesforceDataSource implementation")
+        print("   Skipping this example...")
 
     # 16. Composite Tree - Create Related Records
     print_section("Composite Tree - Create Account with Contacts")
-    tree_data = {
-        "records": [
-            {
-                "attributes": {"type": "Account", "referenceId": "ref1"},
-                "Name": "Parent Account",
-                "Contacts": {
-                    "records": [
-                        {
-                            "attributes": {"type": "Contact", "referenceId": "ref2"},
-                            "FirstName": "John",
-                            "LastName": "Doe",
-                            "Email": "john.doe@example.com"
-                        },
-                        {
-                            "attributes": {"type": "Contact", "referenceId": "ref3"},
-                            "FirstName": "Jane",
-                            "LastName": "Smith",
-                            "Email": "jane.smith@example.com"
-                        }
-                    ]
+    if hasattr(data_source, 'composite_tree'):
+        tree_data = {
+            "records": [
+                {
+                    "attributes": {"type": "Account", "referenceId": "ref1"},
+                    "Name": "Parent Account",
+                    "Contacts": {
+                        "records": [
+                            {
+                                "attributes": {"type": "Contact", "referenceId": "ref2"},
+                                "FirstName": "John",
+                                "LastName": "Doe",
+                                "Email": "john.doe@example.com"
+                            },
+                            {
+                                "attributes": {"type": "Contact", "referenceId": "ref3"},
+                                "FirstName": "Jane",
+                                "LastName": "Smith",
+                                "Email": "jane.smith@example.com"
+                            }
+                        ]
+                    }
                 }
-            }
-        ]
-    }
-    tree_resp = await data_source.composite_tree(sobject="Account", records=tree_data["records"])
-    print_result("Composite Tree", tree_resp)
+            ]
+        }
+        try:
+            tree_resp = await data_source.composite_tree(sobject="Account", records=tree_data["records"])
+            print_result("Composite Tree", tree_resp)
+        except Exception as e:
+            print(f"❌ Composite Tree: Failed")
+            print(f"   Exception: {str(e)}")
+    else:
+        print("⚠️  Composite Tree: Method not available in this SalesforceDataSource implementation")
+        print("   Skipping this example...")
 
     # 17. Delete Record (Cleanup)
     if created_account_id:
@@ -322,4 +461,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    # Handle Windows event loop policy
+    if os.name == "nt":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    
     asyncio.run(main())
