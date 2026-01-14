@@ -70,13 +70,17 @@ export function createUserAccountRouter(container: Container) {
   );
   const authenticateBody = z.object({
     method: z.string().min(1, 'Authentication method is required'),
-    credentials: z.object({
-      password: z.string().optional(),
-      otp: z.number().optional(),
-      token: z.string().optional(),
-      code: z.string().optional(),
-      accessToken: z.string().optional(),
-    }).passthrough(), // Allow additional fields for OAuth providers
+    credentials: z.union([
+      z.string().min(1, 'Credentials cannot be empty'), // For Google OAuth, credentials can be a string (ID token)
+      z.object({
+        password: z.string().optional(),
+        otp: z.number().optional(),
+        token: z.string().optional(),
+        code: z.string().optional(),
+        accessToken: z.string().optional(),
+        idToken: z.string().optional(),
+      }).passthrough(), // Allow additional fields for OAuth providers
+    ]),
     email: z
       .string()
       .max(254, 'Email address is too long') // RFC 5321 limit

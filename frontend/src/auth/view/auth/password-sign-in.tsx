@@ -65,7 +65,7 @@ interface AuthResponse {
 interface PasswordSignInProps {
   email: string;
   onNextStep?: (response: AuthResponse) => void;
-  onAuthComplete?: () => void;
+  onAuthComplete?: () => void | Promise<void>;
   onForgotPassword: (turnstileToken?: string | null) => void;
   redirectPath?: string;
   sx?: SxProps<Theme>;
@@ -127,7 +127,7 @@ export default function PasswordSignIn({
           await checkUserSession?.();
           // router.refresh();
           if (onAuthComplete) {
-            onAuthComplete();
+            await onAuthComplete();
           } else {
             // Navigate to specified redirect path after successful login
             router.push('/');
