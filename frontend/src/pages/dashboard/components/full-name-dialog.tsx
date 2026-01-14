@@ -28,6 +28,9 @@ import { updateUser, getUserIdFromToken, getUserEmailFromToken } from 'src/secti
 
 import { useAuthContext } from 'src/auth/hooks';
 import { STORAGE_KEY, STORAGE_KEY_REFRESH } from 'src/auth/context/jwt/constant';
+import { getRefreshTokenFromCookie } from 'src/auth/context/jwt/cookie-utils';
+import { setSession } from 'src/auth/context/jwt/utils';
+import { CONFIG } from 'src/config-global';
 
 // Schema for validation
 const ProfileSchema = zod.object({
@@ -112,10 +115,10 @@ export default function FullNameDialog({ open, onClose, onSuccess, onError }: Fu
     };
   }, [showRefreshMessage, refreshCountdown]);
 
-  // Function to refresh the token and reload the page
+  // Function to refresh the page
   const refreshAndReload = async () => {
     try {
-      const refreshToken = localStorage.getItem(STORAGE_KEY_REFRESH);
+      const refreshToken = getRefreshTokenFromCookie();
 
       if (!refreshToken) {
         // If no refresh token, show error and don't proceed
@@ -126,7 +129,7 @@ export default function FullNameDialog({ open, onClose, onSuccess, onError }: Fu
 
       // Get a new access token using the refresh token
       const response = await axios.post(
-        `/api/v1/userAccount/refresh/token`,
+        `${CONFIG.authUrl}/api/v1/userAccount/refresh/token`,
         {},
         {
           headers: {
@@ -135,13 +138,10 @@ export default function FullNameDialog({ open, onClose, onSuccess, onError }: Fu
         }
       );
 
-      // Update the access token in localStorage
+      // Update tokens in cookies and axios headers
       if (response.data && response.data.accessToken) {
-        localStorage.setItem(STORAGE_KEY, response.data.accessToken);
-        // Keep the same refresh token
-
-        // Update axios default headers
-        axios.defaults.headers.common.Authorization = `Bearer ${response.data.accessToken}`;
+        const newRefreshToken = response.data.refreshToken || refreshToken;
+        await setSession(response.data.accessToken, newRefreshToken);
 
         // Reload the page to refresh the application state
         window.location.reload();

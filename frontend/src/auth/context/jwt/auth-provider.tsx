@@ -8,8 +8,8 @@ import axios from 'src/utils/axios';
 import { CONFIG } from 'src/config-global';
 
 import { AuthContext } from '../auth-context';
-import { STORAGE_KEY, STORAGE_KEY_REFRESH } from './constant';
-import { jwtDecode, setSession, isValidToken } from './utils';
+import { setSession, isValidToken, jwtDecode } from './utils';
+import { getAccessTokenFromCookie } from './cookie-utils';
 
 import type { AuthState } from '../../types';
 
@@ -36,11 +36,13 @@ export function AuthProvider({ children }: Props) {
 
   const checkUserSession = useCallback(async () => {
     try {
-      let accessToken = localStorage.getItem(STORAGE_KEY);
-      const refreshToken = localStorage.getItem(STORAGE_KEY_REFRESH);
+      // Get access token from cookie
+      const accessToken = getAccessTokenFromCookie();
+      
       if (accessToken && (await isValidToken(accessToken))) {
-        accessToken = localStorage.getItem(STORAGE_KEY); // isValidToken might change accesstoken
-        setSession(accessToken, refreshToken);
+        // IMPORTANT: Set axios default header
+        axios.defaults.headers.common.Authorization = `Bearer ${accessToken}`;
+        
         const decodedToken = jwtDecode(accessToken);
         const { userId } = decodedToken;
 

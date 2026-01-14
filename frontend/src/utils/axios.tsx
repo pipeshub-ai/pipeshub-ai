@@ -14,7 +14,7 @@ import React, {
 import { Alert, Snackbar } from '@mui/material';
 
 import { CONFIG } from 'src/config-global';
-import { STORAGE_KEY, STORAGE_KEY_REFRESH } from 'src/auth/context/jwt/constant';
+import { clearAuthCookies } from 'src/auth/context/jwt/cookie-utils';
 
 // ----------------------------------------------------------------------
 
@@ -58,7 +58,9 @@ interface ErrorProviderProps {
 }
 
 // Create axios instance with config
-const axiosInstance = axios.create({ baseURL: CONFIG.backendUrl });
+const axiosInstance = axios.create({ 
+  baseURL: CONFIG.backendUrl
+});
 
 // Enhanced error handling in interceptor
 axiosInstance.interceptors.response.use(
@@ -165,8 +167,7 @@ axiosInstance.interceptors.response.use(
             const responseMessage = processedError.message as string;
             // Check for session expired or similar messages
             if (responseMessage === "Session expired, please login again") {
-              localStorage.removeItem(STORAGE_KEY);
-              localStorage.removeItem(STORAGE_KEY_REFRESH);
+              clearAuthCookies();
               // Redirect to login page
               window.location.href = '/auth/sign-in';
             }

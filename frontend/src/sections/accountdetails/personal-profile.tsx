@@ -42,6 +42,8 @@ import { Form, Field } from 'src/components/hook-form';
 import { TurnstileWidget } from 'src/components/turnstile/turnstile-widget';
 
 import { useAuthContext } from 'src/auth/hooks';
+import { setSession } from 'src/auth/context/jwt/utils';
+import { getRefreshTokenFromCookie } from 'src/auth/context/jwt/cookie-utils';
 import { STORAGE_KEY } from 'src/auth/context/jwt';
 import {
   logout,
@@ -359,7 +361,12 @@ export default function PersonalProfile() {
         message: 'Password changed successfully, reloading...',
         severity: 'success',
       });
-      localStorage.setItem(STORAGE_KEY, changePasswordResponse.accessToken);
+      // Store new token in cookie if provided
+      if (changePasswordResponse.accessToken) {
+        // Assuming refresh token is also returned or we keep the existing one
+        const refreshToken = getRefreshTokenFromCookie();
+        setSession(changePasswordResponse.accessToken, refreshToken);
+      }
       setIsChangePasswordOpen(false);
       passwordMethods.reset();
       // Delay before reloading to allow user to see success message
