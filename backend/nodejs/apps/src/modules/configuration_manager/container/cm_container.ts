@@ -8,6 +8,9 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { ConfigService } from '../services/updateConfig.service';
 import { SyncEventProducer } from '../services/kafka_events.service';
+import { checkAndMigrateIfNeeded } from '../../../libs/keyValueStore/migration/kvStoreMigration.service';
+import { StoreType } from '../../../libs/keyValueStore/constants/KeyValueStoreType';
+import { ConfigurationMigrationError } from '../../../libs/errors/config.errors';
 const loggerConfig = {
   service: 'Configuration Manager Service',
 };
@@ -52,6 +55,39 @@ export class ConfigurationManagerContainer {
       container
         .bind<KeyValueStoreService>('KeyValueStoreService')
         .toConstantValue(keyValueStoreService);
+
+      // Check and perform migration from etcd to Redis if needed
+      if (configurationManagerConfig.storeType === StoreType.Redis) {
+        this.logger.info('Checking KV store migration status...');
+        const migrationResult = await checkAndMigrateIfNeeded({
+          etcd: {
+            host: configurationManagerConfig.storeConfig.host,
+            port: configurationManagerConfig.storeConfig.port,
+            dialTimeout: configurationManagerConfig.storeConfig.dialTimeout,
+          },
+          redis: {
+            host: configurationManagerConfig.redisConfig.host,
+            port: configurationManagerConfig.redisConfig.port,
+            password: configurationManagerConfig.redisConfig.password,
+            db: configurationManagerConfig.redisConfig.db,
+            keyPrefix: configurationManagerConfig.redisConfig.keyPrefix,
+          },
+          secretKey: configurationManagerConfig.secretKey,
+          algorithm: configurationManagerConfig.algorithm,
+        });
+
+        if (migrationResult !== null && !migrationResult.success) {
+          this.logger.error('KV store migration failed', {
+            error: migrationResult.error,
+            failedKeys: migrationResult.failedKeys,
+          });
+          throw new ConfigurationMigrationError(
+            migrationResult.error || 'Migration failed',
+            migrationResult.failedKeys,
+          );
+        }
+        this.logger.info('KV store migration check completed');
+      }
 
       const syncEventsService = new SyncEventProducer(
         appConfig.kafka,

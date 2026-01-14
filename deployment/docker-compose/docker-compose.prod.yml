@@ -117,7 +117,10 @@ services:
     environment:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
     command: >
-      ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}
+      sh -c "redis-server
+      --appendonly yes
+      --appendfsync everysec
+      ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}"
     volumes:
       - redis_data:/data
     healthcheck:

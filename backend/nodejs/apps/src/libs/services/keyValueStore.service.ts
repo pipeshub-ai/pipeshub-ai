@@ -7,6 +7,11 @@ import {
   StoreType,
 } from '../keyValueStore/constants/KeyValueStoreType';
 import { ConfigurationManagerConfig } from '../../modules/configuration_manager/config/config';
+import {
+  ConfigurationNotFoundError,
+  ConfigurationInvalidError,
+  ConfigurationMigrationError,
+} from '../errors/config.errors';
 
 export class KeyValueStoreService implements IKVStoreConnection {
   private static instance: KeyValueStoreService;
@@ -37,17 +42,23 @@ export class KeyValueStoreService implements IKVStoreConnection {
    */
   async connect(): Promise<void> {
     try {
-      this.logger.info('Connecting to key-value store');
+      this.logger.info('Connecting to key-value store', { storeType: this.config.storeType });
       const storeType: StoreType = KeyValueStoreType.fromString(
         this.config.storeType,
       );
 
       if (!this.isInitialized) {
+        // Select the appropriate config based on store type
+        const storeConfig =
+          storeType === StoreType.Redis
+            ? this.config.redisConfig
+            : this.config.storeConfig;
+
+        this.logger.info(`Using ${storeType} as key-value store backend`);
+
         this.store = KeyValueStoreFactory.createStore(
           storeType,
-          this.config.storeConfig,
-          // (value: any) => Buffer.from(JSON.stringify(value)),
-          // (buffer: Buffer) => JSON.parse(buffer.toString()),
+          storeConfig,
           (value: any) => Buffer.from(value),
           (buffer: Buffer) => buffer.toString(),
         );
@@ -168,5 +179,90 @@ export class KeyValueStoreService implements IKVStoreConnection {
   async compareAndSet<T>(key: string, expectedValue: T | null, newValue: T): Promise<boolean> {
     await this.ensureConnection();
     return await this.store.compareAndSet(key, expectedValue, newValue);
+  }
+
+  /**
+   * Get a required configuration value, throwing an error if not found.
+   * @param key - The configuration key to retrieve
+   * @param friendlyName - Human-readable name for error messages
+   * @returns The configuration value
+   * @throws ConfigurationNotFoundError if the configuration is not found
+   * @throws ConfigurationInvalidError if the configuration is invalid/corrupted
+   */
+  async getRequired<T>(key: string, friendlyName?: string): Promise<T> {
+    await this.ensureConnection();
+    const displayName = friendlyName || key;
+
+    try {
+      const value = await this.store.getKey(key);
+
+      if (value === null) {
+        this.logger.error(
+          `CONFIGURATION ERROR: Required configuration '${displayName}' not found. ` +
+            'This may indicate missing migration from etcd to Redis or ' +
+            'the configuration was never set. Please reconfigure.',
+        );
+        throw new ConfigurationNotFoundError(
+          key,
+          `Please configure '${displayName}' in the admin panel.`,
+        );
+      }
+
+      return value as T;
+    } catch (error) {
+      if (error instanceof ConfigurationNotFoundError) {
+        throw error;
+      }
+      this.logger.error(
+        `CONFIGURATION ERROR: Failed to read configuration '${displayName}': ${error}. ` +
+          'The configuration may be corrupted. Please reconfigure.',
+      );
+      throw new ConfigurationInvalidError(
+        key,
+        `Failed to read or decrypt configuration: ${error}`,
+      );
+    }
+  }
+
+  /**
+   * Validate that all required configurations exist.
+   * @param requiredKeys - List of configuration keys that must exist
+   * @returns Object mapping keys to their validation status
+   * @throws ConfigurationMigrationError if any required configurations are missing
+   */
+  async validateRequiredConfigs(
+    requiredKeys: string[],
+  ): Promise<Record<string, boolean>> {
+    await this.ensureConnection();
+    const results: Record<string, boolean> = {};
+    const missingKeys: string[] = [];
+
+    for (const key of requiredKeys) {
+      try {
+        const value = await this.store.getKey(key);
+        results[key] = value !== null;
+        if (value === null) {
+          missingKeys.push(key);
+        }
+      } catch (error) {
+        this.logger.error(`Error validating config key ${key}: ${error}`);
+        results[key] = false;
+        missingKeys.push(key);
+      }
+    }
+
+    if (missingKeys.length > 0) {
+      this.logger.error(
+        `CONFIGURATION ERROR: The following required configurations are missing: ${missingKeys.join(', ')}. ` +
+          'This may indicate incomplete migration from etcd to Redis. ' +
+          'Please either run migration or reconfigure these settings.',
+      );
+      throw new ConfigurationMigrationError(
+        'Required configurations are missing',
+        missingKeys,
+      );
+    }
+
+    return results;
   }
 }

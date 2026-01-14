@@ -5,6 +5,7 @@ from app.config.constants.store_type import StoreType
 from app.config.key_value_store import KeyValueStore
 from app.config.providers.etcd.etcd3_store import Etcd3DistributedKeyValueStore
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
+from app.config.providers.redis.redis_store import RedisDistributedKeyValueStore
 from app.utils.logger import create_logger
 
 logger = create_logger("etcd")
@@ -25,6 +26,9 @@ class StoreConfig:
     cert_key: Optional[str] = None
     cert_cert: Optional[str] = None
     additional_options: Dict[str, Any] = None
+    # Redis-specific options
+    db: int = 0
+    key_prefix: str = "kv:"
 
 
 class KeyValueStoreFactory:
@@ -83,6 +87,13 @@ class KeyValueStoreFactory:
                 logger.debug("🔄 Creating in-memory store")
                 store = KeyValueStoreFactory._create_in_memory_store()
                 logger.debug("✅ In-memory store created successfully")
+                return store
+            elif store_type == StoreType.REDIS:
+                logger.debug("🔄 Creating Redis store")
+                store = KeyValueStoreFactory._create_redis_store(
+                    serializer, deserializer, config
+                )
+                logger.debug("✅ Redis store created successfully")
                 return store
             else:
                 logger.error("❌ Unsupported store type: %s", store_type)
@@ -143,4 +154,45 @@ class KeyValueStoreFactory:
         logger.debug("🔄 Creating in-memory store instance")
         store = InMemoryKeyValueStore[T]()
         logger.debug("✅ In-memory store instance created successfully")
+        return store
+
+    @staticmethod
+    def _create_redis_store(
+        serializer: Optional[Callable[[T], bytes]],
+        deserializer: Optional[Callable[[bytes], T]],
+        config: StoreConfig,
+    ) -> RedisDistributedKeyValueStore[T]:
+        """Create a Redis store instance with validation."""
+        logger.debug("🔄 Validating Redis store requirements")
+
+        if not serializer or not deserializer:
+            logger.error("❌ Missing serializer or deserializer")
+            logger.debug("📋 Validation details:")
+            logger.debug("   - Serializer present: %s", serializer is not None)
+            logger.debug("   - Deserializer present: %s", deserializer is not None)
+            raise ValueError(
+                "Serializer and deserializer functions must be provided for Redis store."
+            )
+
+        # Validate serializer/deserializer types
+        logger.debug("🔍 Checking serializer/deserializer types")
+        if not callable(serializer) or not callable(deserializer):
+            logger.error("❌ Invalid serializer or deserializer type")
+            logger.debug("📋 Type details:")
+            logger.debug("   - Serializer type: %s", type(serializer))
+            logger.debug("   - Deserializer type: %s", type(deserializer))
+            raise TypeError("Serializer and deserializer must be callable functions")
+
+        logger.debug("🔄 Creating Redis store instance")
+        store = RedisDistributedKeyValueStore[T](
+            serializer=serializer,
+            deserializer=deserializer,
+            host=config.host,
+            port=config.port,
+            password=config.password,
+            db=config.db,
+            key_prefix=config.key_prefix,
+            connect_timeout=config.timeout,
+        )
+        logger.debug("✅ Redis store instance created successfully")
         return store

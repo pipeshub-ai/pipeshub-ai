@@ -2,7 +2,7 @@ from dependency_injector import containers, providers  # type: ignore
 from dotenv import load_dotenv  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
-from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
+from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
 from app.utils.logger import create_logger
@@ -18,7 +18,7 @@ class DoclingAppContainer(BaseAppContainer):
     container_utils = ContainerUtils()
 
     # Override config_service to use the service-specific logger
-    key_value_store = providers.Singleton(Etcd3EncryptedKeyValueStore, logger=logger)
+    key_value_store = providers.Singleton(EncryptedKeyValueStore, logger=logger)
     config_service = providers.Singleton(ConfigurationService, logger=logger, key_value_store=key_value_store)
 
     # Docling-specific wiring configuration
@@ -38,6 +38,12 @@ async def initialize_container(container: DoclingAppContainer) -> bool:
     logger.info("🚀 Initializing Docling service resources")
 
     try:
+        # Check and perform migration from etcd to Redis if needed
+        logger.info("Checking KV store migration status...")
+        key_value_store: EncryptedKeyValueStore = container.key_value_store()
+        await key_value_store.ensure_migrated()
+        logger.info("✅ KV store migration check completed")
+
         # For Docling service, we mainly need configuration and logging
         # No database connections required for the Docling service itself
         logger.info("✅ Docling service configuration initialized")
