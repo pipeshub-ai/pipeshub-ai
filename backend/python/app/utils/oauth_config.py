@@ -19,6 +19,16 @@ def get_oauth_config(auth_config: dict) -> OAuthConfig:
         oauth_config.token_access_type = auth_config.get('tokenAccessType')
     if auth_config.get('additionalParams'):
         oauth_config.additional_params = auth_config.get('additionalParams')
+    else:
+        oauth_config.additional_params = {}
+
+    # Check if this is Notion OAuth (by checking token_url)
+    # Notion requires Basic Auth with JSON body
+    token_url = auth_config.get('tokenUrl', '').lower()
+    if 'notion.com' in token_url or 'notion' in token_url:
+        oauth_config.additional_params["use_basic_auth"] = True
+        oauth_config.additional_params["use_json_body"] = True
+        oauth_config.additional_params["notion_version"] = "2025-09-03"
 
     return oauth_config
 

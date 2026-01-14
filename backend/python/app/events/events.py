@@ -1,4 +1,5 @@
 import hashlib
+import json
 from typing import Any, AsyncGenerator, Dict
 from uuid import uuid4
 
@@ -80,7 +81,10 @@ class EventProcessor:
         record_type = doc.get("recordType")
 
         if md5_checksum is None and content:
-            if isinstance(content, str):
+            if isinstance(content, dict):
+                # For structured content like BlocksContainer, convert to JSON string
+                content = json.dumps(content, sort_keys=True).encode('utf-8')
+            elif isinstance(content, str):
                 content = content.encode('utf-8')
             md5_checksum = hashlib.md5(content).hexdigest()
             doc.update({"md5Checksum": md5_checksum})
@@ -347,6 +351,19 @@ class EventProcessor:
                     origin=origin
                 ):
                     yield event
+                return
+
+            if mime_type == MimeTypes.BLOCKS.value:
+                self.logger.info("🚀 Processing Blocks Container")
+                await self.processor.process_blocks(
+                    recordName=record_name,
+                    recordId=record_id,
+                    version=record_version,
+                    source=connector,
+                    orgId=org_id,
+                    blocks_data=file_content,
+                    virtual_record_id=virtual_record_id,
+                )
                 return
 
             if extension == ExtensionTypes.PDF.value or mime_type == MimeTypes.PDF.value:

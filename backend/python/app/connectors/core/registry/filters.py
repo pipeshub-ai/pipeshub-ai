@@ -259,6 +259,7 @@ class IndexingFilterKey(str, Enum):
 
     # Content types
     PAGES = "pages"
+    DATABASES = "databases"
     BLOGPOSTS = "blogposts"
     FILES = "files"
     DOCUMENTS = "documents"
