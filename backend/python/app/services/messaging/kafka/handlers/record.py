@@ -482,7 +482,7 @@ class RecordEventHandler(BaseEventService):
             connect=120,  # 2 minutes for initial connection
             sock_read=1200,  # 20 minutes per chunk read
         )
-        
+
         headers = {}
 
         if self.config_service and from_route:
@@ -498,7 +498,7 @@ class RecordEventHandler(BaseEventService):
                     self.logger.debug(f"Generated JWT token for downloading signed URL for record {record_id}")
             except Exception as e:
                 self.logger.warning(f"Failed to generate JWT token for signed URL download: {e}")
-        
+
         for attempt in range(max_retries):
             delay = base_delay * (2**attempt)  # Exponential backoff
             file_buffer = BytesIO()
