@@ -4,7 +4,7 @@
 class ConfigurationError(Exception):
     """Base class for configuration-related errors."""
 
-    def __init__(self, message: str, config_key: str = None):
+    def __init__(self, message: str, config_key: str = None) -> None:
         self.message = message
         self.config_key = config_key
         super().__init__(self.message)
@@ -21,7 +21,7 @@ class ConfigurationError(Exception):
 class ConfigurationNotFoundError(ConfigurationError):
     """Raised when required configuration is not found in the KV store."""
 
-    def __init__(self, config_key: str, suggestion: str = None):
+    def __init__(self, config_key: str, suggestion: str = None) -> None:
         self.suggestion = suggestion or "Please reconfigure this setting in the admin panel."
         message = (
             f"Configuration not found for key '{config_key}'. "
@@ -44,7 +44,7 @@ class ConfigurationNotFoundError(ConfigurationError):
 class ConfigurationMigrationError(ConfigurationError):
     """Raised when migration from etcd to Redis fails or is incomplete."""
 
-    def __init__(self, message: str, failed_keys: list = None):
+    def __init__(self, message: str, failed_keys: list = None) -> None:
         self.failed_keys = failed_keys or []
         full_message = (
             f"Configuration migration error: {message}. "
@@ -65,7 +65,7 @@ class ConfigurationMigrationError(ConfigurationError):
 class ConfigurationInvalidError(ConfigurationError):
     """Raised when configuration value is invalid or corrupted."""
 
-    def __init__(self, config_key: str, reason: str = None):
+    def __init__(self, config_key: str, reason: str = None) -> None:
         self.reason = reason or "The configuration value is invalid or corrupted."
         message = (
             f"Invalid configuration for key '{config_key}'. {self.reason} "

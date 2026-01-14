@@ -21,9 +21,6 @@ dotenv.load_dotenv()
 
 T = TypeVar("T")
 
-# Track if migration has been checked (singleton pattern for migration)
-_migration_checked = False
-
 
 class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
     """
@@ -33,6 +30,9 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
     - 'redis': Uses Redis as the backend
     - 'etcd': Uses etcd as the backend (default)
     """
+
+    # Track if migration has been checked (class-level singleton pattern)
+    _migration_checked: bool = False
 
     def __init__(
         self,
@@ -78,15 +78,13 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         Raises:
             ConfigurationMigrationError: If migration fails or data is missing
         """
-        global _migration_checked
-
         # Only check migration once per application lifecycle
-        if _migration_checked:
+        if EncryptedKeyValueStore._migration_checked:
             return
 
         # Only need to check migration when using Redis
         if self._store_type_str != "redis":
-            _migration_checked = True
+            EncryptedKeyValueStore._migration_checked = True
             return
 
         self.logger.info("Checking if etcd to Redis migration is needed...")
@@ -96,7 +94,7 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         if result is None:
             # Redis already has data, no migration needed
             self.logger.info("Redis already has configuration data. No migration needed.")
-            _migration_checked = True
+            EncryptedKeyValueStore._migration_checked = True
             return
 
         if result.success:
@@ -104,7 +102,7 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                 "Migration completed successfully. Migrated %d keys.",
                 len(result.migrated_keys),
             )
-            _migration_checked = True
+            EncryptedKeyValueStore._migration_checked = True
             return
 
         # Migration failed or no data available
