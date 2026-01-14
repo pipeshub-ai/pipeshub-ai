@@ -141,16 +141,10 @@ export const sendOtp = async ({ email }: GetOtpParams): Promise<void> => {
 
 export const VerifyOtp = async ({ email, otp }: SignInOtpParams): Promise<AuthResponse> => {
   try {
-    // Convert OTP string to number for backend validation
-    const otpNumber = parseInt(otp, 10);
-    if (isNaN(otpNumber)) {
-      throw new Error('Invalid OTP format');
-    }
-
     const requestBody = {
       email,
       method: 'otp',
-      credentials: { otp: otpNumber },
+      credentials: { otp },
     };
 
     const res = await axios.post(`${CONFIG.authUrl}/api/v1/userAccount/authenticate`, requestBody);

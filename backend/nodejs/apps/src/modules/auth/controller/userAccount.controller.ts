@@ -113,8 +113,10 @@ export class UserAccountController {
       throw new GoneError('OTP has expired. Please request a new one.');
     }
 
+    // Ensure OTP is a string for bcrypt.compare (bcrypt requires both arguments to be strings)
+    const otpString = String(inputOTP);
     const isMatching = await bcrypt.compare(
-      inputOTP,
+      otpString,
       userCredentials.hashedOTP,
     );
     this.logger.debug('isMatching', isMatching);
@@ -1010,7 +1012,7 @@ export class UserAccountController {
 
   async authenticateWithOtp(
     user: Record<string, any>,
-    otp: Number,
+    otp: string,
     ip: string,
   ) {
     const result = await this.verifyOTP(

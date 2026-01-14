@@ -74,7 +74,7 @@ export function createUserAccountRouter(container: Container) {
       z.string().min(1, 'Credentials cannot be empty'), // For Google OAuth, credentials can be a string (ID token)
       z.object({
         password: z.string().optional(),
-        otp: z.number().optional(),
+        otp: z.string().optional(),
         token: z.string().optional(),
         code: z.string().optional(),
         accessToken: z.string().optional(),
