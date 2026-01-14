@@ -3,7 +3,7 @@ import json
 import os
 from typing import Callable, Dict, Generic, List, Optional, TypeVar, Union
 
-import dotenv
+import dotenv  # type: ignore
 
 from app.config.constants.service import config_node_constants
 from app.config.constants.store_type import StoreType
@@ -59,7 +59,7 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         self.logger.debug("KeyValueStore initialized successfully")
 
     @property
-    def client(self):
+    def client(self) -> object:
         """Expose the underlying client for watchers and diagnostics."""
         return getattr(self.store, "client", None)
 

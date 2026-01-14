@@ -2,6 +2,7 @@ import { Redis } from 'ioredis';
 import { DistributedKeyValueStore } from '../keyValueStore';
 import { KeyAlreadyExistsError, KeyNotFoundError } from '../../errors/etcd.errors';
 import { RedisConfig } from '../../types/redis.types';
+import { Logger } from '../../services/logger.service';
 
 export interface RedisStoreConfig extends RedisConfig {
   keyPrefix?: string;
@@ -129,7 +130,7 @@ export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStor
           callback(value);
         } catch (error) {
           // Log error but don't throw to avoid breaking other watchers
-          console.error(`Error in watcher callback for key ${key}:`, error);
+          Logger.getInstance().error(`Error in watcher callback for key ${key}:`, error);
         }
       }
     }

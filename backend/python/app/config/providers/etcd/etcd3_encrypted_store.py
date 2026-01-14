@@ -57,8 +57,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
     @property
     def client(self) -> Optional[etcd3.client]:
         """Expose the underlying ETCD client for watchers and diagnostics."""
-
-        return getattr(self.store, "client", None)
+        return self.store.client
 
 
     def _create_store(self) -> Etcd3DistributedKeyValueStore:

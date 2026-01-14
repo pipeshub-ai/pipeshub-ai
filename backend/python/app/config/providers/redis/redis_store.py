@@ -2,7 +2,8 @@ import asyncio
 import json
 from typing import Callable, Generic, List, Optional, TypeVar
 
-import redis.asyncio as redis
+import redis.asyncio as redis  # type: ignore
+
 from app.config.key_value_store import KeyValueStore
 from app.utils.logger import create_logger
 
@@ -83,6 +84,12 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             )
 
         logger.debug("Redis store initialized")
+
+    @property
+    def client(self) -> Optional[redis.Redis]:
+        """Expose the underlying Redis client for watchers and diagnostics."""
+
+        return self.client
 
     def _build_key(self, key: str) -> str:
         """Build the full Redis key with prefix."""
