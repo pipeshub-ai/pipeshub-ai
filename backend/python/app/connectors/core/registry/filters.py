@@ -233,6 +233,7 @@ class SyncFilterKey(str, Enum):
     FILE_EXTENSIONS = "file_extensions"
     MAX_FILE_SIZE = "max_file_size"
     PAGE_IDS = "page_ids"
+    DOCUMENT_LIBRARY_IDS = "document_library_ids"
     PAGE_NAMES = "page_names"
     BLOGPOST_IDS = "blogpost_ids"
 
