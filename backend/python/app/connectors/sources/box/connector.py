@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
 
-from aiohttp import ClientSession
 from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -62,8 +61,8 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.box.box import (
+    BoxCCGConfig,
     BoxClient,
-    BoxTokenConfig,
 )
 from app.sources.external.box.box import BoxDataSource
 from app.utils.streaming import create_stream_record_response, stream_content
@@ -219,11 +218,8 @@ class BoxConnector(BaseConnector):
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
 
-        # Track the current access token to detect changes
-        self._current_access_token: Optional[str] = None
-
     async def init(self) -> bool:
-        """Initializes the Box client using credentials from the config service."""
+        """Initializes the Box client using CCG authentication."""
         config = await self.config_service.get_config(
             f"/services/connectors/{self.connector_id}/config"
         )
@@ -238,7 +234,6 @@ class BoxConnector(BaseConnector):
 
         client_id = auth_config.get("clientId")
         client_secret = auth_config.get("clientSecret")
-        # Extract enterprise_id from auth config
         enterprise_id = auth_config.get("enterpriseId")
 
         if not client_id or not client_secret or not enterprise_id:
@@ -246,124 +241,21 @@ class BoxConnector(BaseConnector):
             return False
 
         try:
-            # Check if we already have credentials (OAuth flow)
-            credentials_config = config.get("credentials", {}) or {}
-            access_token = credentials_config.get("access_token")
-
-            # If no stored access token, attempt to get one via HTTP API call
-            if not access_token:
-                self.logger.info("No stored access token found. Attempting to fetch via HTTP API...")
-                # Pass enterprise_id to the fetch method
-                access_token = await self._fetch_access_token_via_http(client_id, client_secret, enterprise_id)
-
-                if not access_token:
-                    self.logger.error("Failed to fetch access token via HTTP API.")
-                    return False
-
-            # Initialize Box client with the access token
-            config_obj = BoxTokenConfig(token=access_token)
+            # Use CCG authentication - SDK handles token refresh automatically
+            config_obj = BoxCCGConfig(
+                client_id=client_id,
+                client_secret=client_secret,
+                enterprise_id=enterprise_id
+            )
             client = await BoxClient.build_with_config(config_obj)
             await client.get_client().create_client()
             self.data_source = BoxDataSource(client)
 
-            # Store the initial token
-            self._current_access_token = access_token
-
-            self.logger.info("Box client initialized successfully.")
+            self.logger.info(f"Box CCG client initialized successfully for enterprise {enterprise_id}")
             return True
         except Exception as e:
-            self.logger.error(f"Failed to initialize Box client: {e}", exc_info=True)
+            self.logger.error(f"Failed to initialize Box CCG client: {e}", exc_info=True)
             return False
-
-    async def _fetch_access_token_via_http(self, client_id: str, client_secret: str, enterprise_id: str) -> Optional[str]:
-        """
-        Fetch access token from Box API using client credentials.
-        Args:
-            client_id: Box application client ID
-            client_secret: Box application client secret
-            enterprise_id: Box Enterprise ID for subject_id
-        Returns:
-            Access token string or None if failed
-        """
-        token_url = f"{self.BASE_URL}{self.TOKEN_ENDPOINT}"
-
-        try:
-            async with ClientSession() as session:
-                # Prepare request data for OAuth token exchange
-                data = {
-                    "grant_type": "client_credentials",
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "box_subject_type": "enterprise",
-                    "box_subject_id": enterprise_id
-                }
-
-                self.logger.info(f"Fetching access token from {token_url}")
-
-                async with session.post(token_url, data=data) as response:
-                    if response.status != self.HTTP_OK:
-                        error_text = await response.text()
-                        self.logger.error(
-                            f"Failed to fetch access token. Status: {response.status}, "
-                            f"Response: {error_text}"
-                        )
-                        return None
-
-                    token_data = await response.json()
-                    access_token = token_data.get("access_token")
-                    return access_token
-
-
-        except Exception as e:
-            self.logger.error(f"Error fetching access token via HTTP: {e}", exc_info=True)
-            return None
-
-    async def _get_fresh_datasource(self) -> None:
-        """
-        Ensures self.data_source is using an ALWAYS-FRESH access token.
-        It checks the central config and rebuilds the client if the token has changed.
-        """
-        try:
-            # 1. Fetch current config from configuration service
-            config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
-
-            if not config:
-                self.logger.warning("Could not fetch Box config for token refresh check.")
-                return
-
-            # 2. Extract fresh OAuth access token
-            credentials_config = config.get("credentials", {}) or {}
-            fresh_token = credentials_config.get("access_token", "")
-
-            if not fresh_token:
-                self.logger.warning("No OAuth access token found in config refresh check.")
-                return
-
-            # 3. Compare with existing token
-            if self._current_access_token != fresh_token:
-                self.logger.info("🔄 Detected new Box Access Token. Re-initializing client...")
-
-                # 4. Re-initialize the client with the new token
-                config_obj = BoxTokenConfig(token=fresh_token)
-                client = await BoxClient.build_with_config(config_obj)
-
-                # Create the internal client instance
-                await client.get_client().create_client()
-
-                # 5. Update the datasource and the tracker
-                self.data_source = BoxDataSource(client)
-                self._current_access_token = fresh_token
-
-                # 6. Clear any cached user ID to force re-fetch with new token
-                self.current_user_id = None
-
-                self.logger.info("✅ Box client successfully updated with fresh token.")
-            else:
-                self.logger.debug("Token unchanged, skipping client refresh.")
-
-        except Exception as e:
-            # Log error but don't crash; attempt to proceed with existing token
-            self.logger.error(f"Error checking for fresh datasource: {e}", exc_info=True)
 
     def _parse_box_timestamp(self, ts_str: Optional[str], field_name: str, entry_name: str) -> int:
         """Helper to parse Box timestamps safely."""
@@ -1037,21 +929,6 @@ class BoxConnector(BaseConnector):
             pass
 
         while True:
-            # 1. Capture the current datasource instance before checking for updates
-            previous_datasource = self.data_source
-
-            await self._get_fresh_datasource()
-
-            # 2. If the datasource was replaced (token refresh), re-apply the user context!
-            if self.data_source != previous_datasource:
-                try:
-                    if self.current_user_id and user.source_user_id != self.current_user_id:
-                        self.logger.info(f"🔄 Token refreshed. Re-applying As-User context for {user.email}")
-                        await self.data_source.set_as_user_context(user.source_user_id)
-                    else:
-                        await self.data_source.clear_as_user_context()
-                except Exception as e:
-                    self.logger.error(f"Failed to re-apply As-User context after refresh: {e}")
 
             async with self.rate_limiter:
                 response = await self.data_source.folders_get_folder_items(
@@ -1218,8 +1095,6 @@ class BoxConnector(BaseConnector):
 
             # ANCHOR THE STREAM
             try:
-                await self._get_fresh_datasource()
-
                 # Get current position ('now')
                 response = await self.data_source.events_get_events(
                     stream_type='admin_logs_streaming',
@@ -1305,8 +1180,6 @@ class BoxConnector(BaseConnector):
 
         try:
             while has_more:
-                await self._get_fresh_datasource()
-
                 self.logger.info(f"📡 [Incremental] Polling Box events from pos: {stream_position}")
 
                 response = await self.data_source.events_get_events(
