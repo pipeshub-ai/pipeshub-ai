@@ -884,10 +884,6 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 next_page_token = changes_response.get("nextPageToken")
                 new_start_page_token = changes_response.get("newStartPageToken")
 
-                # Get next page token
-                next_page_token = changes_response.get("nextPageToken")
-                new_start_page_token = changes_response.get("newStartPageToken")
-
                 if next_page_token:
                     # More pages to fetch
                     current_page_token = next_page_token

@@ -904,10 +904,10 @@ async def download_file(
 
                 if connector.get_app_name() == Connectors.GOOGLE_DRIVE:
                     buffer = await connector.stream_record(record, user_id)
-                    return buffer
                 else:
                     buffer = await connector.stream_record(record)
-                    return buffer
+                
+                return buffer
 
         except Exception as e:
             logger.error(f"Error downloading file: {str(e)}")
@@ -1415,10 +1415,10 @@ async def stream_record(
                 # Pass user_id for google drive
                 if connector.get_app_name() == Connectors.GOOGLE_DRIVE:
                     buffer = await connector.stream_record(record, user_id)
-                    return buffer
                 else:
                     buffer = await connector.stream_record(record)
-                    return buffer
+
+                return buffer
         except Exception as e:
             logger.error(f"Error downloading file: {str(e)}")
             raise HTTPException(
