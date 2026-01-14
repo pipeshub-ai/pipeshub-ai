@@ -47,8 +47,14 @@ import {
 import type { SnackbarState } from './types/organization-data';
 
 const ProfileSchema = zod.object({
-  registeredName: zod.string().min(1, { message: 'Name is required' }),
-  shortName: zod.string().optional(),
+  registeredName: zod.string().min(1, { message: 'Name is required' }).refine(
+    (val) => !val || !/[<>]/.test(val),
+    'Name cannot contain HTML tags'
+  ),
+  shortName: zod.string().optional().refine(
+    (val) => !val || !/[<>]/.test(val),
+    'Short name cannot contain HTML tags'
+  ),
   contactEmail: zod
     .string()
     .email({ message: 'Invalid email' })
@@ -250,9 +256,23 @@ export default function CompanyProfile() {
       setUploading(true);
       const orgId = await getOrgIdFromToken();
       await uploadOrgLogo(formData);
-      setSnackbar({ open: true, message: 'Logo updated successfully!', severity: 'success' });
+      
+      // Fetch the processed logo from server (with EXIF metadata stripped) instead of using original file
+      try {
+        const processedLogoUrl = await getOrgLogo(orgId);
+        setLogo(processedLogoUrl);
+        setSnackbar({ open: true, message: 'Logo updated successfully!', severity: 'success' });
+      } catch (fetchErr) {
+        // Upload succeeded but fetching failed - show warning but don't fail completely
+        setSnackbar({
+          open: true,
+          message: 'Logo uploaded successfully, but failed to refresh. Please refresh the page.',
+          severity: 'warning',
+        });
+        // Fallback to original file preview (user can refresh to see processed version)
+        setLogo(URL.createObjectURL(file));
+      }
       setUploading(false);
-      setLogo(URL.createObjectURL(file));
     } catch (err) {
       setError('Failed to upload logo');
       // setSnackbar({ open: true, message: 'Failed to upload logo', severity: 'error' });

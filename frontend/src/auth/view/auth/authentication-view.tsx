@@ -388,7 +388,7 @@ export const AuthenticationView = () => {
     componentMountRef.current = false;
   };
 
-  const handleForgotPassword = () => {
+  const handleForgotPassword = (turnstileToken?: string | null) => {
     // Make sure we have an email address
     if (!emailFromStore) {
       setError('Email address is required to reset password.');
@@ -401,7 +401,7 @@ export const AuthenticationView = () => {
     // Use the withErrorHandling wrapper for consistent error processing
     withErrorHandling(
       async () => {
-        await forgotPassword({ email: emailFromStore });
+        await forgotPassword({ email: emailFromStore, turnstileToken });
 
         // Show success message
         setSnackbar({

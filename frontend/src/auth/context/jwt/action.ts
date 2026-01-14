@@ -10,6 +10,7 @@ import { setSession, setSessionToken } from './utils';
 export type SignInParams = {
   email: string;
   password: string;
+  turnstileToken?: string | null;
 };
 
 export type SignUpParams = {
@@ -39,6 +40,7 @@ export interface AccountSetupParams {
 
 type ForgotPasswordParams = {
   email: string;
+  turnstileToken?: string | null;
 };
 
 type GetOtpParams = {
@@ -110,9 +112,12 @@ export const OrgExists = async (): Promise<orgExistsReponse> => {
  * Forgot Password
  *************************************** */
 
-export const forgotPassword = async ({ email }: ForgotPasswordParams): Promise<void> => {
+export const forgotPassword = async ({ email, turnstileToken }: ForgotPasswordParams): Promise<void> => {
   try {
-    const params = { email };
+    const params = { 
+      email,
+      ...(turnstileToken && { 'cf-turnstile-response': turnstileToken })
+    };
     await axios.post(`${CONFIG.authUrl}/api/v1/userAccount/password/forgot`, params);
   } catch (error) {
     throw new Error('error in sending mail to reset password', error);
@@ -189,12 +194,14 @@ export const authInitConfig = async (email: string): Promise<AuthInitResponse> =
 export const signInWithPassword = async ({
   email,
   password,
+  turnstileToken,
 }: SignInParams): Promise<AuthResponse> => {
   try {
     const requestBody = {
       email,
       method: 'password',
       credentials: { password },
+      ...(turnstileToken && { 'cf-turnstile-response': turnstileToken })
     };
 
     const res = await axios.post(`${CONFIG.authUrl}/api/v1/userAccount/authenticate`, requestBody);

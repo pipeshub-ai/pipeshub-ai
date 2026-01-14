@@ -4,7 +4,7 @@ import axios from 'src/utils/axios';
 import { CONFIG } from 'src/config-global';
 import { UnifiedPermission } from 'src/components/permissions/UnifiedPermissionsDialog';
 
-import { getConnectorPublicUrl } from 'src/sections/accountdetails/account-settings/services/utils/services-configuration-service';
+import { ConnectorApiService } from 'src/sections/accountdetails/connectors/services/api';
 import type {
   Item,
   KBPermission,
@@ -109,7 +109,7 @@ export class KnowledgeBaseAPI {
     fileName: string
   ): Promise<void> {
     try {
-      const publicConnectorUrlResponse = await getConnectorPublicUrl();
+      const publicConnectorUrlResponse = await ConnectorApiService.getConnectorPublicUrl();
       let connectorResponse;
 
       if (publicConnectorUrlResponse && publicConnectorUrlResponse.url) {

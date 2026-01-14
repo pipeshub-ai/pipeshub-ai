@@ -33,32 +33,49 @@ import {
 
 import { useAdmin } from 'src/context/AdminContext';
 
+import { CONFIG } from 'src/config-global';
+
+import { useTurnstile } from 'src/hooks/use-turnstile';
+
 import { Iconify } from 'src/components/iconify';
 import { Form, Field } from 'src/components/hook-form';
+import { TurnstileWidget } from 'src/components/turnstile/turnstile-widget';
 
 import { useAuthContext } from 'src/auth/hooks';
-
+import { STORAGE_KEY } from 'src/auth/context/jwt';
 import {
   logout,
   updateUser,
   getUserById,
   deleteUserLogo,
   uploadUserLogo,
+  getUserLogo,
   changePassword,
   getUserIdFromToken,
   getUserEmailFromToken,
   getDataCollectionConsent,
   updateDataCollectionConsent,
 } from './utils';
-
 import type { SnackbarState } from './types/organization-data';
 
 const ProfileSchema = zod.object({
-  fullName: zod.string().min(1, { message: 'Full Name is required' }),
-  firstName: zod.string().optional(),
-  lastName: zod.string().optional(),
+  fullName: zod.string().min(1, { message: 'Full Name is required' }).refine(
+    (val) => !val || !/[<>]/.test(val),
+    'Full name cannot contain HTML tags'
+  ),
+  firstName: zod.string().optional().refine(
+    (val) => !val || !/[<>]/.test(val),
+    'First name cannot contain HTML tags'
+  ),
+  lastName: zod.string().optional().refine(
+    (val) => !val || !/[<>]/.test(val),
+    'Last name cannot contain HTML tags'
+  ),
   email: zod.string().email({ message: 'Invalid email' }).min(1, { message: 'Email is required' }),
-  designation: zod.string().optional(),
+  designation: zod.string().optional().refine(
+    (val) => !val || !/[<>]/.test(val),
+    'Designation cannot contain HTML tags'
+  ),
   dataCollectionConsent: zod.boolean().optional(),
 });
 
@@ -108,6 +125,15 @@ export default function PersonalProfile() {
     current: false,
     new: false,
   });
+  
+  // Turnstile hook for change password
+  const { 
+    turnstileToken, 
+    handleSuccess: handleTurnstileSuccess, 
+    handleError: handleTurnstileError, 
+    handleExpire: handleTurnstileExpire,
+    resetTurnstile 
+  } = useTurnstile();
 
   const methods = useForm<ProfileFormData>({
     resolver: zodResolver(ProfileSchema),
@@ -296,9 +322,23 @@ export default function PersonalProfile() {
       setUploading(true);
       const userId = await getUserIdFromToken();
       await uploadUserLogo(userId, formData);
-      setSnackbar({ open: true, message: 'Photo updated successfully', severity: 'success' });
+      
+      // Fetch the processed logo from server (with EXIF metadata stripped) instead of using original file
+      try {
+        const processedLogoUrl = await getUserLogo(userId);
+        setLogo(processedLogoUrl);
+        setSnackbar({ open: true, message: 'Photo updated successfully', severity: 'success' });
+      } catch (fetchErr) {
+        // Upload succeeded but fetching failed - show warning but don't fail completely
+        setSnackbar({
+          open: true,
+          message: 'Photo uploaded successfully, but failed to refresh. Please refresh the page.',
+          severity: 'warning',
+        });
+        // Fallback to original file preview (user can refresh to see processed version)
+        setLogo(URL.createObjectURL(file));
+      }
       setUploading(false);
-      setLogo(URL.createObjectURL(file));
     } catch (err) {
       setError('Failed to upload photo');
       setUploading(false);
@@ -307,19 +347,34 @@ export default function PersonalProfile() {
 
   const handleChangePassword = async (data: PasswordFormData): Promise<void> => {
     try {
-      await changePassword({
+      const changePasswordResponse = await changePassword({
         currentPassword: data.currentPassword,
         newPassword: data.newPassword,
+        ...(turnstileToken && { 'cf-turnstile-response': turnstileToken })
       });
+      
+      // await changePassword(payload);
       setSnackbar({
         open: true,
-        message: 'Password changed successfully',
+        message: 'Password changed successfully, reloading...',
         severity: 'success',
       });
+      localStorage.setItem(STORAGE_KEY, changePasswordResponse.accessToken);
       setIsChangePasswordOpen(false);
       passwordMethods.reset();
+      // Delay before reloading to allow user to see success message
+      setTimeout(() => {
+        window.location.reload();
+      }, 1000);
+
+      resetTurnstile(); // Reset turnstile after successful submission
     } catch (err) {
       // Error handling
+      setSnackbar({
+        open: true,
+        message: 'Failed to change password. Please try again.',
+        severity: 'error',
+      });
     }
   };
 
@@ -327,6 +382,7 @@ export default function PersonalProfile() {
     setIsChangePasswordOpen(false);
     setPasswordVisibility({ current: false, new: false }); // Reset all visibilities
     passwordMethods.reset(); // Clear all form fields
+    resetTurnstile(); // Reset turnstile when closing dialog
   };
 
   if (loading) {
@@ -911,6 +967,19 @@ export default function PersonalProfile() {
                 }}
               />
             </Box>
+            
+            {/* Turnstile widget */}
+            {CONFIG.turnstileSiteKey && (
+              <Box sx={{ mt: 2, mb: 1 }}>
+                <TurnstileWidget
+                  siteKey={CONFIG.turnstileSiteKey}
+                  onSuccess={handleTurnstileSuccess}
+                  onError={handleTurnstileError}
+                  onExpire={handleTurnstileExpire}
+                  size="normal"
+                />
+              </Box>
+            )}
           </DialogContent>
           <DialogActions sx={{ px: 2.5, pb: 2, pt: 1 }}>
             <Button
@@ -928,7 +997,7 @@ export default function PersonalProfile() {
               variant="contained"
               color="primary"
               size="small"
-              disabled={!passwordMethods.formState.isValid}
+              disabled={!passwordMethods.formState.isValid || !!(CONFIG.turnstileSiteKey && !turnstileToken)}
               sx={{
                 textTransform: 'none',
                 borderRadius: 0.75,
@@ -941,7 +1010,7 @@ export default function PersonalProfile() {
                 },
               }}
             >
-              Update password
+              {CONFIG.turnstileSiteKey && !turnstileToken ? 'Please complete verification' : 'Update password'}
             </Button>
           </DialogActions>
         </Form>

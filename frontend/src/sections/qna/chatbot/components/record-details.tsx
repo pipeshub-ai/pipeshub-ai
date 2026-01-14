@@ -37,8 +37,8 @@ import axios from 'src/utils/axios';
 import { CONFIG } from 'src/config-global';
 
 import { ORIGIN } from 'src/sections/knowledgebase/constants/knowledge-search';
-import { getConnectorPublicUrl } from 'src/sections/accountdetails/account-settings/services/utils/services-configuration-service';
 import { useConnectors } from 'src/sections/accountdetails/connectors/context';
+import { ConnectorApiService } from 'src/sections/accountdetails/connectors/services/api';
 
 import PDFViewer from './pdf-viewer';
 
@@ -249,7 +249,7 @@ const RecordDetails = ({ recordId, onExternalLink }: RecordDetailsProps) => {
       }
     } else if (record?.origin === ORIGIN.CONNECTOR) {
       try {
-        const publicConnectorUrlResponse = await getConnectorPublicUrl();
+        const publicConnectorUrlResponse = await ConnectorApiService.getConnectorPublicUrl();
         let response;
         if (publicConnectorUrlResponse && publicConnectorUrlResponse.url) {
           const CONNECTOR_URL = publicConnectorUrlResponse.url;
@@ -390,7 +390,7 @@ const RecordDetails = ({ recordId, onExternalLink }: RecordDetailsProps) => {
 
   const { record, metadata } = recordData;
 
-  let webUrl = record.fileRecord?.webUrl || record.mailRecord?.webUrl;
+  let webUrl = record.fileRecord?.webUrl || record.mailRecord?.webUrl || record.webUrl;
   if (record.origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
     const baseUrl = `${window.location.protocol}//${window.location.host}`;
     const newWebUrl = baseUrl + webUrl;

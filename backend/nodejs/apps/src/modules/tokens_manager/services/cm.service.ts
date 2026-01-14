@@ -374,10 +374,10 @@ export class ConfigService {
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.connectors = {
       ...parsedUrl.connectors,
-      endpoint: normalizeUrl(parsedUrl.connectors?.endpoint) || normalizeUrl(process.env.CONNECTOR_BACKEND!),
+      endpoint: normalizeUrl(process.env.CONNECTOR_BACKEND!) || normalizeUrl(parsedUrl.connectors?.endpoint),
       publicEndpoint:
-        normalizeUrl(parsedUrl.connectors?.publicEndpoint) ||
-        normalizeUrl(process.env.CONNECTOR_PUBLIC_BACKEND!),
+        normalizeUrl(process.env.CONNECTOR_PUBLIC_BACKEND!) ||
+        normalizeUrl(parsedUrl.connectors?.publicEndpoint),
     };
 
     // Save the updated object back to configPaths.endpoint
@@ -406,7 +406,7 @@ export class ConfigService {
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.indexing = {
       ...parsedUrl.indexing,
-      endpoint: normalizeUrl(parsedUrl.indexing?.endpoint) || normalizeUrl(process.env.INDEXING_BACKEND!),
+      endpoint: normalizeUrl(process.env.INDEXING_BACKEND!) || normalizeUrl(parsedUrl.indexing?.endpoint),
     };
 
     // Save the updated object back to configPaths.endpoint
@@ -474,8 +474,8 @@ export class ConfigService {
     parsedUrl.frontend = {
       ...parsedUrl.frontend,
       publicEndpoint:
-        normalizeUrl(parsedUrl.frontend?.publicEndpoint) ||
         normalizeUrl(process.env.FRONTEND_PUBLIC_URL!) ||
+        normalizeUrl(parsedUrl.frontend?.publicEndpoint) ||
         `http://localhost:${process.env.PORT ?? 3000}`,
     };
 
@@ -499,8 +499,8 @@ export class ConfigService {
     parsedUrl.queryBackend = {
       ...parsedUrl.queryBackend,
       endpoint:
-        normalizeUrl(parsedUrl.queryBackend?.endpoint) ||
         normalizeUrl(process.env.QUERY_BACKEND!) ||
+        normalizeUrl(parsedUrl.queryBackend?.endpoint) ||
         `http://localhost:8000`,
     };
 
