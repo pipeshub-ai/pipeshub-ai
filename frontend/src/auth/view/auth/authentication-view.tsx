@@ -283,8 +283,10 @@ export const AuthenticationView = () => {
   };
 
   // Handle successful authentication
-  const handleAuthComplete = () => {
-    checkUserSession?.();
+  const handleAuthComplete = async () => {
+    if (checkUserSession) {
+      await checkUserSession();
+    }
     // router.push('/');
     navigate('/');
   };
@@ -302,7 +304,7 @@ export const AuthenticationView = () => {
 
       // Check if this is the final step
       if (authResponse.accessToken && authResponse.refreshToken) {
-        handleAuthComplete();
+        await handleAuthComplete();
       } else if (authResponse.nextStep !== undefined) {
         handleNextAuthStep(authResponse);
       }
@@ -334,7 +336,7 @@ export const AuthenticationView = () => {
 
       // Check if this is the final step
       if (authResponse.accessToken && authResponse.refreshToken) {
-        handleAuthComplete();
+        await handleAuthComplete();
       } else if (authResponse.nextStep !== undefined) {
         handleNextAuthStep(authResponse);
       }
@@ -358,7 +360,7 @@ export const AuthenticationView = () => {
 
       // Check if this is the final step
       if (authResponse.accessToken && authResponse.refreshToken) {
-        handleAuthComplete();
+        await handleAuthComplete();
       } else if (authResponse.nextStep !== undefined) {
         handleNextAuthStep(authResponse);
       }
