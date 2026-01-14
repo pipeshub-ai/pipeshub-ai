@@ -906,7 +906,7 @@ async def download_file(
                     buffer = await connector.stream_record(record, user_id)
                 else:
                     buffer = await connector.stream_record(record)
-                
+
                 return buffer
 
         except Exception as e:

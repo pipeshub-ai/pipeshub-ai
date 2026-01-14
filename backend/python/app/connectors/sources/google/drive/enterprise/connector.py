@@ -1439,7 +1439,7 @@ class GoogleDriveEnterpriseConnector(BaseConnector):
                     permissions_changed = False
 
                     if existing_record:
-                        self.data_entities_processor.add_permission_to_record(existing_record, new_permissions)
+                        await self.data_entities_processor.add_permission_to_record(existing_record, new_permissions)
                 else:
                     permissions_changed = True
                     if existing_record:
