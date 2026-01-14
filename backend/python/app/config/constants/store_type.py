@@ -7,3 +7,4 @@ class StoreType(Enum):
     ETCD3 = auto()
     IN_MEMORY = auto()
     ENVIRONMENT = auto()
+    REDIS = auto()

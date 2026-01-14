@@ -43,11 +43,17 @@ export class KeyValueStoreService implements IKVStoreConnection {
       );
 
       if (!this.isInitialized) {
+        // Select the appropriate config based on store type
+        const storeConfig =
+          storeType === StoreType.Redis
+            ? this.config.redisConfig
+            : this.config.storeConfig;
+
+        this.logger.info(`Using ${storeType} as key-value store backend`);
+
         this.store = KeyValueStoreFactory.createStore(
           storeType,
-          this.config.storeConfig,
-          // (value: any) => Buffer.from(JSON.stringify(value)),
-          // (buffer: Buffer) => JSON.parse(buffer.toString()),
+          storeConfig,
           (value: any) => Buffer.from(value),
           (buffer: Buffer) => buffer.toString(),
         );
