@@ -82,13 +82,16 @@ class RecordEventHandler(BaseEventService):
         }
 
         if response.get("is_json"):
+            self.logger.info(f"Received json type response for record {record_id}")
             signed_url = response["data"]["signedUrl"]
+            self.logger.info(f"Signed URL: {signed_url}")
             # Download the actual data from the signed URL
             buffer_data = await self._download_from_signed_url(
                 signed_url, record_id
             )
             event_data_for_processor["payload"]["buffer"] = buffer_data
         else:
+            self.logger.info(f"Received binary type response for record {record_id}")
             event_data_for_processor["payload"]["buffer"] = response["data"]
 
         return event_data_for_processor
