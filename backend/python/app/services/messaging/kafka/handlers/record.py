@@ -483,29 +483,13 @@ class RecordEventHandler(BaseEventService):
             sock_read=1200,  # 20 minutes per chunk read
         )
 
-        # Generate JWT token for authentication if config_service is available
-        headers = {}
-        if self.config_service:
-            try:
-                org_id = doc.get("orgId")
-                if org_id:
-                    jwt_payload = {
-                        "orgId": org_id,
-                        "scopes": ["connector:signedUrl"],
-                    }
-                    jwt_token = await generate_jwt(self.config_service, jwt_payload)
-                    headers["Authorization"] = f"Bearer {jwt_token}"
-                    self.logger.debug(f"Generated JWT token for downloading signed URL for record {record_id}")
-            except Exception as e:
-                self.logger.warning(f"Failed to generate JWT token for signed URL download: {e}")
-
         for attempt in range(max_retries):
             delay = base_delay * (2**attempt)  # Exponential backoff
             file_buffer = BytesIO()
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     try:
-                        async with session.get(signed_url, headers=headers) as response:
+                        async with session.get(signed_url) as response:
                             if response.status != HttpStatusCode.SUCCESS.value:
                                 raise aiohttp.ClientError(
                                     f"Failed to download file: {response.status}"
