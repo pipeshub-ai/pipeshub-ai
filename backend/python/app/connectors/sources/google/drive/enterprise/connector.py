@@ -1342,6 +1342,10 @@ class GoogleDriveEnterpriseConnector(BaseConnector):
                     metadata_changed = True
                     is_updated = True
 
+                if existing_record.external_record_group_id is None:
+                    is_updated = True
+                    metadata_changed = True
+
                 external_revision_id = metadata.get("headRevisionId") or metadata.get("version")
                 if existing_record.external_revision_id != external_revision_id:
                     content_changed = True

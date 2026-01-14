@@ -347,7 +347,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 if existing_record.external_revision_id != external_revision_id:
                     content_changed = True
                     is_updated = True
-                
+
                 if existing_record and record_group_id != existing_record.external_record_group_id:
                     is_updated = True
                     metadata_changed = True

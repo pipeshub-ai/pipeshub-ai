@@ -117,7 +117,7 @@ class DriveToDriveWorkspaceMigrationService:
         Find all connectors that need to be migrated, separated by organization account type.
 
         Returns:
-            tuple[List[Dict], List[Dict]]: 
+            tuple[List[Dict], List[Dict]]:
                 - First list: connectors from individual orgs (only scope update needed)
                 - Second list: connectors from non-individual orgs (full migration needed)
         """
@@ -152,7 +152,7 @@ class DriveToDriveWorkspaceMigrationService:
             for result in results:
                 app = result.get("app", {})
                 account_type = result.get("accountType", "")
-                
+
                 if account_type == "individual":
                     individual_connectors.append(app)
                 else:
