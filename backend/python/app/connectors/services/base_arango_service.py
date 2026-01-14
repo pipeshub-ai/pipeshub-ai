@@ -14608,6 +14608,7 @@ class BaseArangoService:
                 LET directKbRecords = (
                     FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
                         FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                        FILTER kb._key IN @kb_ids
                     FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
                     RETURN DISTINCT records
                 )
@@ -14620,6 +14621,7 @@ class BaseArangoService:
                     FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
                         FILTER IS_SAME_COLLECTION("recordGroups", kb)
                         FILTER teamKbEdge.type == "TEAM"
+                        FILTER kb._key IN @kb_ids
                     FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
                     RETURN DISTINCT records
                 )
