@@ -1416,8 +1416,10 @@ class GoogleDriveEnterpriseConnector(BaseConnector):
                 is_shared=is_shared,
             )
 
-            if not content_changed and existing_record:
-                file_record.virtual_record_id = existing_record.virtual_record_id
+            if existing_record and not content_changed:
+                self.logger.debug(f"No content change for file {file_record.record_name} setting indexing status as prev value")
+                file_record.indexing_status = existing_record.indexing_status
+                file_record.extraction_status = existing_record.extraction_status
 
             # Handle Permissions - fetch new permissions
             new_permissions = []
