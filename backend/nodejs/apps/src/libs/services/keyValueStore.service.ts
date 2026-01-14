@@ -37,7 +37,7 @@ export class KeyValueStoreService implements IKVStoreConnection {
    */
   async connect(): Promise<void> {
     try {
-      this.logger.info('Connecting to key-value store');
+      this.logger.info('Connecting to key-value store', { storeType: this.config.storeType });
       const storeType: StoreType = KeyValueStoreType.fromString(
         this.config.storeType,
       );
