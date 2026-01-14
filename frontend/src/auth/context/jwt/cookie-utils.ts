@@ -1,4 +1,5 @@
 import Cookies from 'js-cookie';
+import { jwtDecode } from './jwt-decode';
 
 // Cookie names
 export const ACCESS_TOKEN_COOKIE = 'access_token';
@@ -6,21 +7,31 @@ export const REFRESH_TOKEN_COOKIE = 'refresh_token';
 
 // Set tokens in cookies
 export const setTokensInCookies = (accessToken: string, refreshToken: string): void => {
-  // Set access token cookie (expires in 15 minutes)
-  Cookies.set(ACCESS_TOKEN_COOKIE, accessToken, { 
-    expires: 1/96, // 15 minutes
-    secure: window.location.protocol === 'https:',
-    sameSite: 'lax',
-    path: '/' // Explicitly set path to root
-  });
+  // Decode tokens to get expiry times
+  const accessTokenDecoded = jwtDecode(accessToken);
+  const refreshTokenDecoded = jwtDecode(refreshToken);
   
-  // Set refresh token cookie (expires in 7 days)
-  Cookies.set(REFRESH_TOKEN_COOKIE, refreshToken, { 
-    expires: 7,
-    secure: window.location.protocol === 'https:',
-    sameSite: 'lax',
-    path: '/' // Explicitly set path to root
-  });
+  // Set access token cookie with actual token expiry
+  if (accessTokenDecoded && accessTokenDecoded.exp) {
+    const accessTokenExpiry = new Date(accessTokenDecoded.exp * 1000); // Convert from seconds to milliseconds
+    Cookies.set(ACCESS_TOKEN_COOKIE, accessToken, { 
+      expires: accessTokenExpiry,
+      secure: window.location.protocol === 'https:',
+      sameSite: 'strict',
+      path: '/' // Explicitly set path to root
+    });
+  }
+  
+  // Set refresh token cookie with actual token expiry
+  if (refreshTokenDecoded && refreshTokenDecoded.exp) {
+    const refreshTokenExpiry = new Date(refreshTokenDecoded.exp * 1000); // Convert from seconds to milliseconds
+    Cookies.set(REFRESH_TOKEN_COOKIE, refreshToken, { 
+      expires: refreshTokenExpiry,
+      secure: window.location.protocol === 'https:',
+      sameSite: 'strict',
+      path: '/' // Explicitly set path to root
+    });
+  }
 };
 
 // Get access token from cookie
