@@ -284,7 +284,7 @@ class RecordEventHandler(BaseEventService):
 
                     if response.get("is_json"):
                         signed_url = response["data"]["signedUrl"]
-                        buffer = await self._download_from_signed_url(signed_url=signed_url, record_id=record_id, doc=doc)
+                        buffer = await self._download_from_signed_url(signed_url=signed_url, record_id=record_id, doc=doc, from_route=True)
                         if not buffer:
                             raise Exception("Failed to download file from signed URL")
 
@@ -460,7 +460,7 @@ class RecordEventHandler(BaseEventService):
             return None
 
     async def _download_from_signed_url(
-        self, signed_url: str, record_id: str, doc: dict
+        self, signed_url: str, record_id: str, doc: dict,from_route: bool = False
     ) -> bytes|None:
         """
         Download file from signed URL with exponential backoff retry
@@ -482,14 +482,30 @@ class RecordEventHandler(BaseEventService):
             connect=120,  # 2 minutes for initial connection
             sock_read=1200,  # 20 minutes per chunk read
         )
+        
+        headers = {}
 
+        if self.config_service and from_route:
+            try:
+                org_id = doc.get("orgId")
+                if org_id:
+                    jwt_payload = {
+                        "orgId": org_id,
+                        "scopes": ["connector:signedUrl"],
+                    }
+                    jwt_token = await generate_jwt(self.config_service, jwt_payload)
+                    headers["Authorization"] = f"Bearer {jwt_token}"
+                    self.logger.debug(f"Generated JWT token for downloading signed URL for record {record_id}")
+            except Exception as e:
+                self.logger.warning(f"Failed to generate JWT token for signed URL download: {e}")
+        
         for attempt in range(max_retries):
             delay = base_delay * (2**attempt)  # Exponential backoff
             file_buffer = BytesIO()
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     try:
-                        async with session.get(signed_url) as response:
+                        async with session.get(signed_url, headers=headers) as response:
                             if response.status != HttpStatusCode.SUCCESS.value:
                                 raise aiohttp.ClientError(
                                     f"Failed to download file: {response.status}"
