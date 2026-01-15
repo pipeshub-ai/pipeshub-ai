@@ -16,7 +16,8 @@ export interface FileBufferInfo {
   originalname: string;
   mimetype: string;
   size: number;
-  lastModified?: number,
+  lastModified: number;
+  filePath: string;
 }
 
 export interface IFileUploadService {
@@ -27,4 +28,5 @@ export interface IFileUploadService {
 
 export interface CustomMulterFile extends Express.Multer.File {
   lastModified?: number;
+  filePath?: string;
 }
