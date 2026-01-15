@@ -8,6 +8,7 @@ import { Response, NextFunction, Request } from 'express';
 import { AuthSessionRequest } from '../middlewares/types';
 import { IamService } from '../services/iam.service';
 import { OrgAuthConfig } from '../schema/orgAuthConfiguration.schema';
+import { getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig';
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
@@ -118,7 +119,7 @@ export class SamlController {
       }
 
       this.logger.debug(email);
-      const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
+      const authToken = iamJwtGenerator(email, getJwtKeyFromConfig(this.config, 'scopedJwt', true));
       let result = await this.iamService.getUserByEmail(email, authToken);
       if (result.statusCode !== 200) {
         throw new NotFoundError('User not found');
@@ -139,7 +140,7 @@ export class SamlController {
           uri: `${this.config.cmBackend}/${samlSsoConfigUrl}`,
           method: HttpMethod.GET,
           headers: {
-            Authorization: `Bearer ${await generateFetchConfigAuthToken(user, this.config.scopedJwtSecret)}`,
+            Authorization: `Bearer ${await generateFetchConfigAuthToken(user, getJwtKeyFromConfig(this.config, 'scopedJwt', true))}`,
             'Content-Type': 'application/json',
           },
         };

@@ -107,8 +107,13 @@ export class UserManagerContainer {
         .toConstantValue(userGroupController);
 
       const authTokenService = new AuthTokenService(
+        appConfig.jwtAlgorithm,
         appConfig.jwtSecret,
+        appConfig.jwtPrivateKey,
+        appConfig.jwtPublicKey,
         appConfig.scopedJwtSecret,
+        appConfig.scopedJwtPrivateKey,
+        appConfig.scopedJwtPublicKey,
       );
       const authMiddleware = new AuthMiddleware(
         container.get('Logger'),

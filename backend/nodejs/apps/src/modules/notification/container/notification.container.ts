@@ -12,8 +12,13 @@ export class NotificationContainer {
   static async initialize(appConfig: AppConfig): Promise<Container> {
     const container = new Container();
     const authTokenService = new AuthTokenService(
+      appConfig.jwtAlgorithm,
       appConfig.jwtSecret,
+      appConfig.jwtPrivateKey,
+      appConfig.jwtPublicKey,
       appConfig.scopedJwtSecret,
+      appConfig.scopedJwtPrivateKey,
+      appConfig.scopedJwtPublicKey,
     );
     container.bind<AuthTokenService>(TYPES.AuthTokenService).toConstantValue(authTokenService);
     container.bind(NotificationService).toSelf().inSingletonScope();

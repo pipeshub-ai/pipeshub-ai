@@ -60,8 +60,13 @@ export class AuthServiceContainer {
         .bind<KeyValueStoreService>('KeyValueStoreService')
         .toConstantValue(keyValueStoreService);
       const authTokenService = new AuthTokenService(
+        appConfig.jwtAlgorithm,
         appConfig.jwtSecret,
+        appConfig.jwtPrivateKey,
+        appConfig.jwtPublicKey,
         appConfig.scopedJwtSecret,
+        appConfig.scopedJwtPrivateKey,
+        appConfig.scopedJwtPublicKey,
       );
       const authMiddleware = new AuthMiddleware(logger, authTokenService);
       container

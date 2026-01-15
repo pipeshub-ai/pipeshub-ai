@@ -7,6 +7,7 @@ import {
   NotFoundError,
 } from '../../../libs/errors/http.errors';
 import { ContainerRequest } from '../../auth/middlewares/types';
+import { getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig';
 import { AppConfig } from '../../tokens_manager/config/config';
 
 export const jwtValidator = (
@@ -20,7 +21,7 @@ export const jwtValidator = (
       throw new NotFoundError('Mail container not found');
     }
     const config = container.get<AppConfig>('AppConfig');
-    const decodedData = isJwtTokenValid(req, config.jwtSecret) as JwtPayload;
+    const decodedData = isJwtTokenValid(req, getJwtKeyFromConfig(config, 'jwt', false)) as JwtPayload;
     if (!decodedData) {
       throw new BadRequestError('Invalid Token');
     }

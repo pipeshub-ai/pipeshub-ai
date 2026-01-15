@@ -534,8 +534,13 @@ export const createConversation =
         orgId = user.orgId;
 
         const authTokenService = new AuthTokenService(
+          appConfig.jwtAlgorithm,
           appConfig.jwtSecret,
+          appConfig.jwtPrivateKey,
+          appConfig.jwtPublicKey,
           appConfig.scopedJwtSecret,
+          appConfig.scopedJwtPrivateKey,
+          appConfig.scopedJwtPublicKey,
         );
 
         const jwtToken = authTokenService.generateToken({
@@ -842,8 +847,13 @@ export const addMessage =
         orgId = user.orgId;
 
         const authTokenService = new AuthTokenService(
+          appConfig.jwtAlgorithm,
           appConfig.jwtSecret,
+          appConfig.jwtPrivateKey,
+          appConfig.jwtPublicKey,
           appConfig.scopedJwtSecret,
+          appConfig.scopedJwtPrivateKey,
+          appConfig.scopedJwtPublicKey,
         );
 
         const jwtToken = authTokenService.generateToken({

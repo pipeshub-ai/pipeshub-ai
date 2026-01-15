@@ -209,7 +209,12 @@ class AgentApiService {
       ? `${this.baseUrl}/${agentKey}/conversations/${conversationKey}/messages/stream`
       : `${this.baseUrl}/${agentKey}/conversations/stream`;
 
-    const token = localStorage.getItem('jwt_access_token');
+    const { getAccessTokenFromCookie } = await import('src/auth/context/jwt/cookie-utils');
+    const token = getAccessTokenFromCookie();
+    
+    if (!token) {
+      throw new Error('Authentication required. Please log in again.');
+    }
 
     return fetch(`${axios.defaults.baseURL}${url}`, {
       method: 'POST',

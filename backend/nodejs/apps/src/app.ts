@@ -58,6 +58,7 @@ import { createTeamsRouter } from './modules/user_management/routes/teams.routes
 import { registerAuthSwagger } from './modules/auth/docs/swagger';
 import { registerConfigurationManagerSwagger } from './modules/configuration_manager/docs/swagger';
 import { registerCrawlingManagerSwagger } from './modules/crawling_manager/docs/swagger';
+import { ConfigService } from './modules/tokens_manager/services/cm.service';
 
 const loggerConfig = {
   service: 'Application',
@@ -91,6 +92,12 @@ export class Application {
       this.logger = new Logger(loggerConfig);
       // Loads configuration
       const configurationManagerConfig = loadConfigurationManagerConfig();
+      
+      // Initialize RSA keys BEFORE loading app config
+      const configService = ConfigService.getInstance();
+      await configService.connect();
+      await configService.initializeRSAKeys();
+      
       const appConfig = await loadAppConfig();
 
       this.tokenManagerContainer = await TokenManagerContainer.initialize(

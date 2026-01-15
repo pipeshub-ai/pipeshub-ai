@@ -1034,7 +1034,13 @@ const AgentChat = () => {
 
       try {
         // Make the HTTP request
-        const token = localStorage.getItem('jwt_access_token');
+        const { getAccessTokenFromCookie } = await import('src/auth/context/jwt/cookie-utils');
+        const token = getAccessTokenFromCookie();
+        
+        if (!token) {
+          throw new Error('Authentication required. Please log in again.');
+        }
+        
         const response = await fetch(url, {
           method: 'POST',
           headers: {
@@ -1910,7 +1916,13 @@ const AgentChat = () => {
 
       try {
         // Make the streaming request to regenerate endpoint
-        const token = localStorage.getItem('jwt_access_token');
+        const { getAccessTokenFromCookie } = await import('src/auth/context/jwt/cookie-utils');
+        const token = getAccessTokenFromCookie();
+        
+        if (!token) {
+          throw new Error('Authentication required. Please log in again.');
+        }
+        
         // Use refs to get the latest values (prevents stale closures)
         const currentModel = latestModelRef.current;
         const currentMode = latestChatModeRef.current;

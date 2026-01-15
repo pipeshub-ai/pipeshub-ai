@@ -4,6 +4,10 @@ import { KeyValueStoreService } from '../../../libs/services/keyValueStore.servi
 import { loadConfigurationManagerConfig } from '../../configuration_manager/config/config';
 import { configPaths } from '../../configuration_manager/paths/paths';
 import { normalizeUrl } from '../utils/utils';
+import * as crypto from 'crypto';
+import { promisify } from 'util';
+
+const generateKeyPair = promisify(crypto.generateKeyPair);
 
 // Define interfaces for all service configurations
 export interface SmtpConfig {
@@ -102,6 +106,97 @@ export class ConfigService {
 
   public async connect(): Promise<void> {
     await this.keyValueStoreService.connect();
+  }
+
+  /**
+   * Initialize RSA keys in etcd if they don't exist
+   */
+  public async initializeRSAKeys(): Promise<void> {
+    try {
+      // Get the JWT algorithm setting
+      const jwtAlgorithm = process.env.JWT_ENCRYPTION_KEY || 'HS256';
+      
+      if (jwtAlgorithm !== 'RS256') {
+        console.log('JWT algorithm is not RS256, skipping RSA key generation');
+        return;
+      }
+
+      console.log('Checking for RSA keys in etcd...');
+
+      // Get existing secret keys from etcd
+      const encryptedSecretKeys = await this.keyValueStoreService.get<string>(
+        configPaths.secretKeys
+      );
+
+      let secretKeys: Record<string, string> = {};
+      
+      if (encryptedSecretKeys) {
+        try {
+          secretKeys = JSON.parse(this.encryptionService.decrypt(encryptedSecretKeys));
+        } catch (error) {
+          console.error('Failed to decrypt existing secret keys:', error);
+          secretKeys = {};
+        }
+      }
+
+      let keysGenerated = false;
+
+      // Check and generate JWT RSA keys if missing
+      if (!secretKeys.jwtPrivateKey || !secretKeys.jwtPublicKey) {
+        console.log('Generating JWT RSA key pair...');
+        const jwtKeyPair = await this.generateRSAKeyPair();
+        secretKeys.jwtPrivateKey = jwtKeyPair.privateKey;
+        secretKeys.jwtPublicKey = jwtKeyPair.publicKey;
+        keysGenerated = true;
+      }
+
+      // Check and generate Scoped JWT RSA keys if missing
+      if (!secretKeys.scopedJwtPrivateKey || !secretKeys.scopedJwtPublicKey) {
+        console.log('Generating Scoped JWT RSA key pair...');
+        const scopedJwtKeyPair = await this.generateRSAKeyPair();
+        secretKeys.scopedJwtPrivateKey = scopedJwtKeyPair.privateKey;
+        secretKeys.scopedJwtPublicKey = scopedJwtKeyPair.publicKey;
+        keysGenerated = true;
+      }
+
+      // Save back to etcd if any keys were generated
+      if (keysGenerated) {
+        const encryptedKeys = this.encryptionService.encrypt(
+          JSON.stringify(secretKeys)
+        );
+        
+        await this.keyValueStoreService.set(
+          configPaths.secretKeys,
+          encryptedKeys
+        );
+        
+        console.log('✓ RSA keys successfully generated and stored in etcd');
+      } else {
+        console.log('✓ RSA keys already exist in etcd');
+      }
+    } catch (error) {
+      console.error('Failed to initialize RSA keys:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Generate an RSA key pair
+   */
+  private async generateRSAKeyPair(): Promise<{ publicKey: string; privateKey: string }> {
+    const { publicKey, privateKey } = await generateKeyPair('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: {
+        type: 'spki',
+        format: 'pem'
+      },
+      privateKeyEncoding: {
+        type: 'pkcs8',
+        format: 'pem'
+      }
+    });
+
+    return { publicKey, privateKey };
   }
 
   private async getEncryptedConfig<T>(
@@ -552,6 +647,12 @@ export class ConfigService {
     return { storageType, endpoint: parsedUrl.storage.endpoint };
   }
 
+  // Get JWT Algorithm
+  public async getJwtAlgorithm(): Promise<'HS256' | 'RS256'> {
+    const encryptionKey = process.env.JWT_ENCRYPTION_KEY;
+    return encryptionKey === 'RS256' ? 'RS256' : 'HS256';
+  }
+
   // Get JWT Secret
   public async getJwtSecret(): Promise<string> {
     const encryptedSecretKeys = await this.keyValueStoreService.get<string>(
@@ -575,6 +676,164 @@ export class ConfigService {
       );
     }
     return parsedKeys.jwtSecret;
+  }
+
+  // Get JWT Private Key (RS256)
+  public async getJwtPrivateKey(): Promise<string> {
+    // First check if key is provided as base64 encoded string
+    if (process.env.JWT_PRIVATE_KEY) {
+      return Buffer.from(process.env.JWT_PRIVATE_KEY, 'base64').toString('utf-8');
+    }
+    
+    // Check etcd for the key
+    const encryptedSecretKeys = await this.keyValueStoreService.get<string>(
+      configPaths.secretKeys,
+    );
+    
+    if (encryptedSecretKeys) {
+      try {
+        const parsedKeys = JSON.parse(
+          this.encryptionService.decrypt(encryptedSecretKeys),
+        );
+        if (parsedKeys.jwtPrivateKey) {
+          return parsedKeys.jwtPrivateKey;
+        }
+      } catch (error) {
+        throw new Error(`Failed to get JWT private key from etcd: ${error}`);
+      }
+    }
+    
+    // Otherwise, read from file path
+    const keyPath = process.env.JWT_PRIVATE_KEY_PATH || './keys/jwt-private.pem';
+    const fs = await import('fs');
+    const path = await import('path');
+    
+    try {
+      const absolutePath = path.resolve(keyPath);
+      return fs.readFileSync(absolutePath, 'utf-8');
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      throw new Error(`Failed to load JWT private key from ${keyPath}: ${errorMessage}`);
+    }
+  }
+
+  // Get JWT Public Key (RS256)
+  public async getJwtPublicKey(): Promise<string> {
+    // First check if key is provided as base64 encoded string
+    if (process.env.JWT_PUBLIC_KEY) {
+      return Buffer.from(process.env.JWT_PUBLIC_KEY, 'base64').toString('utf-8');
+    }
+    
+    // Check etcd for the key
+    const encryptedSecretKeys = await this.keyValueStoreService.get<string>(
+      configPaths.secretKeys,
+    );
+    
+    if (encryptedSecretKeys) {
+      try {
+        const parsedKeys = JSON.parse(
+          this.encryptionService.decrypt(encryptedSecretKeys),
+        );
+        if (parsedKeys.jwtPublicKey) {
+          return parsedKeys.jwtPublicKey;
+        }
+      } catch (error) {
+        throw new Error(`Failed to get JWT public key from etcd: ${error}`);
+      }
+    }
+    
+    // Otherwise, read from file path
+    const keyPath = process.env.JWT_PUBLIC_KEY_PATH || './keys/jwt-public.pem';
+    const fs = await import('fs');
+    const path = await import('path');
+    
+    try {
+      const absolutePath = path.resolve(keyPath);
+      return fs.readFileSync(absolutePath, 'utf-8');
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      throw new Error(`Failed to load JWT public key from ${keyPath}: ${errorMessage}`);
+    }
+  }
+
+  // Get Scoped JWT Private Key (RS256)
+  public async getScopedJwtPrivateKey(): Promise<string> {
+    // First check if key is provided as base64 encoded string
+    if (process.env.JWT_SCOPED_PRIVATE_KEY || process.env.SCOPED_JWT_PRIVATE_KEY) {
+      const key = process.env.JWT_SCOPED_PRIVATE_KEY || process.env.SCOPED_JWT_PRIVATE_KEY;
+      return Buffer.from(key!, 'base64').toString('utf-8');
+    }
+    
+    // Check etcd for the key
+    const encryptedSecretKeys = await this.keyValueStoreService.get<string>(
+      configPaths.secretKeys,
+    );
+    
+    if (encryptedSecretKeys) {
+      try {
+        const parsedKeys = JSON.parse(
+          this.encryptionService.decrypt(encryptedSecretKeys),
+        );
+        if (parsedKeys.scopedJwtPrivateKey) {
+          return parsedKeys.scopedJwtPrivateKey;
+        }
+      } catch (error) {
+        throw new Error(`Failed to get scoped JWT private key from etcd: ${error}`);
+      }
+    }
+    
+    // Otherwise, read from file path
+    const keyPath = process.env.JWT_SCOPED_PRIVATE_KEY_PATH || process.env.SCOPED_JWT_PRIVATE_KEY_PATH || './keys/jwt-scoped-private.pem';
+    const fs = await import('fs');
+    const path = await import('path');
+    
+    try {
+      const absolutePath = path.resolve(keyPath);
+      return fs.readFileSync(absolutePath, 'utf-8');
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      throw new Error(`Failed to load scoped JWT private key from ${keyPath}: ${errorMessage}`);
+    }
+  }
+
+  // Get Scoped JWT Public Key (RS256)
+  public async getScopedJwtPublicKey(): Promise<string> {
+    // First check if key is provided as base64 encoded string
+    if (process.env.JWT_SCOPED_PUBLIC_KEY || process.env.SCOPED_JWT_PUBLIC_KEY) {
+      const key = process.env.JWT_SCOPED_PUBLIC_KEY || process.env.SCOPED_JWT_PUBLIC_KEY;
+      return Buffer.from(key!, 'base64').toString('utf-8');
+    }
+    
+    // Check etcd for the key
+    const encryptedSecretKeys = await this.keyValueStoreService.get<string>(
+      configPaths.secretKeys,
+    );
+    
+    if (encryptedSecretKeys) {
+      try {
+        const parsedKeys = JSON.parse(
+          this.encryptionService.decrypt(encryptedSecretKeys),
+        );
+        if (parsedKeys.scopedJwtPublicKey) {
+          return parsedKeys.scopedJwtPublicKey;
+        }
+      } catch (error) {
+        throw new Error(`Failed to get scoped JWT public key from etcd: ${error}`);
+      }
+    }
+    
+    // Otherwise, read from file path
+    const keyPath = process.env.JWT_SCOPED_PUBLIC_KEY_PATH || process.env.SCOPED_JWT_PUBLIC_KEY_PATH || './keys/jwt-scoped-public.pem';
+    const fs = await import('fs');
+    const path = await import('path');
+    
+    try {
+      const absolutePath = path.resolve(keyPath);
+      return fs.readFileSync(absolutePath, 'utf-8');
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      throw new Error(`Failed to load scoped JWT public key from ${keyPath}: ${errorMessage}`);
+    }
   }
 
   // Get Scoped JWT Secret

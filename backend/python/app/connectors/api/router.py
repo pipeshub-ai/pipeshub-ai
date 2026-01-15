@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import google.oauth2.credentials
 import jwt
+from app.utils.jwt import get_jwt_algorithm, get_keys_for_verification
 from dependency_injector.wiring import Provide, inject
 from fastapi import (
     APIRouter,
@@ -564,11 +565,48 @@ async def stream_record_internal(
             )
         # Extract the token
         token = auth_header.split(" ")[1]
-        secret_keys = await config_service.get_config(
-            config_node_constants.SECRET_KEYS.value
-        )
-        jwt_secret = secret_keys.get("scopedJwtSecret")
-        payload = jwt.decode(token, jwt_secret, algorithms=["HS256"])
+        
+        from app.utils.jwt_config import get_jwt_config
+        jwt_config = get_jwt_config()
+        
+        if not jwt_config:
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail="JWT configuration not initialized"
+            )
+        
+        algorithm = jwt_config.algorithm
+        
+        if algorithm == "RS256":
+            # Use scoped public key for verification (since this is a scoped operation)
+            if not jwt_config.scoped_jwt_public_key:
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail="JWT public key not configured"
+                )
+            
+            try:
+                payload = jwt.decode(token, jwt_config.scoped_jwt_public_key, algorithms=["RS256"])
+            except jwt.JWTError:
+                raise HTTPException(
+                    status_code=HttpStatusCode.UNAUTHORIZED.value,
+                    detail="Invalid token"
+                )
+        else:
+            # HS256 - use scoped secret
+            if not jwt_config.scoped_jwt_secret:
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail="JWT secret not configured"
+                )
+            
+            try:
+                payload = jwt.decode(token, jwt_config.scoped_jwt_secret, algorithms=["HS256"])
+            except jwt.JWTError:
+                raise HTTPException(
+                    status_code=HttpStatusCode.UNAUTHORIZED.value,
+                    detail="Invalid token"
+                )
         # TODO: Validate scopes ["connector:signedUrl"]
 
         org_id = payload.get("orgId")
@@ -1046,11 +1084,37 @@ async def stream_record(
                 )
             # Extract the token
             token = auth_header.split(" ")[1]
-            secret_keys = await config_service.get_config(
-                config_node_constants.SECRET_KEYS.value
-            )
-            jwt_secret = secret_keys.get("jwtSecret")
-            payload = jwt.decode(token, jwt_secret, algorithms=["HS256"])
+            
+            from app.utils.jwt_config import get_jwt_config
+            jwt_config = get_jwt_config()
+            
+            if not jwt_config:
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail="JWT configuration not initialized"
+                )
+            
+            algorithm = jwt_config.algorithm
+            
+            if algorithm == "RS256":
+                # Use regular public key for verification (this endpoint uses regular JWT)
+                if not jwt_config.jwt_public_key:
+                    raise HTTPException(
+                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                        detail="JWT public key not configured"
+                    )
+                
+                payload = jwt.decode(token, jwt_config.jwt_public_key, algorithms=["RS256"])
+            else:
+                # HS256 - use regular secret
+                if not jwt_config.jwt_secret:
+                    raise HTTPException(
+                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                        detail="JWT secret not configured"
+                    )
+                
+                payload = jwt.decode(token, jwt_config.jwt_secret, algorithms=["HS256"])
+            
             org_id = payload.get("orgId")
             user_id = payload.get("userId")
         except JWTError as e:

@@ -1,6 +1,7 @@
 import { Router, Response, NextFunction } from 'express';
 import { Container } from 'inversify';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
+import { getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig';
 import {
   createAIModelsConfig,
   createGoogleWorkspaceCredentials,
@@ -169,7 +170,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     createSmtpConfig(
       keyValueStoreService,
       appConfig.communicationBackend,
-      appConfig.scopedJwtSecret,
+      getJwtKeyFromConfig(appConfig, 'scopedJwt', true),
     ),
   );
 
@@ -884,7 +885,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     metricsMiddleware(container),
     setFrontendUrl(
       keyValueStoreService,
-      appConfig.scopedJwtSecret,
+      getJwtKeyFromConfig(appConfig, 'scopedJwt', true),
       configService,
     ),
   );

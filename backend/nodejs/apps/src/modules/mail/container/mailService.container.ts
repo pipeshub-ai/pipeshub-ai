@@ -33,9 +33,15 @@ export class MailServiceContainer {
       container.bind<MailController>('MailController').toDynamicValue(() => {
         return new MailController(appConfig, container.get('Logger'));
       });
-      const jwtSecret = appConfig.jwtSecret;
-      const scopedJwtSecret = appConfig.scopedJwtSecret;
-      const authTokenService = new AuthTokenService(jwtSecret, scopedJwtSecret);
+      const authTokenService = new AuthTokenService(
+        appConfig.jwtAlgorithm,
+        appConfig.jwtSecret,
+        appConfig.jwtPrivateKey,
+        appConfig.jwtPublicKey,
+        appConfig.scopedJwtSecret,
+        appConfig.scopedJwtPrivateKey,
+        appConfig.scopedJwtPublicKey
+      );
       const authMiddleware = new AuthMiddleware(
         container.get('Logger'),
         authTokenService,

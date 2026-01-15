@@ -7,6 +7,7 @@ from jose import JWTError, jwt
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
+from app.utils.jwt import get_jwt_algorithm, get_keys_for_verification
 
 
 async def get_config_service(request: Request) -> ConfigurationService:
@@ -59,11 +60,11 @@ def extract_bearer_token(authorization_header: Optional[str]) -> str:
 @inject
 async def isJwtTokenValid(request: Request) -> dict:
     """
-    Validate JWT token using either regular JWT secret (for frontend) or scoped JWT secret (for internal services).
+    Validate JWT token using configured algorithm (HS256 or RS256).
 
-    This function maintains backward compatibility by trying regular JWT first (the original behavior),
-    then falls back to scoped JWT for internal service calls. This ensures existing frontend calls
-    continue to work without any changes.
+    This function tries regular JWT first (for frontend), then falls back to scoped JWT 
+    for internal service calls. This ensures existing frontend calls continue to work 
+    without any changes.
 
     Args:
         request: FastAPI request object
@@ -75,7 +76,7 @@ async def isJwtTokenValid(request: Request) -> dict:
             - "token_type": Either "regular" or "scoped"
 
     Raises:
-        HTTPException: If token validation fails with both secrets
+        HTTPException: If token validation fails with both keys
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -87,61 +88,107 @@ async def isJwtTokenValid(request: Request) -> dict:
     try:
         logger.debug("🚀 Starting JWT token validation")
 
+        algorithm = get_jwt_algorithm()
         config_service = await get_config_service(request)
-        secret_keys = await config_service.get_config(
-            config_node_constants.SECRET_KEYS.value
-        )
-
-        if not secret_keys:
-            raise ValueError("Secret keys configuration not found")
-
-        # Get both JWT secrets
-        regular_jwt_secret = secret_keys.get("jwtSecret")
-        scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
-        algorithm = os.environ.get("JWT_ALGORITHM", "HS256")
-
-        # Validate required secrets exist
-        if not regular_jwt_secret:
-            raise ValueError("Missing jwtSecret in configuration")
-
-        # scoped_jwt_secret is optional - if missing, we'll only try regular JWT
-        if not scoped_jwt_secret:
-            logger.warning("scopedJwtSecret not found in configuration - scoped JWT validation disabled")
-
+        
         # Extract token from Authorization header
         authorization_header = request.headers.get("Authorization")
         token = extract_bearer_token(authorization_header)
 
-        # Try regular JWT first (maintains backward compatibility)
-        try:
-            payload = jwt.decode(token, regular_jwt_secret, algorithms=[algorithm])
-            logger.debug("✅ Validated token using regular JWT secret")
-            # Add metadata for backward compatibility
-            payload["user"] = token
-            payload["token_type"] = "regular"
-            return payload
-        except JWTError as regular_jwt_error:
-            # If scoped JWT secret is available, try it as fallback
-            if scoped_jwt_secret:
+        if algorithm == "RS256":
+            # Use RS256 with public keys from cached configuration
+            from app.utils.jwt_config import get_jwt_config
+            
+            jwt_config = get_jwt_config()
+            if not jwt_config:
+                logger.error("JWT configuration not initialized")
+                raise credentials_exception
+            
+            if not jwt_config.use_rsa:
+                logger.error("JWT configuration mismatch - expected RS256")
+                raise credentials_exception
+            
+            # Try regular JWT first (maintains backward compatibility)
+            if jwt_config.jwt_public_key:
                 try:
-                    payload = jwt.decode(token, scoped_jwt_secret, algorithms=[algorithm])
-                    logger.debug("✅ Validated token using scoped JWT secret (fallback)")
+                    payload = jwt.decode(token, jwt_config.jwt_public_key, algorithms=["RS256"])
+                    logger.debug("✅ Validated token using regular JWT public key")
+                    # Add metadata for backward compatibility
+                    payload["user"] = token
+                    payload["token_type"] = "regular"
+                    return payload
+                except JWTError as regular_jwt_error:
+                    logger.debug(f"Regular JWT validation failed: {type(regular_jwt_error).__name__}")
+            
+            # Try scoped JWT as fallback
+            if jwt_config.scoped_jwt_public_key:
+                try:
+                    payload = jwt.decode(token, jwt_config.scoped_jwt_public_key, algorithms=["RS256"])
+                    logger.debug("✅ Validated token using scoped JWT public key")
                     # Add metadata
                     payload["user"] = token
                     payload["token_type"] = "scoped"
                     return payload
                 except JWTError as scoped_jwt_error:
-                    # Both failed - log and raise
                     logger.warning(
-                        f"Token validation failed with both secrets. "
-                        f"Regular JWT error: {type(regular_jwt_error).__name__}, "
+                        f"Token validation failed with both public keys. "
                         f"Scoped JWT error: {type(scoped_jwt_error).__name__}"
                     )
+            
+            # Both failed or no keys available
+            logger.error("No valid JWT public keys available for verification")
+            raise credentials_exception
+        else:
+            # Use HS256 with secrets from configuration
+            secret_keys = await config_service.get_config(
+                config_node_constants.SECRET_KEYS.value
+            )
+            
+            if not secret_keys:
+                raise ValueError("Secret keys configuration not found")
+            
+            # Get both JWT secrets
+            regular_jwt_secret = secret_keys.get("jwtSecret")
+            scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
+            
+            # Validate required secrets exist
+            if not regular_jwt_secret:
+                raise ValueError("Missing jwtSecret in configuration")
+            
+            # scoped_jwt_secret is optional - if missing, we'll only try regular JWT
+            if not scoped_jwt_secret:
+                logger.warning("scopedJwtSecret not found in configuration - scoped JWT validation disabled")
+            
+            # Try regular JWT first (maintains backward compatibility)
+            try:
+                payload = jwt.decode(token, regular_jwt_secret, algorithms=["HS256"])
+                logger.debug("✅ Validated token using regular JWT secret")
+                # Add metadata for backward compatibility
+                payload["user"] = token
+                payload["token_type"] = "regular"
+                return payload
+            except JWTError as regular_jwt_error:
+                # If scoped JWT secret is available, try it as fallback
+                if scoped_jwt_secret:
+                    try:
+                        payload = jwt.decode(token, scoped_jwt_secret, algorithms=["HS256"])
+                        logger.debug("✅ Validated token using scoped JWT secret (fallback)")
+                        # Add metadata
+                        payload["user"] = token
+                        payload["token_type"] = "scoped"
+                        return payload
+                    except JWTError as scoped_jwt_error:
+                        # Both failed - log and raise
+                        logger.warning(
+                            f"Token validation failed with both secrets. "
+                            f"Regular JWT error: {type(regular_jwt_error).__name__}, "
+                            f"Scoped JWT error: {type(scoped_jwt_error).__name__}"
+                        )
+                        raise credentials_exception
+                else:
+                    # No scoped secret available, regular JWT failed
+                    logger.warning(f"Token validation failed with regular JWT: {type(regular_jwt_error).__name__}")
                     raise credentials_exception
-            else:
-                # No scoped secret available, regular JWT failed
-                logger.warning(f"Token validation failed with regular JWT: {type(regular_jwt_error).__name__}")
-                raise credentials_exception
 
     except HTTPException:
         # Re-raise HTTP exceptions as-is (including credentials_exception)
@@ -165,7 +212,7 @@ async def authMiddleware(request: Request) -> Request:
     FastAPI middleware dependency for authenticating requests.
 
     Validates JWT token and attaches authenticated user information to request.state.user.
-    Supports both regular JWT (frontend) and scoped JWT (internal services).
+    Supports both regular JWT (frontend) and scoped JWT (internal services) using configured algorithm.
 
     Args:
         request: FastAPI request object

@@ -93,11 +93,14 @@ export class TokenManagerContainer {
         .bind<EntitiesEventProducer>('EntitiesEventProducer')
         .toConstantValue(entityEventsService);
 
-      const jwtSecret = config.jwtSecret;
-      const scopedJwtSecret = config.scopedJwtSecret;
       const authTokenService = new AuthTokenService(
-        jwtSecret || ' ',
-        scopedJwtSecret || ' ',
+        config.jwtAlgorithm,
+        config.jwtSecret,
+        config.jwtPrivateKey,
+        config.jwtPublicKey,
+        config.scopedJwtSecret,
+        config.scopedJwtPrivateKey,
+        config.scopedJwtPublicKey,
       );
       const authMiddleware = new AuthMiddleware(
         container.get('Logger'),
