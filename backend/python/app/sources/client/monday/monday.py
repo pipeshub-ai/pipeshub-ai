@@ -11,7 +11,7 @@ Official SDK: https://github.com/mondaycom/monday-api-python-sdk
 import logging
 from typing import Any, Dict, Optional, Union
 
-from pydantic import BaseModel, Field  # type: ignore
+from pydantic import BaseModel, Field, ValidationError  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.graphql.client import GraphQLClient
@@ -194,6 +194,25 @@ class MondayOAuthConfig(BaseModel):
         return OfficialMondayClient(token=self.oauth_token)  # pyright: ignore[reportOptionalCall]
 
 
+class AuthConfig(BaseModel):
+    """Authentication configuration for Monday.com connector."""
+    authType: str = Field(default="API_TOKEN", description="Authentication type")
+    apiToken: Optional[str] = Field(default=None, description="API token for token auth")
+
+
+class CredentialsConfig(BaseModel):
+    """Credentials configuration for Monday.com connector."""
+    access_token: Optional[str] = Field(default=None, description="OAuth access token")
+
+
+class MondayConnectorConfig(BaseModel):
+    """Configuration model for Monday.com connector from services."""
+    auth: AuthConfig = Field(default_factory=AuthConfig, description="Authentication configuration")
+    credentials: Optional[CredentialsConfig] = Field(default=None, description="Credentials configuration")
+    timeout: int = Field(default=30, description="Request timeout in seconds", gt=0)
+    apiVersion: Optional[str] = Field(default=None, description="API version string")
+
+
 class MondayClient(IClient):
     """Builder class for Monday.com clients with different construction methods.
 
@@ -298,7 +317,8 @@ class MondayClient(IClient):
         if config.use_official_sdk and MONDAY_SDK_AVAILABLE:
             try:
                 sdk_client = config.create_sdk_client()
-            except Exception:
+            except Exception as e:
+                logging.warning(f"Failed to create official Monday SDK client, falling back to GraphQL only. Error: {e}")
                 pass  # Fall back to GraphQL only
 
         return cls(
@@ -331,26 +351,23 @@ class MondayClient(IClient):
             ValueError: If configuration is missing or invalid
         """
         try:
-            config = await cls._get_connector_config(
+            config_dict = await cls._get_connector_config(
                 logger, config_service, connector_instance_id
             )
 
-            if not config:
+            if not config_dict:
                 raise ValueError("Failed to get Monday.com connector configuration")
 
-            auth_config_raw = config.get("auth", {})
-            auth_config: Dict[str, Any] = auth_config_raw if isinstance(auth_config_raw, dict) else {}
-            auth_type: str = str(auth_config.get("authType", "API_TOKEN"))
-            timeout: int = int(config.get("timeout", 30))
-            api_version: Optional[str] = config.get("apiVersion")
+            config = MondayConnectorConfig.model_validate(config_dict)
+
+            auth_type = config.auth.authType
+            timeout = config.timeout
+            api_version = config.apiVersion
 
             if auth_type == "OAUTH":
-                credentials_raw = config.get("credentials", {})
-                credentials_config: Dict[str, Any] = credentials_raw if isinstance(credentials_raw, dict) else {}
-                oauth_token: str = str(credentials_config.get("access_token", ""))
-                if not oauth_token:
+                if not config.credentials or not config.credentials.access_token:
                     raise ValueError("OAuth token required for OAuth auth type")
-
+                oauth_token = config.credentials.access_token
                 graphql_client = MondayGraphQLClientViaOAuth(
                     oauth_token=oauth_token,
                     timeout=timeout,
@@ -359,10 +376,9 @@ class MondayClient(IClient):
                 token = oauth_token
 
             elif auth_type == "API_TOKEN":
-                token = str(auth_config.get("apiToken", ""))
-                if not token:
+                if not config.auth.apiToken:
                     raise ValueError("API token required for token auth type")
-
+                token = config.auth.apiToken
                 graphql_client = MondayGraphQLClientViaToken(
                     token=token,
                     timeout=timeout,
@@ -376,7 +392,8 @@ class MondayClient(IClient):
             if MONDAY_SDK_AVAILABLE:
                 try:
                     sdk_client = OfficialMondayClient(token=token)  # pyright: ignore[reportOptionalCall]
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"Failed to create official Monday SDK client, falling back to GraphQL only. Error: {e}")
                     pass
 
             return cls(
@@ -385,6 +402,9 @@ class MondayClient(IClient):
                 token=token,
             )
 
+        except ValidationError as e:
+            logger.error(f"Invalid Monday.com connector configuration: {e}")
+            raise ValueError("Invalid Monday.com connector configuration") from e
         except Exception as e:
             logger.error(f"Failed to build Monday.com client from services: {str(e)}")
             raise

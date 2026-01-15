@@ -6,7 +6,14 @@ Based on Monday.com API documentation: https://developer.monday.com/api-referenc
 Monday.com uses a GraphQL API at https://api.monday.com/v2
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, TypedDict
+
+
+class Operation(TypedDict):
+    """Type definition for a GraphQL operation."""
+    query: str
+    fragments: List[str]
+    description: str
 
 
 class MondayGraphQLOperations:
@@ -298,7 +305,7 @@ class MondayGraphQLOperations:
     }
 
     # Query operations
-    QUERIES: Dict[str, Dict[str, object]] = {
+    QUERIES: Dict[str, Operation] = {
         # ========== USER QUERIES ==========
         "me": {
             "query": """
@@ -818,7 +825,7 @@ class MondayGraphQLOperations:
     }
 
     # Mutation operations
-    MUTATIONS: Dict[str, Dict[str, object]] = {
+    MUTATIONS: Dict[str, Operation] = {
         # ========== BOARD MUTATIONS ==========
         "create_board": {
             "query": """
