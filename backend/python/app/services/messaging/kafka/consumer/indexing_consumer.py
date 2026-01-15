@@ -8,7 +8,6 @@ from aiokafka import AIOKafkaConsumer, TopicPartition  # type: ignore
 
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
-from app.utils.semaphore_logger import SemaphoreLogger, get_timestamp
 
 # Concurrency control settings - read from environment variables
 MAX_CONCURRENT_PARSING = int(os.getenv('MAX_CONCURRENT_PARSING', '5'))
@@ -48,8 +47,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self.active_tasks: Set[asyncio.Task] = set()
         self.max_concurrent_parsing = MAX_CONCURRENT_PARSING
         self.max_concurrent_indexing = MAX_CONCURRENT_INDEXING
-        # Track timestamps for each message to calculate phase durations
-        self.message_timestamps: Dict[str, Dict[str, Optional[float]]] = {}
 
     @staticmethod
     def kafka_config_to_dict(kafka_config: KafkaConsumerConfig) -> Dict[str, Any]:
@@ -147,17 +144,12 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         await asyncio.sleep(0.1)
                         continue
 
-                    for topic_partition, messages in message_batch.items():
+                    for _, messages in message_batch.items():
                         for message in messages:
                             try:
-                                message_id = f"{message.topic}-{message.partition}-{message.offset}"
                                 self.logger.info(f"Received message: topic={message.topic}, partition={message.partition}, offset={message.offset}")
-                                SemaphoreLogger.log_message_start(message_id, message.topic, message.partition, message.offset)
-                                await self.__start_processing_task(message, topic_partition)
-
+                                await self.__start_processing_task(message)
                             except Exception as e:
-                                message_id = f"{message.topic}-{message.partition}-{message.offset}"
-                                SemaphoreLogger.log_message_error(message_id, str(e))
                                 self.logger.error(f"Error processing individual message: {e}")
                                 continue
 
@@ -172,8 +164,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.logger.error(f"Fatal error in consume_messages: {e}")
         finally:
             await self.cleanup()
-
-
 
 
     def __parse_message(self, message) -> Optional[Dict[str, Any]]:
@@ -223,91 +213,18 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             )
             return None
 
-    async def __start_processing_task(self, message, topic_partition: TopicPartition) -> None:
-        """Start a new task for processing a message with dual semaphore control.
+    async def __start_processing_task(self, message) -> None:
+        """Start a new task for processing a message with semaphore control."""
 
-        Acquires BOTH parsing and indexing semaphores before starting processing.
-        This ensures that when an event is consumed, it has a guaranteed path
-        through both parsing and indexing phases.
-        """
-        topic = message.topic
-        partition = message.partition
-        offset = message.offset
-        message_id = f"{topic}-{partition}-{offset}"
-
-        # Get current semaphore state before acquisition
-        parsing_available_before = self.parsing_semaphore._value
-        indexing_available_before = self.indexing_semaphore._value
-
-        # Log acquire attempt
-        SemaphoreLogger.log_semaphore_acquire_attempt(
-            "both",
-            message_id,
-            parsing_available_before,
-            self.max_concurrent_parsing,
-            indexing_available_before,
-            self.max_concurrent_indexing
-        )
-
-        # Track acquisition start time
-        acquire_start = get_timestamp()
-
-        # Acquire both semaphores - ensures slots available for both phases
-        await self.parsing_semaphore.acquire()
-        await self.indexing_semaphore.acquire()
-
-        # Calculate wait time
-        wait_time_ms = (get_timestamp() - acquire_start) * 1000
-
-        # Get semaphore state after acquisition
-        parsing_available_after = self.parsing_semaphore._value
-        indexing_available_after = self.indexing_semaphore._value
-
-        # Initialize timestamp tracking for this message
-        self.message_timestamps[message_id] = {
-            'acquired': get_timestamp(),
-            'parsing_start': get_timestamp(),
-            'parsing_complete': None,
-            'indexing_start': None,
-            'indexing_complete': None
-        }
-
-        # Log successful acquisition
-        SemaphoreLogger.log_semaphore_acquired(
-            message_id,
-            parsing_available_after,
-            self.max_concurrent_parsing,
-            indexing_available_after,
-            self.max_concurrent_indexing,
-            wait_time_ms
-        )
-
-        self.logger.info(
-            f"Semaphores acquired for message. "
-            f"Parsing available: {parsing_available_after}, "
-            f"Indexing available: {indexing_available_after}"
-        )
-
-        task = asyncio.create_task(self.__process_message_wrapper(message, topic_partition))
+        task = asyncio.create_task(self.__process_message_wrapper(message))
         self.active_tasks.add(task)
-
         self.__cleanup_completed_tasks()
-
-        # Log semaphore state
-        SemaphoreLogger.log_semaphore_state(
-            parsing_available_after,
-            self.max_concurrent_parsing,
-            indexing_available_after,
-            self.max_concurrent_indexing,
-            len(self.active_tasks),
-            message_id
-        )
 
         self.logger.debug(
             f"Active tasks: {len(self.active_tasks)}, parsing_slots_available, indexing_slots_available"
         )
 
-    async def __process_message_wrapper(self, message, topic_partition: TopicPartition) -> None:
+    async def __process_message_wrapper(self, message) -> None:
         """Wrapper to handle async task cleanup and semaphore release based on yielded events.
 
         Iterates over events yielded by the message handler:
@@ -321,138 +238,48 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         offset = message.offset
         message_id = f"{topic}-{partition}-{offset}"
 
-        parsing_released = False
-        indexing_released = False
+        parsing_released = True
+        indexing_released = True
 
         try:
+            await self.parsing_semaphore.acquire()
+            parsing_released = False
+            
+            await self.indexing_semaphore.acquire()
+            indexing_released = False
+
             parsed_message = self.__parse_message(message)
             if parsed_message is None:
                 self.logger.warning(f"Failed to parse message {message_id}, skipping")
-                SemaphoreLogger.log_message_error(message_id, "Failed to parse message")
                 return
-
-
 
             if self.message_handler:
                 async for event in self.message_handler(parsed_message):
                     event_type = event.get("event")
-                    record_id = event.get("data", {}).get("record_id")
 
                     if event_type == IndexingEvent.PARSING_COMPLETE and not parsing_released:
-                        # Calculate parsing duration
-                        if message_id in self.message_timestamps:
-                            timestamps = self.message_timestamps[message_id]
-                            timestamps['parsing_complete'] = get_timestamp()
-                            parsing_duration = timestamps['parsing_complete'] - timestamps['parsing_start']
-                            timestamps['indexing_start'] = get_timestamp()
-                        else:
-                            parsing_duration = None
-
-                        # Log phase transition
-                        SemaphoreLogger.log_phase_transition(
-                            message_id,
-                            "parsing_complete",
-                            record_id,
-                            parsing_duration
-                        )
-
-                        # Capture semaphore value before releasing (to avoid race condition)
-                        parsing_available = self.parsing_semaphore._value
-
-                        # Release semaphore
                         self.parsing_semaphore.release()
                         parsing_released = True
-
-                        # Log release with post-release state (available + 1)
-                        SemaphoreLogger.log_semaphore_release(
-                            "parsing",
-                            message_id,
-                            parsing_available + 1,
-                            self.max_concurrent_parsing,
-                            parsing_duration
-                        )
-
                         self.logger.debug(f"Released parsing semaphore for {message_id}")
-
                     elif event_type == IndexingEvent.INDEXING_COMPLETE and not indexing_released:
-                        # Calculate indexing duration
-                        if message_id in self.message_timestamps:
-                            timestamps = self.message_timestamps[message_id]
-                            timestamps['indexing_complete'] = get_timestamp()
-                            if timestamps['indexing_start']:
-                                indexing_duration = timestamps['indexing_complete'] - timestamps['indexing_start']
-                            else:
-                                indexing_duration = None
-                        else:
-                            indexing_duration = None
-
-                        # Log phase transition
-                        SemaphoreLogger.log_phase_transition(
-                            message_id,
-                            "indexing_complete",
-                            record_id,
-                            indexing_duration
-                        )
-
-                        # Capture semaphore value before releasing (to avoid race condition)
-                        indexing_available = self.indexing_semaphore._value
-
-                        # Release semaphore
                         self.indexing_semaphore.release()
                         indexing_released = True
-
-                        # Log release with post-release state (available + 1)
-                        SemaphoreLogger.log_semaphore_release(
-                            "indexing",
-                            message_id,
-                            indexing_available + 1,
-                            self.max_concurrent_indexing,
-                            indexing_duration
-                        )
-
                         self.logger.debug(f"Released indexing semaphore for {message_id}")
-
-
-                # Clean up timestamp tracking
-                if message_id in self.message_timestamps:
-                    del self.message_timestamps[message_id]
             else:
                 self.logger.error(f"No message handler available for {message_id}")
-                SemaphoreLogger.log_message_error(message_id, "No message handler available")
 
         except Exception as e:
             self.logger.error(f"Error in process_message_wrapper for {message_id}: {e}")
-            SemaphoreLogger.log_message_error(message_id, f"Error in process_message_wrapper: {str(e)}")
         finally:
             # Ensure semaphores are released even on error
             if not parsing_released:
-                # Capture semaphore value before releasing (to avoid race condition)
-                parsing_available = self.parsing_semaphore._value
                 self.parsing_semaphore.release()
-                SemaphoreLogger.log_semaphore_release(
-                    "parsing",
-                    message_id,
-                    parsing_available + 1,
-                    self.max_concurrent_parsing,
-                    reason="finally_block_error"
-                )
                 self.logger.debug(f"Released parsing semaphore in finally for {message_id}")
+
             if not indexing_released:
-                # Capture semaphore value before releasing (to avoid race condition)
-                indexing_available = self.indexing_semaphore._value
                 self.indexing_semaphore.release()
-                SemaphoreLogger.log_semaphore_release(
-                    "indexing",
-                    message_id,
-                    indexing_available + 1,
-                    self.max_concurrent_indexing,
-                    reason="finally_block_error"
-                )
                 self.logger.debug(f"Released indexing semaphore in finally for {message_id}")
 
-            # Clean up timestamp tracking
-            if message_id in self.message_timestamps:
-                del self.message_timestamps[message_id]
 
     def __cleanup_completed_tasks(self) -> None:
         """Remove completed tasks from the active tasks set"""
