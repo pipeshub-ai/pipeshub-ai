@@ -312,6 +312,7 @@ class ConnectorBuilder:
         self.config_builder = ConnectorConfigBuilder()
         self.connector_scopes: List[ConnectorScope] = []
         self._oauth_configs: Dict[str, OAuthConfig] = {}  # Store OAuth configs for auto-registration
+        self.connector_info: Optional[str] = None
 
     def in_group(self, app_group: str) -> 'ConnectorBuilder':
         """Set the app group"""
@@ -396,6 +397,11 @@ class ConnectorBuilder:
         self.app_categories = categories
         return self
 
+    def with_info(self, info: str) -> 'ConnectorBuilder':
+        """Set connector info that will be displayed on the frontend connector page"""
+        self.connector_info = info
+        return self
+
     def configure(self, config_func: Callable[[ConnectorConfigBuilder], ConnectorConfigBuilder]) -> 'ConnectorBuilder':
         """Configure the connector using a configuration function"""
         self.config_builder = config_func(self.config_builder)
@@ -466,7 +472,8 @@ class ConnectorBuilder:
             app_description=self.app_description,
             app_categories=self.app_categories,
             config=config,
-            connector_scopes=self.connector_scopes
+            connector_scopes=self.connector_scopes,
+            connector_info=self.connector_info
         )
 
     def _validate_required_auth_fields(self, config: Dict[str, Any]) -> None:
