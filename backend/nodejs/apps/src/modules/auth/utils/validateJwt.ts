@@ -3,11 +3,12 @@ import {
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import { AuthSessionRequest } from '../middlewares/types';
+import { getJwtConfig } from '../../../libs/utils/jwtConfig';
 const jwt = require('jsonwebtoken');
 
 export const isJwtTokenValid = (
   req: AuthSessionRequest,
-  privateKey: string,
+  keyOrSecret: string,
 ) => {
   const bearerHeader = req.header('authorization');
   if (typeof bearerHeader === 'undefined') {
@@ -21,7 +22,10 @@ export const isJwtTokenValid = (
     throw new BadRequestError('Token not found in Authorization header');
   }
 
-  const decodedData = jwt.verify(jwtAuthToken, privateKey);
+  const config = getJwtConfig();
+  const decodedData = jwt.verify(jwtAuthToken, keyOrSecret, {
+    algorithms: [config.algorithm]
+  });
   if (!decodedData) {
     throw new UnauthorizedError('Invalid Token');
   }

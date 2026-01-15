@@ -12,6 +12,7 @@ from app.config.constants.service import DefaultEndpoints, config_node_constants
 
 class SignedUrlConfig(BaseModel):
     private_key: str | None = None
+    public_key: str | None = None  # For RS256 verification
     expiration_minutes: int = 60
     algorithm: str = "HS256"
     url_prefix: str = "/api/v1/index"
@@ -20,16 +21,32 @@ class SignedUrlConfig(BaseModel):
     async def create(cls, config_service: ConfigurationService) -> "SignedUrlConfig":
         """Async factory method to create config using configuration service"""
         try:
-            # Assuming there's a config node for JWT settings
+            # Get algorithm from environment
+            from app.utils.jwt import get_jwt_algorithm
+            algorithm = get_jwt_algorithm()
+            
+            # Get secret keys from configuration
             secret_keys = await config_service.get_config(
                 config_node_constants.SECRET_KEYS.value
             )
-            private_key = secret_keys.get("scopedJwtSecret")
-            if not private_key:
-                raise ValueError(
-                    "Private key must be provided through configuration or environment"
-                )
-            return cls(private_key=private_key)
+            
+            if algorithm == "RS256":
+                # Use scoped JWT keys for RS256
+                private_key = secret_keys.get("scopedJwtPrivateKey")
+                public_key = secret_keys.get("scopedJwtPublicKey")
+                if not private_key or not public_key:
+                    raise ValueError(
+                        "scopedJwtPrivateKey and scopedJwtPublicKey must be provided for RS256 algorithm"
+                    )
+                return cls(private_key=private_key, public_key=public_key, algorithm=algorithm)
+            else:
+                # Use scoped JWT secret for HS256
+                private_key = secret_keys.get("scopedJwtSecret")
+                if not private_key:
+                    raise ValueError(
+                        "scopedJwtSecret must be provided for HS256 algorithm"
+                    )
+                return cls(private_key=private_key, algorithm=algorithm)
         except Exception:
             raise
 
@@ -138,9 +155,17 @@ class SignedUrlHandler:
         """Validate the JWT token and optional required claims"""
         try:
             self.logger.debug(f"Validating token: {token}")
+            
+            # For RS256, use public key for verification; for HS256, use the same secret
+            verify_key = (
+                self.signed_url_config.public_key 
+                if self.signed_url_config.algorithm == "RS256" and self.signed_url_config.public_key
+                else self.signed_url_config.private_key
+            )
+            
             payload = jwt.decode(
                 token,
-                self.signed_url_config.private_key,
+                verify_key,
                 algorithms=[self.signed_url_config.algorithm],
             )
             self.logger.debug(f"Payload: {payload}")

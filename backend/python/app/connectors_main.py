@@ -371,6 +371,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.oauth_config_registry = oauth_registry
     logger.info("✅ OAuth config registry initialized")
 
+    # Initialize RSA keys from etcd if using RS256
+    from app.utils.jwt import get_jwt_algorithm
+    from app.utils.jwt_config import initialize_jwt_config
+    
+    jwt_algorithm = get_jwt_algorithm()
+    logger.info(f"🔑 JWT Algorithm: {jwt_algorithm}")
+    
+    if jwt_algorithm == "RS256":
+        logger.info("🔑 Initializing JWT configuration from etcd...")
+        try:
+            jwt_config = await initialize_jwt_config(app_container.config_service())
+            logger.info(f"✅ JWT configuration initialized successfully")
+            logger.info(f"   - Algorithm: {jwt_config.algorithm}")
+            logger.info(f"   - Use RSA: {jwt_config.use_rsa}")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize JWT configuration: {str(e)}")
+            raise
+    else:
+        logger.info("✓ Using HS256 algorithm - will load secrets from etcd on demand")
+
     # Run OAuth credentials migration (AFTER connector and OAuth registries are initialized)
     # This migration needs OAuth registry to be populated to get OAuth infrastructure fields
     try:

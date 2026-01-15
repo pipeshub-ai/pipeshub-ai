@@ -7,7 +7,7 @@ import { Org } from '../../user_management/schema/org.schema';
 
 export async function generateAuthToken(
   user: Record<string, any>,
-  jwtSecret: string,
+  jwtKey: string,
 ) {
   // look up for
   const org = await Org.findOne({ orgId: user.orgId, isDeleted: false });
@@ -17,7 +17,7 @@ export async function generateAuthToken(
   const accountType = org?.accountType;
 
   return authJwtGenerator(
-    jwtSecret,
+    jwtKey,
     user.email,
     user._id,
     user.orgId,
@@ -28,7 +28,7 @@ export async function generateAuthToken(
 
 export async function generateFetchConfigAuthToken(
   user: Record<string, any>,
-  scopedJwtSecret: string,
+  scopedJwtKey: string,
 ) {
-  return fetchConfigJwtGenerator(user._id, user.orgId, scopedJwtSecret);
+  return fetchConfigJwtGenerator(user._id, user.orgId, scopedJwtKey);
 }

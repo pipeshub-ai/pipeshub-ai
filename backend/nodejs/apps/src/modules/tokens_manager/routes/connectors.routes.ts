@@ -8,6 +8,8 @@
  * @module connectors/routes
  */
 
+import { getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig';
+
 import { Router, Response, NextFunction } from 'express';
 import { Container } from 'inversify';
 import { z } from 'zod';
@@ -630,7 +632,7 @@ export function createConnectorRouter(container: Container): Router {
         const configResponse = await getGoogleWorkspaceConfig(
           req,
           config.cmBackend,
-          config.scopedJwtSecret,
+          getJwtKeyFromConfig(config, 'scopedJwt', true),
         );
 
         if (configResponse.statusCode !== 200) {
@@ -688,7 +690,7 @@ export function createConnectorRouter(container: Container): Router {
         const credentialsResponse = await setGoogleWorkspaceIndividualCredentials(
           req,
           config.cmBackend,
-          config.scopedJwtSecret,
+          getJwtKeyFromConfig(config, 'scopedJwt', true),
           tokenData.access_token,
           tokenData.refresh_token,
           tokenData.expires_in * 1000 + Date.now(),

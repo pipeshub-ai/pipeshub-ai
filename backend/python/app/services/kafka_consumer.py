@@ -5,7 +5,7 @@ from typing import Dict, List, Set
 
 import aiohttp
 from aiokafka import AIOKafkaConsumer
-from jose import jwt
+from app.utils.jwt import generate_jwt
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.config.configuration_service import ConfigurationService
@@ -556,36 +556,8 @@ class KafkaConsumerManager:
             self.logger.error(f"Error during cleanup: {e}")
 
     async def generate_jwt(self, token_payload: dict) -> str:
-        """
-        Generate a JWT token using the jose library.
-
-        Args:
-            token_payload (dict): The payload to include in the JWT
-
-        Returns:
-            str: The generated JWT token
-        """
-        # Get the JWT secret from environment variable
-        secret_keys = await self.config_service.get_config(
-            config_node_constants.SECRET_KEYS.value
-        )
-        scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
-        if not scoped_jwt_secret:
-            raise ValueError("SCOPED_JWT_SECRET environment variable is not set")
-
-        # Add standard claims if not present
-        if "exp" not in token_payload:
-            # Set expiration to 1 hour from now
-            token_payload["exp"] = datetime.now(timezone.utc) + timedelta(hours=1)
-
-        if "iat" not in token_payload:
-            # Set issued at to current time
-            token_payload["iat"] = datetime.now(timezone.utc)
-
-        # Generate the JWT token using jose
-        token = jwt.encode(token_payload, scoped_jwt_secret, algorithm="HS256")
-
-        return token
+        """Generate JWT token using RS256"""
+        return await generate_jwt(self.config_service, token_payload, use_scoped=True)
 
     async def process_scheduled_updates(self) -> None:
         """Process any scheduled updates that are ready"""

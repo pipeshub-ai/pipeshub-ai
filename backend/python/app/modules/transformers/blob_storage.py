@@ -14,6 +14,7 @@ from app.config.constants.service import (
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.jwt import generate_jwt
 
 
 class BlobStorage(Transformer):
@@ -126,18 +127,12 @@ class BlobStorage(Transformer):
 
             # Generate JWT token
             try:
+                # Generate JWT token for authentication
                 payload = {
                     "orgId": org_id,
                     "scopes": [TokenScopes.STORAGE_TOKEN.value],
                 }
-                secret_keys = await self.config_service.get_config(
-                    config_node_constants.SECRET_KEYS.value
-                )
-                scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
-                if not scoped_jwt_secret:
-                    raise ValueError("Missing scoped JWT secret")
-
-                jwt_token = jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
+                jwt_token = await generate_jwt(self.config_service, payload, use_scoped=True)
                 headers = {
                     "Authorization": f"Bearer {jwt_token}"
                 }
@@ -315,18 +310,12 @@ class BlobStorage(Transformer):
             self.logger.info("🔍 Retrieving record from storage for virtual_record_id: %s", virtual_record_id)
             try:
                 # Generate JWT token for authorization
+                # Generate JWT token for authentication
                 payload = {
                     "orgId": org_id,
                     "scopes": [TokenScopes.STORAGE_TOKEN.value],
                 }
-                secret_keys = await self.config_service.get_config(
-                    config_node_constants.SECRET_KEYS.value
-                )
-                scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
-                if not scoped_jwt_secret:
-                    raise ValueError("Missing scoped JWT secret")
-
-                jwt_token = jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
+                jwt_token = await generate_jwt(self.config_service, payload, use_scoped=True)
                 headers = {
                     "Authorization": f"Bearer {jwt_token}"
                 }

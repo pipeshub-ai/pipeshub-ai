@@ -10,6 +10,7 @@ import {
   mailJwtGenerator,
   refreshTokenJwtGenerator,
 } from '../../../libs/utils/createJwt';
+import { getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig';
 import { generateOtp } from '../utils/generateOtp';
 
 import { passwordValidator } from '../utils/passwordValidator';
@@ -139,7 +140,7 @@ export class UserAccountController {
         await this.mailService.sendMail({
           emailTemplateType: 'suspiciousLoginAttempt',
           initiator: {
-            jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+            jwtAuthToken: mailJwtGenerator(email, getJwtKeyFromConfig(this.config, 'scopedJwt', true)),
           },
           usersMails: [email],
           subject: 'Alert : Suspicious Login Attempt Detected',
@@ -205,7 +206,7 @@ export class UserAccountController {
     try {
       const { email } = req.body;
 
-      const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
+      const authToken = iamJwtGenerator(email, getJwtKeyFromConfig(this.config, 'scopedJwt', true));
       let result = await this.iamService.getUserByEmail(email, authToken);
 
       if (result.statusCode !== 200) {
@@ -267,7 +268,7 @@ export class UserAccountController {
             this.config.cmBackend,
             GOOGLE_AUTH_CONFIG_PATH,
             user,
-            this.config.scopedJwtSecret,
+            getJwtKeyFromConfig(this.config, 'scopedJwt', true),
           );
         authProviders.google = configManagerResponse.data;
       }
@@ -278,7 +279,7 @@ export class UserAccountController {
             this.config.cmBackend,
             MICROSOFT_AUTH_CONFIG_PATH,
             user,
-            this.config.scopedJwtSecret,
+            getJwtKeyFromConfig(this.config, 'scopedJwt', true),
           );
         authProviders.microsoft = configManagerResponse.data;
       }
@@ -289,7 +290,7 @@ export class UserAccountController {
             this.config.cmBackend,
             AZURE_AD_AUTH_CONFIG_PATH,
             user,
-            this.config.scopedJwtSecret,
+            getJwtKeyFromConfig(this.config, 'scopedJwt', true),
           );
         authProviders.azuread = configManagerResponse.data;
       }
@@ -300,7 +301,7 @@ export class UserAccountController {
             this.config.cmBackend,
             OAUTH_AUTH_CONFIG_PATH,
             user,
-            this.config.scopedJwtSecret,
+            getJwtKeyFromConfig(this.config, 'scopedJwt', true),
           );
         
         const { clientSecret, tokenEndpoint, userInfoEndpoint, ...publicConfig } = configManagerResponse.data;
@@ -325,7 +326,7 @@ export class UserAccountController {
           user.email,
           user._id,
           user.orgId,
-          this.config.scopedJwtSecret,
+          getJwtKeyFromConfig(this.config, 'scopedJwt', true),
         );
       const resetPasswordLink = `${this.config.frontendUrl}/reset-password#token=${passwordResetToken}`;
       const org = await Org.findOne({ _id: user.orgId, isDeleted: false });
@@ -448,7 +449,7 @@ export class UserAccountController {
         }
       }
       
-      const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
+      const authToken = iamJwtGenerator(email, getJwtKeyFromConfig(this.config, 'scopedJwt', true));
       const user = await this.iamService.getUserByEmail(email, authToken);
 
       if (user.statusCode !== 200) {
@@ -557,7 +558,7 @@ export class UserAccountController {
 
       const adminCheckResult = await this.iamService.checkAdminUser(
         userId,
-        authJwtGenerator(this.config.jwtSecret, null, userId, orgId),
+        authJwtGenerator(getJwtKeyFromConfig(this.config, 'jwt', true), null, userId, orgId),
       );
 
       if (adminCheckResult.statusCode !== 200) {
@@ -597,7 +598,7 @@ export class UserAccountController {
 
       const adminCheckResult = await this.iamService.checkAdminUser(
         userId,
-        authJwtGenerator(this.config.jwtSecret, null, userId, orgId),
+        authJwtGenerator(getJwtKeyFromConfig(this.config, 'jwt', true), null, userId, orgId),
       );
 
       if (adminCheckResult.statusCode !== 200) {
@@ -637,7 +638,7 @@ export class UserAccountController {
       const userId = req.tokenPayload?.userId;
       const userFindResult = await this.iamService.getUserById(
         userId,
-        iamUserLookupJwtGenerator(userId, orgId, this.config.scopedJwtSecret),
+        iamUserLookupJwtGenerator(userId, orgId, getJwtKeyFromConfig(this.config, 'scopedJwt', true)),
       );
 
       if (userFindResult.statusCode !== 200) {
@@ -711,7 +712,7 @@ export class UserAccountController {
         iamUserLookupJwtGenerator(
           req.user?.userId,
           req.user?.orgId,
-          this.config.scopedJwtSecret,
+          getJwtKeyFromConfig(this.config, 'scopedJwt', true),
         ),
       );
 
@@ -720,7 +721,7 @@ export class UserAccountController {
       }
 
       const user = userFindResult.data;
-      const accessToken = await generateAuthToken(user, this.config.jwtSecret);
+      const accessToken = await generateAuthToken(user, getJwtKeyFromConfig(this.config, 'jwt', true));
 
       res.status(200).send({
         data: 'password reset',
@@ -785,7 +786,7 @@ export class UserAccountController {
       const result = await this.mailService.sendMail({
         emailTemplateType: 'loginWithOTP',
         initiator: {
-          jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+          jwtAuthToken: mailJwtGenerator(email, getJwtKeyFromConfig(this.config, 'scopedJwt', true)),
         },
 
         usersMails: [email],
@@ -821,7 +822,7 @@ export class UserAccountController {
         activityType: OTP_GENERATE,
         ipAddress: req.ip,
       });
-      const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
+      const authToken = iamJwtGenerator(email, getJwtKeyFromConfig(this.config, 'scopedJwt', true));
       let result = await this.iamService.getUserByEmail(email, authToken);
       if (result.statusCode !== 200) {
         throw new NotFoundError(result.data);
@@ -863,7 +864,7 @@ export class UserAccountController {
 
       const result = await this.iamService.getUserById(
         userId,
-        iamUserLookupJwtGenerator(userId, orgId, this.config.scopedJwtSecret),
+        iamUserLookupJwtGenerator(userId, orgId, getJwtKeyFromConfig(this.config, 'scopedJwt', true)),
       );
       if (result.statusCode !== 200) {
         throw new NotFoundError(result.data);
@@ -896,7 +897,7 @@ export class UserAccountController {
         );
       }
 
-      const accessToken = await generateAuthToken(user, this.config.jwtSecret);
+      const accessToken = await generateAuthToken(user, getJwtKeyFromConfig(this.config, 'jwt', true));
 
       res.status(200).json({ user: user, accessToken: accessToken });
       return;
@@ -978,7 +979,7 @@ export class UserAccountController {
         await this.mailService.sendMail({
           emailTemplateType: 'suspiciousLoginAttempt',
           initiator: {
-            jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+            jwtAuthToken: mailJwtGenerator(email, getJwtKeyFromConfig(this.config, 'scopedJwt', true)),
           },
           usersMails: [email],
           subject: 'Alert : Suspicious Login Attempt Detected',
@@ -1046,7 +1047,7 @@ export class UserAccountController {
         this.config.cmBackend,
         GOOGLE_AUTH_CONFIG_PATH,
         user,
-        this.config.scopedJwtSecret,
+        getJwtKeyFromConfig(this.config, 'scopedJwt', true),
       );
     const { clientId } = configManagerResponse.data;
 
@@ -1089,7 +1090,7 @@ export class UserAccountController {
         this.config.cmBackend,
         MICROSOFT_AUTH_CONFIG_PATH,
         user,
-        this.config.scopedJwtSecret,
+        getJwtKeyFromConfig(this.config, 'scopedJwt', true),
       );
     const { tenantId } = configManagerResponse.data;
 
@@ -1113,7 +1114,7 @@ export class UserAccountController {
         this.config.cmBackend,
         AZURE_AD_AUTH_CONFIG_PATH,
         user,
-        this.config.scopedJwtSecret,
+        getJwtKeyFromConfig(this.config, 'scopedJwt', true),
       );
     const { tenantId } = configManagerResponse.data;
     await validateAzureAdUser(credentials, tenantId);
@@ -1136,7 +1137,7 @@ export class UserAccountController {
         this.config.cmBackend,
         OAUTH_AUTH_CONFIG_PATH,
         user,
-        this.config.scopedJwtSecret,
+        getJwtKeyFromConfig(this.config, 'scopedJwt', true),
       );
     
     const { 
@@ -1261,7 +1262,7 @@ export class UserAccountController {
       }
       const authToken = iamJwtGenerator(
         sessionInfo.email,
-        this.config.scopedJwtSecret,
+        getJwtKeyFromConfig(this.config, 'scopedJwt', true),
       );
       const userFindResult = await this.iamService.getUserByEmail(
         sessionInfo.email,
@@ -1327,7 +1328,7 @@ export class UserAccountController {
               this.config.cmBackend,
               GOOGLE_AUTH_CONFIG_PATH,
               user,
-              this.config.scopedJwtSecret,
+              getJwtKeyFromConfig(this.config, 'scopedJwt', true),
             );
           authProviders.google = configManagerResponse.data;
         }
@@ -1338,7 +1339,7 @@ export class UserAccountController {
               this.config.cmBackend,
               MICROSOFT_AUTH_CONFIG_PATH,
               user,
-              this.config.scopedJwtSecret,
+              getJwtKeyFromConfig(this.config, 'scopedJwt', true),
             );
           authProviders.microsoft = configManagerResponse.data;
         }
@@ -1349,7 +1350,7 @@ export class UserAccountController {
               this.config.cmBackend,
               AZURE_AD_AUTH_CONFIG_PATH,
               user,
-              this.config.scopedJwtSecret,
+              getJwtKeyFromConfig(this.config, 'scopedJwt', true),
             );
           authProviders.azuread = configManagerResponse.data;
         }
@@ -1360,7 +1361,7 @@ export class UserAccountController {
               this.config.cmBackend,
               OAUTH_AUTH_CONFIG_PATH,
               user,
-              this.config.scopedJwtSecret,
+              getJwtKeyFromConfig(this.config, 'scopedJwt', true),
             );
           
           const { clientSecret, tokenEndpoint, userInfoEndpoint, ...publicConfig } = configManagerResponse.data;
@@ -1379,7 +1380,7 @@ export class UserAccountController {
         await this.sessionService.completeAuthentication(sessionInfo);
         const accessToken = await generateAuthToken(
           user,
-          this.config.jwtSecret,
+          getJwtKeyFromConfig(this.config, 'jwt', true),
         );
 
         if (!user.hasLoggedIn) {
@@ -1396,7 +1397,7 @@ export class UserAccountController {
           refreshToken: refreshTokenJwtGenerator(
             user._id,
             user.orgId,
-            this.config.scopedJwtSecret,
+            getJwtKeyFromConfig(this.config, 'scopedJwt', true),
           ),
         });
       }
@@ -1436,7 +1437,8 @@ export class UserAccountController {
           designation,
           fullName,
         },
-        jwt.sign({ userId, orgId }, this.config.jwtSecret, {
+        jwt.sign({ userId, orgId }, getJwtKeyFromConfig(this.config, 'jwt', true), {
+          algorithm: this.config.jwtAlgorithm as jwt.Algorithm,
           expiresIn: '24h',
         }),
       );
@@ -1472,7 +1474,7 @@ export class UserAccountController {
       }
 
       // Find user to get proper context for configuration access
-      const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
+      const authToken = iamJwtGenerator(email, getJwtKeyFromConfig(this.config, 'scopedJwt', true));
       const user = await this.iamService.getUserByEmail(email, authToken);
 
       if (user.statusCode !== 200) {
@@ -1485,7 +1487,7 @@ export class UserAccountController {
           this.config.cmBackend,
           OAUTH_AUTH_CONFIG_PATH,
           user.data,
-          this.config.scopedJwtSecret,
+          getJwtKeyFromConfig(this.config, 'scopedJwt', true),
         );
 
       if (!configManagerResponse.data) {

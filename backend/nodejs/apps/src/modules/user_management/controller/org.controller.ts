@@ -8,6 +8,7 @@ import { UserGroups } from '../schema/userGroup.schema';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { OrgLogos } from '../schema/orgLogo.schema';
 import sharp from 'sharp';
+import { getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig';
 import { inject, injectable } from 'inversify';
 import { MailService } from '../services/mail.service';
 import {
@@ -199,7 +200,7 @@ export class OrgController {
           initiator: {
             jwtAuthToken: mailJwtGenerator(
               contactEmail,
-              this.config.scopedJwtSecret,
+              getJwtKeyFromConfig(this.config, 'scopedJwt', true),
             ),
           },
           usersMails: [contactEmail],

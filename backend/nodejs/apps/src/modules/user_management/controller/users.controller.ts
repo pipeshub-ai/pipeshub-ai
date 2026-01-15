@@ -9,6 +9,7 @@ import {
   jwtGeneratorForNewAccountPassword,
   mailJwtGenerator,
 } from '../../../libs/utils/createJwt';
+import { getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig';
 import {
   BadRequestError,
   InternalServerError,
@@ -908,7 +909,7 @@ export class UserController {
       const authToken = fetchConfigJwtGenerator(
         userId,
         orgId,
-        this.config.scopedJwtSecret,
+        getJwtKeyFromConfig(this.config, 'scopedJwt', true),
       );
       let result = await this.authService.passwordMethodEnabled(authToken);
 
@@ -921,7 +922,7 @@ export class UserController {
             email,
             id,
             orgId,
-            this.config.scopedJwtSecret,
+            getJwtKeyFromConfig(this.config, 'scopedJwt', true),
           );
 
         result = await this.mailService.sendMail({
@@ -944,7 +945,7 @@ export class UserController {
         result = await this.mailService.sendMail({
           emailTemplateType: 'appuserInvite',
           initiator: {
-            jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+            jwtAuthToken: mailJwtGenerator(email, getJwtKeyFromConfig(this.config, 'scopedJwt', true)),
           },
           usersMails: [email],
           subject: `You are invited to join ${org?.registeredName} `,
@@ -1108,7 +1109,7 @@ export class UserController {
         const authToken = fetchConfigJwtGenerator(
           userId.toString(),
           req.user?.orgId,
-          this.config.scopedJwtSecret,
+          getJwtKeyFromConfig(this.config, 'scopedJwt', true),
         );
         let result = await this.authService.passwordMethodEnabled(authToken);
 
@@ -1122,7 +1123,7 @@ export class UserController {
               email,
               userId.toString(),
               orgId,
-              this.config.scopedJwtSecret,
+              getJwtKeyFromConfig(this.config, 'scopedJwt', true),
             );
 
           result = await this.mailService.sendMail({
@@ -1148,7 +1149,7 @@ export class UserController {
             initiator: {
               jwtAuthToken: mailJwtGenerator(
                 email,
-                this.config.scopedJwtSecret,
+                getJwtKeyFromConfig(this.config, 'scopedJwt', true),
               ),
             },
             usersMails: [email],
@@ -1195,7 +1196,7 @@ export class UserController {
         const authToken = fetchConfigJwtGenerator(
           userId.toString(),
           req.user?.orgId,
-          this.config.scopedJwtSecret,
+          getJwtKeyFromConfig(this.config, 'scopedJwt', true),
         );
         let result = await this.authService.passwordMethodEnabled(authToken);
 
@@ -1209,7 +1210,7 @@ export class UserController {
               email,
               userId.toString(),
               orgId,
-              this.config.scopedJwtSecret,
+              getJwtKeyFromConfig(this.config, 'scopedJwt', true),
             );
 
           result = await this.mailService.sendMail({
@@ -1235,7 +1236,7 @@ export class UserController {
             initiator: {
               jwtAuthToken: mailJwtGenerator(
                 email,
-                this.config.scopedJwtSecret,
+                getJwtKeyFromConfig(this.config, 'scopedJwt', true),
               ),
             },
             usersMails: [email],

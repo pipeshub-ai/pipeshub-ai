@@ -9,6 +9,7 @@ import {
   iamJwtGenerator,
   refreshTokenJwtGenerator,
 } from '../../../libs/utils/createJwt';
+import { getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig';
 import { IamService } from '../services/iam.service';
 import {
   BadRequestError,
@@ -156,7 +157,7 @@ export function createSamlRouter(container: Container, userManagerContainer: Con
 
         const authToken = iamJwtGenerator(
           req.user.email,
-          config.scopedJwtSecret,
+          getJwtKeyFromConfig(config, 'scopedJwt', true),
         );
 
         // Try to find existing user, if not found, auto-provision via JIT
@@ -187,11 +188,11 @@ export function createSamlRouter(container: Container, userManagerContainer: Con
         const userId = user._id;
 
         await sessionService.completeAuthentication(req.sessionInfo);
-        const accessToken = await generateAuthToken(user, config.jwtSecret);
+        const accessToken = await generateAuthToken(user, getJwtKeyFromConfig(config, 'jwt', true));
         const refreshToken = refreshTokenJwtGenerator(
           userId,
           orgId,
-          config.scopedJwtSecret,
+          getJwtKeyFromConfig(config, 'scopedJwt', true),
         );
         if (!user.hasLoggedIn) {
           const userInfo = {

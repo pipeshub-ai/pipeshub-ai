@@ -1,8 +1,13 @@
 import { ConfigService } from '../services/cm.service';
 
 export interface AppConfig {
-  jwtSecret: string;
-  scopedJwtSecret: string;
+  jwtAlgorithm: 'HS256' | 'RS256';
+  jwtSecret?: string;
+  jwtPrivateKey?: string;
+  jwtPublicKey?: string;
+  scopedJwtSecret?: string;
+  scopedJwtPrivateKey?: string;
+  scopedJwtPublicKey?: string;
   cookieSecret: string;
   rsAvailable: string;
 
@@ -72,10 +77,16 @@ export interface AppConfig {
 
 export const loadAppConfig = async (): Promise<AppConfig> => {
   const configService = ConfigService.getInstance();
+  const jwtAlgorithm = await configService.getJwtAlgorithm();
 
   return {
-    jwtSecret: await configService.getJwtSecret(),
-    scopedJwtSecret: await configService.getScopedJwtSecret(),
+    jwtAlgorithm,
+    jwtSecret: jwtAlgorithm === 'HS256' ? await configService.getJwtSecret() : undefined,
+    jwtPrivateKey: jwtAlgorithm === 'RS256' ? await configService.getJwtPrivateKey() : undefined,
+    jwtPublicKey: jwtAlgorithm === 'RS256' ? await configService.getJwtPublicKey() : undefined,
+    scopedJwtSecret: jwtAlgorithm === 'HS256' ? await configService.getScopedJwtSecret() : undefined,
+    scopedJwtPrivateKey: jwtAlgorithm === 'RS256' ? await configService.getScopedJwtPrivateKey() : undefined,
+    scopedJwtPublicKey: jwtAlgorithm === 'RS256' ? await configService.getScopedJwtPublicKey() : undefined,
     cookieSecret: await configService.getCookieSecret(),
     rsAvailable: await configService.getRsAvailable(),
 
