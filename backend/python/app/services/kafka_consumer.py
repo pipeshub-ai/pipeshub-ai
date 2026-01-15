@@ -349,7 +349,7 @@ class KafkaConsumerManager:
                     return True
                 except Exception as e:
                     error_occurred = True
-                    error_msg = f"Failed to process signed URL route: {str(e)}"
+                    error_msg = str(e)
                     raise
             elif payload_data and payload_data.get("signedUrl"):
                 try:
@@ -368,7 +368,7 @@ class KafkaConsumerManager:
                     return True
                 except Exception as e:
                     error_occurred = True
-                    error_msg = f"Failed to process signed URL: {str(e)}"
+                    error_msg = str(e)
                     raise
             else:
                 try:
@@ -402,7 +402,7 @@ class KafkaConsumerManager:
                     return True
                 except Exception as e:
                     error_occurred = True
-                    error_msg = f"Failed to process signed URL route: {str(e)}"
+                    error_msg = str(e)
                     raise
 
         except IndexingError as e:
