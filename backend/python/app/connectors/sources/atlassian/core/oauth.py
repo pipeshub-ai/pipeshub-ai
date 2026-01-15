@@ -77,7 +77,7 @@ class AtlassianScope(Enum):
 
     @classmethod
     def get_jira_basic(cls) -> List[str]:
-        """Get basic Jira scopes (classic scopes for broad access)"""
+        """Get essential Jira scopes (for minimal user/work access)"""
         return [
             cls.JIRA_WORK_READ.value,
             cls.JIRA_USER_READ.value,
