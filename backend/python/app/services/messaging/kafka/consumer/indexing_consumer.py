@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from logging import Logger
 from typing import Any, AsyncGenerator, Callable, Dict, Optional, Set
@@ -71,13 +70,13 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             """Run the event loop in the worker thread"""
             self.worker_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.worker_loop)
-            
+
             # Create semaphores in the worker thread's event loop
             self.parsing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PARSING)
             self.indexing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_INDEXING)
-            
+
             self.logger.info("Worker thread event loop started with semaphores initialized")
-            
+
             # Run the event loop until stopped
             try:
                 self.worker_loop.run_forever()
@@ -86,16 +85,16 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 pending = asyncio.all_tasks(self.worker_loop)
                 for task in pending:
                     task.cancel()
-                
+
                 # Wait for tasks to complete cancellation
                 if pending:
                     self.worker_loop.run_until_complete(
                         asyncio.gather(*pending, return_exceptions=True)
                     )
-                
+
                 self.worker_loop.close()
                 self.logger.info("Worker thread event loop closed")
-        
+
         # Create executor with single worker thread
         self.worker_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="indexing-worker")
         self.worker_executor.submit(run_worker_loop)
@@ -109,13 +108,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
             # Start worker thread first
             self.__start_worker_thread()
-            
+
             # Wait a moment for worker thread to initialize
-            await asyncio.sleep(0.1)
-            
-            # Verify worker loop is ready
-            if not self.worker_loop:
-                raise RuntimeError("Worker thread event loop not initialized")
+            for _ in range(600):  # Wait up to 60 seconds
+                if self.worker_loop and self.worker_loop.is_running():
+                    break
+                await asyncio.sleep(0.1)
+            else:
+                raise RuntimeError("Worker thread event loop not initialized in time")
 
             kafka_dict = IndexingKafkaConsumer.kafka_config_to_dict(self.kafka_config)
             topics = kafka_dict.pop('topics')
@@ -138,7 +138,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             # Stop the event loop (the finally block in run_worker_loop will handle cleanup)
             self.worker_loop.call_soon_threadsafe(self.worker_loop.stop)
             self.logger.info("Worker thread event loop stop requested")
-        
+
         # Shutdown the executor and wait for thread to finish
         if self.worker_executor:
             self.worker_executor.shutdown(wait=True)
@@ -151,7 +151,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         try:
             # Stop worker thread first
             self.__stop_worker_thread()
-            
+
             if self.consumer:
                 await self.consumer.stop()
                 self.logger.info("Kafka consumer stopped")
@@ -196,10 +196,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         if self.active_tasks:
             self.logger.info(f"Waiting for {len(self.active_tasks)} active tasks to complete...")
             import concurrent.futures
-            _ , not_done = concurrent.futures.wait(
-                self.active_tasks,
-                timeout=30.0,
-                return_when=concurrent.futures.ALL_COMPLETED
+            loop = asyncio.get_running_loop()
+            _, not_done = await loop.run_in_executor(
+                None,
+                lambda: concurrent.futures.wait(
+                    self.active_tasks,
+                    timeout=30.0,
+                    return_when=concurrent.futures.ALL_COMPLETED
+                )
             )
             if not_done:
                 self.logger.warning(f"{len(not_done)} tasks did not complete within timeout")
@@ -207,7 +211,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         if self.consumer:
             await self.consumer.stop()
             self.logger.info("✅ Kafka consumer stopped")
-        
+
         # Stop worker thread
         self.__stop_worker_thread()
 
@@ -298,13 +302,12 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
     async def __start_processing_task(self, message) -> None:
         """Start a new task for processing a message with semaphore control.
-        
         Submits the task to the worker thread's event loop instead of the main loop.
         """
         if not self.worker_loop:
             self.logger.error("Worker loop not initialized, cannot process message")
             return
-        
+
         # Submit coroutine to worker thread's event loop
         future = asyncio.run_coroutine_threadsafe(
             self.__process_message_wrapper(message),
