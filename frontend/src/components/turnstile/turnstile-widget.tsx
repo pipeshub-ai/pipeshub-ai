@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, memo } from 'react';
+import { useEffect, useRef, useState, memo, useImperativeHandle, forwardRef } from 'react';
 
 import Box from '@mui/material/Box';
 
@@ -33,7 +33,11 @@ interface TurnstileWidgetProps {
   className?: string;
 }
 
-export const TurnstileWidget = memo(({
+export interface TurnstileWidgetHandle {
+  reset: () => void;
+}
+
+export const TurnstileWidget = memo(forwardRef<TurnstileWidgetHandle, TurnstileWidgetProps>(({
   siteKey,
   onSuccess,
   onError,
@@ -41,11 +45,24 @@ export const TurnstileWidget = memo(({
   theme = 'auto',
   size = 'normal',
   className,
-}: TurnstileWidgetProps) => {
+}, ref) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const widgetIdRef = useRef<string | null>(null);
   const [isReady, setIsReady] = useState(false);
   const isMountedRef = useRef(true);
+
+  // Expose reset method to parent components
+  useImperativeHandle(ref, () => ({
+    reset: () => {
+      if (widgetIdRef.current && window.turnstile) {
+        try {
+          window.turnstile.reset(widgetIdRef.current);
+        } catch (error) {
+          console.error('Error resetting Turnstile widget:', error);
+        }
+      }
+    },
+  }));
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -123,4 +140,4 @@ export const TurnstileWidget = memo(({
       }}
     />
   );
-});
+}));

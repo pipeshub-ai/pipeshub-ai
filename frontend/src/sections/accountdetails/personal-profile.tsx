@@ -4,7 +4,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import lockIcon from '@iconify-icons/mdi/lock-outline';
 import visibilityIcon from '@iconify-icons/mdi/eye-outline';
 import infoIcon from '@iconify-icons/solar/info-circle-bold';
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import visibilityOffIcon from '@iconify-icons/mdi/eye-off-outline';
 
 import { LoadingButton } from '@mui/lab';
@@ -39,7 +39,7 @@ import { useTurnstile } from 'src/hooks/use-turnstile';
 
 import { Iconify } from 'src/components/iconify';
 import { Form, Field } from 'src/components/hook-form';
-import { TurnstileWidget } from 'src/components/turnstile/turnstile-widget';
+import { TurnstileWidget, type TurnstileWidgetHandle } from 'src/components/turnstile/turnstile-widget';
 
 import { useAuthContext } from 'src/auth/hooks';
 import { STORAGE_KEY } from 'src/auth/context/jwt';
@@ -134,6 +134,7 @@ export default function PersonalProfile() {
     handleExpire: handleTurnstileExpire,
     resetTurnstile 
   } = useTurnstile();
+  const turnstileRef = useRef<TurnstileWidgetHandle>(null);
 
   const methods = useForm<ProfileFormData>({
     resolver: zodResolver(ProfileSchema),
@@ -375,6 +376,12 @@ export default function PersonalProfile() {
         message: 'Failed to change password. Please try again.',
         severity: 'error',
       });
+      
+      // Reset CAPTCHA on error
+      if (CONFIG.turnstileSiteKey) {
+        turnstileRef.current?.reset();
+        resetTurnstile();
+      }
     }
   };
 
@@ -972,6 +979,7 @@ export default function PersonalProfile() {
             {CONFIG.turnstileSiteKey && (
               <Box sx={{ mt: 2, mb: 1 }}>
                 <TurnstileWidget
+                  ref={turnstileRef}
                   siteKey={CONFIG.turnstileSiteKey}
                   onSuccess={handleTurnstileSuccess}
                   onError={handleTurnstileError}

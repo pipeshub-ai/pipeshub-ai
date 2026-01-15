@@ -3,7 +3,7 @@ import type { Theme, SxProps } from '@mui/material';
 import { z as zod } from 'zod';
 import { useForm } from 'react-hook-form';
 import { useDispatch } from 'react-redux';
-import { useState, useEffect } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import eyeIcon from '@iconify-icons/solar/eye-bold';
 import { zodResolver } from '@hookform/resolvers/zod';
 import eyeClosedIcon from '@iconify-icons/solar/eye-closed-bold';
@@ -28,7 +28,7 @@ import { setEmail } from 'src/store/auth-slice';
 
 import { Iconify } from 'src/components/iconify';
 import { Form, Field } from 'src/components/hook-form';
-import { TurnstileWidget } from 'src/components/turnstile/turnstile-widget';
+import { TurnstileWidget, type TurnstileWidgetHandle } from 'src/components/turnstile/turnstile-widget';
 
 import { useAuthContext } from '../../hooks';
 import { signInWithPassword } from '../../context/jwt';
@@ -70,7 +70,8 @@ export default function PasswordSignIn({
 
   const password = useBoolean();
 
-  const { turnstileToken, handleSuccess, handleError, handleExpire } = useTurnstile();
+  const { turnstileToken, handleSuccess, handleError, handleExpire, resetTurnstile } = useTurnstile();
+  const turnstileRef = useRef<TurnstileWidgetHandle>(null);
 
   const methods = useForm<SignInSchemaType>({
     resolver: zodResolver(SignInSchema),
@@ -109,6 +110,12 @@ export default function PasswordSignIn({
       router.refresh();
     } catch (error) {
       setErrorMsg(typeof error === 'string' ? error : (error as ErrorResponse).errorMessage);
+      
+      // Reset CAPTCHA on error
+      if (CONFIG.turnstileSiteKey) {
+        turnstileRef.current?.reset();
+        resetTurnstile();
+      }
     }
   });
 
@@ -125,7 +132,14 @@ export default function PasswordSignIn({
             <Link
               variant="body2"
               color="inherit"
-              onClick={() => onForgotPassword(turnstileToken)}
+              onClick={() => {
+                onForgotPassword(turnstileToken);
+                // Reset CAPTCHA when navigating to forgot password
+                if (CONFIG.turnstileSiteKey) {
+                  turnstileRef.current?.reset();
+                  resetTurnstile();
+                }
+              }}
               sx={{ 
                 cursor: CONFIG.turnstileSiteKey && !turnstileToken ? 'not-allowed' : 'pointer',
                 opacity: CONFIG.turnstileSiteKey && !turnstileToken ? 0.6 : 1,
@@ -162,6 +176,7 @@ export default function PasswordSignIn({
 
       {CONFIG.turnstileSiteKey && (
         <TurnstileWidget
+          ref={turnstileRef}
           siteKey={CONFIG.turnstileSiteKey}
           onSuccess={handleSuccess}
           onError={handleError}
