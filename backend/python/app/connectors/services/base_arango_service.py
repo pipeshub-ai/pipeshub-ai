@@ -25,6 +25,7 @@ from app.config.constants.arangodb import (
     LegacyGraphNames,
     OriginTypes,
     ProgressStatus,
+    RecordRelations,
     RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
@@ -5101,6 +5102,54 @@ class BaseArangoService:
             )
             return None
 
+    async def get_record_by_external_revision_id(
+        self, connector_id: str, external_revision_id: str, transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[Record]:
+        """
+        Get record using the external revision ID (e.g., etag for S3).
+
+        Args:
+            connector_id: Connector ID
+            external_revision_id (str): External revision ID to look up (e.g., etag)
+            transaction (Optional[TransactionDatabase]): Optional database transaction
+
+        Returns:
+            Optional[Record]: Record object if found, None otherwise
+        """
+        try:
+            self.logger.debug(
+                "🚀 Retrieving record by external revision ID %s for connector %s", external_revision_id, connector_id
+            )
+
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.externalRevisionId == @external_revision_id AND record.connectorId == @connector_id
+                RETURN record
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query, bind_vars={"external_revision_id": external_revision_id, "connector_id": connector_id}
+            )
+            result = next(cursor, None)
+
+            if result:
+                self.logger.debug(
+                    "✅ Successfully retrieved record by external revision ID %s for connector %s", external_revision_id, connector_id
+                )
+                return Record.from_arango_base_record(result)
+            else:
+                self.logger.debug(
+                    "⚠️ No record found for external revision ID %s for connector %s", external_revision_id, connector_id
+                )
+                return None
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve record by external revision ID %s for connector %s: %s", external_revision_id, connector_id, str(e)
+            )
+            return None
+
     async def get_record_by_issue_key(
         self, connector_id: str, issue_key: str, transaction: Optional[TransactionDatabase] = None
     ) -> Optional[Record]:
@@ -6272,6 +6321,43 @@ class BaseArangoService:
             return count
         except Exception as e:
             self.logger.error("❌ Failed to delete edges from source: %s in collection: %s: %s", from_key, collection, str(e))
+            return 0
+
+    async def delete_parent_child_edges_to(self, to_key: str, transaction: Optional[TransactionDatabase] = None) -> int:
+        """
+        Delete PARENT_CHILD edges pointing to a specific target record.
+
+        Args:
+            to_key: The target node key (e.g., "records/12345")
+            transaction: Optional transaction database
+
+        Returns:
+            int: Number of edges deleted
+        """
+        try:
+            self.logger.debug("🚀 Deleting PARENT_CHILD edges to target: %s", to_key)
+            query = f"""
+            FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+                FILTER edge._to == @to_key
+                FILTER edge.relationshipType == @relationship_type
+                REMOVE edge IN {CollectionNames.RECORD_RELATIONS.value}
+                RETURN OLD
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query,
+                bind_vars={
+                    "to_key": to_key,
+                    "relationship_type": RecordRelations.PARENT_CHILD.value,
+                },
+            )
+            deleted_edges = list(cursor)
+            deleted_count = len(deleted_edges)
+            if deleted_count > 0:
+                self.logger.debug("✅ Deleted %d PARENT_CHILD edge(s) to target: %s", deleted_count, to_key)
+            return deleted_count
+        except Exception as e:
+            self.logger.error("❌ Failed to delete PARENT_CHILD edges to target %s: %s", to_key, str(e))
             return 0
 
     async def delete_edges_to(self, to_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> int:

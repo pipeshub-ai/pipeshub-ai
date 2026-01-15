@@ -59,6 +59,9 @@ class ArangoTransactionStore(TransactionStore):
     async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
         return await self.arango_service.get_record_by_external_id(connector_id, external_id, transaction=self.txn)
 
+    async def get_record_by_external_revision_id(self, connector_id: str, external_revision_id: str) -> Optional[Record]:
+        return await self.arango_service.get_record_by_external_revision_id(connector_id, external_revision_id, transaction=self.txn)
+
     async def get_record_by_issue_key(self, connector_id: str, issue_key: str) -> Optional[Record]:
         return await self.arango_service.get_record_by_issue_key(connector_id, issue_key, transaction=self.txn)
 

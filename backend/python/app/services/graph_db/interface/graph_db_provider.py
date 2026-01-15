@@ -659,6 +659,26 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_record_by_external_revision_id(
+        self,
+        connector_id: str,
+        external_revision_id: str,
+        transaction: Optional[str] = None
+    ) -> Optional['Record']:
+        """
+        Get a record by its external revision ID (e.g., etag for S3).
+
+        Args:
+            connector_id (str): Connector ID
+            external_revision_id (str): External revision ID (e.g., etag)
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[Record]: Record data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
     async def get_record_key_by_external_id(
         self,
         external_id: str,

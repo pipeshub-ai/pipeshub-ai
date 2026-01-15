@@ -65,6 +65,11 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_record_by_external_revision_id(self, connector_id: str, external_revision_id: str) -> Optional[Record]:
+        """Get record by external revision ID (e.g., etag for S3)."""
+        pass
+
+    @abstractmethod
     async def get_record_by_issue_key(self, connector_id: str, issue_key: str) -> Optional[Record]:
         """Get record by Jira issue key (e.g., PROJ-123) by searching weburl pattern."""
         pass

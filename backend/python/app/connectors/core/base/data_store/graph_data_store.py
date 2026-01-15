@@ -57,6 +57,9 @@ class GraphTransactionStore(TransactionStore):
     async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
         return await self.graph_provider.get_record_by_external_id(connector_id, external_id, transaction=self.txn)
 
+    async def get_record_by_external_revision_id(self, connector_id: str, external_revision_id: str) -> Optional[Record]:
+        return await self.graph_provider.get_record_by_external_revision_id(connector_id, external_revision_id, transaction=self.txn)
+
     async def get_records_by_status(self, org_id: str, connector_id: str, status_filters: List[str], limit: Optional[int] = None, offset: int = 0) -> List[Record]:
         """Get records by status. Returns properly typed Record instances."""
         return await self.graph_provider.get_records_by_status(org_id, connector_id, status_filters, limit, offset, transaction=self.txn)
