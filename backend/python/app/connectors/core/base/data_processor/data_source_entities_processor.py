@@ -246,10 +246,12 @@ class DataSourceEntitiesProcessor:
 
                         # If user doesn't exist (external user), use PEOPLE collection
                         if not user and permission.email:
-                            person_id = await self._upsert_external_person(permission.email, tx_store)
-                            if person_id:
-                                from_id = person_id
-                                from_collection = CollectionNames.PEOPLE.value
+                            self.logger.warning(f"Skipping user/person creation for external user {permission.email}")
+                            # TODO : Handle extenal user/person creation
+                            # person_id = await self._upsert_external_person(permission.email, tx_store)
+                            # if person_id:
+                            #     from_id = person_id
+                            #     from_collection = CollectionNames.PEOPLE.value
 
                     if user:
                         from_id = user.id
