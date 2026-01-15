@@ -1438,7 +1438,7 @@ export class UserAccountController {
           fullName,
         },
         jwt.sign({ userId, orgId }, getJwtKeyFromConfig(this.config, 'jwt', true), {
-          algorithm: 'RS256',
+          algorithm: this.config.jwtAlgorithm as jwt.Algorithm,
           expiresIn: '24h',
         }),
       );
