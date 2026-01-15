@@ -3,7 +3,7 @@ import type { Theme, SxProps } from '@mui/material';
 import { z as zod } from 'zod';
 import { useForm } from 'react-hook-form';
 import { useDispatch } from 'react-redux';
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect, useCallback } from 'react';
 import eyeIcon from '@iconify-icons/solar/eye-bold';
 import { zodResolver } from '@hookform/resolvers/zod';
 import eyeClosedIcon from '@iconify-icons/solar/eye-closed-bold';
@@ -73,6 +73,13 @@ export default function PasswordSignIn({
   const { turnstileToken, handleSuccess, handleError, handleExpire, resetTurnstile } = useTurnstile();
   const turnstileRef = useRef<TurnstileWidgetHandle>(null);
 
+  const resetCaptcha = useCallback(() => {
+    if (CONFIG.turnstileSiteKey) {
+      turnstileRef.current?.reset();
+      resetTurnstile();
+    }
+  }, [resetTurnstile]);
+
   const methods = useForm<SignInSchemaType>({
     resolver: zodResolver(SignInSchema),
     defaultValues: {
@@ -112,10 +119,7 @@ export default function PasswordSignIn({
       setErrorMsg(typeof error === 'string' ? error : (error as ErrorResponse).errorMessage);
       
       // Reset CAPTCHA on error
-      if (CONFIG.turnstileSiteKey) {
-        turnstileRef.current?.reset();
-        resetTurnstile();
-      }
+      resetCaptcha();
     }
   });
 
@@ -135,10 +139,7 @@ export default function PasswordSignIn({
               onClick={() => {
                 onForgotPassword(turnstileToken);
                 // Reset CAPTCHA when navigating to forgot password
-                if (CONFIG.turnstileSiteKey) {
-                  turnstileRef.current?.reset();
-                  resetTurnstile();
-                }
+                resetCaptcha();
               }}
               sx={{ 
                 cursor: CONFIG.turnstileSiteKey && !turnstileToken ? 'not-allowed' : 'pointer',

@@ -1,3 +1,4 @@
+/* eslint-disable react/no-unused-prop-types */
 import { useEffect, useRef, useState, memo, useImperativeHandle, forwardRef } from 'react';
 
 import Box from '@mui/material/Box';

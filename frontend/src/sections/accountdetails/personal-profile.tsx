@@ -136,6 +136,13 @@ export default function PersonalProfile() {
   } = useTurnstile();
   const turnstileRef = useRef<TurnstileWidgetHandle>(null);
 
+  const resetCaptcha = useCallback(() => {
+    if (CONFIG.turnstileSiteKey) {
+      turnstileRef.current?.reset();
+      resetTurnstile();
+    }
+  }, [resetTurnstile]);
+
   const methods = useForm<ProfileFormData>({
     resolver: zodResolver(ProfileSchema),
     mode: 'onChange',
@@ -378,10 +385,7 @@ export default function PersonalProfile() {
       });
       
       // Reset CAPTCHA on error
-      if (CONFIG.turnstileSiteKey) {
-        turnstileRef.current?.reset();
-        resetTurnstile();
-      }
+      resetCaptcha();
     }
   };
 

@@ -1,7 +1,7 @@
 import type { Theme, SxProps } from '@mui/material';
 
 import { z as zod } from 'zod';
-import { useRef, useState } from 'react';
+import { useRef, useState, useCallback } from 'react';
 import { useForm } from 'react-hook-form';
 import emailIcon from '@iconify-icons/mdi/email';
 import eyeIcon from '@iconify-icons/solar/eye-bold';
@@ -92,6 +92,13 @@ export default function PasswordSignIn({
   const { turnstileToken, handleSuccess, handleError, handleExpire, resetTurnstile } = useTurnstile();
   const turnstileRef = useRef<TurnstileWidgetHandle>(null);
 
+  const resetCaptcha = useCallback(() => {
+    if (CONFIG.turnstileSiteKey) {
+      turnstileRef.current?.reset();
+      resetTurnstile();
+    }
+  }, [resetTurnstile]);
+
   const methods = useForm<SignInSchemaType>({
     resolver: zodResolver(SignInSchema),
     defaultValues: {
@@ -140,10 +147,7 @@ export default function PasswordSignIn({
             message: 'Unexpected response from the server. Please try again.',
           });
           // Reset CAPTCHA on error
-          if (CONFIG.turnstileSiteKey) {
-            turnstileRef.current?.reset();
-            resetTurnstile();
-          }
+          resetCaptcha();
         }
       }
     } catch (error) {
@@ -156,10 +160,7 @@ export default function PasswordSignIn({
       });
       
       // Reset CAPTCHA on error
-      if (CONFIG.turnstileSiteKey) {
-        turnstileRef.current?.reset();
-        resetTurnstile();
-      }
+      resetCaptcha();
     } finally {
       setIsProcessing(false);
     }
@@ -231,10 +232,7 @@ export default function PasswordSignIn({
                   onClick={() => {
                     onForgotPassword(turnstileToken);
                     // Reset CAPTCHA when navigating to forgot password
-                    if (CONFIG.turnstileSiteKey) {
-                      turnstileRef.current?.reset();
-                      resetTurnstile();
-                    }
+                    resetCaptcha();
                   }}
                   sx={{
                     display: 'inline-block',
