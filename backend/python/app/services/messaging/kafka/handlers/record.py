@@ -304,7 +304,7 @@ class RecordEventHandler(BaseEventService):
                     return
                 except Exception as e:
                     error_occurred = True
-                    error_msg = f"Failed to process signed URL: {str(e)}"
+                    error_msg = str(e)
                     raise Exception(error_msg)
 
             elif payload and payload.get("signedUrl"):
@@ -330,7 +330,7 @@ class RecordEventHandler(BaseEventService):
                     return
                 except Exception as e:
                     error_occurred = True
-                    error_msg = f"Failed to process signed URL: {str(e)}"
+                    error_msg = str(e)
                     raise Exception(error_msg)
             else:
                 try:
@@ -367,16 +367,16 @@ class RecordEventHandler(BaseEventService):
                     return
                 except Exception as e:
                     error_occurred = True
-                    error_msg = f"Failed to process signed URL: {str(e)}"
+                    error_msg = str(e)
                     raise Exception(error_msg)
         except IndexingError as e:
             error_occurred = True
-            error_msg = f"❌ Indexing error for record {record_id}: {str(e)}"
+            error_msg = str(e)
             self.logger.error(error_msg, exc_info=True)
             raise Exception(error_msg)
         except Exception as e:
             error_occurred = True
-            error_msg = f"Error processing message {message_id}: {str(e)}"
+            error_msg = str(e)
             self.logger.error(error_msg, exc_info=True)
             raise Exception(error_msg)
         finally:
