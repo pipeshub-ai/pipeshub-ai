@@ -3828,13 +3828,13 @@ class SharePointConnector(BaseConnector):
         limit: int,
         search: Optional[str]
     ) -> FilterOptionsResponse:
-        """Get dynamic filter options for SharePoint document libraries."""
+        """Get dynamic filter options for SharePoint document libraries (drives only)."""
 
         search_query = search.strip() if search else ""
-        # Search for lists that are document libraries
-        full_query = f"{search_query}* contentclass:STS_List"
+        
+        # Search query - best effort to narrow down
+        full_query = f"{search_query}* contentclass:STS_List_DocumentLibrary"
 
-        # 1. Get Raw Result
         raw_result = await self.msgraph_client.search_query(
             entity_types=["list"],
             query=full_query,
@@ -3844,6 +3844,18 @@ class SharePointConnector(BaseConnector):
 
         options = []
         total = 0
+        seen_keys = set()  # To handle duplicates
+
+        # System library names to exclude
+        SYSTEM_LIBRARY_NAMES = {
+            'FormServerTemplates',
+            'SiteAssets',
+            'Style Library',
+            'SitePages',
+            '_catalogs',
+            'appdata',
+            'AppCatalog',
+        }
 
         if raw_result:
             additional_data = getattr(raw_result, 'additional_data', {}) or {}
@@ -3857,22 +3869,53 @@ class SharePointConnector(BaseConnector):
 
                     for hit in container.get('hits', []):
                         resource = hit.get('resource', {})
-
+                        summary = hit.get('summary', '')
+                        
                         list_id = resource.get('id')
-                        web_url = resource.get('webUrl')
-
-                        if not list_id and not web_url:
+                        web_url = resource.get('webUrl', '')
+                        name = resource.get('name', '')
+                        display_name = resource.get('displayName', '')
+                        site_id = resource.get('parentReference', {}).get('siteId', '')
+                        unique_key = f"{list_id}:{site_id}"
+                        
+                        # Skip if no ID or already seen (duplicates in results)
+                        if not list_id or unique_key in seen_keys:
                             continue
-
-                        # --- 1. Extract Library Name ---
-                        library_name = (
-                            resource.get('displayName') or
-                            resource.get('name') or
-                            resource.get('title') or
-                            "Unknown Library"
-                        )
-
-                        # --- 2. Extract Site Name from URL ---
+                        
+                        # === FILTERING LOGIC ===
+                        
+                        # 1. Must have "DocumentLibrary" in summary (skip GenericList, Events, etc.)
+                        if 'DocumentLibrary' not in summary:
+                            continue
+                        
+                        # 2. Skip SharePoint Lists (URL contains /Lists/)
+                        if '/Lists/' in web_url:
+                            continue
+                        
+                        # 3. Skip system libraries by name
+                        if name in SYSTEM_LIBRARY_NAMES:
+                            continue
+                        
+                        # 4. Skip contentstorage (internal Microsoft storage)
+                        if '/contentstorage/' in web_url:
+                            continue
+                        
+                        # 5. Skip OneDrive personal libraries
+                        if '-my.sharepoint.com' in web_url:
+                            continue
+                        
+                        # 6. Skip calendar/events URLs
+                        if '/calendar.aspx' in web_url:
+                            continue
+                        
+                        # === PASSED ALL FILTERS - This is a valid drive ===
+                        
+                        seen_keys.add(unique_key)
+                        
+                        # Extract library name
+                        library_name = display_name or name or "Unknown Library"
+                        
+                        # Extract site name from URL
                         site_name = "Unknown Site"
                         if web_url and "/sites/" in web_url:
                             try:
@@ -3883,12 +3926,16 @@ class SharePointConnector(BaseConnector):
                                 pass
                         elif web_url:
                             site_name = "Root Site"
-
-                        # --- 3. Format Final Label ---
+                        
+                        # Clean up display name if it already contains site info
+                        # e.g., "IT Team Site - Documents" -> "Documents"
+                        if " - " in library_name and site_name != "Unknown Site":
+                            library_name = library_name.split(" - ")[-1]
+                        
                         final_label = f"{library_name} ({site_name})"
 
                         options.append(FilterOption(
-                            id=list_id or web_url,
+                            id=list_id,
                             label=final_label
                         ))
 
