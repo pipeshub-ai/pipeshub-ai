@@ -4,7 +4,7 @@ import os
 from logging import Logger
 from typing import Any, AsyncGenerator, Callable, Dict, Optional, Set
 
-from aiokafka import AIOKafkaConsumer, TopicPartition  # type: ignore
+from aiokafka import AIOKafkaConsumer  # type: ignore
 
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
@@ -220,9 +220,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self.active_tasks.add(task)
         self.__cleanup_completed_tasks()
 
-        self.logger.debug(
-            f"Active tasks: {len(self.active_tasks)}, parsing_slots_available, indexing_slots_available"
-        )
 
     async def __process_message_wrapper(self, message) -> None:
         """Wrapper to handle async task cleanup and semaphore release based on yielded events.
@@ -244,7 +241,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         try:
             await self.parsing_semaphore.acquire()
             parsing_released = False
-            
+
             await self.indexing_semaphore.acquire()
             indexing_released = False
 
