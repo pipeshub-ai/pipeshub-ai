@@ -5,6 +5,8 @@ import { useState, useEffect } from 'react';
 import Box from '@mui/material/Box';
 import Portal from '@mui/material/Portal';
 
+import { useWhiteLabel } from 'src/context/WhiteLabelContext';
+
 // ----------------------------------------------------------------------
 
 type Props = BoxProps & {
@@ -14,6 +16,7 @@ type Props = BoxProps & {
 export function SplashScreen({ portal = true, sx, ...other }: Props) {
   const [loaded, setLoaded] = useState(false);
   const [dotOpacity, setDotOpacity] = useState([0.4, 0.6, 0.8]);
+  const { logo, isWhiteLabeled } = useWhiteLabel();
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -47,8 +50,9 @@ export function SplashScreen({ portal = true, sx, ...other }: Props) {
       >
         <Box
           component="img"
-          src="/logo/logo-full.svg"
-          alt="Logo"
+          key={logo || 'default'} // Force re-render when logo changes
+          src={isWhiteLabeled && logo ? logo : '/logo/logo-full.svg'}
+          alt="Application Logo"
           sx={{
             width: { xs: 180, sm: 240, md: 300 },
             height: 'auto',

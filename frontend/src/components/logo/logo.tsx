@@ -1,16 +1,18 @@
 import type { BoxProps } from '@mui/material/Box';
 
-import { useId, forwardRef, useState, useEffect } from 'react';
+import { forwardRef, useState, useEffect } from 'react';
 
 import Box from '@mui/material/Box';
 
 import { RouterLink } from 'src/routes/components';
 
-import { getOrgIdFromToken, getOrgLogo } from 'src/sections/accountdetails/utils';
-import { useAuthContext } from 'src/auth/hooks';
+import { useWhiteLabel } from 'src/context/WhiteLabelContext';
 import { logoClasses } from './classes';
 
 // ----------------------------------------------------------------------
+
+const DEFAULT_LOGO_PATH = '/logo/logo.svg';
+const DEFAULT_SIZE = 40;
 
 export type LogoProps = BoxProps & {
   href?: string;
@@ -18,49 +20,26 @@ export type LogoProps = BoxProps & {
 };
 
 export const Logo = forwardRef<HTMLDivElement, LogoProps>(
-  (
-    { width, href = '/', height, disableLink = false, className, sx, ...other },
-    ref
-  ) => {
-    const { user } = useAuthContext();
+  ({ width, href = '/', height, disableLink = false, className, sx, ...other }, ref) => {
+    const { logo, isWhiteLabeled, loading } = useWhiteLabel();
+    const [imageLoaded, setImageLoaded] = useState(false);
+    const [imageError, setImageError] = useState(false);
 
-    const [customLogo, setCustomLogo] = useState<string | null>('');
-
+    // Reset states when logo changes
     useEffect(() => {
-      let isMounted = true;
+      if (logo) {
+        setImageLoaded(false);
+        setImageError(false);
+      }
+    }, [logo]);
 
-      const isBusiness =
-        user?.accountType === 'business' ||
-        user?.accountType === 'organization' ||
-        user?.role === 'business';
-
-      const fetchLogo = async () => {
-        if (!isBusiness) {
-          if (isMounted) setCustomLogo('');
-          return;
-        }
-
-        try {
-          const orgId = getOrgIdFromToken();
-          const logoUrl = await getOrgLogo(orgId);
-          if (isMounted) {
-            setCustomLogo(logoUrl);
-          }
-        } catch (err) {
-          console.error('Error in fetching logo:', err);
-        }
-      };
-
-      fetchLogo();
-
-      return () => {
-        isMounted = false;
-      };
-    }, [user]);
+    // Determine which logo to show
+    const shouldShowCustomLogo = isWhiteLabeled && logo && !imageError;
+    const shouldShowPlaceholder = isWhiteLabeled && loading && !logo;
 
     const baseSize = {
-      width: width ?? 40,
-      height: height ?? 40,
+      width: width ?? DEFAULT_SIZE,
+      height: height ?? DEFAULT_SIZE,
     };
 
     return (
@@ -80,7 +59,17 @@ export const Logo = forwardRef<HTMLDivElement, LogoProps>(
         }}
         {...other}
       >
-        {customLogo ? (
+        {shouldShowPlaceholder ? (
+          // Invisible placeholder while loading white-labeled logo
+          <Box
+            sx={{
+              width: DEFAULT_SIZE,
+              height: DEFAULT_SIZE,
+              opacity: 0,
+            }}
+          />
+        ) : shouldShowCustomLogo ? (
+          // Custom organization logo
           <Box
             sx={{
               display: 'flex',
@@ -94,31 +83,47 @@ export const Logo = forwardRef<HTMLDivElement, LogoProps>(
           >
             <Box
               component="img"
-              src={customLogo}
-              alt="Logo"
+              src={logo}
+              alt="Organization Logo"
+              onLoad={() => setImageLoaded(true)}
+              onError={() => {
+                console.warn('[Logo] Failed to load custom logo, falling back to default');
+                setImageError(true);
+              }}
               sx={{
                 maxWidth: '100%',
                 maxHeight: '100%',
                 width: 'auto',
                 height: 'auto',
                 objectFit: 'contain',
-                position: 'absolute',
-                top: '50%',
-                left: '50%',
-                transform: 'translate(-50%, -50%)',
+                opacity: imageLoaded ? 1 : 0,
+                transition: 'opacity 0.2s ease-in-out',
               }}
             />
+            {!imageLoaded && !imageError && (
+              // Placeholder while custom logo loads
+              <Box
+                component="img"
+                src={DEFAULT_LOGO_PATH}
+                alt="Loading"
+                sx={{
+                  position: 'absolute',
+                  width: DEFAULT_SIZE,
+                  height: DEFAULT_SIZE,
+                  opacity: 0.3,
+                }}
+              />
+            )}
           </Box>
         ) : (
+          // Default Pipeshub logo
           <Box
             component="img"
-            src="/logo/logo.svg"
-            alt="Logo"
+            src={DEFAULT_LOGO_PATH}
+            alt="Pipeshub Logo"
             sx={{
-              display: 'inline-flex',
-              width: 40,
-              height: 40,
-              cursor: 'pointer',
+              width: DEFAULT_SIZE,
+              height: DEFAULT_SIZE,
             }}
           />
         )}

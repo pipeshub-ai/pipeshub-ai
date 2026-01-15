@@ -32,6 +32,7 @@ import { useAdmin } from 'src/context/AdminContext';
 
 import { Iconify } from 'src/components/iconify';
 import { Form, Field } from 'src/components/hook-form';
+import { useWhiteLabel } from 'src/context/WhiteLabelContext';
 
 import {
   updateOrg,
@@ -100,6 +101,7 @@ export default function CompanyProfile() {
   });
 
   const { isAdmin } = useAdmin();
+  const { displayName, refreshWhiteLabel } = useWhiteLabel();
 
   const methods = useForm<ProfileFormData>({
     resolver: zodResolver(ProfileSchema),
@@ -192,6 +194,13 @@ export default function CompanyProfile() {
       setSaveChanges(true);
       const orgId = await getOrgIdFromToken();
       const msg = await updateOrg(orgId, data);
+      
+      // Refresh white-label context first to update display name everywhere
+      await refreshWhiteLabel();
+      
+      // Update the form with the submitted values (mark as not dirty)
+      reset(data, { keepValues: true });
+      
       setSnackbar({
         open: true,
         message: msg,
@@ -199,7 +208,11 @@ export default function CompanyProfile() {
       });
     } catch (err) {
       setError('Failed to update organization');
-      // setSnackbar({ open: true, message: err.errorMessage, severity: 'error' });
+      setSnackbar({ 
+        open: true, 
+        message: 'Failed to update organization details', 
+        severity: 'error' 
+      });
     } finally {
       setSaveChanges(false);
     }
@@ -235,12 +248,20 @@ export default function CompanyProfile() {
       setDeleting(true);
       const orgId = await getOrgIdFromToken();
       await deleteOrgLogo(orgId);
-      setSnackbar({ open: true, message: 'Logo removed successfully!', severity: 'success' });
-      setDeleting(false);
+      
+      // Refresh white-label context first
+      await refreshWhiteLabel();
       setLogo(null);
+      
+      setSnackbar({ open: true, message: 'Logo removed successfully!', severity: 'success' });
     } catch (err) {
       setError('Failed to remove logo');
-      // setSnackbar({ open: true, message: 'Failed to remove logo', severity: 'error' });
+      setSnackbar({ 
+        open: true, 
+        message: 'Failed to remove logo', 
+        severity: 'error' 
+      });
+    } finally {
       setDeleting(false);
     }
   };
@@ -257,25 +278,29 @@ export default function CompanyProfile() {
       const orgId = await getOrgIdFromToken();
       await uploadOrgLogo(formData);
       
-      // Fetch the processed logo from server (with EXIF metadata stripped) instead of using original file
+      // Refresh white-label context first (this will fetch the new logo)
+      await refreshWhiteLabel();
+      
+      // Then fetch for local display
       try {
         const processedLogoUrl = await getOrgLogo(orgId);
         setLogo(processedLogoUrl);
         setSnackbar({ open: true, message: 'Logo updated successfully!', severity: 'success' });
       } catch (fetchErr) {
-        // Upload succeeded but fetching failed - show warning but don't fail completely
-        setSnackbar({
-          open: true,
-          message: 'Logo uploaded successfully, but failed to refresh. Please refresh the page.',
-          severity: 'warning',
-        });
-        // Fallback to original file preview (user can refresh to see processed version)
+        // Context refresh succeeded, but local fetch failed
+        console.warn('[CompanyProfile] Logo uploaded but local fetch failed:', fetchErr);
+        setSnackbar({ open: true, message: 'Logo updated successfully!', severity: 'success' });
+        // Use a preview URL temporarily
         setLogo(URL.createObjectURL(file));
       }
-      setUploading(false);
     } catch (err) {
       setError('Failed to upload logo');
-      // setSnackbar({ open: true, message: 'Failed to upload logo', severity: 'error' });
+      setSnackbar({ 
+        open: true, 
+        message: 'Failed to upload logo', 
+        severity: 'error' 
+      });
+    } finally {
       setUploading(false);
     }
   };
