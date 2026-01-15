@@ -7,7 +7,7 @@ enums. This ensures consistency across all ticketing connectors.
 """
 
 import logging
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Callable, Dict, Optional, TypeVar, Union
 
 from app.config.constants.arangodb import LinkRelationshipTag
 from app.models.entities import (
@@ -18,6 +18,9 @@ from app.models.entities import (
 )
 
 logger = logging.getLogger(__name__)
+
+# TypeVar for generic mapping value types
+_T = TypeVar("_T")
 
 # Priority level constants for numeric priority mapping
 PRIORITY_HIGHEST = 1
@@ -79,9 +82,9 @@ class TicketValueMapper:
     @staticmethod
     def _find_partial_match(
         normalized: str,
-        mappings: Dict[str, Any],
+        mappings: Dict[str, _T],
         match_func: Optional[Callable[[str, str], bool]] = None
-    ) -> Optional[Any]:
+    ) -> Optional[_T]:
         """
         Try to find a partial match in mappings.
 
