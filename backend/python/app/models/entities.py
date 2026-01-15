@@ -188,18 +188,20 @@ class TicketStatus(str, Enum):
 
 class TicketType(str, Enum):
     """Standard ticket type values for all ticketing connectors"""
-    TASK = "TASK"  # General task
-    BUG = "BUG"  # Bug/defect
-    STORY = "STORY"  # User story
-    EPIC = "EPIC"  # Epic/large feature
-    FEATURE = "FEATURE"  # Feature request
-    SUBTASK = "SUBTASK"  # Subtask
-    INCIDENT = "INCIDENT"  # Incident/outage
-    IMPROVEMENT = "IMPROVEMENT"  # Improvement/enhancement
-    QUESTION = "QUESTION"  # Question/inquiry
-    DOCUMENTATION = "DOCUMENTATION"  # Documentation task
-    TEST = "TEST"  # Test case
-    UNKNOWN = "UNKNOWN"  # Unknown or unmapped ticket type
+    TASK = "TASK"
+    BUG = "BUG"
+    STORY = "STORY"
+    EPIC = "EPIC"
+    FEATURE = "FEATURE"
+    SUBTASK = "SUBTASK"
+    INCIDENT = "INCIDENT"
+    IMPROVEMENT = "IMPROVEMENT"
+    QUESTION = "QUESTION"
+    DOCUMENTATION = "DOCUMENTATION"
+    TEST = "TEST"
+    ISSUE = "ISSUE"
+    SUB_ISSUE = "SUB_ISSUE"
+    UNKNOWN = "UNKNOWN"
 
 
 class TicketDeliveryStatus(str, Enum):

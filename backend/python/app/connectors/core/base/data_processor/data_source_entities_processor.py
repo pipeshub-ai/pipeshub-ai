@@ -8,6 +8,7 @@ from app.config.constants.arangodb import (
     MimeTypes,
     OriginTypes,
     RecordRelations,
+    TicketEdgeTypes,
 )
 from app.config.constants.service import config_node_constants
 from app.connectors.core.base.data_store.data_store import (
@@ -288,6 +289,63 @@ class DataSourceEntitiesProcessor:
             if record.inherit_permissions:
                 await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group.id)
 
+    async def _handle_ticket_user_edges(self, ticket: TicketRecord, tx_store: TransactionStore) -> None:
+        """
+        Create user relationship edges for tickets (ASSIGNED_TO, CREATED_BY).
+
+        This method creates edges in the ticketRelations collection linking tickets to users.
+
+        Args:
+            ticket: The TicketRecord to create edges for
+            tx_store: The transaction store
+        """
+        edges_to_create = []
+
+        # Create ASSIGNED_TO edge if assignee exists and user is found
+        if ticket.assignee_email:
+            try:
+                # Only get existing user by email - do not create if not found
+                user = await tx_store.get_user_by_email(ticket.assignee_email)
+
+                if user:
+                    edges_to_create.append({
+                        "_from": f"{CollectionNames.RECORDS.value}/{ticket.id}",
+                        "_to": f"{CollectionNames.USERS.value}/{user.id}",
+                        "edgeType": TicketEdgeTypes.ASSIGNED_TO.value,
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    })
+                    self.logger.debug(f"Created ASSIGNED_TO edge for ticket {ticket.id} to user {user.email}")
+                else:
+                    self.logger.debug(f"User with email {ticket.assignee_email} not found, skipping ASSIGNED_TO edge for ticket {ticket.id}")
+            except Exception as e:
+                self.logger.warning(f"Failed to create ASSIGNED_TO edge for ticket {ticket.id}: {str(e)}")
+
+        # Create CREATED_BY edge if creator exists and user is found
+        if ticket.creator_email:
+            try:
+                # Only get existing user by email - do not create if not found
+                user = await tx_store.get_user_by_email(ticket.creator_email)
+
+                if user:
+                    edges_to_create.append({
+                        "_from": f"{CollectionNames.RECORDS.value}/{ticket.id}",
+                        "_to": f"{CollectionNames.USERS.value}/{user.id}",
+                        "edgeType": TicketEdgeTypes.CREATED_BY.value,
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    })
+                    self.logger.debug(f"Created CREATED_BY edge for ticket {ticket.id} to user {user.email}")
+                else:
+                    self.logger.debug(f"User with email {ticket.creator_email} not found, skipping CREATED_BY edge for ticket {ticket.id}")
+            except Exception as e:
+                self.logger.warning(f"Failed to create CREATED_BY edge for ticket {ticket.id}: {str(e)}")
+
+        # Batch create all edges
+        if edges_to_create:
+            await tx_store.batch_create_edges(edges_to_create, CollectionNames.TICKET_RELATIONS.value)
+            self.logger.info(f"Created {len(edges_to_create)} ticket-user edges for ticket {ticket.id}")
+
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
         # Set org_id for the record
         record.org_id = self.org_id
@@ -482,6 +540,10 @@ class DataSourceEntitiesProcessor:
         # (This field is in base Record class with default_factory=list, so it always exists)
         if record.related_external_records:
             await self._handle_related_external_records(record, record.related_external_records, tx_store)
+
+        # Create ticket-user relationship edges (ASSIGNED_TO, CREATED_BY) if record is a TicketRecord
+        if isinstance(record, TicketRecord):
+            await self._handle_ticket_user_edges(record, tx_store)
 
         # Create a edge between the base record and the specific record if it doesn't exist - isOfType - File, Mail, Message
 

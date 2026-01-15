@@ -6,7 +6,8 @@ API-specific status and priority values to the standard TicketStatus and TicketP
 enums. This ensures consistency across all ticketing connectors.
 """
 
-from typing import Dict, Optional, Union
+import logging
+from typing import Any, Callable, Dict, Optional, Union
 
 from app.config.constants.arangodb import LinkRelationshipTag
 from app.models.entities import (
@@ -15,6 +16,8 @@ from app.models.entities import (
     TicketStatus,
     TicketType,
 )
+
+logger = logging.getLogger(__name__)
 
 # Priority level constants for numeric priority mapping
 PRIORITY_HIGHEST = 1
@@ -68,6 +71,39 @@ PRIORITY_LOWEST_THRESHOLD = 5
 class TicketValueMapper:
     """Maps connector-specific ticket values to standard enum values"""
 
+    @staticmethod
+    def _normalize_value(value: str) -> str:
+        """Normalize input value: lowercase and strip whitespace"""
+        return value.lower().strip()
+
+    @staticmethod
+    def _find_partial_match(
+        normalized: str,
+        mappings: Dict[str, Any],
+        match_func: Optional[Callable[[str, str], bool]] = None
+    ) -> Optional[Any]:
+        """
+        Try to find a partial match in mappings.
+
+        Args:
+            normalized: Normalized input value
+            mappings: Dictionary of mappings to search
+            match_func: Optional custom match function (key, normalized) -> bool
+
+        Returns:
+            Mapped value if found, None otherwise
+        """
+        if match_func:
+            for key, value in mappings.items():
+                if match_func(key, normalized):
+                    return value
+        else:
+            # Default: try underscore/space variations
+            for key, value in mappings.items():
+                if key.replace("_", " ") == normalized or normalized.replace(" ", "_") == key:
+                    return value
+        return None
+
     # Default status mappings (connector-specific mappings can override)
     DEFAULT_STATUS_MAPPINGS: Dict[str, TicketStatus] = {
         # Common status values
@@ -89,11 +125,16 @@ class TicketValueMapper:
         "todo": TicketStatus.NEW,
         "in review": TicketStatus.IN_PROGRESS,
         "in_review": TicketStatus.IN_PROGRESS,
+        # Linear and other common workflow states
+        "backlog": TicketStatus.NEW,
+        "unstarted": TicketStatus.NEW,
+        "started": TicketStatus.IN_PROGRESS,
+        "planned": TicketStatus.NEW,
+        "testing": TicketStatus.IN_PROGRESS,
     }
 
     # Default priority mappings (connector-specific mappings can override)
     DEFAULT_PRIORITY_MAPPINGS: Dict[str, TicketPriority] = {
-        # Common priority values
         "lowest": TicketPriority.LOWEST,
         "low": TicketPriority.LOW,
         "medium": TicketPriority.MEDIUM,
@@ -102,35 +143,51 @@ class TicketValueMapper:
         "highest": TicketPriority.HIGHEST,
         "critical": TicketPriority.CRITICAL,
         "blocker": TicketPriority.BLOCKER,
-        "urgent": TicketPriority.CRITICAL,
+        "urgent": TicketPriority.HIGHEST,  # Urgent typically means highest priority
         "trivial": TicketPriority.LOWEST,
         "minor": TicketPriority.LOW,
         "major": TicketPriority.HIGH,
+        # No priority / None values
+        "none": TicketPriority.UNKNOWN,
+        "no priority": TicketPriority.UNKNOWN,
     }
 
     # Default type mappings (connector-specific mappings can override)
     DEFAULT_TYPE_MAPPINGS: Dict[str, TicketType] = {
-        # Common ticket type values
         "task": TicketType.TASK,
+        "tasks": TicketType.TASK,
         "bug": TicketType.BUG,
+        "bugs": TicketType.BUG,
+        "defect": TicketType.BUG,
         "story": TicketType.STORY,
+        "stories": TicketType.STORY,
+        "user story": TicketType.STORY,
         "epic": TicketType.EPIC,
+        "epics": TicketType.EPIC,
         "feature": TicketType.FEATURE,
+        "features": TicketType.FEATURE,
         "subtask": TicketType.SUBTASK,
         "sub-task": TicketType.SUBTASK,
         "incident": TicketType.INCIDENT,
+        "incidents": TicketType.INCIDENT,
         "improvement": TicketType.IMPROVEMENT,
+        "improvements": TicketType.IMPROVEMENT,
+        "enhancement": TicketType.IMPROVEMENT,
+        "enhancements": TicketType.IMPROVEMENT,
         "question": TicketType.QUESTION,
+        "questions": TicketType.QUESTION,
         "documentation": TicketType.DOCUMENTATION,
+        "docs": TicketType.DOCUMENTATION,
         "doc": TicketType.DOCUMENTATION,
         "test": TicketType.TEST,
+        "tests": TicketType.TEST,
+        "testing": TicketType.TEST,
         "test case": TicketType.TEST,
         "testcase": TicketType.TEST,
     }
 
     # Default delivery status mappings (connector-specific mappings can override)
     DEFAULT_DELIVERY_STATUS_MAPPINGS: Dict[str, TicketDeliveryStatus] = {
-        # Common delivery status values
         "on track": TicketDeliveryStatus.ON_TRACK,
         "on_track": TicketDeliveryStatus.ON_TRACK,
         "ontrack": TicketDeliveryStatus.ON_TRACK,
@@ -194,19 +251,19 @@ class TicketValueMapper:
         if not api_status:
             return None
 
-        # Normalize the input: lowercase and strip whitespace
-        normalized = api_status.lower().strip()
+        normalized = self._normalize_value(api_status)
 
         # Try exact match first
         if normalized in self.status_mappings:
             return self.status_mappings[normalized]
 
         # Try to find partial match (e.g., "in progress" matches "in_progress")
-        for key, value in self.status_mappings.items():
-            if key.replace("_", " ") == normalized or normalized.replace(" ", "_") == key:
-                return value
+        partial_match = self._find_partial_match(normalized, self.status_mappings)
+        if partial_match:
+            return partial_match
 
-        # If no match found, return original value to preserve connector-specific status
+        # If no match found, log and return original value to preserve connector-specific status
+        logger.debug(f"No mapping found for status '{api_status}', preserving original value")
         return api_status
 
     def map_priority(self, api_priority: Optional[str]) -> Optional[Union[TicketPriority, str]]:
@@ -222,17 +279,14 @@ class TicketValueMapper:
         if not api_priority:
             return None
 
-        # Normalize the input: lowercase and strip whitespace
-        normalized = api_priority.lower().strip()
+        normalized = self._normalize_value(api_priority)
 
         # Try exact match first
         if normalized in self.priority_mappings:
             return self.priority_mappings[normalized]
 
         # Try numeric priority (e.g., "P1", "1" -> HIGHEST, "P5", "5" -> LOWEST)
-        num_part = normalized
-        if normalized.startswith("p") and len(normalized) > 1:
-            num_part = normalized[1:]
+        num_part = normalized[1:] if normalized.startswith("p") and len(normalized) > 1 else normalized
 
         if num_part.isdigit():
             try:
@@ -250,7 +304,8 @@ class TicketValueMapper:
             except ValueError:
                 pass  # Should not happen due to isdigit() check
 
-        # If no match found, return original value to preserve connector-specific priority
+        # If no match found, log and return original value to preserve connector-specific priority
+        logger.debug(f"No mapping found for priority '{api_priority}', preserving original value")
         return api_priority
 
     def map_type(self, api_type: Optional[str]) -> Optional[Union[TicketType, str]]:
@@ -266,19 +321,23 @@ class TicketValueMapper:
         if not api_type:
             return None
 
-        # Normalize the input: lowercase and strip whitespace
-        normalized = api_type.lower().strip()
+        normalized = self._normalize_value(api_type)
 
         # Try exact match first
         if normalized in self.type_mappings:
             return self.type_mappings[normalized]
 
         # Try to find partial match (e.g., "user story" matches "story")
-        for key, value in self.type_mappings.items():
-            if key in normalized or normalized in key:
-                return value
+        partial_match = self._find_partial_match(
+            normalized,
+            self.type_mappings,
+            match_func=lambda key, norm: key in norm or norm in key
+        )
+        if partial_match:
+            return partial_match
 
-        # If no match found, return original value to preserve connector-specific type
+        # If no match found, log and return original value to preserve connector-specific type
+        logger.debug(f"No mapping found for type '{api_type}', preserving original value")
         return api_type
 
     def map_delivery_status(self, api_delivery_status: Optional[str]) -> Optional[Union[TicketDeliveryStatus, str]]:
@@ -294,19 +353,19 @@ class TicketValueMapper:
         if not api_delivery_status:
             return None
 
-        # Normalize the input: lowercase and strip whitespace
-        normalized = api_delivery_status.lower().strip()
+        normalized = self._normalize_value(api_delivery_status)
 
         # Try exact match first
         if normalized in self.delivery_status_mappings:
             return self.delivery_status_mappings[normalized]
 
         # Try to find partial match (e.g., "on track" matches "on_track")
-        for key, value in self.delivery_status_mappings.items():
-            if key.replace("_", " ") == normalized or normalized.replace(" ", "_") == key:
-                return value
+        partial_match = self._find_partial_match(normalized, self.delivery_status_mappings)
+        if partial_match:
+            return partial_match
 
-        # If no match found, return original value to preserve connector-specific delivery status
+        # If no match found, log and return original value to preserve connector-specific delivery status
+        logger.debug(f"No mapping found for delivery_status '{api_delivery_status}', preserving original value")
         return api_delivery_status
 
 
@@ -366,7 +425,7 @@ def map_link_relationship_tag(api_tag: Optional[str], custom_mappings: Optional[
     # Merge with custom mappings if provided
     tag_mappings = {**DEFAULT_TAG_MAPPINGS, **(custom_mappings or {})}
 
-    # Normalize the input: lowercase and strip whitespace
+    # Normalize the input
     normalized = api_tag.lower().strip()
 
     # Try exact match first
@@ -374,9 +433,9 @@ def map_link_relationship_tag(api_tag: Optional[str], custom_mappings: Optional[
         return tag_mappings[normalized]
 
     # Try to find partial match (e.g., "relates to" matches "relates_to")
-    for key, value in tag_mappings.items():
-        if key.replace("_", " ") == normalized or normalized.replace(" ", "_") == key:
-            return value
+    partial_match = TicketValueMapper._find_partial_match(normalized, tag_mappings)
+    if partial_match:
+        return partial_match
 
     # If no match found, return original value to preserve connector-specific tag
     return api_tag

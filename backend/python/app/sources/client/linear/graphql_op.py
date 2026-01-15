@@ -166,6 +166,9 @@ class LinearGraphQLOperations:
                 url
                 createdAt
                 updatedAt
+                parent {
+                    id
+                }
                 user {
                     ...UserFields
                 }
