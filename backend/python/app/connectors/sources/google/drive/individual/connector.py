@@ -66,6 +66,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.utils.oauth_config import fetch_oauth_config_by_id
+from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
 
@@ -1130,12 +1131,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 self.logger.info(f"Exporting Google Workspace file ({mime_type}) directly to PDF")
 
                 request = drive_service.files().export_media(fileId=file_id, mimeType="application/pdf")
-                return StreamingResponse(
+                return create_stream_record_response(
                     self._stream_google_api_request(request, error_context="PDF export"),
-                    media_type="application/pdf",
-                    headers={
-                        "Content-Disposition": f'inline; filename="{Path(file_name).stem}.pdf"'
-                    },
+                    filename=file_name,
+                    mime_type="application/pdf",
+                    fallback_filename=f"record_{record.id}",
                 )
 
             # Regular export for Google Workspace files (not PDF conversion)
@@ -1154,13 +1154,13 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 }
 
                 response_media_type, file_ext = export_media_types.get(export_mime_type, (export_mime_type, ""))
-                file_name_with_ext = file_name if file_name.endswith(file_ext) else f"{file_name}{file_ext}"
+                file_name if file_name.endswith(file_ext) else f"{file_name}{file_ext}"
 
-                headers = {"Content-Disposition": f'attachment; filename="{file_name_with_ext}"'}
-                return StreamingResponse(
+                return create_stream_record_response(
                     self._stream_google_api_request(request, error_context="Google Workspace file export"),
-                    media_type=response_media_type,
-                    headers=headers
+                    filename=file_name,
+                    mime_type=response_media_type,
+                    fallback_filename=f"record_{record.id}",
                 )
 
             # Check if PDF conversion is requested (for regular files only, Google Workspace handled above)
@@ -1212,22 +1212,21 @@ class GoogleDriveIndividualConnector(BaseConnector):
                                 detail="Error reading converted PDF file",
                             )
 
-                    return StreamingResponse(
+                    return create_stream_record_response(
                         file_iterator(),
-                        media_type="application/pdf",
-                        headers={
-                            "Content-Disposition": f'inline; filename="{Path(file_name).stem}.pdf"'
-                        },
+                        filename=file_name,
+                        mime_type="application/pdf",
+                        fallback_filename=f"record_{record.id}",
                     )
 
             # Regular file download without conversion
             # StreamingResponse will handle chunking automatically
             request = drive_service.files().get_media(fileId=file_id)
-            headers = {"Content-Disposition": f'attachment; filename="{file_name}"'}
-            return StreamingResponse(
+            return create_stream_record_response(
                 self._stream_google_api_request(request, error_context="file download"),
-                media_type=mime_type,
-                headers=headers
+                filename=file_name,
+                mime_type=mime_type,
+                fallback_filename=f"record_{record.id}",
             )
 
         except HTTPException:
