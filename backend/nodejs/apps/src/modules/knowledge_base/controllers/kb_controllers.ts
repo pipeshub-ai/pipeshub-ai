@@ -36,6 +36,7 @@ import {
   safeParsePagination,
 } from '../../../utils/safe-integer';
 import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
+import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
 const logger = Logger.getInstance({
   service: 'Knowledge Base Controller',
 });
@@ -688,18 +689,6 @@ export const deleteFolder =
   };
 
 /**
- * Interface for processed file buffer with metadata
- */
-interface ProcessedFileBuffer {
-  buffer: Buffer;
-  originalname: string;
-  mimetype: string;
-  size: number;
-  lastModified: number;
-  filePath: string;
-}
-
-/**
  * Upload records to Knowledge Base.
  * Files are processed by file processor middleware which attaches
  * filePath and lastModified to each file buffer.
@@ -716,7 +705,7 @@ export const uploadRecordsToKB =
     next: NextFunction,
   ): Promise<void> => {
     try {
-      const fileBuffers: ProcessedFileBuffer[] = req.body.fileBuffers || [];
+      const fileBuffers: FileBufferInfo[] = req.body.fileBuffers || [];
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
       const { kbId } = req.params;
@@ -880,7 +869,7 @@ export const uploadRecordsToFolder =
     next: NextFunction,
   ): Promise<void> => {
     try {
-      const fileBuffers: ProcessedFileBuffer[] = req.body.fileBuffers || [];
+      const fileBuffers: FileBufferInfo[] = req.body.fileBuffers || [];
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
       const { kbId, folderId } = req.params;
