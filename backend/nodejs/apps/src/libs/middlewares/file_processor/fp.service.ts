@@ -93,12 +93,7 @@ export class FileProcessorService implements IFileUploadService {
         try {
           this.processFileMetadata(req, files);
         } catch (metadataError) {
-          logger.error('File metadata processing failed', {
-            error:
-              metadataError instanceof Error
-                ? metadataError.message
-                : metadataError,
-          });
+          logger.error('File metadata processing failed', { error: metadataError });
           return next(metadataError);
         }
 
