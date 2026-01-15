@@ -2134,3 +2134,42 @@ class LinearDataSource:
             raise ValueError(f"Failed to fetch file content: {str(e)}")
         except Exception as e:
             raise ValueError(f"Failed to fetch file content: {str(e)}")
+
+    async def get_file_size(self, file_url: str) -> Optional[int]:
+        """
+        Get file size from Linear upload URL using HEAD request.
+
+        Args:
+            file_url: URL of the file (e.g., from uploads.linear.app)
+
+        Returns:
+            File size in bytes, or None if size cannot be determined
+
+        Raises:
+            ValueError: If file request fails
+        """
+        try:
+            auth_header = self._get_auth_header()
+
+            headers = {}
+            if auth_header:
+                headers["Authorization"] = auth_header
+
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                response = await client.head(file_url, headers=headers)
+                response.raise_for_status()
+
+                # Get Content-Length header
+                content_length = response.headers.get("Content-Length")
+                if content_length:
+                    return int(content_length)
+                return None
+        except httpx.HTTPStatusError as e:
+            raise ValueError(f"Failed to fetch file size: HTTP {e.response.status_code}")
+        except httpx.RequestError as e:
+            raise ValueError(f"Failed to fetch file size: {str(e)}")
+        except (ValueError, TypeError):
+            # Content-Length header might be invalid or missing
+            return None
+        except Exception as e:
+            raise ValueError(f"Failed to fetch file size: {str(e)}")

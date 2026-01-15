@@ -1,4 +1,5 @@
 """Linear Connector Implementation"""
+import base64
 import re
 from datetime import datetime, timezone
 from logging import Logger
@@ -51,10 +52,14 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.linear.common.apps import LinearApp
+from app.connectors.utils.ticket_mapper import TicketValueMapper
 from app.models.blocks import (
+    Block,
     BlockComment,
     BlockGroup,
     BlocksContainer,
+    BlockSubType,
+    BlockType,
     ChildRecord,
     ChildType,
     CommentAttachment,
@@ -66,7 +71,6 @@ from app.models.blocks import (
 from app.models.entities import (
     AppUser,
     AppUserGroup,
-    CommentRecord,
     FileRecord,
     IndexingStatus,
     LinkPublicStatus,
@@ -79,6 +83,8 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
     TicketRecord,
+    TicketStatus,
+    TicketType,
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
@@ -103,8 +109,8 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
             redirect_uri="connectors/oauth/callback/Linear",
             scopes=OAuthScopeConfig(
                 personal_sync=[],
-                team_sync=["read", "write"],
-                agent=["read"]
+                team_sync=["read"],
+                agent=["read","write","admin"]
             ),
             fields=[
                 AuthField(
@@ -235,6 +241,9 @@ class LinearConnector(BaseConnector):
         self.organization_url_key: Optional[str] = None
         self.connector_id = connector_id
         self.connector_name = Connectors.LINEAR
+
+        # Initialize ticket value mapper (all mappings are now in defaults)
+        self.ticket_mapper = TicketValueMapper()
 
         # Initialize sync points
         org_id = self.data_entities_processor.org_id
@@ -367,7 +376,7 @@ class LinearConnector(BaseConnector):
         self,
         filter_key: str,
         page: int = 1,
-        limit: int = 100,
+        limit: int = 20,
         search: Optional[str] = None,
         cursor: Optional[str] = None
     ) -> FilterOptionsResponse:
@@ -389,7 +398,7 @@ class LinearConnector(BaseConnector):
     async def _get_team_options(
         self,
         page: int = 1,
-        limit: int = 100,
+        limit: int = 20,
         search: Optional[str] = None,
         cursor: Optional[str] = None
     ) -> FilterOptionsResponse:
@@ -414,7 +423,7 @@ class LinearConnector(BaseConnector):
             # Use cursor if provided (for subsequent pages), otherwise start from beginning
             response = await datasource.teams(
                 first=limit,
-                after=cursor,  # None for first page, cursor for subsequent pages
+                after=cursor,
                 filter=filter_dict
             )
 
@@ -468,7 +477,7 @@ class LinearConnector(BaseConnector):
     async def run_sync(self) -> None:
         """
         Main sync orchestration method.
-        Syncs users, teams, and issues from Linear.
+        Syncs users, teams, issues, attachments, documents, projects from Linear.
         """
         try:
             self.logger.info(f"🚀 Starting Linear sync for connector {self.connector_id}")
@@ -499,25 +508,22 @@ class LinearConnector(BaseConnector):
                 self.logger.info(f"👥 Synced {len(linear_users)} Linear users")
 
             # Step 3: Get team_ids filter and fetch teams
-            team_ids_filter = None
             team_ids = None
             team_ids_operator = None
-            if self.sync_filters:
-                team_ids_filter = self.sync_filters.get("team_ids")
-                if team_ids_filter:
-                    team_ids = team_ids_filter.get_value(default=[])
-                    team_ids_operator = team_ids_filter.get_operator()
-                    if team_ids:
-                        # Extract operator value string (handles both enum and string)
-                        operator_value = team_ids_operator.value if hasattr(team_ids_operator, 'value') else str(team_ids_operator) if team_ids_operator else "in"
-                        action = "Excluding" if operator_value == "not_in" else "Including"
-                        self.logger.info(f"📋 Filter: {action} teams by IDs: {team_ids}")
-                    else:
-                        self.logger.info("📋 Team filter is empty, will fetch no teams")
+            team_ids_filter = self.sync_filters.get("team_ids") if self.sync_filters else None
+
+            if team_ids_filter:
+                team_ids = team_ids_filter.get_value(default=[])
+                team_ids_operator = team_ids_filter.get_operator()
+                if team_ids:
+                    # Extract operator value string (handles both enum and string)
+                    operator_value = team_ids_operator.value if hasattr(team_ids_operator, 'value') else str(team_ids_operator) if team_ids_operator else "in"
+                    action = "Excluding" if operator_value == "not_in" else "Including"
+                    self.logger.info(f"📋 Filter: {action} teams by IDs: {team_ids}")
                 else:
-                    self.logger.info("📋 No team filter set - will fetch all teams")
+                    self.logger.info("📋 Team filter is empty, will fetch no teams")
             else:
-                self.logger.info("📋 No sync filters - will fetch all teams")
+                self.logger.info("📋 No team filter set - will fetch all teams")
 
             # Step 4: Build email map from already-synced users for team member lookup
             user_email_map: Dict[str, AppUser] = {}
@@ -682,27 +688,27 @@ class LinearConnector(BaseConnector):
 
         datasource = await self._get_fresh_datasource()
 
+        # Build filter if specific team IDs are requested (build once before pagination loop)
+        filter_dict: Optional[Dict[str, Any]] = None
+        if team_ids:
+            # Check operator: "in" (include) or "not_in" (exclude)
+            if team_ids_operator:
+                operator_value = team_ids_operator.value if hasattr(team_ids_operator, 'value') else str(team_ids_operator)
+            else:
+                operator_value = "in"
+
+            is_exclude = operator_value == "not_in"
+
+            if is_exclude:
+                # Linear TeamFilter supports "nin" for not in
+                filter_dict = {"id": {"nin": team_ids}}
+            else:
+                # Linear TeamFilter supports "in" for include
+                filter_dict = {"id": {"in": team_ids}}
+
         # Fetch all teams with cursor-based pagination
+        # Note: filter_dict is sent on every request - Linear applies filter first, then paginates
         while True:
-            # Build filter if specific team IDs are requested
-            filter_dict: Optional[Dict[str, Any]] = None
-            if team_ids:
-                # Check operator: "in" (include) or "not_in" (exclude)
-                # Extract operator value string (handles both enum and string)
-                if team_ids_operator:
-                    operator_value = team_ids_operator.value if hasattr(team_ids_operator, 'value') else str(team_ids_operator)
-                else:
-                    operator_value = "in"  # Default to "in" if no operator specified
-
-                is_exclude = operator_value == "not_in"
-
-                if is_exclude:
-                    # Linear TeamFilter supports "nin" for not in
-                    filter_dict = {"id": {"nin": team_ids}}
-                else:
-                    # Linear TeamFilter supports "in" for include
-                    filter_dict = {"id": {"in": team_ids}}
-
             response = await datasource.teams(first=page_size, after=cursor, filter=filter_dict)
 
             if not response.success:
@@ -790,7 +796,6 @@ class LinearConnector(BaseConnector):
                 name=team_name,
                 short_name=team_key or team_id,
                 group_type=RecordGroupType.PROJECT,
-                description=team_description,
                 web_url=web_url,
                 parent_external_group_id=parent_external_group_id,
             )
@@ -850,6 +855,11 @@ class LinearConnector(BaseConnector):
                 team_id = team_record_group.external_group_id
                 team_key = team_record_group.short_name or team_record_group.name
 
+                # Skip teams without external_group_id (shouldn't happen, but defensive check)
+                if not team_id:
+                    self.logger.warning(f"⚠️ Skipping team {team_key}: missing external_group_id")
+                    continue
+
                 self.logger.info(f"📋 Starting issue sync for team: {team_key}")
 
                 # Read team-level sync point
@@ -861,7 +871,6 @@ class LinearConnector(BaseConnector):
                 # Fetch and process issues for this team
                 total_records_processed = 0
                 total_tickets = 0
-                total_comments = 0
                 total_files = 0
                 # Track max updatedAt ONLY from issues (TicketRecords)
                 # We query by issue.updatedAt, so sync point must be based on issue timestamps
@@ -883,8 +892,6 @@ class LinearConnector(BaseConnector):
                             if record.source_updated_at:
                                 if max_issue_updated_at is None or record.source_updated_at > max_issue_updated_at:
                                     max_issue_updated_at = record.source_updated_at
-                        elif isinstance(record, CommentRecord):
-                            total_comments += 1
                         elif isinstance(record, FileRecord):
                             total_files += 1
 
@@ -893,7 +900,6 @@ class LinearConnector(BaseConnector):
                     await self.data_entities_processor.on_new_records(batch_records)
 
                     # Update sync point after each batch for fault tolerance
-                    # Uses max from ISSUES ONLY (we query by issue.updatedAt)
                     if max_issue_updated_at:
                         await self._update_team_sync_checkpoint(team_key, max_issue_updated_at)
 
@@ -902,8 +908,6 @@ class LinearConnector(BaseConnector):
                     parts = []
                     if total_tickets > 0:
                         parts.append(f"{total_tickets} tickets")
-                    if total_comments > 0:
-                        parts.append(f"{total_comments} comments")
                     if total_files > 0:
                         parts.append(f"{total_files} files")
                     summary = ", ".join(parts) if parts else "0 records"
@@ -946,7 +950,6 @@ class LinearConnector(BaseConnector):
         # Apply date filters to team_filter
         self._apply_date_filters_to_linear_filter(team_filter, last_sync_time)
 
-        # Order by updatedAt ASC - critical for sync point logic to work correctly
         # This ensures each batch's max updatedAt >= previous batches, so checkpoint
         order_by = {"updatedAt": "ASC"}
 
@@ -997,14 +1000,9 @@ class LinearConnector(BaseConnector):
                             ticket_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
                         # Records inherit permissions from RecordGroup (team), so pass empty list
-                        # Permissions are set on RecordGroup in _fetch_teams (ORG for public, GROUP for private)
                         batch_records.append((ticket_record, []))
 
-                        # Process comments for this issue
-                        comment_records = await self._process_issue_comments(
-                            issue_data, ticket_record, team_id, tx_store
-                        )
-                        batch_records.extend(comment_records)
+                        # Note: Comments are handled as blocks during streaming, not as separate records
 
                         # Extract files from issue description
                         issue_description = issue_data.get("description", "")
@@ -1022,7 +1020,8 @@ class LinearConnector(BaseConnector):
                                 tx_store=tx_store,
                                 parent_created_at=issue_created_at,
                                 parent_updated_at=issue_updated_at,
-                                parent_weburl=ticket_record.weburl
+                                parent_weburl=ticket_record.weburl,
+                                exclude_images=True
                             )
                             batch_records.extend(file_records)
 
@@ -1261,14 +1260,19 @@ class LinearConnector(BaseConnector):
                             # Get parent issue info
                             issue_data = document_data.get("issue")
 
-                            # Skip documents without an issue (standalone documents)
+                            # Skip documents without an issue (standalone or project-attached documents)
                             # Track updatedAt to avoid refetching in next sync
                             if not issue_data:
                                 document_updated_at = self._parse_linear_datetime(document_data.get("updatedAt", "")) or 0
                                 if document_updated_at:
                                     if max_document_updated_at is None or document_updated_at > max_document_updated_at:
                                         max_document_updated_at = document_updated_at
-                                self.logger.debug(f"⚠️ Skipping document {document_id}: no parent issue (standalone document)")
+                                # Check if it's a project document or standalone
+                                project_data = document_data.get("project")
+                                if project_data:
+                                    self.logger.debug(f"⚠️ Skipping document {document_id}: project-attached (synced via project sync)")
+                                else:
+                                    self.logger.debug(f"⚠️ Skipping document {document_id}: no parent issue or project (standalone)")
                                 continue
 
                             issue_id = issue_data.get("id", "")
@@ -1375,6 +1379,11 @@ class LinearConnector(BaseConnector):
             try:
                 team_id = team_record_group.external_group_id
                 team_key = team_record_group.short_name or team_record_group.name
+
+                # Skip teams without external_group_id (shouldn't happen, but defensive check)
+                if not team_id:
+                    self.logger.warning(f"⚠️ Skipping team {team_key}: missing external_group_id")
+                    continue
 
                 self.logger.info(f"📋 Starting project sync for team: {team_key}")
 
@@ -1510,7 +1519,6 @@ class LinearConnector(BaseConnector):
                         )
 
                         # Transform project to ProjectRecord FIRST (without BlocksContainer - created only during streaming)
-                        # This ensures project_record.id exists before processing related records
                         project_record = self._transform_to_project_record(
                             full_project_data, team_id, existing_record
                         )
@@ -1519,7 +1527,7 @@ class LinearConnector(BaseConnector):
                         project_batch_records = await self._prepare_project_related_records(
                             full_project_data=full_project_data,
                             project_id=project_id,
-                            existing_record=project_record,  # Use project_record instead of existing_record
+                            existing_record=project_record,
                             team_id=team_id,
                             tx_store=tx_store
                         )
@@ -1586,87 +1594,6 @@ class LinearConnector(BaseConnector):
                 break
 
     # ==================== HELPER FUNCTIONS ====================
-
-    async def _process_issue_comments(
-        self,
-        issue_data: Dict[str, Any],
-        ticket_record: TicketRecord,
-        team_id: str,
-        tx_store
-    ) -> List[Tuple[Record, List[Permission]]]:
-        """
-        Process comments for an issue.
-
-        Args:
-            issue_data: Raw issue data from Linear API
-            ticket_record: The parent ticket record
-            team_id: Team ID for external_record_group_id
-            tx_store: Transaction store for looking up existing records
-
-        Returns:
-            List of (CommentRecord, permissions) tuples
-        """
-        comment_records: List[Tuple[Record, List[Permission]]] = []
-        issue_id = issue_data.get("id", "")
-        issue_identifier = issue_data.get("identifier", "")
-        comments_data = issue_data.get("comments", {}).get("nodes", [])
-
-        if not comments_data:
-            return comment_records
-
-        for comment_data in comments_data:
-            try:
-                comment_id = comment_data.get("id", "")
-                if not comment_id:
-                    continue
-
-                # Look up existing comment record to handle versioning
-                existing_comment = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=comment_id
-                )
-
-                comment_record = self._transform_comment_to_comment_record(
-                    comment_data, issue_id, issue_identifier, ticket_record.id, team_id, existing_comment
-                )
-
-                # Set indexing status based on filters
-                if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_COMMENTS):
-                    comment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
-
-                # Comments inherit permissions from RecordGroup (team), so pass empty list
-                comment_records.append((comment_record, []))
-
-                # Extract files from comment body
-                comment_body = comment_data.get("body", "")
-                if comment_body:
-                    # Get comment timestamps for file records
-                    comment_created_at = self._parse_linear_datetime(comment_data.get("createdAt", "")) or 0
-                    comment_updated_at = self._parse_linear_datetime(comment_data.get("updatedAt", "")) or 0
-
-                    file_records = await self._extract_files_from_markdown(
-                        markdown_text=comment_body,
-                        parent_external_id=comment_id,
-                        parent_node_id=ticket_record.id,  # Use ticket's internal ID, not comment's
-                        parent_record_type=RecordType.COMMENT,
-                        team_id=team_id,
-                        tx_store=tx_store,
-                        parent_created_at=comment_created_at,
-                        parent_updated_at=comment_updated_at,
-                        parent_weburl=comment_record.weburl
-                    )
-                    comment_records.extend(file_records)
-
-            except Exception as e:
-                comment_id = comment_data.get("id", "unknown")
-                self.logger.error(f"❌ Error processing comment {comment_id} for issue {issue_id}: {e}", exc_info=True)
-                continue
-
-        if comment_records:
-            issue_identifier = issue_data.get("identifier", issue_id)
-            self.logger.debug(f"💬 Issue {issue_identifier}: {len(comment_records)} comments")
-
-        return comment_records
 
     async def _prepare_project_related_records(
         self,
@@ -1798,9 +1725,8 @@ class LinearConnector(BaseConnector):
                 if create_block_groups:
                     child_record = ChildRecord(
                         child_type=ChildType.RECORD,
-                        record_id=link_record.id,
-                        record_name=link_record.record_name,
-                        record_type=RecordType.LINK
+                        child_id=link_record.id,
+                        child_name=link_record.record_name
                     )
 
                     block_group = BlockGroup(
@@ -1884,9 +1810,8 @@ class LinearConnector(BaseConnector):
                 if create_block_groups:
                     child_record = ChildRecord(
                         child_type=ChildType.RECORD,
-                        record_id=webpage_record.id,
-                        record_name=webpage_record.record_name,
-                        record_type=RecordType.WEBPAGE
+                        child_id=webpage_record.id,
+                        child_name=webpage_record.record_name
                     )
 
                     block_group = BlockGroup(
@@ -1911,6 +1836,267 @@ class LinearConnector(BaseConnector):
                 continue
 
         return document_records, block_groups
+
+    async def _process_issue_attachments(
+        self,
+        attachments_data: List[Dict[str, Any]],
+        issue_id: str,
+        issue_node_id: str,
+        team_id: str,
+        tx_store,
+    ) -> List[ChildRecord]:
+        """
+        Process issue attachments and create ChildRecords for TableRowMetadata.
+        Creates LinkRecords if they don't exist (like projects do).
+
+        Args:
+            attachments_data: List of attachment data from Linear API
+            issue_id: Issue external ID
+            issue_node_id: Internal record ID of issue
+            team_id: Team ID for external_record_group_id
+            tx_store: Transaction store for looking up existing records
+
+        Returns:
+            List of ChildRecord objects for attachments
+        """
+        child_records: List[ChildRecord] = []
+
+        for attachment_data in attachments_data:
+            try:
+                attachment_id = attachment_data.get("id", "")
+                if not attachment_id:
+                    continue
+
+                # Look up existing attachment record from database
+                existing_record = await tx_store.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=attachment_id
+                )
+
+                # Create record if it doesn't exist (like projects do)
+                if not existing_record:
+                    link_record = self._transform_attachment_to_link_record(
+                        attachment_data=attachment_data,
+                        issue_id=issue_id,
+                        parent_node_id=issue_node_id,
+                        team_id=team_id,
+                        existing_record=None,
+                        parent_record_type=RecordType.TICKET
+                    )
+
+                    # Set indexing status based on filters
+                    if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_ATTACHMENTS):
+                        link_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+                    # Save the record
+                    await self.data_entities_processor.on_new_records([(link_record, [])])
+                    existing_record = link_record
+
+                if existing_record:
+                    child_records.append(ChildRecord(
+                        child_type=ChildType.RECORD,
+                        child_id=existing_record.id,
+                        child_name=existing_record.record_name
+                    ))
+
+            except Exception as e:
+                attachment_id = attachment_data.get("id", "unknown")
+                self.logger.error(f"❌ Error processing issue attachment {attachment_id} for children_records: {e}", exc_info=True)
+                continue
+
+        return child_records
+
+    async def _process_issue_documents(
+        self,
+        documents_data: List[Dict[str, Any]],
+        issue_id: str,
+        issue_node_id: str,
+        team_id: str,
+        tx_store,
+    ) -> List[ChildRecord]:
+        """
+        Process issue documents and create ChildRecords for TableRowMetadata.
+        Creates WebpageRecords if they don't exist (like projects do).
+
+        Args:
+            documents_data: List of document data from Linear API
+            issue_id: Issue external ID
+            issue_node_id: Internal record ID of issue
+            team_id: Team ID for external_record_group_id
+            tx_store: Transaction store for looking up existing records
+
+        Returns:
+            List of ChildRecord objects for documents
+        """
+        child_records: List[ChildRecord] = []
+
+        for document_data in documents_data:
+            try:
+                document_id = document_data.get("id", "")
+                if not document_id:
+                    continue
+
+                # Look up existing document record from database
+                existing_record = await tx_store.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=document_id
+                )
+
+                # Create record if it doesn't exist (like projects do)
+                if not existing_record:
+                    webpage_record = self._transform_document_to_webpage_record(
+                        document_data=document_data,
+                        issue_id=issue_id,
+                        parent_node_id=issue_node_id,
+                        team_id=team_id,
+                        existing_record=None,
+                        parent_record_type=RecordType.TICKET
+                    )
+
+                    # Set indexing status based on filters
+                    if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.DOCUMENTS):
+                        webpage_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+                    # Save the record
+                    await self.data_entities_processor.on_new_records([(webpage_record, [])])
+                    existing_record = webpage_record
+
+                if existing_record:
+                    child_records.append(ChildRecord(
+                        child_type=ChildType.RECORD,
+                        child_id=existing_record.id,
+                        child_name=existing_record.record_name
+                    ))
+
+            except Exception as e:
+                document_id = document_data.get("id", "unknown")
+                self.logger.error(f"❌ Error processing issue document {document_id} for children_records: {e}", exc_info=True)
+                continue
+
+        return child_records
+
+    async def _process_content_files_for_children(
+        self,
+        content: str,
+        parent_id: str,
+        tx_store,
+    ) -> List[ChildRecord]:
+        """
+        Process files extracted from content (description/body) and create ChildRecords.
+        Fetches already-synced FileRecords from database (excluding images).
+
+        This method is reusable for both issues and projects.
+
+        Args:
+            content: Markdown content to extract files from
+            parent_id: Parent record external ID (for logging)
+            tx_store: Transaction store for looking up existing records
+
+        Returns:
+            List of ChildRecord objects for files (excluding images)
+        """
+        child_records: List[ChildRecord] = []
+
+        if not content:
+            return child_records
+
+        # Extract file URLs from content (excluding images)
+        file_urls = self._extract_file_urls_from_markdown(content, exclude_images=True)
+
+        for file_info in file_urls:
+            try:
+                file_url = file_info["url"]
+
+                # Look up existing file record by URL (external_record_id = file_url)
+                existing_record = await tx_store.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=file_url
+                )
+
+                if existing_record:
+                    child_records.append(ChildRecord(
+                        child_type=ChildType.RECORD,
+                        child_id=existing_record.id,
+                        child_name=existing_record.record_name
+                    ))
+
+            except Exception as e:
+                self.logger.error(f"❌ Error processing file {file_info.get('url', 'unknown')} for children_records: {e}", exc_info=True)
+                continue
+
+        return child_records
+
+    async def _process_comment_files_for_children(
+        self,
+        comments_data: List[Dict[str, Any]],
+        issue_id: str,
+        issue_node_id: str,
+        team_id: str,
+        issue_weburl: Optional[str],
+        tx_store,
+    ) -> Dict[str, List[ChildRecord]]:
+        """
+        Process files from comment bodies, create FileRecords, and return a map of comment_id -> ChildRecords.
+
+        Args:
+            comments_data: List of comment data from Linear API
+            issue_id: Issue external ID
+            issue_node_id: Internal record ID of issue
+            team_id: Team ID for external_record_group_id
+            issue_weburl: Issue web URL (for file weburl)
+            tx_store: Transaction store for looking up existing records
+
+        Returns:
+            Dictionary mapping comment_id to List[ChildRecord] for files in that comment
+        """
+        comment_file_children_map: Dict[str, List[ChildRecord]] = {}
+
+        if not comments_data:
+            return comment_file_children_map
+
+        for comment_data in comments_data:
+            comment_id = comment_data.get("id", "")
+            comment_body = comment_data.get("body", "")
+
+            if not comment_id or not comment_body:
+                continue
+
+            # Extract files from comment body and create FileRecords
+            comment_created_at = self._parse_linear_datetime(comment_data.get("createdAt", "")) or 0
+            comment_updated_at = self._parse_linear_datetime(comment_data.get("updatedAt", "")) or 0
+            comment_url = comment_data.get("url", issue_weburl)
+
+            file_records = await self._extract_files_from_markdown(
+                markdown_text=comment_body,
+                parent_external_id=issue_id,
+                parent_node_id=issue_node_id,
+                parent_record_type=RecordType.TICKET,
+                team_id=team_id,
+                tx_store=tx_store,
+                parent_created_at=comment_created_at,
+                parent_updated_at=comment_updated_at,
+                parent_weburl=comment_url,
+                exclude_images=True,
+                indexing_filter_key=IndexingFilterKey.FILES
+            )
+
+            # Save FileRecords if any were created
+            if file_records:
+                await self.data_entities_processor.on_new_records(file_records)
+
+            # Create ChildRecords for the files
+            child_records: List[ChildRecord] = []
+            for file_record, _ in file_records:
+                child_records.append(ChildRecord(
+                    child_type=ChildType.RECORD,
+                    child_id=file_record.id,
+                    child_name=file_record.record_name
+                ))
+
+            if child_records:
+                comment_file_children_map[comment_id] = child_records
+
+        return comment_file_children_map
 
     async def _extract_files_from_markdown(
         self,
@@ -1969,7 +2155,7 @@ class LinearConnector(BaseConnector):
                 )
 
                 # Transform to FileRecord
-                file_record = self._transform_file_url_to_file_record(
+                file_record = await self._transform_file_url_to_file_record(
                     file_url=file_url,
                     filename=filename,
                     parent_external_id=parent_external_id,
@@ -2095,6 +2281,101 @@ class LinearConnector(BaseConnector):
 
         return extension_to_mime.get(ext, MimeTypes.UNKNOWN.value)
 
+    async def _convert_images_to_base64_in_markdown(self, markdown_text: str) -> str:
+        """
+        Convert all images in markdown text to base64 data URIs.
+
+        Finds all image patterns like ![alt](url) and replaces them with
+        base64-encoded data URIs: ![alt](data:image/png;base64,...)
+
+        Only processes images from Linear uploads (uploads.linear.app).
+
+        Args:
+            markdown_text: Markdown content that may contain images
+
+        Returns:
+            Markdown text with images converted to base64 data URIs
+        """
+        if not markdown_text:
+            return markdown_text
+
+        # Pattern to match markdown images: ![alt](url)
+        image_pattern = r'!\[([^\]]*)\]\(([^)]+)\)'
+
+        # Find all image matches
+        matches = list(re.finditer(image_pattern, markdown_text))
+
+        if not matches:
+            return markdown_text  # No images found
+
+        # Initialize datasource if needed
+        if not self.data_source:
+            await self.init()
+
+        datasource = await self._get_fresh_datasource()
+
+        # Process all images and build replacements
+        replacements = {}
+        for match in matches:
+            alt_text = match.group(1) or ""
+            image_url = match.group(2).strip()
+
+            # Only process Linear upload URLs
+            if "uploads.linear.app" not in image_url:
+                continue  # Skip non-Linear images
+
+            try:
+                # Download image content
+                image_bytes = b""
+                async for chunk in datasource.download_file(image_url):
+                    image_bytes += chunk
+
+                if not image_bytes:
+                    self.logger.debug(f"⚠️ Empty image content from {image_url}")
+                    continue  # Skip empty images
+
+                # Determine image type from URL
+                image_type = "png"  # default
+                url_lower = image_url.lower()
+                if ".jpg" in url_lower or ".jpeg" in url_lower:
+                    image_type = "jpeg"
+                elif ".gif" in url_lower:
+                    image_type = "gif"
+                elif ".webp" in url_lower:
+                    image_type = "webp"
+                elif ".svg" in url_lower:
+                    image_type = "svg"
+                elif ".png" in url_lower:
+                    image_type = "png"
+
+                # Convert to base64
+                base64_encoded = base64.b64encode(image_bytes).decode('utf-8')
+
+                # Create data URI
+                if image_type == "svg":
+                    data_uri = f"data:image/svg+xml;base64,{base64_encoded}"
+                else:
+                    data_uri = f"data:image/{image_type};base64,{base64_encoded}"
+
+                # Store replacement
+                original = match.group(0)
+                replacement = f"![{alt_text}]({data_uri})"
+                replacements[original] = replacement
+
+            except Exception as e:
+                self.logger.debug(f"⚠️ Failed to convert image {image_url} to base64: {e}")
+                continue  # Skip on error
+
+        # Apply replacements (process in reverse order to preserve string indices)
+        result = markdown_text
+        for match in reversed(matches):
+            original = match.group(0)
+            if original in replacements:
+                start, end = match.span()
+                result = result[:start] + replacements[original] + result[end:]
+
+        return result
+
     # ==================== TRANSFORMATIONS ====================
 
     def _transform_issue_to_ticket_record(
@@ -2122,15 +2403,11 @@ class LinearConnector(BaseConnector):
         identifier = issue_data.get("identifier", "")
         title = issue_data.get("title", "")
 
-        # Build record name: "ENG-123: Title" or fallback to identifier or title
         if identifier and title:
-            record_name = f"{identifier}: {title}"
+            record_name = title
         elif identifier:
             record_name = identifier
-        elif title:
-            record_name = title
         else:
-            # Last resort: use issue ID but log a warning
             self.logger.warning(f"Issue {issue_id} missing both identifier and title, using ID as record name")
             record_name = issue_id
 
@@ -2139,15 +2416,52 @@ class LinearConnector(BaseConnector):
             self.logger.error(f"Issue {issue_id} has no team_id, cannot create record without team association")
             raise ValueError(f"team_id is required but was {team_id}")
 
-        # Priority mapping (Linear uses numeric: 0=None, 1=Urgent, 2=High, 3=Medium, 4=Low)
+        # Priority mapping
         priority_num = issue_data.get("priority")
-        priority_map = {1: "Urgent", 2: "High", 3: "Medium", 4: "Low"}
-        priority = priority_map.get(priority_num) if priority_num else None
+        if priority_num is None:
+            priority_str = None
+        elif priority_num == 0:
+            priority_str = "none"  # Linear priority 0 = no priority
+        else:
+            priority_map = {1: "Urgent", 2: "High", 3: "Medium", 4: "Low"}
+            priority_str = priority_map.get(priority_num)
 
-        # State information
+        # Map to standard TicketPriority enum
+        priority = self.ticket_mapper.map_priority(priority_str)
+
+        # State information - map to standard TicketStatus enum
         state = issue_data.get("state", {})
         state_name = state.get("name") if state else None
         state_type = state.get("type") if state else None
+
+        # Try custom state name first (e.g., "new", "In Review")
+        status = self.ticket_mapper.map_status(state_name)
+
+        # If state_name didn't map to enum, try state_type (backlog, started, etc.)
+        if status and not isinstance(status, TicketStatus):
+            status = self.ticket_mapper.map_status(state_type)
+
+        # Type extraction from labels with fallback logic
+        labels = issue_data.get("labels", {})
+        label_nodes = labels.get("nodes", []) if labels else []
+        type_value = None
+
+        # Check all labels for type match
+        for label in label_nodes:
+            label_name = label.get("name", "") if label else ""
+            if label_name:
+                mapped_type = self.ticket_mapper.map_type(label_name)
+                if mapped_type and isinstance(mapped_type, TicketType):
+                    type_value = mapped_type
+                    break  # Use first matching type
+
+        # If no label matched, check if it's a sub-issue or default to TASK
+        if not type_value:
+            parent = issue_data.get("parent")
+            if parent and parent.get("id"):
+                type_value = TicketType.SUB_ISSUE
+            else:
+                type_value = TicketType.ISSUE
 
         # Assignee information
         assignee = issue_data.get("assignee", {})
@@ -2182,7 +2496,6 @@ class LinearConnector(BaseConnector):
         # Get web URL directly from Linear API response
         weburl = issue_data.get("url")
 
-        # Create TicketRecord
         # Use updatedAt as external_revision_id so placeholders (None) will trigger update
         external_revision_id = str(updated_at) if updated_at else None
 
@@ -2200,15 +2513,16 @@ class LinearConnector(BaseConnector):
             origin=OriginTypes.CONNECTOR.value,
             connector_name=self.connector_name,
             connector_id=self.connector_id,
-            mime_type=MimeTypes.MARKDOWN.value,
+            mime_type=MimeTypes.BLOCKS.value,
             weburl=weburl,
             created_at=get_epoch_timestamp_in_ms(),
             updated_at=get_epoch_timestamp_in_ms(),
             source_created_at=created_at,
             source_updated_at=updated_at,
-            status=state_name,
+            status=status,
             priority=priority,
-            type=state_type,
+            type=type_value,
+            delivery_status=None,
             assignee=assignee_name,
             preview_renderable=False,
             assignee_email=assignee_email,
@@ -2320,96 +2634,6 @@ class LinearConnector(BaseConnector):
 
 
         return project
-
-    def _transform_comment_to_comment_record(
-        self,
-        comment_data: Dict[str, Any],
-        issue_id: str,
-        issue_identifier: str,
-        parent_node_id: str,
-        team_id: str,
-        existing_record: Optional[Record] = None
-    ) -> CommentRecord:
-        """
-        Transform Linear comment data to CommentRecord.
-        This method handles versioning similar to TicketRecord.
-        Follows Jira pattern for record naming.
-
-        Args:
-            comment_data: Raw comment data from Linear API
-            issue_id: Parent issue external ID
-            issue_identifier: Parent issue identifier (e.g., "BAC-1")
-            parent_node_id: Internal record ID of parent ticket
-            team_id: Team ID for external_record_group_id
-            existing_record: Existing record from DB (if any) for version handling
-
-        Returns:
-            CommentRecord: Transformed comment record
-        """
-        comment_id = comment_data.get("id", "")
-        if not comment_id:
-            raise ValueError("Comment data missing required 'id' field")
-
-        user = comment_data.get("user", {})
-        author_source_id = user.get("id", "") if user else ""
-        author_name = user.get("displayName") or user.get("name") or "Unknown"
-
-        # Timestamps
-        created_at = self._parse_linear_datetime(comment_data.get("createdAt", "")) or 0
-        updated_at = self._parse_linear_datetime(comment_data.get("updatedAt", "")) or 0
-
-        # Use updatedAt as external_revision_id
-        external_revision_id = str(updated_at) if updated_at else None
-
-        # Build record name following Jira pattern: "Comment by {author} on {issue_key}"
-        if issue_identifier:
-            record_name = f"Comment by {author_name} on {issue_identifier}"
-        else:
-            record_name = f"Comment by {author_name}"
-
-        # Get web URL directly from Linear API response
-        weburl = comment_data.get("url")
-
-        # Handle versioning: use existing record's id and increment version if changed
-        is_new = existing_record is None
-        record_id = existing_record.id if existing_record else str(uuid4())
-
-        if is_new:
-            version = 0
-        elif hasattr(existing_record, 'source_updated_at') and existing_record.source_updated_at != updated_at:
-            version = existing_record.version + 1
-            self.logger.debug(f"📝 Comment {comment_id[:8]} changed, incrementing version to {version}")
-        else:
-            version = existing_record.version if existing_record else 0
-
-        comment = CommentRecord(
-            id=record_id,
-            org_id=self.data_entities_processor.org_id,
-            record_name=record_name,
-            record_type=RecordType.COMMENT,
-            external_record_id=comment_id,
-            external_revision_id=external_revision_id,
-            external_record_group_id=team_id,
-            parent_external_record_id=issue_id,
-            parent_record_type=RecordType.TICKET,
-            version=version,
-            origin=OriginTypes.CONNECTOR.value,
-            connector_name=self.connector_name,
-            connector_id=self.connector_id,
-            mime_type=MimeTypes.MARKDOWN.value,
-            weburl=weburl,
-            created_at=get_epoch_timestamp_in_ms(),
-            updated_at=get_epoch_timestamp_in_ms(),
-            source_created_at=created_at,
-            source_updated_at=updated_at,
-            author_source_id=author_source_id,
-            preview_renderable=False,
-            is_dependent_node=True,
-            parent_node_id=parent_node_id,
-            inherit_permissions=True,
-        )
-
-        return comment
 
     def _transform_attachment_to_link_record(
         self,
@@ -2586,7 +2810,7 @@ class LinearConnector(BaseConnector):
 
         return webpage
 
-    def _transform_file_url_to_file_record(
+    async def _transform_file_url_to_file_record(
         self,
         file_url: str,
         filename: str,
@@ -2635,6 +2859,18 @@ class LinearConnector(BaseConnector):
             # For files, we don't track updatedAt, so keep same version unless URL changed
             version = existing_record.version if existing_record else 0
 
+        # Get file size from URL using HEAD request
+        size_in_bytes = 0
+        try:
+            if self.data_source:
+                datasource = await self._get_fresh_datasource()
+                file_size = await datasource.get_file_size(file_url)
+                if file_size is not None:
+                    size_in_bytes = file_size
+        except Exception as e:
+            # Log error but don't fail - use 0 as fallback
+            self.logger.debug(f"⚠️ Could not fetch file size for {file_url}: {e}")
+
         file_record = FileRecord(
             id=record_id,
             org_id=self.data_entities_processor.org_id,
@@ -2661,7 +2897,7 @@ class LinearConnector(BaseConnector):
             inherit_permissions=True,
             is_file=True,
             extension=extension,
-            size_in_bytes=0,
+            size_in_bytes=size_in_bytes,
         )
 
         return file_record
@@ -2699,8 +2935,9 @@ class LinearConnector(BaseConnector):
 
         # Merge modified_after with checkpoint (use the latest)
         if modified_after_ts and last_sync_time:
+            original_filter_ts = modified_after_ts
             modified_after_ts = max(modified_after_ts, last_sync_time)
-            self.logger.info(f"🔄 Using latest modified_after: {modified_after_ts} (filter: {modified_after_ts}, checkpoint: {last_sync_time})")
+            self.logger.info(f"🔄 Using latest modified_after: {modified_after_ts} (filter: {original_filter_ts}, checkpoint: {last_sync_time})")
         elif modified_after_ts:
             self.logger.info(f"🔍 Using filter: Fetching issues modified after {modified_after_ts}")
         elif last_sync_time:
@@ -3001,11 +3238,10 @@ class LinearConnector(BaseConnector):
         Mark a record and all its child records as deleted.
 
         For Issues:
-            - Issue (TicketRecord)
-            - Comments (CommentRecord) - separate records
+            - Issue (TicketRecord) - contains comments as blocks (not separate records)
             - Attachments (LinkRecord) - separate records
             - Documents (WebPageRecord) - separate records
-            - Files (FileRecord) - extracted from issue descriptions and comments
+            - Files (FileRecord) - extracted from issue descriptions
 
         For Projects:
             - Project (ProjectRecord) - contains milestones, updates, and comments as blocks (not separate records)
@@ -3013,9 +3249,9 @@ class LinearConnector(BaseConnector):
             - External Links (LinkRecord) - separate records
             - Files (FileRecord) - extracted from project content markdown
 
-        Note: Project milestones, updates, and comments are stored as blocks within the project
-        record itself, not as separate records, so they are automatically deleted when the
-        project record is deleted.
+        Note: Issue comments and project milestones/updates/comments are stored as blocks within
+        the parent record itself, not as separate records, so they are automatically deleted
+        when the parent record is deleted.
         """
         try:
             # Use transaction to delete parent and all children
@@ -3375,6 +3611,9 @@ class LinearConnector(BaseConnector):
         if description_sections:
             combined_content = "\n".join(description_sections)
 
+            # Convert images in project description/content to base64
+            combined_content = await self._convert_images_to_base64_in_markdown(combined_content)
+
             # Build project comments as BlockComments
             block_comments: List[BlockComment] = []
             comments = project_data.get("comments", {}).get("nodes", [])
@@ -3383,6 +3622,7 @@ class LinearConnector(BaseConnector):
                     comment_body = comment_data.get("body", "")
                     if comment_body:
                         author = comment_data.get("user", {})
+                        author_id = author.get("id")
                         author_name = author.get("displayName") or author.get("name", "Unknown")
                         comment_id = comment_data.get("id", "")
                         comment_url = comment_data.get("url", "")
@@ -3393,11 +3633,22 @@ class LinearConnector(BaseConnector):
                         comment_created_at = self._parse_linear_datetime_to_datetime(comment_created_at_str)
                         comment_updated_at = self._parse_linear_datetime_to_datetime(comment_updated_at_str)
 
-                        # Format comment with author and timestamp for better tracking
-                        formatted_comment_text = f"**{author_name}**"
-                        if comment_created_at_str:
-                            formatted_comment_text += f" ({comment_created_at_str})"
-                        formatted_comment_text += f":\n{comment_body}"
+                        # Convert images in comment body to base64
+                        comment_body = await self._convert_images_to_base64_in_markdown(comment_body)
+
+                        # Extract attachments from comment body (excluding images)
+                        attachments = None
+                        if comment_body:
+                            file_urls = self._extract_file_urls_from_markdown(comment_body, exclude_images=True)
+                            if file_urls:
+                                attachments = [
+                                    CommentAttachment(
+                                        name=file_info.get("filename", ""),
+                                        id=file_info.get("url", "")  # Use file URL as ID (same as external_record_id)
+                                    )
+                                    for file_info in file_urls
+                                    if file_info.get("filename") and file_info.get("url")
+                                ]
 
                         # Handle quoted_text if present
                         quoted_text = comment_data.get("quotedText") or comment_data.get("quoted_text")
@@ -3408,12 +3659,16 @@ class LinearConnector(BaseConnector):
 
                         block_comments.append(
                             BlockComment(
-                                text=formatted_comment_text,
+                                text=comment_body,
                                 format=DataFormat.MARKDOWN,
+                                author_id=author_id,
+                                author_name=author_name,
                                 thread_id=thread_id,
+                                resolution_status=None,
                                 weburl=comment_url if comment_url else None,
                                 created_at=comment_created_at,
                                 updated_at=comment_updated_at,
+                                attachments=attachments if attachments else None,
                                 quoted_text=quoted_text,
                             )
                         )
@@ -3451,6 +3706,9 @@ class LinearConnector(BaseConnector):
                 if milestone_description:
                     milestone_markdown += f"\n{milestone_description}\n"
 
+                # Convert images in milestone description to base64
+                milestone_markdown = await self._convert_images_to_base64_in_markdown(milestone_markdown)
+
                 # Construct milestone-specific URL: {project_url}/overview#milestone-{milestone_id}
                 milestone_weburl = f"{weburl.rstrip('/')}/overview#milestone-{milestone_id}" if milestone_id and weburl else weburl
 
@@ -3486,6 +3744,9 @@ class LinearConnector(BaseConnector):
                     update_markdown += f"*Created: {update_created_at}*\n"
                 update_markdown += f"\n{update_body}\n"
 
+                # Convert images in update body to base64
+                update_markdown = await self._convert_images_to_base64_in_markdown(update_markdown)
+
                 # Update URL is always provided by Linear API
                 update_weburl = update_data.get("url") or weburl
 
@@ -3497,6 +3758,7 @@ class LinearConnector(BaseConnector):
                         comment_body = comment_data.get("body", "")
                         if comment_body:
                             comment_author = comment_data.get("user", {})
+                            comment_author_id = comment_author.get("id")
                             comment_author_name = comment_author.get("displayName") or comment_author.get("name", "Unknown")
                             comment_id = comment_data.get("id", "")
                             comment_url = comment_data.get("url", "")
@@ -3507,11 +3769,8 @@ class LinearConnector(BaseConnector):
                             comment_created_at = self._parse_linear_datetime_to_datetime(comment_created_at_str)
                             comment_updated_at = self._parse_linear_datetime_to_datetime(comment_updated_at_str)
 
-                            # Format comment with author and timestamp for better tracking
-                            formatted_comment_text = f"**{comment_author_name}**"
-                            if comment_created_at_str:
-                                formatted_comment_text += f" ({comment_created_at_str})"
-                            formatted_comment_text += f":\n{comment_body}"
+                            # Convert images in comment body to base64
+                            comment_body = await self._convert_images_to_base64_in_markdown(comment_body)
 
                             # Extract attachments from comment body (excluding images) using existing function
                             attachments = None
@@ -3519,9 +3778,12 @@ class LinearConnector(BaseConnector):
                                 file_urls = self._extract_file_urls_from_markdown(comment_body, exclude_images=True)
                                 if file_urls:
                                     attachments = [
-                                        CommentAttachment(name=file_info.get("filename", ""))
+                                        CommentAttachment(
+                                            name=file_info.get("filename", ""),
+                                            id=file_info.get("url", "")  # Use file URL as ID (same as external_record_id)
+                                        )
                                         for file_info in file_urls
-                                        if file_info.get("filename")
+                                        if file_info.get("filename") and file_info.get("url")
                                     ]
 
                             # Handle quoted_text if present
@@ -3533,9 +3795,12 @@ class LinearConnector(BaseConnector):
 
                             update_block_comments.append(
                                 BlockComment(
-                                    text=formatted_comment_text,
+                                    text=comment_body,
                                     format=DataFormat.MARKDOWN,
+                                    author_id=comment_author_id,
+                                    author_name=comment_author_name,
                                     thread_id=thread_id,
+                                    resolution_status=None,
                                     weburl=comment_url if comment_url else None,
                                     created_at=comment_created_at,
                                     updated_at=comment_updated_at,
@@ -3567,6 +3832,7 @@ class LinearConnector(BaseConnector):
         # create a minimal BlockGroup with just the project name
         if not block_groups:
             minimal_data = f"# {project_name}" if project_name else f"# Project {project_id}"
+            minimal_data = await self._convert_images_to_base64_in_markdown(minimal_data)
 
             minimal_block_group = self._create_blockgroup(
                 name=project_name or f"Project {project_id}",
@@ -3584,6 +3850,228 @@ class LinearConnector(BaseConnector):
 
         return BlocksContainer(blocks=[], block_groups=block_groups)
 
+    def _organize_issue_comments_to_threads(self, comments_data: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+        """
+        Group comments by thread (parent_id) and sort by created_at.
+        Returns list of threads, each thread is a list of comments sorted by created_at.
+
+        Args:
+            comments_data: List of comment data from Linear API
+
+        Returns:
+            List of threads, each thread is a list of comments sorted by created_at (oldest first)
+        """
+        if not comments_data:
+            return []
+
+        threads: Dict[str, List[Dict[str, Any]]] = {}
+
+        for comment in comments_data:
+            parent = comment.get("parent", {})
+            # Thread ID is parent's ID if it's a reply, or self ID if top-level
+            thread_id = parent.get("id") if parent and parent.get("id") else comment.get("id", "")
+            if not thread_id:
+                continue
+
+            if thread_id not in threads:
+                threads[thread_id] = []
+            threads[thread_id].append(comment)
+
+        # Sort each thread by created_at (oldest first)
+        for thread_id in threads:
+            threads[thread_id].sort(
+                key=lambda c: self._parse_linear_datetime(c.get("createdAt", "")) or 0
+            )
+
+        # Sort threads by first comment's created_at (oldest thread first)
+        sorted_threads = sorted(
+            threads.values(),
+            key=lambda t: self._parse_linear_datetime(t[0].get("createdAt", "")) or 0 if t else 0
+        )
+
+        return sorted_threads
+
+    async def _parse_issue_to_blocks(
+        self,
+        issue_data: Dict[str, Any],
+        weburl: Optional[str] = None,
+        children_records: Optional[List[ChildRecord]] = None,
+        comment_file_children_map: Optional[Dict[str, List[ChildRecord]]] = None,
+    ) -> BlocksContainer:
+        """
+        Parse issue data into BlockGroups that will be processed by Docling.
+
+        This creates:
+        - Description BlockGroup (index=0) with:
+          - Issue description markdown
+          - children_records in TableRowMetadata (attachments, documents, files)
+        - Thread BlockGroups (index=1,2,...) for each comment thread with:
+          - parent_index=0 (pointing to Description BlockGroup)
+        - Block objects (sub_type=COMMENT) for each comment with:
+          - parent_index pointing to thread BlockGroup index
+          - children_records in TableRowMetadata (files from comment body)
+
+        Args:
+            issue_data: Full issue data from Linear API (with nested data)
+            weburl: Issue web URL (required for docling BlockGroups)
+            children_records: List of ChildRecord for attachments, documents, files (for description)
+            comment_file_children_map: Dictionary mapping comment_id to List[ChildRecord] for files in comments
+
+        Returns:
+            BlocksContainer with Description BlockGroup, Thread BlockGroups, and Comment Blocks
+        """
+        issue_id = issue_data.get("id", "")
+        issue_identifier = issue_data.get("identifier", "")
+        issue_title = issue_data.get("title", "")
+        issue_description = issue_data.get("description", "")
+
+        if not weburl:
+            raise ValueError("weburl is required when creating docling BlockGroup for issues")
+
+        block_groups: List[BlockGroup] = []
+        blocks: List[Block] = []
+        block_group_index = 0
+        block_index = 0
+
+        # 1. Description BlockGroup (index=0)
+        # Use description if available, otherwise create minimal content with title
+        description_content = issue_description if issue_description else f"# {issue_title}" if issue_title else f"# Issue {issue_identifier or issue_id}"
+
+        # Convert images in description to base64
+        description_content = await self._convert_images_to_base64_in_markdown(description_content)
+
+        # Create TableRowMetadata with children_records if any
+        table_row_metadata = None
+        if children_records:
+            table_row_metadata = TableRowMetadata(
+                children_records=children_records
+            )
+
+        description_block_group = BlockGroup(
+            id=str(uuid4()),
+            index=block_group_index,
+            name=issue_title if issue_title else (f"{issue_identifier} - Description" if issue_identifier else "Issue Description"),
+            type=GroupType.TEXT_SECTION,
+            group_subtype=GroupSubType.ISSUE_CONTENT,
+            description=f"Description for issue {issue_identifier}" if issue_identifier else "Issue description",
+            source_group_id=f"{issue_id}_description",
+            data=description_content,
+            format=DataFormat.MARKDOWN,
+            weburl=weburl,
+            requires_processing=True,
+            table_row_metadata=table_row_metadata,
+        )
+        block_groups.append(description_block_group)
+        block_group_index += 1
+
+        # 2. Comment Thread BlockGroups (index=1,2,...) and Comment Blocks
+        comments_data = issue_data.get("comments", {}).get("nodes", [])
+
+        if comments_data:
+            sorted_threads = self._organize_issue_comments_to_threads(comments_data)
+
+            for thread_comments in sorted_threads:
+                if not thread_comments:
+                    continue
+
+                # Get thread ID from first comment (either its ID if top-level, or parent ID if reply)
+                first_comment = thread_comments[0]
+                parent = first_comment.get("parent", {})
+                thread_id = parent.get("id") if parent and parent.get("id") else first_comment.get("id", "")
+
+                # Create thread BlockGroup with parent_index=0 (Description BlockGroup)
+                thread_block_group = BlockGroup(
+                    id=str(uuid4()),
+                    index=block_group_index,
+                    parent_index=0,  # Points to Description BlockGroup
+                    name=f"Comment Thread - {thread_id[:8]}" if thread_id else "Comment Thread",
+                    type=GroupType.TEXT_SECTION,
+                    group_subtype=GroupSubType.COMMENT_THREAD,
+                    description=f"Comment thread for issue {issue_identifier}" if issue_identifier else "Comment thread",
+                    source_group_id=f"{issue_id}_thread_{thread_id}" if thread_id else f"{issue_id}_thread_{block_group_index}",
+                    weburl=thread_comments[0].get("url") if thread_comments else weburl,
+                    requires_processing=False,
+                )
+                block_groups.append(thread_block_group)
+
+                # Create Block objects for each comment in the thread
+                for comment in thread_comments:
+                    comment_body = comment.get("body", "")
+                    if not comment_body:
+                        continue
+
+                    comment_id = comment.get("id", "")
+                    comment_url = comment.get("url", "")
+                    comment_created_at_str = comment.get("createdAt", "")
+                    comment_updated_at_str = comment.get("updatedAt", "")
+
+                    # Parse datetime strings to datetime objects
+                    comment_created_at = self._parse_linear_datetime_to_datetime(comment_created_at_str)
+                    comment_updated_at = self._parse_linear_datetime_to_datetime(comment_updated_at_str)
+
+                    user = comment.get("user", {})
+                    author_name = user.get("displayName") or user.get("name") or "Unknown"
+
+                    # Convert images in comment body to base64
+                    comment_body = await self._convert_images_to_base64_in_markdown(comment_body)
+
+                    # Get file children_records for this comment if any
+                    comment_file_children = None
+                    if comment_file_children_map and comment_id in comment_file_children_map:
+                        comment_file_children = comment_file_children_map[comment_id]
+
+                    # Create TableRowMetadata with children_records if comment has files
+                    comment_table_row_metadata = None
+                    if comment_file_children:
+                        comment_table_row_metadata = TableRowMetadata(
+                            children_records=comment_file_children
+                        )
+
+                    # Create Block with sub_type=COMMENT
+                    comment_block = Block(
+                        id=str(uuid4()),
+                        index=block_index,
+                        parent_index=block_group_index,  # Points to thread BlockGroup
+                        type=BlockType.TEXT,
+                        sub_type=BlockSubType.COMMENT,
+                        name=f"Comment by {author_name}",
+                        format=DataFormat.MARKDOWN,
+                        data=comment_body,
+                        weburl=comment_url if comment_url else None,
+                        source_creation_date=comment_created_at,
+                        source_update_date=comment_updated_at,
+                        source_id=comment_id,
+                        source_name=f"Comment by {author_name}",
+                        source_type="comment",
+                        table_row_metadata=comment_table_row_metadata,
+                    )
+                    blocks.append(comment_block)
+                    block_index += 1
+
+                block_group_index += 1
+
+        # If no blockgroups were created (no description and no comments), create minimal BlockGroup
+        if not block_groups:
+            minimal_data = f"# {issue_title}" if issue_title else f"# Issue {issue_identifier or issue_id}"
+            minimal_data = await self._convert_images_to_base64_in_markdown(minimal_data)
+            minimal_block_group = BlockGroup(
+                id=str(uuid4()),
+                index=0,
+                name=f"{issue_identifier} - Description" if issue_identifier else "Issue Description",
+                type=GroupType.TEXT_SECTION,
+                group_subtype=GroupSubType.ISSUE_CONTENT,
+                description=f"Description for issue {issue_identifier}" if issue_identifier else "Issue description",
+                source_group_id=f"{issue_id}_description",
+                data=minimal_data,
+                format=DataFormat.MARKDOWN,
+                weburl=weburl,
+                requires_processing=True,
+                table_row_metadata=TableRowMetadata(children_records=children_records) if children_records else None,
+            )
+            block_groups.append(minimal_block_group)
+
+        return BlocksContainer(blocks=blocks, block_groups=block_groups)
+
     async def _process_project_blockgroups_for_streaming(self, record: Record) -> bytes:
         """
         Process project BlockGroups for streaming by creating BlocksContainer on-demand.
@@ -3592,8 +4080,9 @@ class LinearConnector(BaseConnector):
         1. Fetches project data from Linear API
         2. Parses project content to BlockGroups (description, milestones, updates)
         3. Processes external links and documents with BlockGroups
-        4. Combines everything into BlocksContainer
-        5. Serializes BlocksContainer to JSON bytes for streaming
+        4. Fetches FileRecords and adds them to description BlockGroup's children_records
+        5. Combines everything into BlocksContainer
+        6. Serializes BlocksContainer to JSON bytes for streaming
 
         Args:
             record: ProjectRecord to stream
@@ -3622,15 +4111,17 @@ class LinearConnector(BaseConnector):
         blocks_container = await self._parse_project_to_blocks(
             project_data,
             weburl=project_weburl,
-            related_external_record_ids=None  # Not needed for streaming
+            related_external_record_ids=None
         )
 
-        # Get external links and documents from API and create BlockGroups for them
+        # Get external links, documents data from API
         external_links_data = project_data.get("externalLinks", {}).get("nodes", [])
         documents_data = project_data.get("documents", {}).get("nodes", [])
+        project_content = project_data.get("content", "")
 
         link_block_groups: List[BlockGroup] = []
         document_block_groups: List[BlockGroup] = []
+        file_children: List[ChildRecord] = []
 
         # Use data_store_provider to look up existing records
         async with self.data_store_provider.transaction() as tx_store:
@@ -3656,6 +4147,29 @@ class LinearConnector(BaseConnector):
                     create_block_groups=True
                 )
 
+            # Fetch FileRecords from database (already synced during project sync)
+            if project_content:
+                file_children = await self._process_content_files_for_children(
+                    content=project_content,
+                    parent_id=record_id,
+                    tx_store=tx_store
+                )
+
+        # Add file children to the first BlockGroup's (description) children_records
+        if file_children and blocks_container.block_groups:
+            first_block_group = blocks_container.block_groups[0]
+            if first_block_group.table_row_metadata:
+                # Append to existing children_records
+                if first_block_group.table_row_metadata.children_records:
+                    first_block_group.table_row_metadata.children_records.extend(file_children)
+                else:
+                    first_block_group.table_row_metadata.children_records = file_children
+            else:
+                # Create new table_row_metadata with children_records
+                first_block_group.table_row_metadata = TableRowMetadata(
+                    children_records=file_children
+                )
+
         # Add BlockGroups for external links and documents to the blocks container
         base_index = len(blocks_container.block_groups)
         for i, block_group in enumerate(link_block_groups + document_block_groups):
@@ -3666,21 +4180,26 @@ class LinearConnector(BaseConnector):
         blocks_json = blocks_container.model_dump_json(indent=2)
         return blocks_json.encode('utf-8')
 
-    # ==================== CONTENT STREAMING HELPERS ====================
+    async def _process_issue_blockgroups_for_streaming(self, record: Record) -> bytes:
+        """
+        Process issue BlockGroups for streaming by creating BlocksContainer on-demand.
 
-    async def _fetch_issue_content(self, issue_id: str) -> str:
-        """Fetch full issue content for streaming.
+        This function:
+        1. Fetches issue data from Linear API
+        2. Fetches related records from database (attachments, documents, files)
+        3. Parses issue to BlocksContainer with Description and Thread BlockGroups
+        4. Serializes BlocksContainer to JSON bytes for streaming
 
         Args:
-            issue_id: Linear issue ID
+            record: TicketRecord to stream
 
         Returns:
-            Formatted markdown content for the issue
-        """
-        if not self.data_source:
-            raise ValueError("DataSource not initialized")
+            bytes: Serialized BlocksContainer as JSON bytes
 
-        # Use DataSource to get issue details
+        Raises:
+            Exception: If issue data cannot be fetched or processed
+        """
+        issue_id = record.external_record_id
         datasource = await self._get_fresh_datasource()
         response = await datasource.issue(id=issue_id)
 
@@ -3691,43 +4210,81 @@ class LinearConnector(BaseConnector):
         if not issue_data:
             raise Exception(f"No issue data found for ID: {issue_id}")
 
-        # Return only the description field
-        description = issue_data.get("description", "")
-        return description if description else ""
+        issue_weburl = issue_data.get("url")
+        issue_description = issue_data.get("description", "")
 
-    async def _fetch_comment_content(self, comment_id: str) -> str:
-        """Fetch comment content for streaming.
+        # Get attachments, documents data from API response
+        attachments_data = issue_data.get("attachments", {}).get("nodes", [])
+        documents_data = issue_data.get("documents", {}).get("nodes", [])
 
-        Args:
-            comment_id: Linear comment ID
+        # Fetch child records from database
+        all_children: List[ChildRecord] = []
+        comment_file_children_map: Dict[str, List[ChildRecord]] = {}
 
-        Returns:
-            Formatted markdown content for the comment
-        """
-        if not self.data_source:
-            raise ValueError("DataSource not initialized")
+        async with self.data_store_provider.transaction() as tx_store:
+            # Process attachments
+            if attachments_data:
+                attachment_children = await self._process_issue_attachments(
+                    attachments_data=attachments_data,
+                    issue_id=issue_id,
+                    issue_node_id=record.id,
+                    team_id=record.external_record_group_id or "",
+                    tx_store=tx_store
+                )
+                all_children.extend(attachment_children)
 
-        # Use DataSource to get comment details
-        datasource = await self._get_fresh_datasource()
-        response = await datasource.comment(id=comment_id)
+            # Process documents
+            if documents_data:
+                document_children = await self._process_issue_documents(
+                    documents_data=documents_data,
+                    issue_id=issue_id,
+                    issue_node_id=record.id,
+                    team_id=record.external_record_group_id or "",
+                    tx_store=tx_store
+                )
+                all_children.extend(document_children)
 
-        if not response.success:
-            raise Exception(f"Failed to fetch comment content: {response.message}")
+            # Process files from description (excluding images)
+            if issue_description:
+                file_children = await self._process_content_files_for_children(
+                    content=issue_description,
+                    parent_id=issue_id,
+                    tx_store=tx_store
+                )
+                all_children.extend(file_children)
 
-        comment_data = response.data.get("comment", {}) if response.data else {}
-        if not comment_data:
-            raise Exception(f"No comment data found for ID: {comment_id}")
+            # Process files from comment bodies and create FileRecords
+            comments_data = issue_data.get("comments", {}).get("nodes", [])
+            if comments_data:
+                comment_file_children_map = await self._process_comment_files_for_children(
+                    comments_data=comments_data,
+                    issue_id=issue_id,
+                    issue_node_id=record.id,
+                    team_id=record.external_record_group_id or "",
+                    issue_weburl=issue_weburl,
+                    tx_store=tx_store
+                )
 
-        # Return only the comment body
-        body = comment_data.get("body", "")
-        return body if body else ""
+        # Parse issue to BlocksContainer
+        blocks_container = await self._parse_issue_to_blocks(
+            issue_data=issue_data,
+            weburl=issue_weburl,
+            children_records=all_children if all_children else None,
+            comment_file_children_map=comment_file_children_map if comment_file_children_map else None
+        )
+
+        # Serialize BlocksContainer to JSON bytes
+        blocks_json = blocks_container.model_dump_json(indent=2)
+        return blocks_json.encode('utf-8')
+
+    # ==================== CONTENT STREAMING HELPERS ====================
 
     async def _fetch_document_content(self, document_id: str) -> str:
         """Fetch document content for streaming.
         Args:
             document_id: Linear document ID
         Returns:
-            Document content (markdown format)
+            Document content (markdown format) with images converted to base64
         """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
@@ -3743,23 +4300,30 @@ class LinearConnector(BaseConnector):
         if not document_data:
             raise Exception(f"No document data found for ID: {document_id}")
 
-        # Return the content field (markdown)
+        # Get the content field (markdown)
         content = document_data.get("content", "")
-        return content if content else ""
+        if not content:
+            return ""
+
+        # Convert images in document content to base64
+        content = await self._convert_images_to_base64_in_markdown(content)
+        return content
 
     # ==================== ABSTRACT METHODS ====================
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         """
-        Stream record content (issue, project, comment, attachment, document, or file).
+        Stream record content (issue, project, attachment, document, or file).
 
         Handles:
-        - TICKET: Stream issue description/content (markdown)
-        - PROJECT: Stream project description/content (markdown)
-        - COMMENT: Stream comment body (markdown)
+        - TICKET: Stream issue BlocksContainer (description BlockGroup + thread BlockGroups with comments as Block objects)
+        - PROJECT: Stream project BlocksContainer (description, milestones, updates BlockGroups)
         - LINK: Stream attachment/link from weburl
         - WEBPAGE: Stream document content (markdown)
         - FILE: Stream file content from weburl
+
+        Note: Comments are handled as Block objects (sub_type=COMMENT) within
+        issue/project BlocksContainer, not as separate records.
         """
         try:
             if not self.data_source:
@@ -3778,28 +4342,15 @@ class LinearConnector(BaseConnector):
                 )
 
             elif record.record_type == RecordType.TICKET:
-                # Issue: Stream from API
-                issue_id = record.external_record_id
-                content = await self._fetch_issue_content(issue_id)
+                # Issue: Fetch and stream BlocksContainer (like projects)
+                # Comments are handled as Block objects within issue BlocksContainer
+                blocks_json_bytes = await self._process_issue_blockgroups_for_streaming(record)
 
                 return StreamingResponse(
-                    iter([content.encode('utf-8')]),
-                    media_type=MimeTypes.MARKDOWN.value,
+                    iter([blocks_json_bytes]),
+                    media_type=MimeTypes.BLOCKS.value,
                     headers={
-                        "Content-Disposition": f'inline; filename="{record.external_record_id}.md"'
-                    }
-                )
-
-            elif record.record_type == RecordType.COMMENT:
-                # Stream comment content (markdown format)
-                comment_id = record.external_record_id.replace("comment_", "")
-                content = await self._fetch_comment_content(comment_id)
-
-                return StreamingResponse(
-                    iter([content.encode('utf-8')]),
-                    media_type=MimeTypes.MARKDOWN.value,
-                    headers={
-                        "Content-Disposition": f'inline; filename="{record.external_record_id}.md"'
+                        "Content-Disposition": f'inline; filename="{record.external_record_id}_blocks.json"'
                     }
                 )
 
@@ -3984,7 +4535,7 @@ class LinearConnector(BaseConnector):
                 skipped_count = 0
 
                 for record in non_updated_records:
-                    # Only reindex properly typed records (TicketRecord, ProjectRecord, CommentRecord, etc.)
+                    # Only reindex properly typed records (TicketRecord, ProjectRecord, etc.)
                     record_class_name = type(record).__name__
                     if record_class_name != 'Record':
                         reindexable_records.append(record)
@@ -4031,9 +4582,7 @@ class LinearConnector(BaseConnector):
             elif record.record_type == RecordType.TICKET:
                 return await self._check_and_fetch_updated_issue(record)
 
-            # Handle CommentRecord: only one type
-            elif record.record_type == RecordType.COMMENT:
-                return await self._check_and_fetch_updated_comment(record)
+            # Note: Comments are handled as blocks within issues, not as separate records
 
             # Handle WebpageRecord: only one type (documents)
             elif record.record_type == RecordType.WEBPAGE:
@@ -4211,81 +4760,6 @@ class LinearConnector(BaseConnector):
             self.logger.error(f"Error checking project {record.id} at source: {e}")
             return None
 
-    async def _check_and_fetch_updated_comment(
-        self, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
-        """Fetch comment from source for reindexing."""
-        try:
-            comment_id = record.external_record_id
-
-            # Fetch comment from source
-            datasource = await self._get_fresh_datasource()
-            response = await datasource.comment(id=comment_id)
-
-            if not response.success:
-                self.logger.warning(f"Comment {comment_id} not found at source: {response.message}")
-                return None
-
-            comment_data = response.data.get("comment", {}) if response.data else {}
-            if not comment_data:
-                self.logger.warning(f"No comment data found for {comment_id}")
-                return None
-
-            # Check if updated timestamp changed
-            current_updated_at = None
-            updated_at_str = comment_data.get("updatedAt")
-            if updated_at_str:
-                current_updated_at = self._parse_linear_datetime(updated_at_str)
-
-            # Compare with stored timestamp
-            if hasattr(record, 'source_updated_at') and record.source_updated_at and current_updated_at:
-                if record.source_updated_at == current_updated_at:
-                    self.logger.debug(f"Comment {comment_id} has not changed at source")
-                    return None
-
-            self.logger.info(f"Comment {comment_id} has changed at source")
-
-            # Use data from record object directly
-            team_id = record.external_record_group_id or ""
-            parent_node_id = record.parent_node_id
-
-            # Get issue info from comment_data (already fetched from API)
-            issue_data = comment_data.get("issue", {})
-            issue_id = issue_data.get("id", record.parent_external_record_id or "")
-            issue_identifier = issue_data.get("identifier", "")
-
-            # Extract issue_identifier from record_name if not in comment_data (format: "Comment by {author} on {issue_identifier}")
-            if not issue_identifier and record.record_name and " on " in record.record_name:
-                parts = record.record_name.split(" on ")
-                if len(parts) > 1:
-                    issue_identifier = parts[-1].strip()
-
-            # Fallback to issue_id if still no identifier
-            if not issue_identifier:
-                issue_identifier = issue_id
-
-            if not issue_id:
-                self.logger.warning(f"Comment {comment_id} has no issue_id, cannot transform properly")
-                return None
-
-            if not parent_node_id:
-                self.logger.warning(f"Comment {comment_id} has no parent_node_id, cannot transform properly")
-                return None
-
-            # Transform comment to comment record
-            comment_record = self._transform_comment_to_comment_record(
-                comment_data, issue_id, issue_identifier, parent_node_id, team_id, record
-            )
-
-            # Extract permissions (empty list for now)
-            permissions = []
-
-            return (comment_record, permissions)
-
-        except Exception as e:
-            self.logger.error(f"Error checking comment {record.id} at source: {e}")
-            return None
-
     async def _check_and_fetch_updated_document(
         self, record: Record
     ) -> Optional[Tuple[Record, List[Permission]]]:
@@ -4351,7 +4825,7 @@ class LinearConnector(BaseConnector):
             # Transform document to WebpageRecord
             webpage_record = self._transform_document_to_webpage_record(
                 document_data=document_data,
-                issue_id=parent_external_id,  # Parameter name is issue_id but can be project_id too
+                issue_id=parent_external_id,
                 parent_node_id=parent_node_id,
                 team_id=team_id,
                 existing_record=record
