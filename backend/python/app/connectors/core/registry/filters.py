@@ -281,6 +281,7 @@ class IndexingFilterKey(str, Enum):
     ISSUE_ATTACHMENTS = "issue_attachments"
 
     SHARED = "shared"
+    SHARED_WITH_ME = "shared_with_me"
 
 
 # Type to operators mapping (for validation and UI)

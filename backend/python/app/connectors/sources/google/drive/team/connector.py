@@ -69,6 +69,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.admin.admin import GoogleAdminDataSource
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
+from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
 
@@ -147,10 +148,18 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
         ))
         .add_filter_field(FilterField(
             name="shared",
-            display_name="Index Shared Items",
+            display_name="Index Items Shared by me",
             filter_type=FilterType.BOOLEAN,
             category=FilterCategory.INDEXING,
-            description="Enable indexing of shared items",
+            description="Enable indexing of items shared by me",
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name="shared_with_me",
+            display_name="Index Items Shared With Me",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of shared with me items",
             default_value=True
         ))
         .with_webhook_config(False, [])
@@ -793,15 +802,14 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                     # If it's an insufficient permissions error and we have a user_email, create fallback permission
                     if error_reason == "insufficientFilePermissions" and user_email:
-                        self.logger.warning(
-                            f"Insufficient permissions to fetch permissions for file {resource_id}. "
-                            f"Creating fallback permission for user {user_email}"
-                        )
                         # Create a fallback permission with READ access for the current user
                         fallback_permission = Permission(
                             email=user_email,
                             type=PermissionType.READ,
                             entity_type=EntityType.USER
+                        )
+                        self.logger.info(
+                            f"Added single user permission for file {resource_id}: {user_email}"
                         )
                         return ([fallback_permission], True)
                     else:
@@ -1358,13 +1366,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             # Determine indexing status - shared files are not indexed by default
             is_shared = metadata.get("shared", False)
 
+            # Check if file is shared with me (user is not owner and file is shared)
+            owners = metadata.get("owners", [])
+            owner_emails = [owner.get("emailAddress") for owner in owners if owner.get("emailAddress")]
+            is_shared_with_me = is_shared and user_email not in owner_emails
+
             if not is_shared_drive:
-                # Check if file is shared with me (user is not owner and file is shared)
-                owners = metadata.get("owners", [])
-                owner_emails = [owner.get("emailAddress") for owner in owners if owner.get("emailAddress")]
-                is_shared_with_me = is_shared and user_email not in owner_emails
-
-
                 record_group_id = existing_record.external_record_group_id if existing_record and existing_record.external_record_group_id is not None else None if is_shared_with_me else record_group_id
 
                 if existing_record and record_group_id != existing_record.external_record_group_id:
@@ -1418,6 +1425,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 sha256_hash=metadata.get("sha256Checksum", None),
                 md5_hash=metadata.get("md5Checksum", None),
                 is_shared=is_shared,
+                is_shared_with_me=is_shared_with_me,
             )
 
             if existing_record and not content_changed:
@@ -1504,8 +1512,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                 )
                 if record_update and record_update.record:
                     files_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
-                    shared_disabled = record_update.record.is_shared and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True)
-                    if files_disabled or shared_disabled:
+                    shared_disabled = record_update.record.is_shared and not record_update.record.is_shared_with_me and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True)
+                    shared_with_me_disabled = record_update.record.is_shared_with_me and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED_WITH_ME, default=True)
+                    if files_disabled or shared_disabled or shared_with_me_disabled:
                         record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
                     yield (record_update.record, record_update.new_permissions or [], record_update)
@@ -2531,11 +2540,18 @@ class GoogleDriveTeamConnector(BaseConnector):
                 supportsAllDrives=True  # ADDED - This is the key fix!
             )
             headers = {"Content-Disposition": f'attachment; filename="{file_name}"'}
-            return StreamingResponse(
+            return create_stream_record_response(
                 self._stream_google_api_request(request, error_context="file download"),
-                media_type=mime_type,
-                headers=headers
+                filename=file_name,
+                mime_type=mime_type,
+                fallback_filename=f"record_{record.id}",
+                additional_headers=headers
             )
+            # return StreamingResponse(
+            #     self._stream_google_api_request(request, error_context="file download"),
+            #     media_type=mime_type,
+            #     headers=headers
+            # )
 
         except HTTPException:
             raise

@@ -93,6 +93,7 @@ class Record(BaseModel):
     fetch_signed_url: Optional[str] = None
     preview_renderable: Optional[bool] = True
     is_shared: Optional[bool] = False
+    is_shared_with_me: Optional[bool] = False
     hide_weburl: bool = Field(default=False, description="Flag indicating if web URL should be hidden")
     is_internal: bool = Field(default=False, description="Flag indicating if record is internal")
 
