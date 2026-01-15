@@ -2446,13 +2446,13 @@ class GoogleDriveTeamConnector(BaseConnector):
                     mimeType="application/pdf"
                     # Note: export_media doesn't need supportsAllDrives
                 )
-                return StreamingResponse(
+                return create_stream_record_response(
                     self._stream_google_api_request(request, error_context="PDF export"),
-                    media_type="application/pdf",
-                    headers={
-                        "Content-Disposition": f'inline; filename="{Path(file_name).stem}.pdf"'
-                    },
+                    filename=file_name,
+                    mime_type="application/pdf",
+                    fallback_filename=f"record_{record.id}",
                 )
+
 
             # Regular export for Google Workspace files
             if mime_type in google_workspace_export_formats:
@@ -2474,11 +2474,13 @@ class GoogleDriveTeamConnector(BaseConnector):
                 file_name_with_ext = file_name if file_name.endswith(file_ext) else f"{file_name}{file_ext}"
 
                 headers = {"Content-Disposition": f'attachment; filename="{file_name_with_ext}"'}
-                return StreamingResponse(
+                return create_stream_record_response(
                     self._stream_google_api_request(request, error_context="Google Workspace file export"),
-                    media_type=response_media_type,
-                    headers=headers
+                    filename=file_name_with_ext,
+                    mime_type=response_media_type,
+                    fallback_filename=f"record_{record.id}",
                 )
+                
 
             # PDF conversion for regular files
             if convertTo == MimeTypes.PDF.value:
@@ -2526,13 +2528,13 @@ class GoogleDriveTeamConnector(BaseConnector):
                                 detail="Error reading converted PDF file",
                             )
 
-                    return StreamingResponse(
+                    return create_stream_record_response(
                         file_iterator(),
-                        media_type="application/pdf",
-                        headers={
-                            "Content-Disposition": f'inline; filename="{Path(file_name).stem}.pdf"'
-                        },
+                        filename=file_name,
+                        mime_type="application/pdf",
+                        fallback_filename=f"record_{record.id}",
                     )
+
 
             # Regular file download - WITH supportsAllDrives
             request = drive_service.files().get_media(
@@ -2545,13 +2547,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 filename=file_name,
                 mime_type=mime_type,
                 fallback_filename=f"record_{record.id}",
-                additional_headers=headers
             )
-            # return StreamingResponse(
-            #     self._stream_google_api_request(request, error_context="file download"),
-            #     media_type=mime_type,
-            #     headers=headers
-            # )
 
         except HTTPException:
             raise
