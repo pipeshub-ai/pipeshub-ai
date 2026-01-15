@@ -90,7 +90,17 @@ export class FileProcessorService implements IFileUploadService {
         });
 
         // Process file metadata (including lastModified) immediately after multer processing
-        this.processFileMetadata(req, files);
+        try {
+          this.processFileMetadata(req, files);
+        } catch (metadataError) {
+          logger.error('File metadata processing failed', {
+            error:
+              metadataError instanceof Error
+                ? metadataError.message
+                : metadataError,
+          });
+          return next(metadataError);
+        }
 
         // If strict mode and no files, throw an error
         if (files.length === 0) {
