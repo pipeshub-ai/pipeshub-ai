@@ -22,7 +22,6 @@ from app.config.constants.arangodb import (
     CollectionNames,
     MimeTypes,
     OriginTypes,
-    RecordRelations,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import config_node_constants
@@ -770,7 +769,7 @@ class S3CompatibleBaseConnector(BaseConnector):
         self, obj: Dict, bucket_name: str
     ) -> Tuple[Optional[FileRecord], List[Permission]]:
         """Process a single S3 object and convert it to a FileRecord.
-        
+
         Logic:
         1. Extract path and etag from S3 object
         2. Try lookup by path (externalRecordId) - PRIMARY
@@ -828,7 +827,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                         f"Skipping {normalized_key}: externalRecordId and externalRevisionId unchanged"
                     )
                     return None, []
-                
+
                 # Content changed or missing etag - sync properly from S3
                 if current_etag and stored_etag and current_etag != stored_etag:
                     self.logger.info(
