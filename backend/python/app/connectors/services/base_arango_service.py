@@ -5124,6 +5124,7 @@ class BaseArangoService:
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
                 FILTER record.externalRevisionId == @external_revision_id AND record.connectorId == @connector_id
+                LIMIT 1
                 RETURN record
             """
 
@@ -6358,6 +6359,8 @@ class BaseArangoService:
             return deleted_count
         except Exception as e:
             self.logger.error("❌ Failed to delete PARENT_CHILD edges to target %s: %s", to_key, str(e))
+            if transaction:
+                raise
             return 0
 
     async def delete_edges_to(self, to_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> int:

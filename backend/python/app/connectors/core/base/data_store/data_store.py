@@ -230,6 +230,19 @@ class BaseDataStore(ABC):
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> None:
         pass
 
+    @abstractmethod
+    async def delete_parent_child_edges_to(self, to_key: str) -> int:
+        """
+        Delete PARENT_CHILD edges pointing to a specific target record.
+
+        Args:
+            to_key: The target node key (e.g., "records/12345")
+
+        Returns:
+            int: Number of edges deleted
+        """
+        pass
+
 
 class TransactionStore(BaseDataStore):
     """Abstract transaction-aware data store that operates within a transaction context"""

@@ -29,7 +29,10 @@ from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
-from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.data_store.data_store import (
+    DataStoreProvider,
+    TransactionStore,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -745,23 +748,14 @@ class S3CompatibleBaseConnector(BaseConnector):
             )
 
     async def _remove_old_parent_relationship(
-        self, record_id: str, tx_store
+        self, record_id: str, tx_store: "TransactionStore"
     ) -> None:
         """Remove old PARENT_CHILD relationships for a record."""
         try:
-            # Use BaseArangoService method if available (for ArangoTransactionStore)
-            if hasattr(tx_store, 'arango_service') and hasattr(tx_store.arango_service, 'delete_parent_child_edges_to'):
-                record_key = f"{CollectionNames.RECORDS.value}/{record_id}"
-                deleted_count = await tx_store.arango_service.delete_parent_child_edges_to(
-                    to_key=record_key,
-                    transaction=tx_store.txn if hasattr(tx_store, 'txn') else None
-                )
-                if deleted_count > 0:
-                    self.logger.info(f"Removed {deleted_count} old parent relationship(s) for record {record_id}")
-            else:
-                # Fallback: Try using delete_edges_to (less precise, but works)
-                # Note: This deletes ALL edges, not just PARENT_CHILD, so use with caution
-                self.logger.warning(f"Could not use delete_parent_child_edges_to for record {record_id}, skipping parent relationship removal")
+            record_key = f"{CollectionNames.RECORDS.value}/{record_id}"
+            deleted_count = await tx_store.delete_parent_child_edges_to(to_key=record_key)
+            if deleted_count > 0:
+                self.logger.info(f"Removed {deleted_count} old parent relationship(s) for record {record_id}")
         except Exception as e:
             self.logger.warning(f"Error in _remove_old_parent_relationship: {e}")
 
