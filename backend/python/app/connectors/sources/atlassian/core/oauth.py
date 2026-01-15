@@ -31,8 +31,11 @@ class AtlassianScope(Enum):
     JIRA_PROJECT_MANAGE = "manage:jira-project"
     JIRA_CONFIGURATION_MANAGE = "manage:jira-configuration"
     JIRA_DATA_PROVIDER_MANAGE = "manage:jira-data-provider"
-    JIRA_PROJECT_READ = "read:jira-project"
-    JIRA_PROJECT_WRITE = "write:jira-project"
+    JIRA_PROJECT_READ = "read:project:jira"
+    JIRA_PROJECT_WRITE = "write:project:jira"
+    JIRA_AUDIT_LOG_READ = "read:audit-log:jira"
+    JIRA_APPLICATION_ROLE_READ = "read:application-role:jira"
+    JIRA_PROJECT_ROLE_READ = "read:project-role:jira"
 
     # Confluence Scopes
     CONFLUENCE_CONTENT_READ = "read:confluence-content.all"
@@ -74,15 +77,36 @@ class AtlassianScope(Enum):
 
     @classmethod
     def get_jira_basic(cls) -> List[str]:
-        """Get basic Jira scopes"""
+        """Get basic Jira scopes (classic scopes for broad access)"""
         return [
             cls.JIRA_WORK_READ.value,
             cls.JIRA_USER_READ.value,
-            cls.JIRA_GROUP_READ.value,
             cls.ACCOUNT_READ.value,
             cls.OFFLINE_ACCESS.value,
-            cls.JIRA_PROJECT_READ.value,
-            cls.JIRA_PROJECT_WRITE.value,
+        ]
+
+    @classmethod
+    def get_jira_read_access(cls) -> List[str]:
+        """
+        Get read-only access scopes for Jira connector.
+        Uses classic scopes for broad access plus minimal granular scopes.
+        """
+        return [
+            # Classic scopes (recommended for broad access)
+            cls.JIRA_WORK_READ.value,           # Read project/issue data, search issues, attachments, worklogs
+            cls.JIRA_USER_READ.value,           # View user information (usernames, emails, avatars)
+
+            # Granular scopes (for specific API access)
+            cls.USER_JIRA_READ.value,           # Granular: View user details
+            cls.JIRA_GROUP_READ.value,          # Read groups and group members
+            cls.JIRA_AVATAR_READ.value,         # Read user/project avatars
+            cls.JIRA_AUDIT_LOG_READ.value,      # Read audit logs (for detecting deleted issues)
+            cls.JIRA_APPLICATION_ROLE_READ.value,  # Read application roles
+            cls.JIRA_PROJECT_ROLE_READ.value,   # Read project roles
+
+            # Common scopes
+            cls.ACCOUNT_READ.value,             # Read Atlassian account info
+            cls.OFFLINE_ACCESS.value,           # Refresh tokens
         ]
 
     @classmethod
