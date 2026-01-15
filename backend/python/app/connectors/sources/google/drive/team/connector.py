@@ -1,5 +1,6 @@
 import asyncio
 import io
+import logging
 import os
 import tempfile
 import uuid
@@ -215,6 +216,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         self.admin_data_source: Optional[GoogleAdminDataSource] = None
         self.drive_data_source: Optional[GoogleDriveDataSource] = None
         self.config: Optional[Dict] = None
+        logging.getLogger('googleapiclient.http').setLevel(logging.ERROR)
 
         # Store synced users for use in batch processing
         self.synced_users: List[AppUser] = []
@@ -2473,14 +2475,13 @@ class GoogleDriveTeamConnector(BaseConnector):
                 response_media_type, file_ext = export_media_types.get(export_mime_type, (export_mime_type, ""))
                 file_name_with_ext = file_name if file_name.endswith(file_ext) else f"{file_name}{file_ext}"
 
-                headers = {"Content-Disposition": f'attachment; filename="{file_name_with_ext}"'}
                 return create_stream_record_response(
                     self._stream_google_api_request(request, error_context="Google Workspace file export"),
                     filename=file_name_with_ext,
                     mime_type=response_media_type,
                     fallback_filename=f"record_{record.id}",
                 )
-                
+
 
             # PDF conversion for regular files
             if convertTo == MimeTypes.PDF.value:
@@ -2541,7 +2542,6 @@ class GoogleDriveTeamConnector(BaseConnector):
                 fileId=file_id,
                 supportsAllDrives=True  # ADDED - This is the key fix!
             )
-            headers = {"Content-Disposition": f'attachment; filename="{file_name}"'}
             return create_stream_record_response(
                 self._stream_google_api_request(request, error_context="file download"),
                 filename=file_name,
