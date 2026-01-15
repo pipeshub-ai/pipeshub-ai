@@ -3154,7 +3154,7 @@ class MondayDataSource:
         self,
         item_id: str,
         column_id: str,
-        file: Any
+        file: object
     ) -> GraphQLResponse:
         """Add a file to a file column
 
@@ -3163,7 +3163,7 @@ class MondayDataSource:
         Args:
             item_id (str, required): Parameter for item_id
             column_id (str, required): Parameter for column_id
-            file (Any, required): Parameter for file
+            file (object, required): Parameter for file
 
         Returns:
             GraphQLResponse: The GraphQL response containing the operation result
@@ -3200,7 +3200,7 @@ class MondayDataSource:
     async def add_file_to_update(
         self,
         update_id: str,
-        file: Any
+        file: object
     ) -> GraphQLResponse:
         """Add a file to an update
 
@@ -3208,7 +3208,7 @@ class MondayDataSource:
 
         Args:
             update_id (str, required): Parameter for update_id
-            file (Any, required): Parameter for file
+            file (object, required): Parameter for file
 
         Returns:
             GraphQLResponse: The GraphQL response containing the operation result
@@ -3452,7 +3452,7 @@ class MondayDataSource:
         board_id: str,
         item_id: str,
         column_id: str,
-        value: Any
+        value: object
     ) -> GraphQLResponse:
         """Update a single column value for an item."""
         import json

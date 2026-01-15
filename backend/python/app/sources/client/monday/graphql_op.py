@@ -1926,7 +1926,7 @@ class MondayGraphQLOperations:
             if fragment:
                 all_fragments.append(fragment)
                 # Check for nested fragment references
-                for other_name in cls.FRAGMENTS.keys():
+                for other_name in cls.FRAGMENTS:
                     if f"...{other_name}" in fragment and other_name not in collected:
                         collect_fragment(other_name)
 

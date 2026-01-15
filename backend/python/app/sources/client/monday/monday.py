@@ -142,7 +142,7 @@ class MondayTokenConfig(BaseModel):
             api_version=self.api_version,
         )
 
-    def create_sdk_client(self) -> Any:
+    def create_sdk_client(self) -> object:
         """Create an official Monday SDK client."""
         if not MONDAY_SDK_AVAILABLE:
             raise ImportError(
@@ -184,7 +184,7 @@ class MondayOAuthConfig(BaseModel):
             api_version=self.api_version,
         )
 
-    def create_sdk_client(self) -> Any:
+    def create_sdk_client(self) -> object:
         """Create an official Monday SDK client."""
         if not MONDAY_SDK_AVAILABLE:
             raise ImportError(
@@ -222,7 +222,7 @@ class MondayClient(IClient):
     def __init__(
         self,
         graphql_client: Union[MondayGraphQLClientViaToken, MondayGraphQLClientViaOAuth],
-        sdk_client: Optional[Any] = None,
+        sdk_client: Optional[object] = None,
         token: Optional[str] = None,
     ) -> None:
         """Initialize with Monday.com clients.
@@ -244,7 +244,7 @@ class MondayClient(IClient):
         """Return the Monday.com GraphQL client for async operations."""
         return self._graphql_client
 
-    def get_sdk_client(self) -> Any:
+    def get_sdk_client(self) -> object:
         """Return the official Monday SDK client.
 
         Returns:
