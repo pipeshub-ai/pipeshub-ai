@@ -1,12 +1,11 @@
-import asyncio
 import json
 import logging
 from typing import Optional, Tuple
 
+from app.agents.actions.utils import run_async
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
-from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.sharepoint.sharepoint import SharePointDataSource
 
@@ -24,22 +23,6 @@ class SharePoint:
             None
         """
         self.client = SharePointDataSource(client)
-
-    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
-        """Helper method to run async operations in sync context"""
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # If we're already in an async context, we need to use a thread pool
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, coro)
-                    return future.result()
-            else:
-                return loop.run_until_complete(coro)
-        except Exception as e:
-            logger.error(f"Error running async operation: {e}")
-            raise
 
     @tool(
         app_name="sharepointonline",
@@ -115,7 +98,7 @@ class SharePoint:
         """
         try:
             # Use SharePointDataSource method
-            response = self._run_async(self.client.sites_get_all_sites(
+            response = run_async(self.client.sites_get_all_sites(
                 search=search,
                 filter=filter,
                 orderby=orderby,
@@ -175,7 +158,7 @@ class SharePoint:
         """
         try:
             # Use SharePointDataSource method
-            response = self._run_async(self.client.sites_site_get_by_path(
+            response = run_async(self.client.sites_site_get_by_path(
                 site_id=site_id,
                 select=select,
                 expand=expand
@@ -271,7 +254,7 @@ class SharePoint:
         """
         try:
             # Use SharePointDataSource method
-            response = self._run_async(self.client.sites_list_lists(
+            response = run_async(self.client.sites_list_lists(
                 site_id=site_id,
                 search=search,
                 filter=filter,
@@ -372,7 +355,7 @@ class SharePoint:
         """
         try:
             # Use SharePointDataSource method
-            response = self._run_async(self.client.sites_list_drives(
+            response = run_async(self.client.sites_list_drives(
                 site_id=site_id,
                 search=search,
                 filter=filter,
@@ -473,7 +456,7 @@ class SharePoint:
         """
         try:
             # Use SharePointDataSource method
-            response = self._run_async(self.client.sites_list_pages(
+            response = run_async(self.client.sites_list_pages(
                 site_id=site_id,
                 search=search,
                 filter=filter,

@@ -1,12 +1,12 @@
-import asyncio
+
 import json
 import logging
 from typing import Optional, Tuple
 
+from app.agents.actions.utils import run_async
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
-from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.one_note.one_note import OneNoteDataSource
 
@@ -24,22 +24,6 @@ class OneNote:
             None
         """
         self.client = OneNoteDataSource(client)
-
-    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
-        """Helper method to run async operations in sync context"""
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # If we're already in an async context, we need to use a thread pool
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, coro)
-                    return future.result()
-            else:
-                return loop.run_until_complete(coro)
-        except Exception as e:
-            logger.error(f"Error running async operation: {e}")
-            raise
 
     @tool(
         app_name="one_note",
@@ -64,7 +48,7 @@ class OneNote:
         """
         try:
             # Use the existing me_onenote_get_notebooks method with proper parameters
-            response = self._run_async(self.client.me_onenote_get_notebooks(
+            response = run_async(self.client.me_onenote_get_notebooks(
                 notebook_id="",  # Empty string for listing all notebooks
                 top=top,
                 select=["id", "displayName", "createdDateTime", "lastModifiedDateTime"],
@@ -102,7 +86,7 @@ class OneNote:
         """
         try:
             # Map to data source method: me_onenote_get_notebooks requires notebook_id
-            response = self._run_async(self.client.me_onenote_get_notebooks(
+            response = run_async(self.client.me_onenote_get_notebooks(
                 notebook_id=notebook_id
             ))
             if response.success:
@@ -136,7 +120,7 @@ class OneNote:
         """
         try:
             # Use the existing me_onenote_notebooks_get_sections method
-            response = self._run_async(self.client.me_onenote_notebooks_get_sections(
+            response = run_async(self.client.me_onenote_notebooks_get_sections(
                 notebook_id=notebook_id,
                 onenoteSection_id="",  # Empty string for listing all sections
                 top=100,
@@ -182,7 +166,7 @@ class OneNote:
         """
         try:
             # Use the existing me_onenote_notebooks_sections_get_pages method
-            response = self._run_async(self.client.me_onenote_notebooks_sections_get_pages(
+            response = run_async(self.client.me_onenote_notebooks_sections_get_pages(
                 notebook_id=notebook_id,
                 onenoteSection_id=section_id,
                 onenotePage_id="",  # Empty string for listing all pages
@@ -287,7 +271,7 @@ class OneNote:
                 "content": content
             }
 
-            response = self._run_async(self.client.me_onenote_notebooks_sections_create_pages(
+            response = run_async(self.client.me_onenote_notebooks_sections_create_pages(
                 notebook_id=notebook_id,
                 onenoteSection_id=section_id,
                 request_body=request_body
@@ -381,7 +365,7 @@ class OneNote:
         """
         try:
             # Use the existing me_onenote_notebooks_sections_delete_pages method
-            response = self._run_async(self.client.me_onenote_notebooks_sections_delete_pages(
+            response = run_async(self.client.me_onenote_notebooks_sections_delete_pages(
                 notebook_id=notebook_id,
                 onenoteSection_id=section_id,
                 onenotePage_id=page_id
