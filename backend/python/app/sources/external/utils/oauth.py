@@ -30,7 +30,7 @@ class GenericOAuth2Client:
         redirect_uri: str,
         scope_delimiter: str = " ",
         auth_method: str = "header",  # Options: 'header' (Basic Auth) or 'body'
-    ):
+    ) -> None:
         self.client_id = client_id
         self.client_secret = client_secret
         self.auth_endpoint = auth_endpoint
@@ -150,7 +150,7 @@ class OAuthHTTPServer(HTTPServer):
     and allowing multiple concurrent OAuth flows without race conditions.
     """
 
-    def __init__(self, server_address, RequestHandlerClass):
+    def __init__(self, server_address, RequestHandlerClass) -> None:
         super().__init__(server_address, RequestHandlerClass)
         # Initialize state for this server instance
         self.auth_result = {"code": None, "state": None, "error": None}
@@ -159,7 +159,7 @@ class OAuthHTTPServer(HTTPServer):
 class OAuthCallbackHandler(BaseHTTPRequestHandler):
     """HTTP request handler for OAuth callback redirects."""
 
-    def do_GET(self):
+    def do_GET(self) -> None:
         """Handle GET requests from OAuth provider redirect."""
         # Access state from the server instance
         auth_result = self.server.auth_result
@@ -175,14 +175,14 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
         else:
             self._send_response("Invalid response.", color="red")
 
-    def _send_response(self, message: str, color: str = "green"):
+    def _send_response(self, message: str, color: str = "green") -> None:
         """Send HTML response to browser."""
         self.send_response(200)
         self.send_header("Content-type", "text/html")
         self.end_headers()
         self.wfile.write(f"<h1 style='color:{color}'>{message}</h1>".encode())
 
-    def log_message(self, format, *args):
+    def log_message(self, format, *args) -> None:
         """Silence logging to reduce noise."""
         pass
 
@@ -310,7 +310,7 @@ def perform_oauth_flow(
 
 # --- 4. Main Execution (Configuration & Logic) ---
 
-def main():
+def main() -> None:
     """Standalone execution example for generic OAuth2 flow.
 
     Reads configuration from environment variables:
