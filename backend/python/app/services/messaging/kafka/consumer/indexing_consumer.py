@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import json
 import os
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -49,8 +50,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self.indexing_semaphore: Optional[asyncio.Semaphore] = None
         self.message_handler: Optional[Callable[[Dict[str, Any]], AsyncGenerator[Dict[str, Any], None]]] = None
         self.active_tasks: Set[Future] = set()  # Changed to Future for worker thread tasks
-        self.max_concurrent_parsing = MAX_CONCURRENT_PARSING
-        self.max_concurrent_indexing = MAX_CONCURRENT_INDEXING
 
     @staticmethod
     def kafka_config_to_dict(kafka_config: KafkaConsumerConfig) -> Dict[str, Any]:
@@ -66,7 +65,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
     def __start_worker_thread(self) -> None:
         """Start the worker thread with its own event loop"""
-        def run_worker_loop():
+        def run_worker_loop() -> None:
             """Run the event loop in the worker thread"""
             self.worker_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.worker_loop)
@@ -102,6 +101,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
     async def initialize(self) -> None:
         """Initialize the Kafka consumer and worker thread"""
+        consumer = None
         try:
             if not self.kafka_config:
                 raise ValueError("Kafka configuration is not valid")
@@ -120,16 +120,18 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             kafka_dict = IndexingKafkaConsumer.kafka_config_to_dict(self.kafka_config)
             topics = kafka_dict.pop('topics')
 
-            self.consumer = AIOKafkaConsumer(
+            consumer = AIOKafkaConsumer(
                 *topics,
                 **kafka_dict
             )
 
-            await self.consumer.start()  # type: ignore
+            await consumer.start()  # type: ignore
+            self.consumer = consumer
             auto_commit_status = "enabled" if self.kafka_config.enable_auto_commit else "disabled"
             self.logger.info(f"Successfully initialized aiokafka consumer for indexing (auto-commit: {auto_commit_status})")
         except Exception as e:
             self.logger.error(f"Failed to create consumer: {e}")
+            await self.stop()
             raise
 
     def __stop_worker_thread(self) -> None:
@@ -195,7 +197,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # Wait for active tasks to complete (with timeout)
         if self.active_tasks:
             self.logger.info(f"Waiting for {len(self.active_tasks)} active tasks to complete...")
-            import concurrent.futures
             loop = asyncio.get_running_loop()
             _, not_done = await loop.run_in_executor(
                 None,
@@ -249,8 +250,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         except Exception as e:
             self.logger.error(f"Fatal error in consume_messages: {e}")
-        finally:
-            await self.cleanup()
 
 
     def __parse_message(self, message) -> Optional[Dict[str, Any]]:
