@@ -269,7 +269,7 @@ def perform_oauth_flow(
     server = start_server(port)
     auth_url = client.get_authorization_url(state=state, scopes=scopes)
 
-    print(f"Opening Browser: {auth_url}")
+    print(f"Opening Browser")
     webbrowser.open(auth_url)
 
     # Wait for callback
