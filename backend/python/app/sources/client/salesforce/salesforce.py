@@ -44,7 +44,7 @@ class SalesforceRESTClient(HTTPClient):
 
         # Construct the base API URL
         # Format: https://instance.salesforce.com/services/data/vXX.X
-        self.base_url = f"{self.instance_url}"
+        self.base_url = self.instance_url
 
         # Add Salesforce-specific headers
         self.headers.update({
@@ -149,24 +149,24 @@ class SalesforceClient(IClient):
             # For Salesforce, we typically need the instance URL and the access token
             # regardless of whether the flow was OAUTH or a manual TOKEN entry.
 
-            if auth_type == "OAUTH" or auth_type == "ACCESS_TOKEN":
-                credentials = auth_config.get("credentials", {}) if auth_type == "OAUTH" else auth_config
-
+            if auth_type == "OAUTH":
+                credentials = auth_config.get("credentials", {})
                 access_token = credentials.get("accessToken") or auth_config.get("accessToken")
                 instance_url = credentials.get("instanceUrl") or auth_config.get("instanceUrl")
-
-                if not access_token:
-                    raise ValueError("Access token is required")
-                if not instance_url:
-                    raise ValueError("Instance URL is required")
-
-                config = SalesforceConfig(
-                    instance_url=instance_url,
-                    access_token=access_token,
-                    api_version=config_data.get("apiVersion", "59.0")
-                )
+            elif auth_type == "ACCESS_TOKEN":
+                access_token = auth_config.get("accessToken")
+                instance_url = auth_config.get("instanceUrl")
             else:
                 raise ValueError(f"Unsupported auth type: {auth_type}")
+            if not access_token:
+                raise ValueError("Access token is required")
+            if not instance_url:
+                raise ValueError("Instance URL is required")
+            config = SalesforceConfig(
+                instance_url=instance_url,
+                access_token=access_token,
+                api_version=config_data.get("apiVersion", "59.0")
+            )
 
             return cls.build_with_config(config)
 
@@ -182,4 +182,4 @@ class SalesforceClient(IClient):
             return config or {}
         except Exception as e:
             logger.error(f"Failed to get Salesforce connector config: {e}")
-            return {}
+            raise
