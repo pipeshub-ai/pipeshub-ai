@@ -46,8 +46,9 @@ from app.sources.client.snowflake.snowflake import (
     SnowflakeOAuthConfig,
     SnowflakePATConfig,
     SnowflakeResponse,
+    SnowflakeSDKClient,
 )
-from app.sources.external.snowflake.snowflake import SnowflakeDataSource
+from app.sources.external.snowflake.snowflake_ import SnowflakeDataSource
 from app.sources.external.utils.oauth import perform_oauth_flow
 
 # --- Configuration ---
@@ -376,6 +377,74 @@ async def main() -> None:
             schema=schema_name
         )
         print_result("List Notebooks", notebooks_resp)
+
+    # 18. SQL SDK Examples (Direct SQL Query Execution)
+    print_section("SQL SDK Examples")
+
+    # Get the OAuth token from the config for SDK client
+    oauth_token = None
+    if isinstance(config, SnowflakeOAuthConfig):
+        oauth_token = config.oauth_token
+
+    if oauth_token:
+        print("ℹ️  Testing SQL SDK with OAuth token...")
+        try:
+            # Initialize SDK client with OAuth
+            sdk_client = SnowflakeSDKClient(
+                account_identifier=ACCOUNT_IDENTIFIER,
+                oauth_token=oauth_token,
+                warehouse=warehouse_name,  # Use the warehouse we found earlier
+                role="PUBLIC",  # Match the OAuth scope role
+            )
+
+            # Use context manager for automatic connection handling
+            with sdk_client:
+                print("✅ SDK Client connected successfully")
+
+                # Example 1: Show current user
+                print("\n   Query 1: SELECT CURRENT_USER()")
+                result = sdk_client.execute_query("SELECT CURRENT_USER() as current_user")
+                print(f"   Result: {json.dumps(result, indent=2)}")
+
+                # Example 2: Show current role
+                print("\n   Query 2: SELECT CURRENT_ROLE()")
+                result = sdk_client.execute_query("SELECT CURRENT_ROLE() as current_role")
+                print(f"   Result: {json.dumps(result, indent=2)}")
+
+                # Example 3: Show current warehouse
+                print("\n   Query 3: SELECT CURRENT_WAREHOUSE()")
+                result = sdk_client.execute_query("SELECT CURRENT_WAREHOUSE() as current_warehouse")
+                print(f"   Result: {json.dumps(result, indent=2)}")
+
+                # Example 4: List databases via SQL
+                print("\n   Query 4: SHOW DATABASES")
+                result = sdk_client.execute_query("SHOW DATABASES")
+                print(f"   Found {len(result)} database(s)")
+                for i, db in enumerate(result[:3], 1):
+                    db_name = db.get("name", "Unknown")
+                    print(f"   Database {i}: {db_name}")
+
+                # Example 5: Sample data query (if SNOWFLAKE_SAMPLE_DATA exists)
+                print("\n   Query 5: Sample data from TPCH")
+                try:
+                    result = sdk_client.execute_query(
+                        "SELECT * FROM SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.NATION LIMIT 5"
+                    )
+                    print(f"   Found {len(result)} row(s)")
+                    for i, row in enumerate(result[:3], 1):
+                        print(f"   Row {i}: {json.dumps(row, default=str)[:200]}...")
+                except Exception as e:
+                    print(f"   ⚠️  Sample data query skipped: {e}")
+
+            print("\n✅ SQL SDK examples completed successfully")
+
+        except ImportError as e:
+            print(f"⚠️  SQL SDK not available: {e}")
+            print("   Install with: pip install snowflake-connector-python")
+        except Exception as e:
+            print(f"❌ SQL SDK error: {e}")
+    else:
+        print("⚠️  SQL SDK examples skipped (requires OAuth token)")
 
     print("\n" + "=" * 80)
     print("✅ All examples completed successfully!")
