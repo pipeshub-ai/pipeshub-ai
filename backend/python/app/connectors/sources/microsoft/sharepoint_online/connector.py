@@ -3967,8 +3967,7 @@ class SharePointConnector(BaseConnector):
                         if '/contentstorage/' in web_url:
                             continue
                         # 5. Skip OneDrive personal libraries
-                        parsed_url = urlparse(web_url)
-                        if parsed_url.netloc.endswith('-my.sharepoint.com'):
+                        if re.match(r'^https?://[^/]*-my\.sharepoint\.com(/|$)', web_url, re.IGNORECASE):
                             continue
                         # 6. Skip calendar/events URLs
                         if '/calendar.aspx' in web_url:
