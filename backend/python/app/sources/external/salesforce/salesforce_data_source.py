@@ -21,6 +21,9 @@ from app.sources.client.salesforce.salesforce import (
     SalesforceResponse,
 )
 
+HTTP_SUCCESS = 300
+HTTP_NO_CONTENT = 204
+
 
 class SalesforceDataSource:
     """
@@ -38,7 +41,7 @@ class SalesforceDataSource:
     - Messaging (Conversations, Messages)
     """
 
-    def __init__(self, client: SalesforceClient):
+    def __init__(self, client: SalesforceClient) -> None:
         """
         Initialize the Salesforce data source.
         Args:
@@ -63,7 +66,7 @@ class SalesforceDataSource:
         method: str,
         path: str,
         params: Optional[Dict[str, Any]] = None,
-        body: Optional[Any] = None,
+        body: Optional[Dict[str, Any]] = None,
         content_type: str = "application/json"
     ) -> SalesforceResponse:
         """Execute an HTTP request and return SalesforceResponse."""
@@ -91,9 +94,9 @@ class SalesforceDataSource:
             response = await self.client.execute(request)
 
             # Call the methods since they're callable
-            if response.status < 300:
+            if response.status < HTTP_SUCCESS:
                 response_text = response.text() if callable(response.text) else response.text
-                if response_text and response.status != 204:
+                if response_text and response.status != HTTP_NO_CONTENT:
                     data = response.json() if callable(response.json) else response.json
                 else:
                     data = {}
