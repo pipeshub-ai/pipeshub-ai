@@ -151,11 +151,12 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
                         [theme.breakpoints.up(layoutQuery)]: {
                           display: 'inline-flex',
                         },
-                        width: 40,
-                        minWidth: 40,
-                        height: 40,
-                        minHeight: 40,
+                        width: 44,
+                        minWidth: 44,
+                        height: 44,
+                        minHeight: 44,
                         flexShrink: 0,
+                        objectFit: 'contain',
                         cursor: 'pointer',
                       }}
                     />

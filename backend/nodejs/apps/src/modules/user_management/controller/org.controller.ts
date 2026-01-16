@@ -63,59 +63,84 @@ export class OrgController {
   }
 
   /**
-   * Sanitizes SVG content by removing dangerous elements and attributes
-   * Removes script tags, event handlers, and javascript: protocols while preserving SVG structure
-   * @param svgBuffer - The SVG file buffer to sanitize
-   * @returns Sanitized SVG buffer
+   * Validates SVG content for dangerous elements and attributes
+   * Throws an error if scripts, event handlers, or other dangerous content is found
+   * Does not modify the buffer - only validates
+   * @param svgBuffer - The SVG file buffer to validate
+   * @throws BadRequestError if dangerous content is detected
    */
-  /**
-   * Sanitizes SVG content by removing dangerous elements and attributes
-   * Removes script tags, event handlers, and javascript: protocols while preserving SVG structure
-   * Always sanitizes SVG files as a defense-in-depth security measure
-   * @param svgBuffer - The SVG file buffer to sanitize
-   * @returns Sanitized SVG buffer
-   */
-  private sanitizeSVG(svgBuffer: Buffer): Buffer {
+  private validateSVG(svgBuffer: Buffer): void {
     try {
-      const svgString = svgBuffer.toString('utf-8');
-      
-      // Always sanitize SVG files as a defense-in-depth security measure
-      // Remove script tags and their content
-      let sanitized = svgString
-        // Remove script tags and their content (including nested)
-        .replace(/<[\s]*script[\s\S]*?<\/[\s]*script[^>]*>/gi, '')
-        // Remove any remaining script opening tags
-        .replace(/<[\s]*script[^>]*>/gi, '')
-        // Remove event handlers (onclick, onload, onerror, etc.)
-        .replace(/\s+on\w+\s*=\s*["'][^"']*["']/gi, '')
-        .replace(/\s+on\w+\s*=\s*[^\s>]*/gi, '')
-        // Remove javascript: protocols
-        .replace(/javascript:/gi, '')
-        // Remove data: protocols with HTML/text
-        .replace(/data:\s*text\/html/gi, '')
-        // Remove iframe, object, embed tags
-        .replace(/<[\s]*(iframe|object|embed)[\s\S]*?<\/[\s]*\1[^>]*>/gi, '')
-        .replace(/<[\s]*(iframe|object|embed)[^>]*>/gi, '');
-
-      // Additional pass to remove any remaining dangerous patterns
-      // This iterative approach prevents bypass via nested patterns
-      const maxIterations = 5;
-      let previousValue = '';
-      let iterations = 0;
-      
-      while (sanitized !== previousValue && iterations < maxIterations) {
-        previousValue = sanitized;
-        iterations++;
-        sanitized = sanitized
-          .replace(/<[\s]*script[\s\S]*?<\/[\s]*script[^>]*>/gi, '')
-          .replace(/<[\s]*script[^>]*>/gi, '')
-          .replace(/\s+on\w+\s*=\s*["'][^"']*["']/gi, '')
-          .replace(/\s+on\w+\s*=\s*[^\s>]*/gi, '');
+      // Input length limit to prevent DoS attacks
+      const MAX_SVG_SIZE = 10 * 1024 * 1024; // 10MB max
+      if (svgBuffer.length > MAX_SVG_SIZE) {
+        throw new BadRequestError('SVG file is too large (max 10MB)');
       }
 
-      return Buffer.from(sanitized, 'utf-8');
+      const svgString = svgBuffer.toString('utf-8');
+      
+      // Limit string length to prevent ReDoS - only check first portion if too long
+      const maxCheckLength = 1000000; // 1MB in characters for validation
+      const checkString = svgString.length > maxCheckLength 
+        ? svgString.substring(0, maxCheckLength) 
+        : svgString;
+      
+      // Use limited quantifiers [^>]{0,10000} to prevent ReDoS attacks
+      // Check for dangerous patterns - throw error if found
+      
+      // Check for script tags (opening, closing, or incomplete)
+      const scriptTagPattern = /<[\s]*script[^>]{0,10000}>/gi;
+      const scriptClosingPattern = /<\/[\s]*script[^>]{0,10000}>/gi;
+      if (scriptTagPattern.test(checkString) || scriptClosingPattern.test(checkString)) {
+        throw new BadRequestError(
+          'SVG file contains script tags which are not allowed for security reasons',
+        );
+      }
+
+      // Check for event handlers (onclick, onload, onerror, etc.)
+      const eventHandlerPattern = /\s+on\w+\s*=\s*["'][^"'>]{0,1000}["']?/gi;
+      if (eventHandlerPattern.test(checkString)) {
+        throw new BadRequestError(
+          'SVG file contains event handlers (onclick, onload, etc.) which are not allowed for security reasons',
+        );
+      }
+
+      // Check for javascript: protocols
+      const javascriptProtocolPattern = /javascript:/gi;
+      if (javascriptProtocolPattern.test(checkString)) {
+        throw new BadRequestError(
+          'SVG file contains javascript: protocols which are not allowed for security reasons',
+        );
+      }
+
+      // Check for data: protocols with HTML/text
+      const dataHtmlPattern = /data:\s*text\/html/gi;
+      if (dataHtmlPattern.test(checkString)) {
+        throw new BadRequestError(
+          'SVG file contains data:text/html protocols which are not allowed for security reasons',
+        );
+      }
+
+      // Check for iframe, object, embed tags
+      const iframePattern = /<[\s]*iframe[^>]{0,10000}>/gi;
+      const objectPattern = /<[\s]*object[^>]{0,10000}>/gi;
+      const embedPattern = /<[\s]*embed[^>]{0,10000}>/gi;
+      if (
+        iframePattern.test(checkString) ||
+        objectPattern.test(checkString) ||
+        embedPattern.test(checkString)
+      ) {
+        throw new BadRequestError(
+          'SVG file contains iframe, object, or embed tags which are not allowed for security reasons',
+        );
+      }
+
+      // Validation passed - buffer is safe and unmodified
     } catch (error) {
-      this.logger.error('Failed to sanitize SVG', { error });
+      this.logger.error('SVG validation failed', { error });
+      if (error instanceof BadRequestError) {
+        throw error;
+      }
       throw new BadRequestError('Invalid SVG file format');
     }
   }
@@ -448,9 +473,11 @@ export class OrgController {
       let mimeType: string;
 
       if (isSvg) {
-        // For SVG files, sanitize to remove any dangerous content (scripts, event handlers, etc.)
-        // SVGs are already text-based and typically small, so no compression needed
-        processedBuffer = this.sanitizeSVG(logoFile.buffer);
+        // For SVG files, validate for dangerous content and reject if found
+        // This preserves the original buffer without corruption
+        this.validateSVG(logoFile.buffer);
+        // Use original buffer if validation passes - no modification
+        processedBuffer = logoFile.buffer;
         // Always set mimeType to a safe, hardcoded value (not user-controlled)
         mimeType = 'image/svg+xml';
       } else {
