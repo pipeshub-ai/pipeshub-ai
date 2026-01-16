@@ -1,6 +1,7 @@
 import io
+import json
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict
+from typing import Any, AsyncGenerator, Dict, List
 
 from bs4 import BeautifulSoup
 from html_to_markdown import convert
@@ -21,6 +22,7 @@ from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import (
     Block,
     BlockContainerIndex,
+    BlockGroup,
     BlocksContainer,
     BlockType,
     CitationMetadata,
@@ -599,6 +601,311 @@ class Processor:
         except Exception as e:
             self.logger.error(f"❌ Error processing DOCX document: {str(e)}")
             raise
+
+    async def process_blocks(
+        self, recordName, recordId, version, source, orgId, blocks_data, virtual_record_id
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process BlocksContainer and attach to record for indexing, yielding phase completion events.
+
+        For BlockGroups with requires_processing=True, processes their data through docling
+        and merges the resulting blocks back into the container.
+
+        Args:
+            recordName (str): Name of the record
+            recordId (str): ID of the record
+            version (str): Version of the record
+            source (str): Source of the document
+            orgId (str): Organization ID
+            blocks_data (bytes|str|dict): BlocksContainer data (JSON string, bytes, or dict)
+            virtual_record_id (str): Virtual record ID
+        """
+        self.logger.info(
+            f"🚀 Starting Blocks Container processing for record: {recordName}"
+        )
+
+        try:
+            # Deserialize blocks_data to BlocksContainer
+            if isinstance(blocks_data, bytes):
+                blocks_data = blocks_data.decode('utf-8')
+
+            if isinstance(blocks_data, str):
+                blocks_dict = json.loads(blocks_data)
+            elif isinstance(blocks_data, dict):
+                blocks_dict = blocks_data
+            else:
+                raise ValueError(f"Invalid blocks_data type: {type(blocks_data)}")
+
+            # Convert dict to BlocksContainer
+            block_containers = BlocksContainer(**blocks_dict)
+
+            # Process BlockGroups with requires_processing=True through docling
+            block_containers = await self._process_blockgroups_through_docling(
+                block_containers, recordName
+            )
+
+            # Signal parsing complete after blocks are processed
+            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+
+            # Get record from database
+            record = await self.arango_service.get_document(
+                recordId, CollectionNames.RECORDS.value
+            )
+
+            if record is None:
+                self.logger.error(f"❌ Record {recordId} not found in database")
+                # Must yield indexing_complete to release indexing semaphore properly
+                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                return
+
+            # Convert to Record entity and attach blocks
+            record = convert_record_dict_to_record(record)
+            record.block_containers = block_containers
+            record.virtual_record_id = virtual_record_id
+
+            # Apply indexing pipeline
+            ctx = TransformContext(record=record)
+            pipeline = IndexingPipeline(
+                document_extraction=self.document_extraction,
+                sink_orchestrator=self.sink_orchestrator
+            )
+            await pipeline.apply(ctx)
+
+            # Signal indexing complete
+            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+
+            self.logger.info("✅ Blocks Container processing completed successfully")
+
+        except Exception as e:
+            self.logger.error(f"❌ Error processing Blocks Container: {str(e)}")
+            raise
+
+    async def _process_blockgroups_through_docling(
+        self, block_containers: BlocksContainer, record_name: str
+    ) -> BlocksContainer:
+        """
+        Process BlockGroups with requires_processing=True through docling.
+
+        Uses a functional approach:
+        1. Process all BlockGroups that need processing, collecting results
+        2. Calculate index mappings upfront
+        3. Build new BlocksContainer in a single pass
+
+        Args:
+            block_containers: BlocksContainer to process
+            record_name: Name of the record (for docling processing)
+
+        Returns:
+            BlocksContainer with processed blocks merged in
+        """
+        if not block_containers.block_groups:
+            return block_containers
+
+        # Separate block_groups with valid index from those with None index
+        block_groups_with_index: List[BlockGroup] = []
+        block_groups_without_index: List[BlockGroup] = []
+
+        for bg in block_containers.block_groups:
+            if bg.index is not None:
+                block_groups_with_index.append(bg)
+            else:
+                block_groups_without_index.append(bg)
+
+        # Filter BlockGroups that need processing (already in sequence from connector)
+        block_groups_to_process = [
+            bg for bg in block_groups_with_index
+            if bg.requires_processing and bg.data
+        ]
+
+        if not block_groups_to_process:
+            self.logger.debug("No BlockGroups require processing")
+            return block_containers
+
+        self.logger.info(
+            f"🔄 Processing {len(block_groups_to_process)} BlockGroups through docling"
+        )
+
+        # ========== PHASE 1: Process all BlockGroups and collect results ==========
+        # Map: parent_index -> (new_block_groups, new_blocks)
+        processing_results: Dict[int, tuple[List[BlockGroup], List[Block]]] = {}
+        processor = DoclingProcessor(logger=self.logger, config=self.config_service)
+        initial_block_count = len(block_containers.blocks)
+
+        for block_group in block_groups_to_process:
+            try:
+                # Extract markdown data from BlockGroup
+                markdown_data = block_group.data
+                if not markdown_data or not isinstance(markdown_data, str):
+                    raise ValueError(
+                        f"BlockGroup {block_group.index} has no valid markdown data"
+                    )
+
+                # Convert to bytes for docling
+                md_bytes = markdown_data.encode('utf-8')
+
+                # Create filename from BlockGroup name or use default
+                filename = block_group.name or f"{Path(record_name).stem}_blockgroup_{block_group.index}.md"
+                if not filename.endswith('.md'):
+                    filename = f"{filename}.md"
+
+                # Process through docling
+                self.logger.debug(
+                    f"📄 Processing BlockGroup {block_group.index} ({block_group.name}) through docling"
+                )
+                processed_blocks_container = await processor.load_document(filename, md_bytes)
+
+                if not processed_blocks_container:
+                    raise ValueError(
+                        f"Docling returned empty result for BlockGroup {block_group.index}"
+                    )
+
+                # Store results for later merging (exclude parent_block_group reference to avoid mutation issues)
+                processing_results[block_group.index] = (
+                    processed_blocks_container.block_groups,
+                    processed_blocks_container.blocks,
+                )
+
+                self.logger.debug(
+                    f"✅ Processed BlockGroup {block_group.index}: "
+                    f"collected {len(processed_blocks_container.blocks)} blocks, "
+                    f"{len(processed_blocks_container.block_groups)} block_groups"
+                )
+
+            except Exception as e:
+                self.logger.error(
+                    f"❌ Error processing BlockGroup {block_group.index} through docling: {e}",
+                    exc_info=True
+                )
+                # Stop processing if any BlockGroup fails
+                raise
+
+        if not processing_results:
+            self.logger.debug("No BlockGroups were successfully processed")
+            return block_containers
+
+        # ========== PHASE 2: Calculate index mappings upfront ==========
+        # Build map of original_index -> cumulative_shift_amount
+        # cumulative_shift = sum of new_block_groups from all parents with index < original_index
+        index_shift_map: Dict[int, int] = {}
+        cumulative_shift = 0
+
+        for bg in block_groups_with_index:
+            original_index = bg.index
+            index_shift_map[original_index] = cumulative_shift
+
+            # If this block_group was processed, add its new block_groups to the shift
+            if original_index in processing_results:
+                num_new_block_groups = len(processing_results[original_index][0])
+                cumulative_shift += num_new_block_groups
+
+        processed_indices = set(processing_results.keys())
+
+        # ========== PHASE 3: Build new BlocksContainer in a single pass ==========
+        new_block_groups: List[BlockGroup] = []
+        new_blocks: List[Block] = []
+
+        # Track block index offset (blocks are appended at the end)
+        block_index_offset = initial_block_count
+
+        # Build new block_groups list
+        for bg in block_groups_with_index:
+            original_index = bg.index
+            shift_amount = index_shift_map[original_index]
+            final_index = original_index + shift_amount
+
+            # Update block_group's index
+            bg.index = final_index
+
+            # Update parent_index if it references a shifted block_group
+            if bg.parent_index is not None and bg.parent_index in index_shift_map:
+                bg.parent_index += index_shift_map[bg.parent_index]
+
+            # Update children references
+            if bg.children:
+                for child in bg.children:
+                    if child.block_group_index is not None and child.block_group_index in index_shift_map:
+                        child.block_group_index += index_shift_map[child.block_group_index]
+
+            # Add the block_group to the result
+            new_block_groups.append(bg)
+
+            # If this block_group was processed, insert its children and mark as processed
+            if original_index in processed_indices:
+                bg.requires_processing = False
+
+                # Get processing results
+                new_block_groups_list, new_blocks_list = processing_results[original_index]
+                insertion_index = final_index + 1
+
+                # Initialize children array if needed
+                if bg.children is None:
+                    bg.children = []
+
+                # Assign indices to new block_groups and update references
+                for i, new_bg in enumerate(new_block_groups_list):
+                    new_bg.index = insertion_index + i
+
+                    # Set parent_index to parent's final index if not set
+                    if new_bg.parent_index is None:
+                        new_bg.parent_index = final_index
+                    else:
+                        # If parent_index exists, it's a relative index from docling
+                        new_bg.parent_index = new_bg.parent_index + insertion_index
+
+                    # Update children indices in the new block_group
+                    if new_bg.children:
+                        for child in new_bg.children:
+                            if child.block_index is not None:
+                                child.block_index += block_index_offset
+                            if child.block_group_index is not None:
+                                child.block_group_index += insertion_index
+
+                    new_block_groups.append(new_bg)
+
+                    # Add to parent's children
+                    bg.children.append(BlockContainerIndex(block_group_index=new_bg.index))
+
+                # Process new blocks with sequential indices
+                for block_i, new_block in enumerate(new_blocks_list):
+                    # Assign sequential block index
+                    new_block.index = block_index_offset + block_i
+
+                    # Set parent_index
+                    if new_block.parent_index is None:
+                        new_block.parent_index = final_index
+                    else:
+                        # If parent_index exists, it's a relative index from docling
+                        new_block.parent_index = new_block.parent_index + insertion_index
+
+                    new_blocks.append(new_block)
+
+                    # Add blocks that directly belong to the parent BlockGroup
+                    if new_block.parent_index == final_index:
+                        bg.children.append(BlockContainerIndex(block_index=new_block.index))
+
+                # Update block offset for next iteration
+                block_index_offset += len(new_blocks_list)
+
+        # Append block_groups with None index at end
+        new_block_groups.extend(block_groups_without_index)
+
+        # Update all original blocks' parent_index references
+        for block in block_containers.blocks:
+            if block.parent_index is not None and block.parent_index in index_shift_map:
+                block.parent_index += index_shift_map[block.parent_index]
+
+        # Build final BlocksContainer
+        result = BlocksContainer(
+            block_groups=new_block_groups,
+            blocks=list(block_containers.blocks) + new_blocks
+        )
+
+        self.logger.info(
+            f"✅ Processed {len(processing_results)} BlockGroups. "
+            f"Total blocks: {len(result.blocks)}, "
+            f"Total block_groups: {len(result.block_groups)}"
+        )
+
+        return result
 
     async def process_excel_document(
         self, recordName, recordId, version, source, orgId, excel_binary, virtual_record_id

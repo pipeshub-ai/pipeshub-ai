@@ -738,15 +738,35 @@ class IGraphDBProvider(ABC):
         transaction: Optional[str] = None
     ) -> Optional['Record']:
         """
-        Get a record by Jira issue key (e.g., PROJ-123) by searching weburl pattern.
+        Get record by Jira issue key (e.g., PROJ-123) by searching weburl pattern.
 
         Args:
-            connector_id (str): Connector ID
-            issue_key (str): Jira issue key (e.g., "PROJ-123")
-            transaction (Optional[Any]): Optional transaction context
+            connector_id: Connector ID
+            issue_key: Jira issue key (e.g., "PROJ-123")
+            transaction: Optional transaction ID
 
         Returns:
-            Optional[Dict]: Record data if found, None otherwise
+            Optional[Record]: Record if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_by_weburl(
+        self,
+        weburl: str,
+        org_id: Optional[str] = None,
+        transaction: Optional[str] = None
+    ) -> Optional['Record']:
+        """
+        Get record by weburl (exact match).
+
+        Args:
+            weburl: Web URL to search for
+            org_id: Optional organization ID to filter by
+            transaction: Optional transaction ID
+
+        Returns:
+            Optional[Record]: Record if found, None otherwise
         """
         pass
 
@@ -1067,6 +1087,7 @@ class IGraphDBProvider(ABC):
         from_record_id: str,
         to_record_id: str,
         relation_type: str,
+        custom_relationship_tag: Optional[str] = None,
         transaction: Optional[str] = None
     ) -> None:
         """
@@ -1075,8 +1096,9 @@ class IGraphDBProvider(ABC):
         Args:
             from_record_id (str): Source record ID
             to_record_id (str): Target record ID
-            relation_type (str): Type of relation (e.g., 'PARENT_CHILD', 'ATTACHMENT')
-            transaction (Optional[Any]): Optional transaction context
+            relation_type (str): Type of relation (e.g., "PARENT_CHILD", "ATTACHMENT", "SIBLING", "LINKED_TO")
+            custom_relationship_tag (Optional[str]): Optional custom relationship tag from source system (e.g., "is blocked by" for Jira)
+            transaction (Optional[str]): Optional transaction ID
         """
         pass
 

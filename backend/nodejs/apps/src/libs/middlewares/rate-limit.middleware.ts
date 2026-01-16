@@ -4,7 +4,7 @@ import { Logger } from '../services/logger.service';
 import { TooManyRequestsError } from '../errors/http.errors';
 import { AuthenticatedUserRequest, AuthenticatedServiceRequest } from './types';
 
-// Single global rate limiter: 10,000 requests per 1 minute
+// Single global rate limiter: 500 requests per 1 minute
 export function createGlobalRateLimiter(logger: Logger): RequestHandler {
   const config: Partial<Options> = {
     windowMs: 60 * 1000,

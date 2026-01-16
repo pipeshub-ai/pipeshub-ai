@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Type, TypeVar, Union
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -9,9 +9,19 @@ from app.config.constants.arangodb import (
     MimeTypes,
     OriginTypes,
     ProgressStatus,
+    RecordRelations,
 )
-from app.models.blocks import BlocksContainer, SemanticMetadata
+from app.models.blocks import (
+    BlockGroup,
+    BlocksContainer,
+    ChildRecord,
+    SemanticMetadata,
+    TableRowMetadata,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+# Type variable for enum classes (must be after Enum import)
+EnumType = TypeVar('EnumType', bound=Enum)
 
 
 class RecordGroupType(str, Enum):
@@ -45,8 +55,16 @@ class RecordType(str, Enum):
     SHAREPOINT_LIST = "SHAREPOINT_LIST"
     SHAREPOINT_LIST_ITEM = "SHAREPOINT_LIST_ITEM"
     SHAREPOINT_DOCUMENT_LIBRARY = "SHAREPOINT_DOCUMENT_LIBRARY"
+    LINK = "LINK"
+    PROJECT = "PROJECT"
     OTHERS = "OTHERS"
 
+
+class LinkPublicStatus(str, Enum):
+    """Status of link accessibility"""
+    TRUE = "true"
+    FALSE = "false"
+    UNKNOWN = "unknown"
 
 class IndexingStatus(str, Enum):
     """Status of record indexing for search and AI features"""
@@ -55,6 +73,82 @@ class IndexingStatus(str, Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     AUTO_INDEX_OFF = "AUTO_INDEX_OFF"  # Record saved but not indexed (filtered out)
+
+
+class RelatedExternalRecord(BaseModel):
+    """Structured model for related external records to create LINKED_TO relations.
+
+    This model ensures type safety and validation for related external records.
+    Only external_record_id and record_type are required; relation_type defaults to LINKED_TO.
+    custom_relationship_tag is optional and used to specify the relationship type from the source system
+    (e.g., "is blocked by", "blocks", "clones" for Jira).
+    """
+    external_record_id: str = Field(description="External ID of the related record")
+    record_type: RecordType = Field(description="Type of the related record")
+    relation_type: RecordRelations = Field(
+        default=RecordRelations.LINKED_TO,
+        description="Type of relation to create (defaults to LINKED_TO)"
+    )
+    custom_relationship_tag: Optional[str] = Field(
+        default=None,
+        description="Custom relationship tag from source system (e.g., 'is blocked by', 'blocks' for Jira)"
+    )
+
+
+class TicketPriority(str, Enum):
+    """Standard ticket priority values for all ticketing connectors"""
+    LOWEST = "LOWEST"
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    HIGHEST = "HIGHEST"
+    CRITICAL = "CRITICAL"
+    BLOCKER = "BLOCKER"
+    UNKNOWN = "UNKNOWN"  # For unmapped or missing priority values
+
+
+class TicketStatus(str, Enum):
+    """Standard ticket status values for all ticketing connectors"""
+    NEW = "NEW"
+    OPEN = "OPEN"
+    IN_PROGRESS = "IN_PROGRESS"
+    RESOLVED = "RESOLVED"
+    CLOSED = "CLOSED"
+    CANCELLED = "CANCELLED"
+    REOPENED = "REOPENED"
+    PENDING = "PENDING"
+    WAITING = "WAITING"
+    BLOCKED = "BLOCKED"
+    DONE = "DONE"
+    UNKNOWN = "UNKNOWN"  # For unmapped or missing status values
+
+
+class TicketType(str, Enum):
+    """Standard ticket type values for all ticketing connectors"""
+    TASK = "TASK"
+    BUG = "BUG"
+    STORY = "STORY"
+    EPIC = "EPIC"
+    FEATURE = "FEATURE"
+    SUBTASK = "SUBTASK"
+    INCIDENT = "INCIDENT"
+    IMPROVEMENT = "IMPROVEMENT"
+    QUESTION = "QUESTION"
+    DOCUMENTATION = "DOCUMENTATION"
+    TEST = "TEST"
+    ISSUE = "ISSUE"
+    SUB_ISSUE = "SUB_ISSUE"
+    UNKNOWN = "UNKNOWN"
+
+
+class TicketDeliveryStatus(str, Enum):
+    """Standard ticket delivery status values for all ticketing connectors"""
+    ON_TRACK = "ON_TRACK"  # On track - progressing as expected
+    AT_RISK = "AT_RISK"  # At risk - some concerns but manageable
+    OFF_TRACK = "OFF_TRACK"  # Off track - significant issues or delays
+    HIGH_RISK = "HIGH_RISK"  # High risk - major concerns (Jira Align)
+    SOME_RISK = "SOME_RISK"  # Some risk - minor concerns (Jira Align)
+    UNKNOWN = "UNKNOWN"  # Unknown or unmapped delivery status
 
 class Record(BaseModel):
     # Core record properties
@@ -105,6 +199,9 @@ class Record(BaseModel):
     parent_record_id: Optional[str] = None
     child_record_ids: Optional[List[str]] = Field(default_factory=list)
     related_record_ids: Optional[List[str]] = Field(default_factory=list)
+
+    # Related external records (for connectors to specify relations by external IDs)
+    related_external_records: Optional[List[RelatedExternalRecord]] = Field(default_factory=list, description="List of related external records to create LINKED_TO relations (not persisted)")
     # Hierarchy fields
     is_dependent_node: bool = Field(default=False, description="True for dependent records, False for root records")
     parent_node_id: Optional[str] = Field(default=None, description="Internal record ID of the parent node")
@@ -439,6 +536,84 @@ class WebpageRecord(Record):
             virtual_record_id=record_doc.get("virtualRecordId"),
         )
 
+class LinkRecord(Record):
+    """
+    Link record for URLs and attachments.
+
+    Fields:
+    - url: The link URL (required)
+    - title: Link title (optional)
+    - is_public: Whether the link is publicly accessible (no auth required)
+    - linked_record_id: Internal record ID of a record that has the same weburl (optional)
+    """
+    url: str
+    title: Optional[str] = None
+    is_public: LinkPublicStatus = Field(description="Link public accessibility status")
+    linked_record_id: Optional[str] = Field(default=None, description="Internal record ID of linked record with same weburl")
+
+    def to_kafka_record(self) -> Dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
+            "mimeType": self.mime_type,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+            "signedUrl": self.signed_url,
+            "signedUrlRoute": self.fetch_signed_url,
+            "webUrl": self.weburl,
+        }
+
+    def to_arango_record(self) -> Dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "url": self.url,
+            "title": self.title,
+            "isPublic": self.is_public.value,
+            "linkedRecordId": self.linked_record_id,
+        }
+
+    @staticmethod
+    def from_arango_record(link_doc: Dict, record_doc: Dict) -> "LinkRecord":
+        """Create LinkRecord from ArangoDB documents (records + links collections)"""
+        conn_name_value = record_doc.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+
+        return LinkRecord(
+            id=record_doc.get("id", record_doc.get("_key")),
+            org_id=record_doc["orgId"],
+            record_name=record_doc["recordName"],
+            record_type=RecordType(record_doc["recordType"]),
+            external_record_id=record_doc["externalRecordId"],
+            external_revision_id=record_doc.get("externalRevisionId"),
+            external_record_group_id=record_doc.get("externalGroupId"),
+            parent_external_record_id=record_doc.get("externalParentId"),
+            version=record_doc["version"],
+            origin=OriginTypes(record_doc["origin"]),
+            connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
+            mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
+            weburl=record_doc.get("webUrl"),
+            created_at=record_doc.get("createdAtTimestamp"),
+            updated_at=record_doc.get("updatedAtTimestamp"),
+            source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
+            virtual_record_id=record_doc.get("virtualRecordId"),
+            url=link_doc["url"],
+            title=link_doc.get("title"),
+            is_public=LinkPublicStatus(link_doc.get("isPublic", "unknown")),
+            linked_record_id=link_doc.get("linkedRecordId"),
+        )
+
 class CommentRecord(Record):
     """
     Comment record for page comments (footer and inline).
@@ -513,9 +688,10 @@ class CommentRecord(Record):
         )
 
 class TicketRecord(Record):
-    status: Optional[str] = None
-    priority: Optional[str] = None
-    type: Optional[str] = None
+    status: Optional[Union[TicketStatus, str]] = None
+    priority: Optional[Union[TicketPriority, str]] = None
+    type: Optional[Union[TicketType, str]] = None
+    delivery_status: Optional[Union[TicketDeliveryStatus, str]] = None
     assignee: Optional[str] = None
     reporter_email: Optional[str] = None
     assignee_email: Optional[str] = None
@@ -524,18 +700,44 @@ class TicketRecord(Record):
     creator_name: Optional[str] = None
 
     def to_arango_record(self) -> Dict:
+        def _get_value(field_value: Optional[Union[Enum, str]]) -> Optional[str]:
+            """Extract string value from enum or return original string"""
+            if field_value is None:
+                return None
+            if isinstance(field_value, Enum):
+                return field_value.value
+            return str(field_value)
+
         return {
             "_key": self.id,
             "orgId": self.org_id,
-            "status": self.status,
-            "priority": self.priority,
-            "type": self.type,
+            "status": _get_value(self.status),
+            "priority": _get_value(self.priority),
+            "type": _get_value(self.type),
+            "deliveryStatus": _get_value(self.delivery_status),
             "assignee": self.assignee,
             "reporterEmail": self.reporter_email,
+            "reporterName": self.reporter_name,
             "assigneeEmail": self.assignee_email,
             "creatorEmail": self.creator_email,
             "creatorName": self.creator_name,
         }
+
+    @staticmethod
+    def _safe_enum_parse(value: Optional[str], enum_class: Type[EnumType]) -> Optional[Union[EnumType, str]]:
+        """Safely parse enum value, returning original string if invalid (preserves connector-specific values)"""
+        if not value:
+            return None
+        try:
+            return enum_class(value)
+        except (ValueError, KeyError):
+            # If value doesn't match enum, try to find by value (case-insensitive)
+            value_upper = value.upper()
+            for enum_item in enum_class:
+                if enum_item.value.upper() == value_upper:
+                    return enum_item
+            # If still no match, return original value instead of UNKNOWN to preserve connector-specific values
+            return value
 
     @staticmethod
     def from_arango_record(ticket_doc: Dict, record_doc: Dict) -> "TicketRecord":
@@ -569,11 +771,10 @@ class TicketRecord(Record):
             preview_renderable=record_doc.get("previewRenderable", True),
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId", None),
-            summary=ticket_doc.get("summary"),
-            description=ticket_doc.get("description"),
-            status=ticket_doc.get("status"),
-            priority=ticket_doc.get("priority"),
-            type=ticket_doc.get("type"),
+            status=TicketRecord._safe_enum_parse(ticket_doc.get("status"), TicketStatus),
+            priority=TicketRecord._safe_enum_parse(ticket_doc.get("priority"), TicketPriority),
+            type=TicketRecord._safe_enum_parse(ticket_doc.get("type"), TicketType),
+            delivery_status=TicketRecord._safe_enum_parse(ticket_doc.get("deliveryStatus"), TicketDeliveryStatus),
             assignee=ticket_doc.get("assignee"),
             reporter_email=ticket_doc.get("reporterEmail"),
             assignee_email=ticket_doc.get("assigneeEmail"),
@@ -584,6 +785,83 @@ class TicketRecord(Record):
 
     def to_kafka_record(self) -> Dict:
 
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
+            "mimeType": self.mime_type,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "signedUrl": self.signed_url,
+            "signedUrlRoute": self.fetch_signed_url,
+            "origin": self.origin.value,
+            "webUrl": self.weburl,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+        }
+
+class ProjectRecord(Record):
+    """Record class for projects"""
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    lead_id: Optional[str] = None
+    lead_name: Optional[str] = None
+    lead_email: Optional[str] = None
+
+    def to_arango_record(self) -> Dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "status": self.status,
+            "priority": self.priority,
+            "leadId": self.lead_id,
+            "leadName": self.lead_name,
+            "leadEmail": self.lead_email,
+        }
+
+    @staticmethod
+    def from_arango_record(project_doc: Dict, record_doc: Dict) -> "ProjectRecord":
+        """Create ProjectRecord from ArangoDB documents (records + projects collections)"""
+        conn_name_value = record_doc.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+
+        return ProjectRecord(
+            id=record_doc.get("id", record_doc.get("_key")),
+            org_id=record_doc["orgId"],
+            record_name=record_doc["recordName"],
+            record_type=RecordType(record_doc["recordType"]),
+            external_record_id=record_doc["externalRecordId"],
+            external_revision_id=record_doc.get("externalRevisionId"),
+            external_record_group_id=record_doc.get("externalGroupId"),
+            parent_external_record_id=record_doc.get("externalParentId"),
+            version=record_doc["version"],
+            origin=OriginTypes(record_doc["origin"]),
+            connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
+            mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
+            weburl=record_doc.get("webUrl"),
+            created_at=record_doc.get("createdAtTimestamp"),
+            updated_at=record_doc.get("updatedAtTimestamp"),
+            source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
+            virtual_record_id=record_doc.get("virtualRecordId"),
+            preview_renderable=record_doc.get("previewRenderable", True),
+            is_dependent_node=record_doc.get("isDependentNode", False),
+            parent_node_id=record_doc.get("parentNodeId", None),
+            status=project_doc.get("status"),
+            priority=project_doc.get("priority"),
+            lead_id=project_doc.get("leadId"),
+            lead_name=project_doc.get("leadName"),
+            lead_email=project_doc.get("leadEmail"),
+        )
+
+    def to_kafka_record(self) -> Dict:
         return {
             "recordId": self.id,
             "orgId": self.org_id,
@@ -1027,3 +1305,27 @@ class AppRole(BaseModel):
             source_created_at=arango_doc.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_doc.get("sourceLastModifiedTimestamp"),
         )
+
+# Rebuild models to resolve forward references after all imports are complete
+# This is necessary due to circular imports between entities.py and blocks.py
+Record.model_rebuild()
+FileRecord.model_rebuild()
+MessageRecord.model_rebuild()
+MailRecord.model_rebuild()
+WebpageRecord.model_rebuild()
+CommentRecord.model_rebuild()
+TicketRecord.model_rebuild()
+LinkRecord.model_rebuild()
+ProjectRecord.model_rebuild()
+SharePointListRecord.model_rebuild()
+SharePointListItemRecord.model_rebuild()
+SharePointDocumentLibraryRecord.model_rebuild()
+SharePointPageRecord.model_rebuild()
+
+# Rebuild blocks models that have forward references to RecordType
+# ChildRecord has a forward reference to RecordType, and other models depend on it
+# These models need to be rebuilt after RecordType is defined
+ChildRecord.model_rebuild()
+TableRowMetadata.model_rebuild()
+BlockGroup.model_rebuild()
+BlocksContainer.model_rebuild()

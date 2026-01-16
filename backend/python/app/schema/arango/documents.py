@@ -362,20 +362,55 @@ comment_record_schema = {
     "message": "Document does not match the comment record schema.",
 }
 
+link_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "url": {"type": "string"},
+            "title": {"type": ["string", "null"]},
+            "isPublic": {
+                "type": "string",
+                "enum": ["true", "false", "unknown"]
+            },
+            "linkedRecordId": {"type": ["string", "null"]},
+        },
+        "required": ["orgId", "url", "isPublic"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the link record schema.",
+}
+
 ticket_record_schema = {
     "rule": {
         "type": "object",
         "properties": {
             "orgId": {"type": "string"},
-            "summary": {"type": ["string", "null"]},
-            "description": {"type": ["string", "null"]},
             "status": {"type": ["string", "null"]},
             "priority": {"type": ["string", "null"]},
+            "type": {"type": ["string", "null"]},
+            "deliveryStatus": {"type": ["string", "null"]},
             "assignee": {"type": ["string", "null"]},
             "reporterEmail": {"type": ["string", "null"]},
             "assigneeEmail": {"type": ["string", "null"]},
             "creatorEmail": {"type": ["string", "null"]},
             "creatorName": {"type": ["string", "null"]},
+            "reporterName": {"type": ["string", "null"]},
+        },
+    },
+}
+
+project_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "status": {"type": ["string", "null"]},
+            "priority": {"type": ["string", "null"]},
+            "leadId": {"type": ["string", "null"]},
+            "leadName": {"type": ["string", "null"]},
+            "leadEmail": {"type": ["string", "null"]},
         },
     },
 }

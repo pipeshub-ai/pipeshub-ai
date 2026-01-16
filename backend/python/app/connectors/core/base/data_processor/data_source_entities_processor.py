@@ -8,6 +8,7 @@ from app.config.constants.arangodb import (
     MimeTypes,
     OriginTypes,
     RecordRelations,
+    TicketEdgeTypes,
 )
 from app.config.constants.service import config_node_constants
 from app.connectors.core.base.data_store.data_store import (
@@ -23,9 +24,11 @@ from app.models.entities import (
     FileRecord,
     IndexingStatus,
     MailRecord,
+    ProjectRecord,
     Record,
     RecordGroup,
     RecordType,
+    RelatedExternalRecord,
     TicketRecord,
     User,
     WebpageRecord,
@@ -155,6 +158,8 @@ class DataSourceEntitiesProcessor:
             return MailRecord(**base_params)
         elif parent_record_type == RecordType.TICKET:
             return TicketRecord(**base_params)
+        elif parent_record_type == RecordType.PROJECT:
+            return ProjectRecord(**base_params)
         elif parent_record_type in [RecordType.COMMENT, RecordType.INLINE_COMMENT]:
             return CommentRecord(
                 **base_params,
@@ -190,6 +195,70 @@ class DataSourceEntitiesProcessor:
                     relation_type = RecordRelations.PARENT_CHILD.value
                 await tx_store.create_record_relation(parent_record.id, record.id, relation_type)
 
+    async def _handle_related_external_records(
+        self,
+        record: Record,
+        related_external_records: List[RelatedExternalRecord],
+        tx_store: TransactionStore
+    ) -> None:
+        """
+        Handle related external records by creating LINKED_TO relations.
+        Creates placeholder records if not found, then creates LINKED_TO edges.
+
+        Args:
+            record: The record to create relations for
+            related_external_records: List of RelatedExternalRecord objects (strict type checking)
+            tx_store: Transaction store
+        """
+        if not related_external_records:
+            return
+
+        for related_ext_record in related_external_records:
+            # Strict type check - only accept RelatedExternalRecord objects
+            if not isinstance(related_ext_record, RelatedExternalRecord):
+                self.logger.warning(
+                    f"Skipping invalid related_external_record: expected RelatedExternalRecord, "
+                    f"got {type(related_ext_record).__name__}"
+                )
+                continue
+
+            external_record_id = related_ext_record.external_record_id
+            record_type = related_ext_record.record_type
+            relation_type_enum = related_ext_record.relation_type
+
+            if not external_record_id:
+                continue
+
+            # Look up the related record by external ID and connector
+            related_record = await tx_store.get_record_by_external_id(
+                connector_id=record.connector_id,
+                external_id=external_record_id
+            )
+
+            # Create placeholder related record if not found (similar to _handle_parent_record)
+            if related_record is None and record_type:
+                # record_type is already a RecordType enum from RelatedExternalRecord
+                related_record = self._create_placeholder_parent_record(
+                    parent_external_id=external_record_id,
+                    parent_record_type=record_type,
+                    record=record,
+                )
+                await tx_store.batch_upsert_records([related_record])
+
+            # Create LINKED_TO relation
+            if related_record and isinstance(related_record, Record):
+                # relation_type_enum is already a RecordRelations enum, get its value
+                relation_type = relation_type_enum.value
+                # Get custom_relationship_tag from RelatedExternalRecord (e.g., "is blocked by, blocks, clones" for Jira)
+                custom_relationship_tag = related_ext_record.custom_relationship_tag
+
+                await tx_store.create_record_relation(
+                    from_record_id=record.id,
+                    to_record_id=related_record.id,
+                    relation_type=relation_type,
+                    custom_relationship_tag=custom_relationship_tag
+                )
+
     async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> None:
         record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id,
                                                                       external_id=record.external_record_group_id)
@@ -212,6 +281,63 @@ class DataSourceEntitiesProcessor:
 
             if record.inherit_permissions:
                 await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group.id)
+
+    async def _handle_ticket_user_edges(self, ticket: TicketRecord, tx_store: TransactionStore) -> None:
+        """
+        Create user relationship edges for tickets (ASSIGNED_TO, CREATED_BY).
+
+        This method creates edges in the ticketRelations collection linking tickets to users.
+
+        Args:
+            ticket: The TicketRecord to create edges for
+            tx_store: The transaction store
+        """
+        edges_to_create = []
+
+        # Create ASSIGNED_TO edge if assignee exists and user is found
+        if ticket.assignee_email:
+            try:
+                # Only get existing user by email - do not create if not found
+                user = await tx_store.get_user_by_email(ticket.assignee_email)
+
+                if user:
+                    edges_to_create.append({
+                        "_from": f"{CollectionNames.RECORDS.value}/{ticket.id}",
+                        "_to": f"{CollectionNames.USERS.value}/{user.id}",
+                        "edgeType": TicketEdgeTypes.ASSIGNED_TO.value,
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    })
+                    self.logger.debug(f"Created ASSIGNED_TO edge for ticket {ticket.id} to user {user.email}")
+                else:
+                    self.logger.debug(f"User with email {ticket.assignee_email} not found, skipping ASSIGNED_TO edge for ticket {ticket.id}")
+            except Exception as e:
+                self.logger.warning(f"Failed to create ASSIGNED_TO edge for ticket {ticket.id}: {str(e)}")
+
+        # Create CREATED_BY edge if creator exists and user is found
+        if ticket.creator_email:
+            try:
+                # Only get existing user by email - do not create if not found
+                user = await tx_store.get_user_by_email(ticket.creator_email)
+
+                if user:
+                    edges_to_create.append({
+                        "_from": f"{CollectionNames.RECORDS.value}/{ticket.id}",
+                        "_to": f"{CollectionNames.USERS.value}/{user.id}",
+                        "edgeType": TicketEdgeTypes.CREATED_BY.value,
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    })
+                    self.logger.debug(f"Created CREATED_BY edge for ticket {ticket.id} to user {user.email}")
+                else:
+                    self.logger.debug(f"User with email {ticket.creator_email} not found, skipping CREATED_BY edge for ticket {ticket.id}")
+            except Exception as e:
+                self.logger.warning(f"Failed to create CREATED_BY edge for ticket {ticket.id}: {str(e)}")
+
+        # Batch create all edges
+        if edges_to_create:
+            await tx_store.batch_create_edges(edges_to_create, CollectionNames.TICKET_RELATIONS.value)
+            self.logger.info(f"Created {len(edges_to_create)} ticket-user edges for ticket {ticket.id}")
 
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
         # Set org_id for the record
@@ -393,6 +519,15 @@ class DataSourceEntitiesProcessor:
 
         # Create a edge between the record and the record group if it doesn't exist and if record_group_id is provided
         await self._handle_record_group(record, tx_store)
+
+        # Create LINKED_TO edges for related external records if record has related_external_records
+        # (This field is in base Record class with default_factory=list, so it always exists)
+        if record.related_external_records:
+            await self._handle_related_external_records(record, record.related_external_records, tx_store)
+
+        # Create ticket-user relationship edges (ASSIGNED_TO, CREATED_BY) if record is a TicketRecord
+        if isinstance(record, TicketRecord):
+            await self._handle_ticket_user_edges(record, tx_store)
 
         # Create a edge between the base record and the specific record if it doesn't exist - isOfType - File, Mail, Message
 

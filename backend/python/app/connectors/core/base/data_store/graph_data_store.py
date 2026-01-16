@@ -262,6 +262,10 @@ class GraphTransactionStore(TransactionStore):
         """Get record by Jira issue key (e.g., PROJ-123) by searching weburl pattern."""
         return await self.graph_provider.get_record_by_issue_key(connector_id, issue_key, transaction=self.txn)
 
+    async def get_record_by_weburl(self, weburl: str, org_id: Optional[str] = None) -> Optional[Record]:
+        """Get record by weburl (exact match)."""
+        return await self.graph_provider.get_record_by_weburl(weburl, org_id, transaction=self.txn)
+
     async def get_records_by_parent(
         self,
         connector_id: str,
@@ -356,13 +360,27 @@ class GraphTransactionStore(TransactionStore):
         await self.graph_provider.rollback_transaction(self.txn)
         self.logger.debug(f"✅ Transaction {self.txn} rolled back")
 
-    async def create_record_relation(self, from_record_id: str, to_record_id: str, relation_type: str) -> None:
+    async def create_record_relation(
+        self,
+        from_record_id: str,
+        to_record_id: str,
+        relation_type: str,
+        custom_relationship_tag: Optional[str] = None
+    ) -> None:
         """
         Create a relation edge between two records.
 
         Delegates to graph_provider for implementation.
+
+        Args:
+            from_record_id: Source record ID
+            to_record_id: Target record ID
+            relation_type: Type of relation (e.g., "LINKED_TO")
+            custom_relationship_tag: Optional custom relationship tag from source system (e.g., "is blocked by" for Jira)
         """
-        return await self.graph_provider.create_record_relation(from_record_id, to_record_id, relation_type, transaction=self.txn)
+        return await self.graph_provider.create_record_relation(
+            from_record_id, to_record_id, relation_type, custom_relationship_tag=custom_relationship_tag, transaction=self.txn
+        )
     async def create_record_group_relation(self, record_id: str, record_group_id: str) -> None:
         """
         Create BELONGS_TO edge from record to record group.
