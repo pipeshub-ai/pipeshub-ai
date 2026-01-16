@@ -32,6 +32,7 @@ import {
   AccordionSummary,
   AccordionDetails,
   IconButton,
+  Link,
 } from '@mui/material';
 
 import type { CustomCitation } from 'src/types/chat-bot';
@@ -895,38 +896,43 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                         sx={{ flexShrink: 0, mt:1, mr:2}}
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <Button
-                          size="small"
-                          variant="text"
+                        <Link
+                          href={
+                            (() => {
+                              const firstCitation = recordCitations[0];
+                              if (firstCitation?.metadata?.previewRenderable === false) {
+                                return getWebUrlWithFragment(firstCitation) || firstCitation?.metadata?.webUrl || '#';
+                              }
+                              return firstCitation?.metadata?.webUrl || '#';
+                            })()
+                          }
+                          target="_blank"
+                          rel="noopener noreferrer"
                           onClick={(e) => {
                             e.stopPropagation();
                             const firstCitation = recordCitations[0];
-                            // Check if previewRenderable is false - if so, open webUrl instead of viewer
-                            if (firstCitation?.metadata?.previewRenderable === false) {
-                              const webUrl = getWebUrlWithFragment(firstCitation);
-                              if (webUrl) {
-                                window.open(webUrl, '_blank', 'noopener,noreferrer');
-                              }
+                            // If there's a webUrl, let the link handle navigation naturally
+                            if (firstCitation?.metadata?.webUrl || 
+                                (firstCitation?.metadata?.previewRenderable === false && getWebUrlWithFragment(firstCitation))) {
+                              // Link will navigate naturally via href
                               return;
                             }
-                            if (firstCitation?.metadata?.webUrl) {
-                              window.open(
-                                firstCitation.metadata.webUrl,
-                                '_blank',
-                                'noopener,noreferrer'
-                              );
-                            } else if (
+                            // For files without webUrl (like UPLOAD), prevent default and open the document viewer
+                            if (
                               recordInfo.extension &&
                               recordInfo.recordId &&
                               firstCitation
                             ) {
-                              // For files without webUrl (like UPLOAD), open the document viewer
+                              e.preventDefault();
                               const allRecordCitations =
                                 aggregatedCitations[recordInfo.recordId] || recordCitations;
                               const isExcelOrCSV = ['csv', 'xlsx', 'xls'].includes(
                                 recordInfo.extension || ''
                               );
                               onViewPdf('', firstCitation, allRecordCitations, isExcelOrCSV);
+                            } else {
+                              // No webUrl and no viewer option, prevent default navigation
+                              e.preventDefault();
                             }
                           }}
                           sx={{
@@ -934,6 +940,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                             fontSize: '11px',
                             fontWeight: 500,
                             color: 'text.secondary',
+                            textDecoration: 'none',
                             px: { xs: 0.5, sm: 1 },
                             py: 0.5,
                             minHeight: 28,
@@ -941,6 +948,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                             display: 'flex',
                             alignItems: 'center',
                             gap: 0.5,
+                            borderRadius: 1,
                             '&:hover': {
                               color: 'primary.main',
                               bgcolor: (t) =>
@@ -985,7 +993,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                           >
                             {recordInfo.connector || 'KB'}
                           </Typography>
-                        </Button>
+                        </Link>
                         {recordInfo.extension && (
                           <Button
                             size="small"
