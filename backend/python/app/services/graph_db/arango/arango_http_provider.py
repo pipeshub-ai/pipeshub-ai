@@ -5238,20 +5238,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN 1
                 ) > 0
                 FILTER has_permission
-                LET has_children = LENGTH(
+                // Check for children via recordRelations PARENT_CHILD edges or nested recordGroups
+                LET has_record_children = LENGTH(
                     FOR edge IN recordRelations
                         FILTER edge._from == kb._id
                         FILTER edge.relationshipType == "PARENT_CHILD"
                         LET child = DOCUMENT(edge._to)
                         FILTER child != null AND child.isDeleted != true
                         RETURN 1
-                ) > 0 OR LENGTH(
-                    FOR perm_edge IN inheritPermissions
-                        FILTER perm_edge._to == kb._id
-                        LET record = DOCUMENT(perm_edge._from)
-                        FILTER record != null AND record.isDeleted != true
+                ) > 0
+                LET has_nested_rgs = LENGTH(
+                    FOR child_rg IN recordGroups
+                        FILTER child_rg.parentId == kb._key AND child_rg.isDeleted != true
                         RETURN 1
                 ) > 0
+                LET has_children = has_record_children OR has_nested_rgs
                 RETURN {
                     id: kb._key,
                     name: kb.groupName,
@@ -5402,11 +5403,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR rg IN recordGroups
                 FILTER rg.connectorId == @app_id AND rg.orgId == @org_id AND rg.isDeleted != true AND rg.parentId == null
                 LET has_child_rgs = LENGTH(FOR child_rg IN recordGroups FILTER child_rg.parentId == rg._key AND child_rg.isDeleted != true RETURN 1) > 0
+                // Use recordRelations with PARENT_CHILD to check for direct child records
                 LET has_records = LENGTH(
-                    FOR perm_edge IN inheritPermissions FILTER perm_edge._to == rg._id
-                    LET record = DOCUMENT(perm_edge._from) FILTER record != null AND record.isDeleted != true
-                    LET has_parent = LENGTH(FOR pe IN recordRelations FILTER pe._to == record._id AND pe.relationshipType == "PARENT_CHILD" RETURN 1) > 0
-                    FILTER has_parent == false RETURN 1
+                    FOR edge IN recordRelations
+                        FILTER edge._from == rg._id AND edge.relationshipType == "PARENT_CHILD"
+                        LET record = DOCUMENT(edge._to)
+                        FILTER record != null AND record.isDeleted != true
+                        RETURN 1
                 ) > 0
                 RETURN {
                     id: rg._key, name: rg.groupName, nodeType: "recordGroup",
@@ -5433,38 +5436,43 @@ class ArangoHTTPProvider(IGraphDBProvider):
         LET nested_rgs = (
             FOR child_rg IN recordGroups
                 FILTER child_rg.parentId == rg._key AND child_rg.isDeleted != true AND child_rg.orgId == @org_id
-                LET has_children = LENGTH(FOR sub_rg IN recordGroups FILTER sub_rg.parentId == child_rg._key AND sub_rg.isDeleted != true RETURN 1) > 0 OR
-                    LENGTH(FOR pe IN inheritPermissions FILTER pe._to == child_rg._id LET r = DOCUMENT(pe._from) FILTER r != null AND r.isDeleted != true
-                        LET hp = LENGTH(FOR pre IN recordRelations FILTER pre._to == r._id AND pre.relationshipType == "PARENT_CHILD" RETURN 1) > 0 FILTER hp == false RETURN 1) > 0
+                LET has_child_rgs = LENGTH(FOR sub_rg IN recordGroups FILTER sub_rg.parentId == child_rg._key AND sub_rg.isDeleted != true RETURN 1) > 0
+                LET has_records = LENGTH(
+                    FOR edge IN recordRelations
+                        FILTER edge._from == child_rg._id AND edge.relationshipType == "PARENT_CHILD"
+                        LET r = DOCUMENT(edge._to)
+                        FILTER r != null AND r.isDeleted != true
+                        RETURN 1
+                ) > 0
                 RETURN {{
                     id: child_rg._key, name: child_rg.groupName, nodeType: "recordGroup",
                     parentId: @rg_doc_id, source: "{source}",
                     connector: child_rg.connectorName, recordType: null, indexingStatus: null,
                     createdAt: child_rg.createdAtTimestamp, updatedAt: child_rg.updatedAtTimestamp,
                     sizeInBytes: null, mimeType: null, extension: null,
-                    webUrl: child_rg.webUrl, hasChildren: has_children
+                    webUrl: child_rg.webUrl, hasChildren: has_child_rgs OR has_records
                 }}
         )
 
+        // Use recordRelations with PARENT_CHILD type to find direct children of the record group
         LET records = (
-            FOR perm_edge IN inheritPermissions FILTER perm_edge._to == @rg_doc_id
-            LET record = DOCUMENT(perm_edge._from)
-            FILTER record != null AND record.isDeleted != true AND record.orgId == @org_id
-            LET has_parent_rec = LENGTH(FOR pre IN recordRelations FILTER pre._to == record._id AND pre.relationshipType == "PARENT_CHILD" RETURN 1) > 0
-            FILTER has_parent_rec == false
-            LET file_info = FIRST(FOR fe IN isOfType FILTER fe._from == record._id LET f = DOCUMENT(fe._to) RETURN f)
-            LET is_folder = file_info != null AND file_info.isFile == false
-            LET has_children = LENGTH(FOR ce IN recordRelations FILTER ce._from == record._id AND ce.relationshipType == "PARENT_CHILD" LET c = DOCUMENT(ce._to) FILTER c != null AND c.isDeleted != true RETURN 1) > 0
-            RETURN {{
-                id: record._key, name: record.recordName, nodeType: is_folder ? "folder" : "record",
-                parentId: @rg_doc_id,
-                source: "{source}", connector: record.connectorName,
-                recordType: record.recordType, indexingStatus: record.indexingStatus,
-                createdAt: record.createdAtTimestamp, updatedAt: record.updatedAtTimestamp,
-                sizeInBytes: file_info.fileSizeInBytes, mimeType: file_info.mimeType,
-                extension: file_info.extension, webUrl: record.webUrl,
-                hasChildren: has_children
-            }}
+            FOR edge IN recordRelations
+                FILTER edge._from == @rg_doc_id AND edge.relationshipType == "PARENT_CHILD"
+                LET record = DOCUMENT(edge._to)
+                FILTER record != null AND record.isDeleted != true AND record.orgId == @org_id
+                LET file_info = FIRST(FOR fe IN isOfType FILTER fe._from == record._id LET f = DOCUMENT(fe._to) RETURN f)
+                LET is_folder = file_info != null AND file_info.isFile == false
+                LET has_children = LENGTH(FOR ce IN recordRelations FILTER ce._from == record._id AND ce.relationshipType == "PARENT_CHILD" LET c = DOCUMENT(ce._to) FILTER c != null AND c.isDeleted != true RETURN 1) > 0
+                RETURN {{
+                    id: record._key, name: record.recordName, nodeType: is_folder ? "folder" : "record",
+                    parentId: @rg_doc_id,
+                    source: "{source}", connector: record.connectorName,
+                    recordType: record.recordType, indexingStatus: record.indexingStatus,
+                    createdAt: record.createdAtTimestamp, updatedAt: record.updatedAtTimestamp,
+                    sizeInBytes: file_info.fileSizeInBytes, mimeType: file_info.mimeType,
+                    extension: file_info.extension, webUrl: record.webUrl,
+                    hasChildren: has_children
+                }}
         )
 
         LET raw_children = UNION(nested_rgs, records)
@@ -5599,19 +5607,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN 1
                 ) > 0
                 FILTER has_permission
-                LET has_children = LENGTH(
+                // Check for children via recordRelations PARENT_CHILD edges or nested recordGroups
+                LET has_record_children = LENGTH(
                     FOR edge IN recordRelations
                         FILTER edge._from == kb._id AND edge.relationshipType == "PARENT_CHILD"
                         LET child = DOCUMENT(edge._to)
                         FILTER child != null AND child.isDeleted != true
                         RETURN 1
-                ) > 0 OR LENGTH(
-                    FOR perm_edge IN inheritPermissions
-                        FILTER perm_edge._to == kb._id
-                        LET record = DOCUMENT(perm_edge._from)
-                        FILTER record != null AND record.isDeleted != true
+                ) > 0
+                LET has_nested_rgs = LENGTH(
+                    FOR child_rg IN recordGroups
+                        FILTER child_rg.parentId == kb._key AND child_rg.isDeleted != true
                         RETURN 1
                 ) > 0
+                LET has_children = has_record_children OR has_nested_rgs
                 RETURN {{
                     id: kb._key, name: kb.groupName, nodeType: "kb",
                     parentId: null, source: "KB", connector: "KB", recordType: null,
@@ -5680,16 +5689,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR rg IN recordGroups
                 FILTER rg.orgId == @org_id AND rg.connectorName != "KB" AND rg.isDeleted != true
                 FILTER rg.connectorId IN @user_apps_ids
-                LET has_children = LENGTH(
+                LET has_child_rgs = LENGTH(
                     FOR child_rg IN recordGroups FILTER child_rg.parentId == rg._key AND child_rg.isDeleted != true RETURN 1
-                ) > 0 OR LENGTH(
-                    FOR perm_edge IN inheritPermissions FILTER perm_edge._to == rg._id
-                    LET rec = DOCUMENT(perm_edge._from)
-                    FILTER rec != null AND rec.isDeleted != true
-                    LET has_parent = LENGTH(FOR pe IN recordRelations FILTER pe._to == rec._id AND pe.relationshipType == "PARENT_CHILD" RETURN 1) > 0
-                    FILTER has_parent == false
-                    RETURN 1
                 ) > 0
+                // Use recordRelations with PARENT_CHILD to check for direct child records
+                LET has_records = LENGTH(
+                    FOR edge IN recordRelations
+                        FILTER edge._from == rg._id AND edge.relationshipType == "PARENT_CHILD"
+                        LET rec = DOCUMENT(edge._to)
+                        FILTER rec != null AND rec.isDeleted != true
+                        RETURN 1
+                ) > 0
+                LET has_children = has_child_rgs OR has_records
                 RETURN {{
                     id: rg._key, name: rg.groupName, nodeType: "recordGroup",
                     parentId: rg.parentId != null ? CONCAT("recordGroups/", rg.parentId) : CONCAT("apps/", rg.connectorId),

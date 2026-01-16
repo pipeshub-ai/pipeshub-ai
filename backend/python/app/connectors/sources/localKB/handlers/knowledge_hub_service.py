@@ -682,7 +682,7 @@ class KnowledgeHubService:
         # Validate type matches
         if actual_type != expected_type:
             raise ValueError(
-                f"Node type mismatch: expected '{expected_type}' but found '{actual_type}' for node ID '{node_id}'"
+                f"Node type mismatch: node '{node_id}' is not '{expected_type}', it is '{actual_type}'. Use /nodes/{actual_type}/{node_id} instead."
             )
 
         # Validate user has access (check permissions)
