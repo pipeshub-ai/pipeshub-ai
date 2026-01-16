@@ -184,7 +184,6 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
         logger.info("✅ Record Kafka consumer started")
 
         return consumers
-
     except Exception as e:
         logger.error(f"❌ Error starting Kafka consumers: {str(e)}")
         # Cleanup any started consumers
@@ -195,7 +194,6 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
             except Exception as cleanup_error:
                 logger.error(f"Error stopping {name} consumer during cleanup: {cleanup_error}")
         raise
-
 
 async def stop_kafka_consumers(container) -> None:
     """Stop all Kafka consumers"""
