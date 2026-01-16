@@ -10,7 +10,7 @@ Authentication: https://docs.snowflake.com/en/developer-guide/sql-api/authentica
 
 import logging
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 from urllib.parse import urlparse, urlunparse
 
 from pydantic import BaseModel, Field, ValidationError  # type: ignore
@@ -19,6 +19,15 @@ from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
 
+logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from snowflake.connector import SnowflakeConnection  # type: ignore
+
+try:
+    import snowflake.connector as snowflake_connector  # type: ignore
+except ImportError:
+    snowflake_connector = None
 
 class AuthType(str, Enum):
     """Authentication type for Snowflake connector."""
@@ -445,3 +454,272 @@ class SnowflakeResponse(BaseModel):
     def to_json(self) -> str:
         """Convert response to JSON string."""
         return self.model_dump_json(exclude_none=True)
+
+class SnowflakeSDKClient:
+    """Snowflake SDK client for direct SQL query execution.
+
+    Uses the official Snowflake Python connector (snowflake-connector-python)
+    for executing SQL queries directly against Snowflake.
+
+    Supports authentication via:
+    - OAuth token
+    - Username/Password
+    - External browser (SSO)
+
+    SDK Documentation: https://docs.snowflake.com/en/developer-guide/python-connector/python-connector
+    """
+
+    def __init__(
+        self,
+        account_identifier: str,
+        warehouse: Optional[str] = None,
+        database: Optional[str] = None,
+        schema: Optional[str] = None,
+        role: Optional[str] = None,
+        oauth_token: Optional[str] = None,
+        user: Optional[str] = None,
+        password: Optional[str] = None,
+        authenticator: Optional[str] = None,
+        timeout: int = 60,
+    ) -> None:
+        """Initialize Snowflake SDK client.
+
+        Args:
+            account_identifier: Snowflake account identifier
+            warehouse: Default warehouse to use
+            database: Default database to use
+            schema: Default schema to use
+            role: Role to use for the session
+            oauth_token: OAuth access token for authentication
+            user: Username for password authentication
+            password: Password for password authentication
+            authenticator: Authentication method ('oauth', 'externalbrowser', etc.)
+            timeout: Connection timeout in seconds
+        """
+        if snowflake_connector is None:
+            raise ImportError("snowflake-connector-python is required for SQL SDK client. Install with: pip install snowflake-connector-python")
+        self.account_identifier = self._clean_account_identifier(account_identifier)
+        self.warehouse = warehouse
+        self.database = database
+        self.schema = schema
+        self.role = role
+        self.timeout = timeout
+        self._connection: Optional["SnowflakeConnection"] = None
+
+        # Store auth credentials
+        self._oauth_token = oauth_token
+        self._user = user
+        self._password = password
+        self._authenticator = authenticator or ("oauth" if oauth_token else None)
+
+    @staticmethod
+    def _clean_account_identifier(account_identifier: str) -> str:
+        """Clean account identifier to extract just the account name.
+
+        Args:
+            account_identifier: Full or partial account identifier
+
+        Returns:
+            Clean account identifier for SDK connection
+        """
+        # Remove URL components if present
+        account = account_identifier.replace("https://", "").replace("http://", "")
+        account = account.replace(".snowflakecomputing.com", "")
+        # Remove any trailing paths
+        account = account.split("/")[0]
+        return account
+
+    def connect(self) -> "SnowflakeSDKClient":
+        """Establish connection to Snowflake.
+
+        Returns:
+            Self for method chaining
+
+        Raises:
+            ConnectionError: If connection fails
+        """
+        if self._connection is not None:
+            return self
+
+        try:
+            connect_params: Dict[str, Any] = {
+                "account": self.account_identifier,
+                "login_timeout": self.timeout,
+                "network_timeout": self.timeout,
+            }
+
+            # Add optional parameters
+            if self.warehouse:
+                connect_params["warehouse"] = self.warehouse
+            if self.database:
+                connect_params["database"] = self.database
+            if self.schema:
+                connect_params["schema"] = self.schema
+            if self.role:
+                connect_params["role"] = self.role
+
+            # Authentication
+            if self._oauth_token:
+                connect_params["token"] = self._oauth_token
+                connect_params["authenticator"] = "oauth"
+            elif self._user and self._password:
+                connect_params["user"] = self._user
+                connect_params["password"] = self._password
+            elif self._authenticator == "externalbrowser":
+                connect_params["authenticator"] = "externalbrowser"
+                if self._user:
+                    connect_params["user"] = self._user
+
+            self._connection = snowflake_connector.connect(**connect_params)  # type: ignore
+            return self
+
+        except Exception as e:
+            raise ConnectionError(f"Failed to connect to Snowflake: {e}") from e
+
+    def close(self) -> None:
+        """Close the Snowflake connection."""
+        if self._connection is not None:
+            try:
+                self._connection.close()
+            except Exception as e:
+                logger.warning(f"Failed to close Snowflake connection gracefully: {e}")
+            finally:
+                self._connection = None
+
+    def is_connected(self) -> bool:
+        """Check if connection is active."""
+        return self._connection is not None and not self._connection.is_closed()
+
+    def execute_query(
+        self,
+        query: str,
+        params: Optional[Union[Dict[str, Any], List[Any]]] = None,
+        timeout: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Execute a SQL query and return results as list of dicts.
+
+        Args:
+            query: SQL query to execute
+            params: Optional query parameters (for parameterized queries)
+            timeout: Optional query timeout in seconds
+
+        Returns:
+            List of dictionaries containing query results
+
+        Raises:
+            ConnectionError: If not connected
+            RuntimeError: If query execution fails
+        """
+        if not self.is_connected():
+            self.connect()
+
+        try:
+            cursor = self._connection.cursor()  # type: ignore
+            if timeout is not None:
+                if not isinstance(timeout, int) or timeout < 0:
+                    raise ValueError("Query timeout must be a non-negative integer.")
+                cursor.execute(f"ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {timeout}")
+
+            if params:
+                cursor.execute(query, params)
+            else:
+                cursor.execute(query)
+
+            # Get column names
+            columns = [desc[0] for desc in cursor.description] if cursor.description else []
+
+            # Fetch all results
+            rows = cursor.fetchall()
+
+            # Convert to list of dicts
+            results = [dict(zip(columns, row)) for row in rows]
+
+            cursor.close()
+            return results
+
+        except Exception as e:
+            raise RuntimeError(f"Query execution failed: {e}") from e
+
+    def execute_query_raw(
+        self,
+        query: str,
+        params: Optional[Union[Dict[str, Any], List[Any]]] = None,
+    ) -> tuple:
+        """Execute a SQL query and return raw cursor results.
+
+        Args:
+            query: SQL query to execute
+            params: Optional query parameters
+
+        Returns:
+            Tuple of (columns, rows) where columns is list of column names
+            and rows is list of tuples
+
+        Raises:
+            ConnectionError: If not connected
+            RuntimeError: If query execution fails
+        """
+        if not self.is_connected():
+            self.connect()
+
+        try:
+            cursor = self._connection.cursor()  # type: ignore
+
+            if params:
+                cursor.execute(query, params)
+            else:
+                cursor.execute(query)
+
+            columns = [desc[0] for desc in cursor.description] if cursor.description else []
+            rows = cursor.fetchall()
+
+            cursor.close()
+            return (columns, rows)
+
+        except Exception as e:
+            raise RuntimeError(f"Query execution failed: {e}") from e
+
+    def execute_many(
+        self,
+        query: str,
+        params_list: List[Union[Dict[str, Any], List[Any], tuple]],
+    ) -> int:
+        """Execute a SQL query multiple times with different parameters.
+
+        Args:
+            query: SQL query to execute
+            params_list: List of parameter sets
+
+        Returns:
+            Number of rows affected
+
+        Raises:
+            ConnectionError: If not connected
+            RuntimeError: If query execution fails
+        """
+        if not self.is_connected():
+            self.connect()
+
+        try:
+            cursor = self._connection.cursor()  # type: ignore
+            cursor.executemany(query, params_list)
+            rowcount = cursor.rowcount
+            cursor.close()
+            return rowcount
+
+        except Exception as e:
+            raise RuntimeError(f"Query execution failed: {e}") from e
+
+    def get_account_identifier(self) -> str:
+        """Get the Snowflake account identifier."""
+        return self.account_identifier
+
+    def __enter__(self) -> "SnowflakeSDKClient":
+        """Context manager entry."""
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Context manager exit."""
+        self.close()
+

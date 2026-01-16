@@ -1,5 +1,3 @@
-# ruff: noqa
-
 import base64
 import os
 import secrets
@@ -10,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlencode, urlparse
 
-import requests # type: ignore
+import requests  # type: ignore
 
 # --- 1. The Generic Client (Reusable Library Code) ---
 
@@ -32,7 +30,7 @@ class GenericOAuth2Client:
         redirect_uri: str,
         scope_delimiter: str = " ",
         auth_method: str = "header",  # Options: 'header' (Basic Auth) or 'body'
-    ):
+    ) -> None:
         self.client_id = client_id
         self.client_secret = client_secret
         self.auth_endpoint = auth_endpoint
@@ -148,12 +146,11 @@ class GenericOAuth2Client:
 
 class OAuthHTTPServer(HTTPServer):
     """Custom HTTPServer that encapsulates OAuth callback state.
-    
     This class stores the authentication result state, making it thread-safe
     and allowing multiple concurrent OAuth flows without race conditions.
     """
-    
-    def __init__(self, server_address, RequestHandlerClass):
+
+    def __init__(self, server_address, RequestHandlerClass) -> None:
         super().__init__(server_address, RequestHandlerClass)
         # Initialize state for this server instance
         self.auth_result = {"code": None, "state": None, "error": None}
@@ -162,7 +159,7 @@ class OAuthHTTPServer(HTTPServer):
 class OAuthCallbackHandler(BaseHTTPRequestHandler):
     """HTTP request handler for OAuth callback redirects."""
 
-    def do_GET(self):
+    def do_GET(self) -> None:
         """Handle GET requests from OAuth provider redirect."""
         # Access state from the server instance
         auth_result = self.server.auth_result
@@ -178,14 +175,14 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
         else:
             self._send_response("Invalid response.", color="red")
 
-    def _send_response(self, message: str, color: str = "green"):
+    def _send_response(self, message: str, color: str = "green") -> None:
         """Send HTML response to browser."""
         self.send_response(200)
         self.send_header("Content-type", "text/html")
         self.end_headers()
         self.wfile.write(f"<h1 style='color:{color}'>{message}</h1>".encode())
 
-    def log_message(self, format, *args):
+    def log_message(self, format, *args) -> None:
         """Silence logging to reduce noise."""
         pass
 
@@ -267,44 +264,53 @@ def perform_oauth_flow(
     # Start server & open browser
     # Each server instance has its own isolated auth_result state
     server = start_server(port)
-    auth_url = client.get_authorization_url(state=state, scopes=scopes)
 
-    print(f"Opening Browser")
-    webbrowser.open(auth_url)
+    try:
+        auth_url = client.get_authorization_url(state=state, scopes=scopes)
 
-    # Wait for callback
-    # Access state from the server instance (thread-safe)
-    print("Waiting for callback...")
-    for _ in range(timeout * 2):  # Check every 0.5 seconds
-        if server.auth_result["code"] or server.auth_result["error"]:
-            break
-        time.sleep(0.5)
+        print("Opening Browser")
+        webbrowser.open(auth_url)
 
-    # Verify & Exchange
-    if server.auth_result["error"]:
-        raise ValueError(f"Authorization Failed: {server.auth_result['error']}")
-    elif not server.auth_result["code"]:
-        raise TimeoutError("Timeout: No callback received within the timeout period.")
-    elif server.auth_result["state"] != state:
-        # CRITICAL SECURITY CHECK
-        raise ValueError(
-            f"SECURITY ALERT: State mismatch! Expected {state}, got {server.auth_result['state']}"
-        )
-    else:
-        print("✅ Authorization Code Received. Exchanging for Token...")
+        # Wait for callback
+        # Access state from the server instance (thread-safe)
+        print("Waiting for callback...")
+        for _ in range(timeout * 2):  # Check every 0.5 seconds
+            if server.auth_result["code"] or server.auth_result["error"]:
+                break
+            time.sleep(0.5)
+
+        # Verify & Exchange
+        if server.auth_result["error"]:
+            raise ValueError(f"Authorization Failed: {server.auth_result['error']}")
+        elif not server.auth_result["code"]:
+            raise TimeoutError("Timeout: No callback received within the timeout period.")
+        elif server.auth_result["state"] != state:
+            # CRITICAL SECURITY CHECK
+            raise ValueError(
+                f"SECURITY ALERT: State mismatch! Expected {state}, got {server.auth_result['state']}"
+            )
+        else:
+            print("✅ Authorization Code Received. Exchanging for Token...")
+            try:
+                token_response = client.exchange_code_for_token(code=server.auth_result["code"])
+                print("🎉 SUCCESS! Token obtained.")
+                return token_response
+            except requests.exceptions.RequestException as e:
+                raise requests.exceptions.RequestException(
+                    f"Token Exchange Failed: {e}"
+                ) from e
+    finally:
+        # Always close the server to release the port
         try:
-            token_response = client.exchange_code_for_token(code=server.auth_result["code"])
-            print("🎉 SUCCESS! Token obtained.")
-            return token_response
-        except requests.exceptions.RequestException as e:
-            raise requests.exceptions.RequestException(
-                f"Token Exchange Failed: {e}"
-            ) from e
+            server.server_close()
+            print("🔒 OAuth server closed, port released.")
+        except Exception:
+            pass
 
 
 # --- 4. Main Execution (Configuration & Logic) ---
 
-def main():
+def main() -> None:
     """Standalone execution example for generic OAuth2 flow.
 
     Reads configuration from environment variables:
@@ -322,14 +328,6 @@ def main():
     client_secret = os.getenv("OAUTH_CLIENT_SECRET")
     auth_url = os.getenv("OAUTH_AUTH_URL")
     token_url = os.getenv("OAUTH_TOKEN_URL")
-    redirect_uri = os.getenv("OAUTH_REDIRECT_URI", "http://localhost:8080/callback")
-
-    # Parse scopes from environment variable
-    scopes_str = os.getenv("OAUTH_SCOPES", "")
-    scope_delimiter = os.getenv("OAUTH_SCOPE_DELIMITER", " ")
-    scopes = [s.strip() for s in scopes_str.split(scope_delimiter)] if scopes_str else None
-
-    auth_method = os.getenv("OAUTH_AUTH_METHOD", "header")
 
     if not client_id or not client_secret:
         print("❌ Error: Missing Required Environment Variables")
@@ -342,17 +340,6 @@ def main():
         return
 
     try:
-        token_response = perform_oauth_flow(
-            client_id=client_id,
-            client_secret=client_secret,
-            auth_endpoint=auth_url,
-            token_endpoint=token_url,
-            redirect_uri=redirect_uri,
-            scopes=scopes,
-            scope_delimiter=scope_delimiter,
-            auth_method=auth_method,
-        )
-
         print("\n🎉 SUCCESS! Token Response:")
         print("\n💡 You can now use the 'access_token' from the response above.")
     except Exception as e:

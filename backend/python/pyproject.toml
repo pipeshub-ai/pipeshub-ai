@@ -72,6 +72,7 @@ dependencies = [
     "linkedin-api-client>=0.3.0",
     "markdown==3.8",
     "monday-api-python-sdk>=0.1.0",
+    "snowflake-connector-python",
     "msgraph-sdk==1.16.0",
     "nats-py==2.1.0",
     "notion-client==2.2.1",
