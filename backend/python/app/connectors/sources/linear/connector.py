@@ -1,6 +1,7 @@
 """Linear Connector Implementation"""
 import base64
 import re
+from collections import defaultdict
 from datetime import datetime, timezone
 from logging import Logger
 from typing import (
@@ -56,6 +57,7 @@ from app.connectors.utils.ticket_mapper import TicketValueMapper
 from app.models.blocks import (
     Block,
     BlockComment,
+    BlockContainerIndex,
     BlockGroup,
     BlocksContainer,
     BlockSubType,
@@ -4094,6 +4096,39 @@ class LinearConnector(BaseConnector):
                 table_row_metadata=TableRowMetadata(children_records=children_records) if children_records else None,
             )
             block_groups.append(minimal_block_group)
+
+        # Populate children arrays for BlockGroups and add thread groups to description
+        # Build a map of parent_index -> list of child indices
+        blockgroup_children_map = defaultdict(list)  # Maps BlockGroup index -> list of child BlockGroup indices
+        block_children_map = defaultdict(list)  # Maps BlockGroup index -> list of child Block indices
+
+        # Collect all BlockGroup children (thread groups that are children of description)
+        for bg in block_groups:
+            if bg.parent_index is not None:
+                blockgroup_children_map[bg.parent_index].append(bg.index)
+
+        # Collect all Block children (comment blocks that are children of thread groups)
+        for b in blocks:
+            if b.parent_index is not None:
+                block_children_map[b.parent_index].append(b.index)
+
+        # Now populate the children arrays
+        for bg in block_groups:
+            children_list = []
+
+            # Add child BlockGroups
+            if bg.index in blockgroup_children_map:
+                for child_bg_index in sorted(blockgroup_children_map[bg.index]):
+                    children_list.append(BlockContainerIndex(block_group_index=child_bg_index))
+
+            # Add child Blocks
+            if bg.index in block_children_map:
+                for child_block_index in sorted(block_children_map[bg.index]):
+                    children_list.append(BlockContainerIndex(block_index=child_block_index))
+
+            # Set children if we have any
+            if children_list:
+                bg.children = children_list
 
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 

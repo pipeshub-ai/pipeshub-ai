@@ -688,7 +688,7 @@ class Processor:
         Uses a functional approach:
         1. Process all BlockGroups that need processing, collecting results
         2. Calculate index mappings upfront
-        3. Build new BlocksContainer in a single pass without in-place modifications
+        3. Build new BlocksContainer in a single pass
 
         Args:
             block_containers: BlocksContainer to process
@@ -700,12 +700,21 @@ class Processor:
         if not block_containers.block_groups:
             return block_containers
 
-        # Find BlockGroups that need processing (sorted by index to process in order)
-        # Filter out BlockGroups with None index to avoid TypeError during sorting
-        block_groups_to_process = sorted(
-            [bg for bg in block_containers.block_groups if bg.requires_processing and bg.data and bg.index is not None],
-            key=lambda bg: bg.index
-        )
+        # Separate block_groups with valid index from those with None index
+        block_groups_with_index: List[BlockGroup] = []
+        block_groups_without_index: List[BlockGroup] = []
+
+        for bg in block_containers.block_groups:
+            if bg.index is not None:
+                block_groups_with_index.append(bg)
+            else:
+                block_groups_without_index.append(bg)
+
+        # Filter BlockGroups that need processing (already in sequence from connector)
+        block_groups_to_process = [
+            bg for bg in block_groups_with_index
+            if bg.requires_processing and bg.data
+        ]
 
         if not block_groups_to_process:
             self.logger.debug("No BlockGroups require processing")
@@ -716,8 +725,8 @@ class Processor:
         )
 
         # ========== PHASE 1: Process all BlockGroups and collect results ==========
-        # Map: parent_index -> (new_block_groups, new_blocks, parent_block_group)
-        processing_results: Dict[int, tuple] = {}
+        # Map: parent_index -> (new_block_groups, new_blocks)
+        processing_results: Dict[int, tuple[List[BlockGroup], List[Block]]] = {}
         processor = DoclingProcessor(logger=self.logger, config=self.config_service)
         initial_block_count = len(block_containers.blocks)
 
@@ -726,10 +735,9 @@ class Processor:
                 # Extract markdown data from BlockGroup
                 markdown_data = block_group.data
                 if not markdown_data or not isinstance(markdown_data, str):
-                    self.logger.warning(
-                        f"⚠️ BlockGroup {block_group.index} has no valid markdown data, skipping"
+                    raise ValueError(
+                        f"BlockGroup {block_group.index} has no valid markdown data"
                     )
-                    continue
 
                 # Convert to bytes for docling
                 md_bytes = markdown_data.encode('utf-8')
@@ -746,16 +754,14 @@ class Processor:
                 processed_blocks_container = await processor.load_document(filename, md_bytes)
 
                 if not processed_blocks_container:
-                    self.logger.warning(
-                        f"⚠️ Docling returned empty result for BlockGroup {block_group.index}, skipping"
+                    raise ValueError(
+                        f"Docling returned empty result for BlockGroup {block_group.index}"
                     )
-                    continue
 
-                # Store results for later merging
+                # Store results for later merging (exclude parent_block_group reference to avoid mutation issues)
                 processing_results[block_group.index] = (
                     processed_blocks_container.block_groups,
                     processed_blocks_container.blocks,
-                    block_group
                 )
 
                 self.logger.debug(
@@ -769,8 +775,8 @@ class Processor:
                     f"❌ Error processing BlockGroup {block_group.index} through docling: {e}",
                     exc_info=True
                 )
-                # Continue processing other BlockGroups even if one fails
-                continue
+                # Stop processing if any BlockGroup fails
+                raise
 
         if not processing_results:
             self.logger.debug("No BlockGroups were successfully processed")
@@ -782,13 +788,7 @@ class Processor:
         index_shift_map: Dict[int, int] = {}
         cumulative_shift = 0
 
-        # Process original block_groups in sorted order to calculate shifts
-        original_block_groups_sorted = sorted(
-            [bg for bg in block_containers.block_groups if bg.index is not None],
-            key=lambda bg: bg.index
-        )
-
-        for bg in original_block_groups_sorted:
+        for bg in block_groups_with_index:
             original_index = bg.index
             index_shift_map[original_index] = cumulative_shift
 
@@ -797,72 +797,79 @@ class Processor:
                 num_new_block_groups = len(processing_results[original_index][0])
                 cumulative_shift += num_new_block_groups
 
+        processed_indices = set(processing_results.keys())
+
         # ========== PHASE 3: Build new BlocksContainer in a single pass ==========
         new_block_groups: List[BlockGroup] = []
         new_blocks: List[Block] = []
-        set(processing_results.keys())
 
         # Track block index offset (blocks are appended at the end)
         block_index_offset = initial_block_count
 
         # Build new block_groups list
-        for bg in original_block_groups_sorted:
+        for bg in block_groups_with_index:
             original_index = bg.index
-            final_index = original_index + index_shift_map[original_index]
+            shift_amount = index_shift_map[original_index]
+            final_index = original_index + shift_amount
 
-            # Add the original block_group (or processed version) with updated index
-            if original_index in processing_results:
-                # This block_group was processed - mark it as processed
-                parent_block_group = processing_results[original_index][2]
-                parent_block_group.requires_processing = False
-                parent_block_group.index = final_index
+            # Update block_group's index
+            bg.index = final_index
 
-                # Update parent_index if it references a shifted block_group
-                if parent_block_group.parent_index is not None:
-                    if parent_block_group.parent_index in index_shift_map:
-                        parent_block_group.parent_index += index_shift_map[parent_block_group.parent_index]
+            # Update parent_index if it references a shifted block_group
+            if bg.parent_index is not None and bg.parent_index in index_shift_map:
+                bg.parent_index += index_shift_map[bg.parent_index]
 
-                # Update children block_group_index references
-                if parent_block_group.children:
-                    for child in parent_block_group.children:
-                        if child.block_group_index is not None and child.block_group_index in index_shift_map:
-                            child.block_group_index += index_shift_map[child.block_group_index]
+            # Update children references
+            if bg.children:
+                for child in bg.children:
+                    if child.block_group_index is not None and child.block_group_index in index_shift_map:
+                        child.block_group_index += index_shift_map[child.block_group_index]
 
-                new_block_groups.append(parent_block_group)
+            # Add the block_group to the result
+            new_block_groups.append(bg)
 
-                # Insert new block_groups right after parent
-                new_block_groups_list, new_blocks_list, _ = processing_results[original_index]
+            # If this block_group was processed, insert its children and mark as processed
+            if original_index in processed_indices:
+                bg.requires_processing = False
+
+                # Get processing results
+                new_block_groups_list, new_blocks_list = processing_results[original_index]
                 insertion_index = final_index + 1
+
+                # Initialize children array if needed
+                if bg.children is None:
+                    bg.children = []
 
                 # Assign indices to new block_groups and update references
                 for i, new_bg in enumerate(new_block_groups_list):
                     new_bg.index = insertion_index + i
-                    # Set parent_index to parent's final index
+
+                    # Set parent_index to parent's final index if not set
                     if new_bg.parent_index is None:
                         new_bg.parent_index = final_index
                     else:
                         # If parent_index exists, it's a relative index from docling
                         new_bg.parent_index = new_bg.parent_index + insertion_index
 
-                    # Update children indices
+                    # Update children indices in the new block_group
                     if new_bg.children:
                         for child in new_bg.children:
                             if child.block_index is not None:
-                                child.block_index = child.block_index + block_index_offset
+                                child.block_index += block_index_offset
                             if child.block_group_index is not None:
-                                child.block_group_index = child.block_group_index + insertion_index
+                                child.block_group_index += insertion_index
 
                     new_block_groups.append(new_bg)
 
-                # Process new blocks
-                for block_i, new_block in enumerate(new_blocks_list):
-                    # Handle blocks with None index
-                    if new_block.index is None:
-                        new_block.index = block_index_offset + block_i
-                    else:
-                        new_block.index = new_block.index + block_index_offset
+                    # Add to parent's children
+                    bg.children.append(BlockContainerIndex(block_group_index=new_bg.index))
 
-                    # Set parent_index to parent's final index
+                # Process new blocks with sequential indices
+                for block_i, new_block in enumerate(new_blocks_list):
+                    # Assign sequential block index
+                    new_block.index = block_index_offset + block_i
+
+                    # Set parent_index
                     if new_block.parent_index is None:
                         new_block.parent_index = final_index
                     else:
@@ -871,47 +878,15 @@ class Processor:
 
                     new_blocks.append(new_block)
 
-                # Update parent's children array
-                if parent_block_group.children is None:
-                    parent_block_group.children = []
-
-                # Add new block_groups to parent's children
-                for new_bg in new_block_groups_list:
-                    parent_block_group.children.append(
-                        BlockContainerIndex(block_group_index=new_bg.index)
-                    )
-
-                # Add blocks that directly belong to the parent BlockGroup
-                for new_block in new_blocks_list:
+                    # Add blocks that directly belong to the parent BlockGroup
                     if new_block.parent_index == final_index:
-                        parent_block_group.children.append(
-                            BlockContainerIndex(block_index=new_block.index)
-                        )
+                        bg.children.append(BlockContainerIndex(block_index=new_block.index))
 
                 # Update block offset for next iteration
                 block_index_offset += len(new_blocks_list)
 
-            else:
-                # This block_group was not processed - just update its index and references
-                bg.index = final_index
-
-                # Update parent_index if it references a shifted block_group
-                if bg.parent_index is not None:
-                    if bg.parent_index in index_shift_map:
-                        bg.parent_index += index_shift_map[bg.parent_index]
-
-                # Update children block_group_index references
-                if bg.children:
-                    for child in bg.children:
-                        if child.block_group_index is not None and child.block_group_index in index_shift_map:
-                            child.block_group_index += index_shift_map[child.block_group_index]
-
-                new_block_groups.append(bg)
-
-        # Handle block_groups with None index (append at end)
-        for bg in block_containers.block_groups:
-            if bg.index is None:
-                new_block_groups.append(bg)
+        # Append block_groups with None index at end
+        new_block_groups.extend(block_groups_without_index)
 
         # Update all original blocks' parent_index references
         for block in block_containers.blocks:
