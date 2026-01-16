@@ -8668,13 +8668,9 @@ class BaseArangoService:
         folder_data = {
             "_key": folder_id,
             "orgId": org_id,
-            "recordGroupId": kb_id,
             "name": folder_name,
             "isFile": False,
             "extension": None,
-            "mimeType": "application/vnd.folder",
-            "sizeInBytes": 0,
-            "webUrl": f"/kb/{kb_id}/folder/{folder_id}"
         }
 
         # Create folder
@@ -10122,13 +10118,9 @@ class BaseArangoService:
                 folder_data = {
                     "_key": folder_id,
                     "orgId": org_id,
-                    "recordGroupId": kb_id,
                     "name": folder_name,
                     "isFile": False,
                     "extension": None,
-                    "mimeType": "application/vnd.folder",
-                    "sizeInBytes": 0,
-                    "webUrl": f"/kb/{kb_id}/folder/{folder_id}"
                 }
 
                 # Step 5: Insert both documents
