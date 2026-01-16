@@ -1052,37 +1052,73 @@ class OneDriveConnector(BaseConnector):
             users: List of users to process
         """
         try:
-            # Get all active users
             all_active_users = await self.data_entities_processor.get_all_active_users()
             active_user_emails = {active_user.email.lower() for active_user in all_active_users}
 
-            # Filter users to sync
-            users_to_sync = [
+            # Filter users to sync (only active users)
+            active_users = [
                 user for user in users
                 if user.email and user.email.lower() in active_user_emails
             ]
 
-            self.logger.info(f"Processing {len(users_to_sync)} active users out of {len(users)} total users")
+            self.logger.info(f"Found {len(active_users)} active users out of {len(users)} total users")
+
+            # Further filter to only users with OneDrive provisioned
+            users_to_sync = []
+            for user in active_users:
+                if await self._user_has_onedrive(user.source_user_id):
+                    users_to_sync.append(user)
+                else:
+                    self.logger.info(f"\n\n\n\n\n\nSkipping user {user.email}: No OneDrive license or drive not provisioned")
+
+            self.logger.info(f"Processing {len(users_to_sync)} users with OneDrive out of {len(active_users)} active users")
 
             # Process users in concurrent batches
             for i in range(0, len(users_to_sync), self.max_concurrent_batches):
                 batch = users_to_sync[i:i + self.max_concurrent_batches]
 
-                # Run sync for batch of users concurrently
                 sync_tasks = [
                     self._run_sync_with_yield(user.source_user_id)
                     for user in batch
                 ]
 
                 await asyncio.gather(*sync_tasks, return_exceptions=True)
-
-                # Small delay between batches to prevent overwhelming the API
                 await asyncio.sleep(1)
 
             self.logger.info("Completed processing all user batches")
 
         except Exception as e:
             self.logger.error(f"❌ Error processing users in batches: {e}")
+            raise
+
+    async def _user_has_onedrive(self, user_id: str) -> bool:
+        """
+        Check if a user has OneDrive provisioned.
+
+        Args:
+            user_id: The user identifier
+
+        Returns:
+            True if user has OneDrive, False otherwise
+        """
+        try:
+            await self.msgraph_client.get_user_drive(user_id)
+            return True
+        except Exception as e:
+            error_message = str(e).lower()
+            error_code = ""
+
+            # Extract error code if it's an ODataError
+            if hasattr(e, 'error') and hasattr(e.error, 'code'):
+                error_code = e.error.code.lower() if e.error.code else ""
+
+            if any(indicator in error_message or indicator in error_code for indicator in [
+                "resourcenotfound",
+                "itemnotfound",
+                "request_resourcenotfound",
+                "404"
+            ]):
+                return False
             raise
 
     async def _detect_and_handle_permission_changes(self) -> None:
