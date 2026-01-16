@@ -508,8 +508,12 @@ export class OrgController {
         { new: true, upsert: true },
       );
 
-      res.setHeader('Content-Type', mimeType);
-      res.status(201).send(processedBuffer);
+      // Return JSON response instead of raw buffer - prevents XSS vulnerability
+      // The frontend doesn't use the response and fetches the logo separately via getOrgLogo()
+      res.status(201).json({
+        message: 'Logo updated successfully',
+        mimeType: mimeType,
+      });
       return;
     } catch (error) {
       next(error);
