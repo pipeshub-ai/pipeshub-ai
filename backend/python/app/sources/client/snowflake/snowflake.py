@@ -9,13 +9,22 @@ Authentication: https://docs.snowflake.com/en/developer-guide/sql-api/authentica
 """
 
 import logging
+from enum import Enum
 from typing import Any, Dict, List, Optional, Union
+from urllib.parse import urlparse, urlunparse
 
 from pydantic import BaseModel, Field, ValidationError  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
+
+
+class AuthType(str, Enum):
+    """Authentication type for Snowflake connector."""
+
+    OAUTH = "OAUTH"
+    PAT = "PAT"
 
 
 class SnowflakeRESTClientViaOAuth(HTTPClient):
@@ -55,14 +64,33 @@ class SnowflakeRESTClientViaOAuth(HTTPClient):
         """Build the Snowflake SQL API base URL from account identifier.
 
         Args:
-            account_identifier: Snowflake account identifier
+            account_identifier: Snowflake account identifier (can be a full URL,
+                partial URL, or just the account name)
 
         Returns:
             Base URL for Snowflake SQL API
         """
-        # Remove any existing URL components if present
-        account = account_identifier.replace("https://", "").replace(".snowflakecomputing.com", "")
-        return f"https://{account}.snowflakecomputing.com/api/v2"
+        # Parse the account identifier as a URL
+        parsed = urlparse(account_identifier if "://" in account_identifier else f"https://{account_identifier}")
+        # Extract the account name from netloc
+        netloc = parsed.netloc or parsed.path.split("/")[0] if parsed.path else account_identifier
+        # Remove the .snowflakecomputing.com suffix if present
+        if netloc.endswith(".snowflakecomputing.com"):
+            account = netloc[:-len(".snowflakecomputing.com")]
+        else:
+            # If no suffix, assume netloc is the account name
+            account = netloc
+
+        # Build the base URL using urlunparse for proper URL construction
+        base_url = urlunparse((
+            "https",
+            f"{account}.snowflakecomputing.com",
+            "/api/v2",
+            "",
+            "",
+            ""
+        ))
+        return base_url
 
     def get_base_url(self) -> str:
         """Get the base URL for Snowflake API."""
@@ -111,14 +139,35 @@ class SnowflakeRESTClientViaPAT(HTTPClient):
         """Build the Snowflake SQL API base URL from account identifier.
 
         Args:
-            account_identifier: Snowflake account identifier
+            account_identifier: Snowflake account identifier (can be a full URL,
+                partial URL, or just the account name)
 
         Returns:
             Base URL for Snowflake SQL API
         """
-        # Remove any existing URL components if present
-        account = account_identifier.replace("https://", "").replace(".snowflakecomputing.com", "")
-        return f"https://{account}.snowflakecomputing.com/api/v2"
+        # Parse the account identifier as a URL
+        parsed = urlparse(account_identifier if "://" in account_identifier else f"https://{account_identifier}")
+
+        # Extract the account name from netloc
+        netloc = parsed.netloc or parsed.path.split("/")[0] if parsed.path else account_identifier
+
+        # Remove the .snowflakecomputing.com suffix if present
+        if netloc.endswith(".snowflakecomputing.com"):
+            account = netloc[:-len(".snowflakecomputing.com")]
+        else:
+            # If no suffix, assume netloc is the account name
+            account = netloc
+
+        # Build the base URL using urlunparse for proper URL construction
+        base_url = urlunparse((
+            "https",
+            f"{account}.snowflakecomputing.com",
+            "/api/v2",
+            "",
+            "",
+            ""
+        ))
+        return base_url
 
     def get_base_url(self) -> str:
         """Get the base URL for Snowflake API."""
@@ -184,7 +233,7 @@ class SnowflakePATConfig(BaseModel):
 class AuthConfig(BaseModel):
     """Authentication configuration for Snowflake connector."""
 
-    authType: str = Field(default="PAT", description="Authentication type (OAUTH or PAT)")
+    authType: AuthType = Field(default=AuthType.PAT, description="Authentication type (OAUTH or PAT)")
     patToken: Optional[str] = Field(default=None, description="Personal Access Token for PAT auth")
 
 
@@ -294,16 +343,13 @@ class SnowflakeClient(IClient):
                 logger, config_service, connector_instance_id
             )
 
-            if not config_dict:
-                raise ValueError("Failed to get Snowflake connector configuration")
-
             config = SnowflakeConnectorConfig.model_validate(config_dict)
 
             auth_type = config.auth.authType
             account_identifier = config.accountIdentifier
             timeout = config.timeout
 
-            if auth_type == "OAUTH":
+            if auth_type == AuthType.OAUTH:
                 if not config.credentials or not config.credentials.access_token:
                     raise ValueError("OAuth access token required for OAuth auth type")
                 client = SnowflakeRESTClientViaOAuth(
@@ -312,7 +358,7 @@ class SnowflakeClient(IClient):
                     timeout=timeout,
                 )
 
-            elif auth_type == "PAT":
+            elif auth_type == AuthType.PAT:
                 if not config.auth.patToken:
                     raise ValueError("PAT token required for PAT auth type")
                 client = SnowflakeRESTClientViaPAT(
@@ -357,21 +403,21 @@ class SnowflakeClient(IClient):
                 f"/services/connectors/{connector_instance_id}/config"
             )
             if not config:
+                instance_msg = f" for instance {connector_instance_id}" if connector_instance_id else ""
                 raise ValueError(
-                    f"Failed to get Snowflake connector configuration "
-                    f"for instance {connector_instance_id}"
+                    f"Failed to get Snowflake connector configuration{instance_msg}"
                 )
             if not isinstance(config, dict):
+                instance_msg = f" for instance {connector_instance_id}" if connector_instance_id else ""
                 raise ValueError(
-                    f"Invalid Snowflake connector configuration format "
-                    f"for instance {connector_instance_id}"
+                    f"Invalid Snowflake connector configuration format{instance_msg}"
                 )
             return config
         except Exception as e:
             logger.error(f"Failed to get Snowflake connector config: {e}")
+            instance_msg = f" for instance {connector_instance_id}" if connector_instance_id else ""
             raise ValueError(
-                f"Failed to get Snowflake connector configuration "
-                f"for instance {connector_instance_id}"
+                f"Failed to get Snowflake connector configuration{instance_msg}"
             ) from e
 
 
