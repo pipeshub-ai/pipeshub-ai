@@ -14,6 +14,7 @@ from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 # Concurrency control settings - read from environment variables
 MAX_CONCURRENT_PARSING = int(os.getenv('MAX_CONCURRENT_PARSING', '5'))
 MAX_CONCURRENT_INDEXING = int(os.getenv('MAX_CONCURRENT_INDEXING', '100'))
+SHUTDOWN_TASK_TIMEOUT = 30.0
 
 
 class IndexingEvent:
@@ -202,7 +203,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 None,
                 lambda: concurrent.futures.wait(
                     self.active_tasks,
-                    timeout=30.0,
+                    timeout=SHUTDOWN_TASK_TIMEOUT,
                     return_when=concurrent.futures.ALL_COMPLETED
                 )
             )
@@ -250,6 +251,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         except Exception as e:
             self.logger.error(f"Fatal error in consume_messages: {e}")
+
 
 
     def __parse_message(self, message) -> Optional[Dict[str, Any]]:
@@ -329,8 +331,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         offset = message.offset
         message_id = f"{topic}-{partition}-{offset}"
 
-        parsing_released = True
-        indexing_released = True
+        needs_parsing_release = True
+        needs_indexing_release = True
 
         if not self.parsing_semaphore or not self.indexing_semaphore:
             self.logger.error(f"Semaphores not initialized for {message_id}")
@@ -338,10 +340,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         try:
             await self.parsing_semaphore.acquire()
-            parsing_released = False
+            needs_parsing_release = False
 
             await self.indexing_semaphore.acquire()
-            indexing_released = False
+            needs_indexing_release = False
 
             parsed_message = self.__parse_message(message)
             if parsed_message is None:
@@ -352,13 +354,13 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 async for event in self.message_handler(parsed_message):
                     event_type = event.get("event")
 
-                    if event_type == IndexingEvent.PARSING_COMPLETE and not parsing_released and self.parsing_semaphore:
+                    if event_type == IndexingEvent.PARSING_COMPLETE and not needs_parsing_release and self.parsing_semaphore:
                         self.parsing_semaphore.release()
-                        parsing_released = True
+                        needs_parsing_release = True
                         self.logger.debug(f"Released parsing semaphore for {message_id}")
-                    elif event_type == IndexingEvent.INDEXING_COMPLETE and not indexing_released and self.indexing_semaphore:
+                    elif event_type == IndexingEvent.INDEXING_COMPLETE and not needs_indexing_release and self.indexing_semaphore:
                         self.indexing_semaphore.release()
-                        indexing_released = True
+                        needs_indexing_release = True
                         self.logger.debug(f"Released indexing semaphore for {message_id}")
             else:
                 self.logger.error(f"No message handler available for {message_id}")
@@ -367,11 +369,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.logger.error(f"Error in process_message_wrapper for {message_id}: {e}")
         finally:
             # Ensure semaphores are released even on error
-            if not parsing_released and self.parsing_semaphore:
+            if not needs_parsing_release and self.parsing_semaphore:
                 self.parsing_semaphore.release()
                 self.logger.debug(f"Released parsing semaphore in finally for {message_id}")
 
-            if not indexing_released and self.indexing_semaphore:
+            if not needs_indexing_release and self.indexing_semaphore:
                 self.indexing_semaphore.release()
                 self.logger.debug(f"Released indexing semaphore in finally for {message_id}")
 
