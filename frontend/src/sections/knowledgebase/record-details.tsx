@@ -277,6 +277,7 @@ export default function RecordDetails() {
   }
   // Check all possible sources for webUrl
   const webUrl = record.webUrl || record.fileRecord?.webUrl || record.mailRecord?.webUrl;
+  const hideWeburl = record.hideWeburl ?? false;
 
   const hasValidNames = (items: MetadataItem[]) => {
     if (!items || items.length === 0) return false;
@@ -417,7 +418,7 @@ export default function RecordDetails() {
                   <SummaryButton onClick={handleShowSummary} variant="default" />
                 )}
 
-                {webUrl && record.origin !=='UPLOAD' && <OpenButton webUrl={webUrl} variant="default" />}
+                {webUrl && record.origin !=='UPLOAD' && !hideWeburl && <OpenButton webUrl={webUrl} variant="default" />}
 
                 {/* Reindex button */}
                 {recordId && (
@@ -456,7 +457,7 @@ export default function RecordDetails() {
                   <SummaryButton onClick={handleShowSummary} variant="default" />
                 )}
 
-                {webUrl && record.origin !=='UPLOAD' && <OpenButton webUrl={webUrl} variant="default" />}
+                {webUrl && record.origin !=='UPLOAD' && !hideWeburl && <OpenButton webUrl={webUrl} variant="default" />}
 
                 {/* Reindex button */}
                 {recordId && (
@@ -504,7 +505,7 @@ export default function RecordDetails() {
                   />
                 )}
 
-                {webUrl && record.origin !=='UPLOAD' && <OpenButton webUrl={webUrl} variant="compact" />}
+                {webUrl && record.origin !=='UPLOAD' && !hideWeburl && <OpenButton webUrl={webUrl} variant="compact" />}
 
                 {/* Delete button - Compact */}
                 {!isRecordConnector && (
@@ -612,7 +613,7 @@ export default function RecordDetails() {
                   )}
 
                   {/* Open */}
-                  {webUrl && record.origin !=='UPLOAD' && (
+                  {webUrl && record.origin !=='UPLOAD' && !hideWeburl && (
                     <OpenButton
                       webUrl={webUrl}
                       variant="menu"

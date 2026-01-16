@@ -27,5 +27,6 @@ export interface MessageContentProps {
 export interface Record {
   recordId: string;
   citations?: CustomCitation[];
+  hideWeburl?: boolean;
   [key: string]: any;
 }

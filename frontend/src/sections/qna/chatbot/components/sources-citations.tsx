@@ -308,40 +308,71 @@ const FileCard = React.memo(
 
             {/* Connector Icon */}
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
-              <Box
-                sx={{ cursor: 'pointer', alignItems: 'center', display: 'flex', gap: 0.5 }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  window.open(file.webUrl, '_blank', 'noopener,noreferrer');
-                }}
-              >
-                <Icon icon={linkIcon} width={14} height={14} />
-                <img
-                  src={connectorInfo.iconPath}
-                  alt={file.connector || 'UPLOAD'}
-                  width={16}
-                  height={16}
-                  style={{
-                    objectFit: 'contain',
-                    borderRadius: '2px',
-                  }}
-                  onError={(e) => {
-                    e.currentTarget.src = '/assets/icons/connectors/default.svg';
-                  }}
-                />
-                <Typography
-                  variant="caption"
-                  sx={{
-                    color: 'text.secondary',
-                    fontSize: '11px',
-                    fontWeight: 500,
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.3px',
+              {file.webUrl && !file.citation?.metadata?.hideWeburl && (
+                <Box
+                  sx={{ cursor: 'pointer', alignItems: 'center', display: 'flex', gap: 0.5 }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    window.open(file.webUrl, '_blank', 'noopener,noreferrer');
                   }}
                 >
-                  {file.connector || 'UPLOAD'}
-                </Typography>
-              </Box>
+                  <Icon icon={linkIcon} width={14} height={14} />
+                  <img
+                    src={connectorInfo.iconPath}
+                    alt={file.connector || 'UPLOAD'}
+                    width={16}
+                    height={16}
+                    style={{
+                      objectFit: 'contain',
+                      borderRadius: '2px',
+                    }}
+                    onError={(e) => {
+                      e.currentTarget.src = '/assets/icons/connectors/default.svg';
+                    }}
+                  />
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      color: 'text.secondary',
+                      fontSize: '11px',
+                      fontWeight: 500,
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.3px',
+                    }}
+                  >
+                    {file.connector || 'UPLOAD'}
+                  </Typography>
+                </Box>
+              )}
+              {(!file.webUrl || file.citation?.metadata?.hideWeburl) && (
+                <Box sx={{ alignItems: 'center', display: 'flex', gap: 0.5 }}>
+                  <img
+                    src={connectorInfo.iconPath}
+                    alt={file.connector || 'UPLOAD'}
+                    width={16}
+                    height={16}
+                    style={{
+                      objectFit: 'contain',
+                      borderRadius: '2px',
+                    }}
+                    onError={(e) => {
+                      e.currentTarget.src = '/assets/icons/connectors/default.svg';
+                    }}
+                  />
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      color: 'text.secondary',
+                      fontSize: '11px',
+                      fontWeight: 500,
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.3px',
+                    }}
+                  >
+                    {file.connector || 'UPLOAD'}
+                  </Typography>
+                </Box>
+              )}
             </Box>
           </Stack>
 
@@ -896,104 +927,148 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                         sx={{ flexShrink: 0, mt:1, mr:2}}
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <Link
-                          href={
-                            (() => {
+                        {recordCitations[0]?.metadata?.webUrl && !recordCitations[0]?.metadata?.hideWeburl ? (
+                          <Link
+                            href={
+                              (() => {
+                                const firstCitation = recordCitations[0];
+                                if (firstCitation?.metadata?.previewRenderable === false) {
+                                  return getWebUrlWithFragment(firstCitation) || firstCitation?.metadata?.webUrl || '#';
+                                }
+                                return firstCitation?.metadata?.webUrl || '#';
+                              })()
+                            }
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => {
+                              e.stopPropagation();
                               const firstCitation = recordCitations[0];
-                              if (firstCitation?.metadata?.previewRenderable === false) {
-                                return getWebUrlWithFragment(firstCitation) || firstCitation?.metadata?.webUrl || '#';
+                              // If there's a webUrl, let the link handle navigation naturally
+                              if (firstCitation?.metadata?.webUrl || 
+                                  (firstCitation?.metadata?.previewRenderable === false && getWebUrlWithFragment(firstCitation))) {
+                                // Link will navigate naturally via href
+                                return;
                               }
-                              return firstCitation?.metadata?.webUrl || '#';
-                            })()
-                          }
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            const firstCitation = recordCitations[0];
-                            // If there's a webUrl, let the link handle navigation naturally
-                            if (firstCitation?.metadata?.webUrl || 
-                                (firstCitation?.metadata?.previewRenderable === false && getWebUrlWithFragment(firstCitation))) {
-                              // Link will navigate naturally via href
-                              return;
-                            }
-                            // For files without webUrl (like UPLOAD), prevent default and open the document viewer
-                            if (
-                              recordInfo.extension &&
-                              recordInfo.recordId &&
-                              firstCitation
-                            ) {
-                              e.preventDefault();
-                              const allRecordCitations =
-                                aggregatedCitations[recordInfo.recordId] || recordCitations;
-                              const isExcelOrCSV = ['csv', 'xlsx', 'xls'].includes(
-                                recordInfo.extension || ''
-                              );
-                              onViewPdf('', firstCitation, allRecordCitations, isExcelOrCSV);
-                            } else {
-                              // No webUrl and no viewer option, prevent default navigation
-                              e.preventDefault();
-                            }
-                          }}
-                          sx={{
-                            textTransform: 'none',
-                            fontSize: '11px',
-                            fontWeight: 500,
-                            color: 'text.secondary',
-                            textDecoration: 'none',
-                            px: { xs: 0.5, sm: 1 },
-                            py: 0.5,
-                            minHeight: 28,
-                            minWidth: 'auto',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 0.5,
-                            borderRadius: 1,
-                            '&:hover': {
-                              color: 'primary.main',
-                              bgcolor: (t) =>
-                                t.palette.mode === 'dark'
-                                  ? alpha(t.palette.primary.main, 0.1)
-                                  : alpha(t.palette.primary.main, 0.05),
-                            },
-                          }}
-                        >
-                          <Icon
-                            icon={recordCitations[0]?.metadata?.webUrl ? linkIcon : eyeIcon}
-                            width={14}
-                            height={14}
-                          />
-                          <img
-                            src={
-                              connectorData[(recordInfo.connector || 'UPLOAD')?.toUpperCase()]
-                                ?.iconPath || '/assets/icons/connectors/default.svg'
-                            }
-                            alt={recordInfo.connector || 'UPLOAD'}
-                            width={16}
-                            height={16}
-                            style={{
-                              objectFit: 'contain',
-                              borderRadius: '2px',
-                              flexShrink: 0,
+                              // For files without webUrl (like UPLOAD), prevent default and open the document viewer
+                              if (
+                                recordInfo.extension &&
+                                recordInfo.recordId &&
+                                firstCitation
+                              ) {
+                                e.preventDefault();
+                                const allRecordCitations =
+                                  aggregatedCitations[recordInfo.recordId] || recordCitations;
+                                const isExcelOrCSV = ['csv', 'xlsx', 'xls'].includes(
+                                  recordInfo.extension || ''
+                                );
+                                onViewPdf('', firstCitation, allRecordCitations, isExcelOrCSV);
+                              } else {
+                                // No webUrl and no viewer option, prevent default navigation
+                                e.preventDefault();
+                              }
                             }}
-                            onError={(e) => {
-                              e.currentTarget.src = '/assets/icons/connectors/default.svg';
-                            }}
-                          />
-                          <Typography
-                            component="span"
                             sx={{
+                              textTransform: 'none',
                               fontSize: '11px',
                               fontWeight: 500,
-                              textTransform: 'uppercase',
-                              letterSpacing: '0.3px',
-                              display: { xs: 'none', md: 'inline' },
-                              whiteSpace: 'nowrap',
+                              color: 'text.secondary',
+                              textDecoration: 'none',
+                              px: { xs: 0.5, sm: 1 },
+                              py: 0.5,
+                              minHeight: 28,
+                              minWidth: 'auto',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 0.5,
+                              borderRadius: 1,
+                              '&:hover': {
+                                color: 'primary.main',
+                                bgcolor: (t) =>
+                                  t.palette.mode === 'dark'
+                                    ? alpha(t.palette.primary.main, 0.1)
+                                    : alpha(t.palette.primary.main, 0.05),
+                              },
                             }}
                           >
-                            {recordInfo.connector || 'KB'}
-                          </Typography>
-                        </Link>
+                            <Icon
+                              icon={recordCitations[0]?.metadata?.webUrl ? linkIcon : eyeIcon}
+                              width={14}
+                              height={14}
+                            />
+                            <img
+                              src={
+                                connectorData[(recordInfo.connector || 'UPLOAD')?.toUpperCase()]
+                                  ?.iconPath || '/assets/icons/connectors/default.svg'
+                              }
+                              alt={recordInfo.connector || 'UPLOAD'}
+                              width={16}
+                              height={16}
+                              style={{
+                                objectFit: 'contain',
+                                borderRadius: '2px',
+                                flexShrink: 0,
+                              }}
+                              onError={(e) => {
+                                e.currentTarget.src = '/assets/icons/connectors/default.svg';
+                              }}
+                            />
+                            <Typography
+                              component="span"
+                              sx={{
+                                fontSize: '11px',
+                                fontWeight: 500,
+                                textTransform: 'uppercase',
+                                letterSpacing: '0.3px',
+                                display: { xs: 'none', md: 'inline' },
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {recordInfo.connector || 'KB'}
+                            </Typography>
+                          </Link>
+                        ) : (
+                          <Box
+                            sx={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 0.5,
+                              px: { xs: 0.5, sm: 1 },
+                              py: 0.5,
+                            }}
+                          >
+                            <img
+                              src={
+                                connectorData[(recordInfo.connector || 'UPLOAD')?.toUpperCase()]
+                                  ?.iconPath || '/assets/icons/connectors/default.svg'
+                              }
+                              alt={recordInfo.connector || 'UPLOAD'}
+                              width={16}
+                              height={16}
+                              style={{
+                                objectFit: 'contain',
+                                borderRadius: '2px',
+                                flexShrink: 0,
+                              }}
+                              onError={(e) => {
+                                e.currentTarget.src = '/assets/icons/connectors/default.svg';
+                              }}
+                            />
+                            <Typography
+                              component="span"
+                              sx={{
+                                fontSize: '11px',
+                                fontWeight: 500,
+                                textTransform: 'uppercase',
+                                letterSpacing: '0.3px',
+                                display: { xs: 'none', md: 'inline' },
+                                whiteSpace: 'nowrap',
+                                color: 'text.secondary',
+                              }}
+                            >
+                              {recordInfo.connector || 'KB'}
+                            </Typography>
+                          </Box>
+                        )}
                         {recordInfo.extension && (
                           <Button
                             size="small"

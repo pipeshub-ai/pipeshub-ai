@@ -295,6 +295,9 @@ const KnowledgeSearch = ({
 
     if (!recordMeta?.webUrl) return;
 
+    const hideWeburl = recordMeta.hideWeburl ?? false;
+    if (hideWeburl) return;
+
     let { webUrl } = recordMeta;
 
     if (recordMeta.origin === 'UPLOAD' && !webUrl.startsWith('http')) {
