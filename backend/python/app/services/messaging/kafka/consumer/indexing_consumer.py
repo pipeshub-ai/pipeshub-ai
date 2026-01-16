@@ -50,7 +50,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self.parsing_semaphore: Optional[asyncio.Semaphore] = None
         self.indexing_semaphore: Optional[asyncio.Semaphore] = None
         self.message_handler: Optional[Callable[[Dict[str, Any]], AsyncGenerator[Dict[str, Any], None]]] = None
-        self.active_tasks: Set[Future] = set()  # Changed to Future for worker thread tasks
 
     @staticmethod
     def kafka_config_to_dict(kafka_config: KafkaConsumerConfig) -> Dict[str, Any]:
@@ -195,21 +194,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             except asyncio.CancelledError:
                 pass
 
-        # Wait for active tasks to complete (with timeout)
-        if self.active_tasks:
-            self.logger.info(f"Waiting for {len(self.active_tasks)} active tasks to complete...")
-            loop = asyncio.get_running_loop()
-            _, not_done = await loop.run_in_executor(
-                None,
-                lambda: concurrent.futures.wait(
-                    self.active_tasks,
-                    timeout=SHUTDOWN_TASK_TIMEOUT,
-                    return_when=concurrent.futures.ALL_COMPLETED
-                )
-            )
-            if not_done:
-                self.logger.warning(f"{len(not_done)} tasks did not complete within timeout")
-
         if self.consumer:
             await self.consumer.stop()
             self.logger.info("✅ Kafka consumer stopped")
@@ -314,8 +298,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.__process_message_wrapper(message),
             self.worker_loop
         )
-        self.active_tasks.add(future)
-        self.__cleanup_completed_tasks()
 
     async def __process_message_wrapper(self, message) -> None:
         """Wrapper to handle async task cleanup and semaphore release based on yielded events.
@@ -377,17 +359,4 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 self.indexing_semaphore.release()
                 self.logger.debug(f"Released indexing semaphore in finally for {message_id}")
 
-
-    def __cleanup_completed_tasks(self) -> None:
-        """Remove completed tasks from the active tasks set"""
-        done_tasks = {future for future in self.active_tasks if future.done()}
-        self.active_tasks -= done_tasks
-
-        for future in done_tasks:
-            try:
-                exception = future.exception()
-                if exception:
-                    self.logger.error(f"Task completed with exception: {exception}")
-            except Exception as e:
-                self.logger.error(f"Error checking task exception: {e}")
 
