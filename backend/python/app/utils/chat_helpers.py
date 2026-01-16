@@ -361,7 +361,7 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
             preview_renderable = meta.get("previewRenderable")
             if preview_renderable is None:
                 preview_renderable = record.get("preview_renderable", True)
-            
+
             hide_weburl = meta.get("hideWeburl")
             if hide_weburl is None:
                 hide_weburl = record.get("hide_weburl", False)

@@ -169,6 +169,76 @@ const getButtonStyles = (theme: any, colorType: 'primary' | 'success' = 'primary
   },
 });
 
+// Reusable connector display component to reduce duplication
+const ConnectorDisplay = React.memo(
+  ({
+    connectorName,
+    connectorIconPath,
+    showLinkIcon = false,
+    useSpan = false,
+    typographySx,
+    iconStyle,
+  }: {
+    connectorName: string;
+    connectorIconPath: string;
+    showLinkIcon?: boolean;
+    useSpan?: boolean;
+    typographySx?: any;
+    iconStyle?: React.CSSProperties;
+  }) => (
+    <>
+      {showLinkIcon && <Icon icon={linkIcon} width={14} height={14} />}
+      <img
+        src={connectorIconPath}
+        alt={connectorName}
+        width={16}
+        height={16}
+        style={{
+          objectFit: 'contain',
+          borderRadius: '2px',
+          flexShrink: 0,
+          ...iconStyle,
+        }}
+        onError={(e) => {
+          e.currentTarget.src = '/assets/icons/connectors/default.svg';
+        }}
+      />
+      {useSpan ? (
+        <Typography
+          component="span"
+          variant="caption"
+          sx={{
+            color: 'text.secondary',
+            fontSize: '11px',
+            fontWeight: 500,
+            textTransform: 'uppercase',
+            letterSpacing: '0.3px',
+            ...typographySx,
+          }}
+        >
+          {connectorName}
+        </Typography>
+      ) : (
+        <Typography
+          variant="caption"
+          sx={{
+            color: 'text.secondary',
+            fontSize: '11px',
+            fontWeight: 500,
+            textTransform: 'uppercase',
+            letterSpacing: '0.3px',
+            ...typographySx,
+          }}
+        >
+          {connectorName}
+        </Typography>
+      )}
+    </>
+  )
+);
+
+ConnectorDisplay.displayName = 'ConnectorDisplay';
+
 // Clean file card with optimal UX and appealing design
 const FileCard = React.memo(
   ({
@@ -308,7 +378,7 @@ const FileCard = React.memo(
 
             {/* Connector Icon */}
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
-              {file.webUrl && !file.citation?.metadata?.hideWeburl && (
+              {file.webUrl && !file.citation?.metadata?.hideWeburl ? (
                 <Box
                   sx={{ cursor: 'pointer', alignItems: 'center', display: 'flex', gap: 0.5 }}
                   onClick={(e) => {
@@ -316,61 +386,18 @@ const FileCard = React.memo(
                     window.open(file.webUrl, '_blank', 'noopener,noreferrer');
                   }}
                 >
-                  <Icon icon={linkIcon} width={14} height={14} />
-                  <img
-                    src={connectorInfo.iconPath}
-                    alt={file.connector || 'UPLOAD'}
-                    width={16}
-                    height={16}
-                    style={{
-                      objectFit: 'contain',
-                      borderRadius: '2px',
-                    }}
-                    onError={(e) => {
-                      e.currentTarget.src = '/assets/icons/connectors/default.svg';
-                    }}
+                  <ConnectorDisplay
+                    connectorName={file.connector || 'UPLOAD'}
+                    connectorIconPath={connectorInfo.iconPath}
+                    showLinkIcon
                   />
-                  <Typography
-                    variant="caption"
-                    sx={{
-                      color: 'text.secondary',
-                      fontSize: '11px',
-                      fontWeight: 500,
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.3px',
-                    }}
-                  >
-                    {file.connector || 'UPLOAD'}
-                  </Typography>
                 </Box>
-              )}
-              {(!file.webUrl || file.citation?.metadata?.hideWeburl) && (
+              ) : (
                 <Box sx={{ alignItems: 'center', display: 'flex', gap: 0.5 }}>
-                  <img
-                    src={connectorInfo.iconPath}
-                    alt={file.connector || 'UPLOAD'}
-                    width={16}
-                    height={16}
-                    style={{
-                      objectFit: 'contain',
-                      borderRadius: '2px',
-                    }}
-                    onError={(e) => {
-                      e.currentTarget.src = '/assets/icons/connectors/default.svg';
-                    }}
+                  <ConnectorDisplay
+                    connectorName={file.connector || 'UPLOAD'}
+                    connectorIconPath={connectorInfo.iconPath}
                   />
-                  <Typography
-                    variant="caption"
-                    sx={{
-                      color: 'text.secondary',
-                      fontSize: '11px',
-                      fontWeight: 500,
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.3px',
-                    }}
-                  >
-                    {file.connector || 'UPLOAD'}
-                  </Typography>
                 </Box>
               )}
             </Box>
@@ -990,41 +1017,19 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                               },
                             }}
                           >
-                            <Icon
-                              icon={recordCitations[0]?.metadata?.webUrl ? linkIcon : eyeIcon}
-                              width={14}
-                              height={14}
-                            />
-                            <img
-                              src={
+                            <ConnectorDisplay
+                              connectorName={recordInfo.connector || 'KB'}
+                              connectorIconPath={
                                 connectorData[(recordInfo.connector || 'UPLOAD')?.toUpperCase()]
                                   ?.iconPath || '/assets/icons/connectors/default.svg'
                               }
-                              alt={recordInfo.connector || 'UPLOAD'}
-                              width={16}
-                              height={16}
-                              style={{
-                                objectFit: 'contain',
-                                borderRadius: '2px',
-                                flexShrink: 0,
-                              }}
-                              onError={(e) => {
-                                e.currentTarget.src = '/assets/icons/connectors/default.svg';
-                              }}
-                            />
-                            <Typography
-                              component="span"
-                              sx={{
-                                fontSize: '11px',
-                                fontWeight: 500,
-                                textTransform: 'uppercase',
-                                letterSpacing: '0.3px',
+                              showLinkIcon
+                              useSpan
+                              typographySx={{
                                 display: { xs: 'none', md: 'inline' },
                                 whiteSpace: 'nowrap',
                               }}
-                            >
-                              {recordInfo.connector || 'KB'}
-                            </Typography>
+                            />
                           </Link>
                         ) : (
                           <Box
@@ -1036,37 +1041,18 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                               py: 0.5,
                             }}
                           >
-                            <img
-                              src={
+                            <ConnectorDisplay
+                              connectorName={recordInfo.connector || 'KB'}
+                              connectorIconPath={
                                 connectorData[(recordInfo.connector || 'UPLOAD')?.toUpperCase()]
                                   ?.iconPath || '/assets/icons/connectors/default.svg'
                               }
-                              alt={recordInfo.connector || 'UPLOAD'}
-                              width={16}
-                              height={16}
-                              style={{
-                                objectFit: 'contain',
-                                borderRadius: '2px',
-                                flexShrink: 0,
-                              }}
-                              onError={(e) => {
-                                e.currentTarget.src = '/assets/icons/connectors/default.svg';
-                              }}
-                            />
-                            <Typography
-                              component="span"
-                              sx={{
-                                fontSize: '11px',
-                                fontWeight: 500,
-                                textTransform: 'uppercase',
-                                letterSpacing: '0.3px',
+                              useSpan
+                              typographySx={{
                                 display: { xs: 'none', md: 'inline' },
                                 whiteSpace: 'nowrap',
-                                color: 'text.secondary',
                               }}
-                            >
-                              {recordInfo.connector || 'KB'}
-                            </Typography>
+                            />
                           </Box>
                         )}
                         {recordInfo.extension && (
