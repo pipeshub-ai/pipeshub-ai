@@ -1,10 +1,9 @@
 import asyncio
-import concurrent.futures
 import json
 import os
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from logging import Logger
-from typing import Any, AsyncGenerator, Callable, Dict, Optional, Set
+from typing import Any, AsyncGenerator, Callable, Dict, Optional
 
 from aiokafka import AIOKafkaConsumer  # type: ignore
 
@@ -294,7 +293,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             return
 
         # Submit coroutine to worker thread's event loop
-        future = asyncio.run_coroutine_threadsafe(
+        asyncio.run_coroutine_threadsafe(
             self.__process_message_wrapper(message),
             self.worker_loop
         )
