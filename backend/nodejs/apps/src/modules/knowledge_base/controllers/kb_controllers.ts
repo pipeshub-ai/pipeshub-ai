@@ -78,7 +78,7 @@ export const getKnowledgeHubNodes =
         q: 'q',
         nodeTypes: 'node_types',
         recordTypes: 'record_types',
-        sources: 'sources',
+        origins: 'origins',
         connectorIds: 'connector_ids',
         kbIds: 'kb_ids',
         indexingStatus: 'indexing_status',
