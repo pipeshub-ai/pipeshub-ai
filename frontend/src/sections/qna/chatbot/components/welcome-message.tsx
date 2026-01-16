@@ -12,6 +12,8 @@ import {
   Typography,
 } from '@mui/material';
 
+import { useWhiteLabel } from 'src/context/WhiteLabelContext';
+
 import ChatInput from './chat-input';
 import { Model, ChatMode } from '../types';
 
@@ -107,6 +109,7 @@ const WelcomeMessageComponent = ({
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const isSubmittingRef = useRef(false);
+  const { displayName } = useWhiteLabel();
 
   // Direct submission handler that stores message text in a ref
   const handleDirectSubmit = useCallback(
@@ -170,7 +173,7 @@ const WelcomeMessageComponent = ({
             WebkitTextFillColor: 'transparent',
           }}
         >
-          PipesHub AI
+          {displayName} AI
         </Typography>
 
         <Typography

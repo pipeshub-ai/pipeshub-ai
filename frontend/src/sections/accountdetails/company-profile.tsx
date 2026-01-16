@@ -32,6 +32,7 @@ import { useAdmin } from 'src/context/AdminContext';
 
 import { Iconify } from 'src/components/iconify';
 import { Form, Field } from 'src/components/hook-form';
+import { useWhiteLabel } from 'src/context/WhiteLabelContext';
 
 import {
   updateOrg,
@@ -87,7 +88,6 @@ export default function CompanyProfile() {
   const theme = useTheme();
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
-  const [logo, setLogo] = useState<string | null>(null);
   const [uploading, setUploading] = useState<boolean>(false);
   const [deleting, setDeleting] = useState<boolean>(false);
   const [saveChanges, setSaveChanges] = useState<boolean>(false);
@@ -100,6 +100,7 @@ export default function CompanyProfile() {
   });
 
   const { isAdmin } = useAdmin();
+  const { displayName, refreshWhiteLabel, logo } = useWhiteLabel();
 
   const methods = useForm<ProfileFormData>({
     resolver: zodResolver(ProfileSchema),
@@ -158,40 +159,19 @@ export default function CompanyProfile() {
     fetchOrgData();
   }, [reset, isAdmin]);
 
-  // Modify the fetchLogo function in company-profile.tsx to handle errors gracefully
-  useEffect(() => {
-    const fetchLogo = async () => {
-      try {
-        const orgId = await getOrgIdFromToken();
-        const logoUrl = await getOrgLogo(orgId);
-        setLogo(logoUrl);
-      } catch (err) {
-        // Don't show error message for 404 errors - this is expected when no logo exists
-        if (err.response && err.response.status === 404) {
-          console.log('No logo found for organization - this is normal for new organizations');
-          // Just set logo to null and continue
-          setLogo(null);
-        } else {
-          // For other errors, show the error message
-          setError('Failed to fetch logo');
-          // setSnackbar({
-          //   open: true,
-          //   message: err.errorMessage || 'Error loading logo',
-          //   severity: 'error',
-          // });
-          console.error(err, 'error in fetching logo');
-        }
-      }
-    };
-
-    fetchLogo();
-  }, []);
 
   const onSubmit = async (data: ProfileFormData): Promise<void> => {
     try {
       setSaveChanges(true);
       const orgId = await getOrgIdFromToken();
       const msg = await updateOrg(orgId, data);
+      
+      // Refresh white-label context first to update display name everywhere
+      await refreshWhiteLabel();
+      
+      // Update the form with the submitted values (mark as not dirty)
+      reset(data, { keepValues: true });
+      
       setSnackbar({
         open: true,
         message: msg,
@@ -199,7 +179,11 @@ export default function CompanyProfile() {
       });
     } catch (err) {
       setError('Failed to update organization');
-      // setSnackbar({ open: true, message: err.errorMessage, severity: 'error' });
+      setSnackbar({ 
+        open: true, 
+        message: 'Failed to update organization details', 
+        severity: 'error' 
+      });
     } finally {
       setSaveChanges(false);
     }
@@ -235,12 +219,19 @@ export default function CompanyProfile() {
       setDeleting(true);
       const orgId = await getOrgIdFromToken();
       await deleteOrgLogo(orgId);
+      
+      // Refresh white-label context first
+      await refreshWhiteLabel();
+      
       setSnackbar({ open: true, message: 'Logo removed successfully!', severity: 'success' });
-      setDeleting(false);
-      setLogo(null);
     } catch (err) {
       setError('Failed to remove logo');
-      // setSnackbar({ open: true, message: 'Failed to remove logo', severity: 'error' });
+      setSnackbar({ 
+        open: true, 
+        message: 'Failed to remove logo', 
+        severity: 'error' 
+      });
+    } finally {
       setDeleting(false);
     }
   };
@@ -257,25 +248,18 @@ export default function CompanyProfile() {
       const orgId = await getOrgIdFromToken();
       await uploadOrgLogo(formData);
       
-      // Fetch the processed logo from server (with EXIF metadata stripped) instead of using original file
-      try {
-        const processedLogoUrl = await getOrgLogo(orgId);
-        setLogo(processedLogoUrl);
-        setSnackbar({ open: true, message: 'Logo updated successfully!', severity: 'success' });
-      } catch (fetchErr) {
-        // Upload succeeded but fetching failed - show warning but don't fail completely
-        setSnackbar({
-          open: true,
-          message: 'Logo uploaded successfully, but failed to refresh. Please refresh the page.',
-          severity: 'warning',
-        });
-        // Fallback to original file preview (user can refresh to see processed version)
-        setLogo(URL.createObjectURL(file));
-      }
-      setUploading(false);
+      // Refresh white-label context (this will fetch the new logo)
+      await refreshWhiteLabel();
+      
+      setSnackbar({ open: true, message: 'Logo updated successfully!', severity: 'success' });
     } catch (err) {
       setError('Failed to upload logo');
-      // setSnackbar({ open: true, message: 'Failed to upload logo', severity: 'error' });
+      setSnackbar({ 
+        open: true, 
+        message: 'Failed to upload logo', 
+        severity: 'error' 
+      });
+    } finally {
       setUploading(false);
     }
   };
@@ -763,53 +747,24 @@ export default function CompanyProfile() {
                 <Box sx={{ position: 'relative', mb: 3 }}>
                   {logo ? (
                     <Box
+                      component="img"
+                      src={logo}
+                      alt="Company Logo"
                       sx={{
-                        width: 150,
-                        height: 150,
-                        borderRadius: 2,
-                        border: `1px solid ${alpha(theme.palette.divider, 0.2)}`,
-                        boxShadow: theme.shadows[2],
-                        position: 'relative',
+                        width: 160,
+                        height: 160,
+                        objectFit: 'contain',
+                        display: 'block',
                         margin: '0 auto',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        backgroundColor: 'transparent',
-                        padding: 2, // Add padding to ensure logo doesn't touch the borders
                       }}
-                    >
-                      <Box
-                        sx={{
-                          width: '100%',
-                          height: '100%',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          position: 'relative',
-                        }}
-                      >
-                        <img
-                          src={logo}
-                          alt="Company Logo"
-                          style={{
-                            maxWidth: '100%',
-                            maxHeight: '100%',
-                            width: 'auto',
-                            height: 'auto',
-                            objectFit: 'contain',
-                            display: 'block',
-                          }}
-                        />
-                      </Box>
-                    </Box>
+                    />
                   ) : (
                     <Box
                       sx={{
-                        width: 150,
-                        height: 150,
-                        borderRadius: 2,
-                        bgcolor: alpha(theme.palette.primary.main, 0.08),
-                        boxShadow: `0 0 0 1px ${alpha(theme.palette.divider, 0.2)}`,
+                        width: 160,
+                        height: 160,
+                        borderRadius: 2.5,
+                        border: `2px dashed ${alpha(theme.palette.primary.main, 0.3)}`,
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
@@ -818,9 +773,9 @@ export default function CompanyProfile() {
                     >
                       <Iconify
                         icon={officeBuildingIcon}
-                        width={70}
-                        height={70}
-                        color={alpha(theme.palette.primary.main, 0.7)}
+                        width={64}
+                        height={64}
+                        color={alpha(theme.palette.primary.main, 0.6)}
                       />
                     </Box>
                   )}

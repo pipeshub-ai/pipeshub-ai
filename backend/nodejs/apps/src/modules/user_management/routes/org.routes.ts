@@ -154,6 +154,7 @@ export function createOrgRouter(container: Container) {
         'image/jpg',
         'image/webp',
         'image/gif',
+        'image/svg+xml',
       ],
       maxFilesAllowed: 1,
       isMultipleFilesAllowed: false,
