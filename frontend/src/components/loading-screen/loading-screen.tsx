@@ -56,37 +56,19 @@ export function LoadingScreen({ portal, sx, ...other }: Props) {
       }}
       {...other}
     >
-      {isWhiteLabeled && logo ? (
-        // Custom organization logo - displayed exactly like default
-        <Box
-          component="img"
-          key={logo || 'default'}
-          src={logo}
-          alt="Application Logo"
-          sx={{
-            width: { xs: 180, sm: 240, md: 280 },
-            height: 'auto',
-            transition: 'all 0.5s ease-in-out',
-            transform: loaded ? 'scale(1)' : 'scale(0.8)',
-            filter: 'drop-shadow(0 0 10px rgba(0, 60, 255, 0.2))',
-          }}
-        />
-      ) : (
-        // Default Pipeshub logo
-        <Box
-          component="img"
-          key="default"
-          src="/logo/logo-full.svg"
-          alt="Application Logo"
-          sx={{
-            width: { xs: 180, sm: 240, md: 280 },
-            height: 'auto',
-            transition: 'all 0.5s ease-in-out',
-            transform: loaded ? 'scale(1)' : 'scale(0.8)',
-            filter: 'drop-shadow(0 0 10px rgba(0, 60, 255, 0.2))',
-          }}
-        />
-      )}
+      <Box
+        component="img"
+        key={isWhiteLabeled && logo ? logo : 'default'}
+        src={isWhiteLabeled && logo ? logo : '/logo/logo-full.svg'}
+        alt="Application Logo"
+        sx={{
+          width: { xs: 180, sm: 240, md: 280 },
+          height: 'auto',
+          transition: 'all 0.5s ease-in-out',
+          transform: loaded ? 'scale(1)' : 'scale(0.8)',
+          filter: 'drop-shadow(0 0 10px rgba(0, 60, 255, 0.2))',
+        }}
+      />
 
       {/* Add loading dots below the logo */}
       <Box

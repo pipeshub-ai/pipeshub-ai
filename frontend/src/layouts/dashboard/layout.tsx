@@ -139,33 +139,13 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
                         opacity: 0,
                       }}
                     />
-                  ) : isWhiteLabeled && logo ? (
-                    // Custom organization logo - displayed exactly like default
-                    <Box
-                      component="img"
-                      onClick={() => navigate('/')}
-                      key={logo || 'default'} // Force re-render when logo changes
-                      src={logo}
-                      alt="Organization Logo"
-                      sx={{
-                        display: 'none',
-                        [theme.breakpoints.up(layoutQuery)]: {
-                          display: 'inline-flex',
-                        },
-                        width: 40,
-                        minWidth: 40,
-                        height: 40,
-                        minHeight: 40,
-                        flexShrink: 0,
-                        cursor: 'pointer',
-                      }}
-                    />
                   ) : (
                     <Box
                       component="img"
                       onClick={() => navigate('/')}
-                      src="/logo/logo.svg"
-                      alt="Logo"
+                      key={isWhiteLabeled && logo ? logo : 'default'}
+                      src={isWhiteLabeled && logo ? logo : '/logo/logo.svg'}
+                      alt={isWhiteLabeled && logo ? 'Organization Logo' : 'Logo'}
                       sx={{
                         display: 'none',
                         [theme.breakpoints.up(layoutQuery)]: {

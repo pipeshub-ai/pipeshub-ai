@@ -48,35 +48,18 @@ export function SplashScreen({ portal = true, sx, ...other }: Props) {
         }}
         {...other}
       >
-        {isWhiteLabeled && logo ? (
-          // Custom organization logo - displayed exactly like default
-          <Box
-            component="img"
-            key={logo || 'default'}
-            src={logo}
-            alt="Application Logo"
-            sx={{
-              width: { xs: 180, sm: 240, md: 300 },
-              height: 'auto',
-              transition: 'all 0.8s ease-out',
-              transform: loaded ? 'scale(1)' : 'scale(0.8)',
-            }}
-          />
-        ) : (
-          // Default Pipeshub logo
-          <Box
-            component="img"
-            key="default"
-            src="/logo/logo-full.svg"
-            alt="Application Logo"
-            sx={{
-              width: { xs: 180, sm: 240, md: 300 },
-              height: 'auto',
-              transition: 'all 0.8s ease-out',
-              transform: loaded ? 'scale(1)' : 'scale(0.8)',
-            }}
-          />
-        )}
+        <Box
+          component="img"
+          key={isWhiteLabeled && logo ? logo : 'default'}
+          src={isWhiteLabeled && logo ? logo : '/logo/logo-full.svg'}
+          alt="Application Logo"
+          sx={{
+            width: { xs: 180, sm: 240, md: 300 },
+            height: 'auto',
+            transition: 'all 0.8s ease-out',
+            transform: loaded ? 'scale(1)' : 'scale(0.8)',
+          }}
+        />
         
         {/* Loading indicators */}
         <Box 

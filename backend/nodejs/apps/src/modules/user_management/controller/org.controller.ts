@@ -62,6 +62,64 @@ export class OrgController {
     return domain;
   }
 
+  /**
+   * Sanitizes SVG content by removing dangerous elements and attributes
+   * Removes script tags, event handlers, and javascript: protocols while preserving SVG structure
+   * @param svgBuffer - The SVG file buffer to sanitize
+   * @returns Sanitized SVG buffer
+   */
+  /**
+   * Sanitizes SVG content by removing dangerous elements and attributes
+   * Removes script tags, event handlers, and javascript: protocols while preserving SVG structure
+   * Always sanitizes SVG files as a defense-in-depth security measure
+   * @param svgBuffer - The SVG file buffer to sanitize
+   * @returns Sanitized SVG buffer
+   */
+  private sanitizeSVG(svgBuffer: Buffer): Buffer {
+    try {
+      const svgString = svgBuffer.toString('utf-8');
+      
+      // Always sanitize SVG files as a defense-in-depth security measure
+      // Remove script tags and their content
+      let sanitized = svgString
+        // Remove script tags and their content (including nested)
+        .replace(/<[\s]*script[\s\S]*?<\/[\s]*script[^>]*>/gi, '')
+        // Remove any remaining script opening tags
+        .replace(/<[\s]*script[^>]*>/gi, '')
+        // Remove event handlers (onclick, onload, onerror, etc.)
+        .replace(/\s+on\w+\s*=\s*["'][^"']*["']/gi, '')
+        .replace(/\s+on\w+\s*=\s*[^\s>]*/gi, '')
+        // Remove javascript: protocols
+        .replace(/javascript:/gi, '')
+        // Remove data: protocols with HTML/text
+        .replace(/data:\s*text\/html/gi, '')
+        // Remove iframe, object, embed tags
+        .replace(/<[\s]*(iframe|object|embed)[\s\S]*?<\/[\s]*\1[^>]*>/gi, '')
+        .replace(/<[\s]*(iframe|object|embed)[^>]*>/gi, '');
+
+      // Additional pass to remove any remaining dangerous patterns
+      // This iterative approach prevents bypass via nested patterns
+      const maxIterations = 5;
+      let previousValue = '';
+      let iterations = 0;
+      
+      while (sanitized !== previousValue && iterations < maxIterations) {
+        previousValue = sanitized;
+        iterations++;
+        sanitized = sanitized
+          .replace(/<[\s]*script[\s\S]*?<\/[\s]*script[^>]*>/gi, '')
+          .replace(/<[\s]*script[^>]*>/gi, '')
+          .replace(/\s+on\w+\s*=\s*["'][^"']*["']/gi, '')
+          .replace(/\s+on\w+\s*=\s*[^\s>]*/gi, '');
+      }
+
+      return Buffer.from(sanitized, 'utf-8');
+    } catch (error) {
+      this.logger.error('Failed to sanitize SVG', { error });
+      throw new BadRequestError('Invalid SVG file format');
+    }
+  }
+
   async checkOrgExistence(res: Response): Promise<void> {
     const count = await Org.countDocuments();
 
@@ -390,24 +448,27 @@ export class OrgController {
       let mimeType: string;
 
       if (isSvg) {
-        // For SVG files, preserve the original format to maintain transparency
+        // For SVG files, sanitize to remove any dangerous content (scripts, event handlers, etc.)
         // SVGs are already text-based and typically small, so no compression needed
-        processedBuffer = logoFile.buffer;
+        processedBuffer = this.sanitizeSVG(logoFile.buffer);
+        // Always set mimeType to a safe, hardcoded value (not user-controlled)
         mimeType = 'image/svg+xml';
       } else {
         // For raster images (PNG, JPEG, etc.), convert to JPEG for compression
-        let quality = 100;
-        processedBuffer = await sharp(logoFile.buffer)
-          .jpeg({ quality })
-          .toBuffer();
+        const MAX_LOGO_SIZE_BYTES = 100 * 1024;
+        const INITIAL_JPEG_QUALITY = 100;
+        const MIN_JPEG_QUALITY = 10;
+        const JPEG_QUALITY_STEP = 10;
 
-        // Compress if file is too large
-        while (processedBuffer.length > 100 * 1024 && quality > 10) {
-          quality -= 10;
+        let quality = INITIAL_JPEG_QUALITY + JPEG_QUALITY_STEP;
+
+        do {
+          quality -= JPEG_QUALITY_STEP;
           processedBuffer = await sharp(logoFile.buffer)
             .jpeg({ quality })
             .toBuffer();
-        }
+        } while (processedBuffer.length > MAX_LOGO_SIZE_BYTES && quality > MIN_JPEG_QUALITY);
+
         mimeType = 'image/jpeg';
       }
 

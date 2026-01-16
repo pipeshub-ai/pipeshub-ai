@@ -40,6 +40,15 @@ export const Logo = forwardRef<HTMLDivElement, LogoProps>(
       height: height ?? DEFAULT_SIZE,
     };
 
+    const commonLogoStyles = {
+      width: DEFAULT_SIZE,
+      minWidth: DEFAULT_SIZE,
+      height: DEFAULT_SIZE,
+      minHeight: DEFAULT_SIZE,
+      flexShrink: 0,
+      objectFit: 'contain',
+    };
+
     return (
       <Box
         ref={ref}
@@ -61,45 +70,22 @@ export const Logo = forwardRef<HTMLDivElement, LogoProps>(
           // Invisible placeholder while loading white-labeled logo
           <Box
             sx={{
-              width: DEFAULT_SIZE,
-              minWidth: DEFAULT_SIZE,
-              height: DEFAULT_SIZE,
-              minHeight: DEFAULT_SIZE,
-              flexShrink: 0,
+              ...commonLogoStyles,
               opacity: 0,
             }}
           />
-        ) : shouldShowCustomLogo ? (
-          // Custom organization logo - displayed exactly like default
-          <Box
-            component="img"
-            src={logo}
-            alt="Organization Logo"
-            onError={() => {
-              console.warn('[Logo] Failed to load custom logo, falling back to default');
-              setImageError(true);
-            }}
-            sx={{
-              width: DEFAULT_SIZE,
-              minWidth: DEFAULT_SIZE,
-              height: DEFAULT_SIZE,
-              minHeight: DEFAULT_SIZE,
-              flexShrink: 0,
-            }}
-          />
         ) : (
-          // Default Pipeshub logo
           <Box
             component="img"
-            src={DEFAULT_LOGO_PATH}
-            alt="Pipeshub Logo"
-            sx={{
-              width: DEFAULT_SIZE,
-              minWidth: DEFAULT_SIZE,
-              height: DEFAULT_SIZE,
-              minHeight: DEFAULT_SIZE,
-              flexShrink: 0,
+            src={shouldShowCustomLogo ? logo! : DEFAULT_LOGO_PATH}
+            alt={shouldShowCustomLogo ? 'Organization Logo' : 'Pipeshub Logo'}
+            onError={() => {
+              if (shouldShowCustomLogo) {
+                console.warn('[Logo] Failed to load custom logo, falling back to default');
+                setImageError(true);
+              }
             }}
+            sx={commonLogoStyles}
           />
         )}
       </Box>

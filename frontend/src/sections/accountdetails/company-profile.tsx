@@ -88,7 +88,6 @@ export default function CompanyProfile() {
   const theme = useTheme();
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
-  const [logo, setLogo] = useState<string | null>(null);
   const [uploading, setUploading] = useState<boolean>(false);
   const [deleting, setDeleting] = useState<boolean>(false);
   const [saveChanges, setSaveChanges] = useState<boolean>(false);
@@ -101,7 +100,7 @@ export default function CompanyProfile() {
   });
 
   const { isAdmin } = useAdmin();
-  const { displayName, refreshWhiteLabel } = useWhiteLabel();
+  const { displayName, refreshWhiteLabel, logo } = useWhiteLabel();
 
   const methods = useForm<ProfileFormData>({
     resolver: zodResolver(ProfileSchema),
@@ -160,34 +159,6 @@ export default function CompanyProfile() {
     fetchOrgData();
   }, [reset, isAdmin]);
 
-  // Modify the fetchLogo function in company-profile.tsx to handle errors gracefully
-  useEffect(() => {
-    const fetchLogo = async () => {
-      try {
-        const orgId = await getOrgIdFromToken();
-        const logoUrl = await getOrgLogo(orgId);
-        setLogo(logoUrl);
-      } catch (err) {
-        // Don't show error message for 404 errors - this is expected when no logo exists
-        if (err.response && err.response.status === 404) {
-          console.log('No logo found for organization - this is normal for new organizations');
-          // Just set logo to null and continue
-          setLogo(null);
-        } else {
-          // For other errors, show the error message
-          setError('Failed to fetch logo');
-          // setSnackbar({
-          //   open: true,
-          //   message: err.errorMessage || 'Error loading logo',
-          //   severity: 'error',
-          // });
-          console.error(err, 'error in fetching logo');
-        }
-      }
-    };
-
-    fetchLogo();
-  }, []);
 
   const onSubmit = async (data: ProfileFormData): Promise<void> => {
     try {
@@ -251,7 +222,6 @@ export default function CompanyProfile() {
       
       // Refresh white-label context first
       await refreshWhiteLabel();
-      setLogo(null);
       
       setSnackbar({ open: true, message: 'Logo removed successfully!', severity: 'success' });
     } catch (err) {
@@ -278,21 +248,10 @@ export default function CompanyProfile() {
       const orgId = await getOrgIdFromToken();
       await uploadOrgLogo(formData);
       
-      // Refresh white-label context first (this will fetch the new logo)
+      // Refresh white-label context (this will fetch the new logo)
       await refreshWhiteLabel();
       
-      // Then fetch for local display
-      try {
-        const processedLogoUrl = await getOrgLogo(orgId);
-        setLogo(processedLogoUrl);
-        setSnackbar({ open: true, message: 'Logo updated successfully!', severity: 'success' });
-      } catch (fetchErr) {
-        // Context refresh succeeded, but local fetch failed
-        console.warn('[CompanyProfile] Logo uploaded but local fetch failed:', fetchErr);
-        setSnackbar({ open: true, message: 'Logo updated successfully!', severity: 'success' });
-        // Use a preview URL temporarily
-        setLogo(URL.createObjectURL(file));
-      }
+      setSnackbar({ open: true, message: 'Logo updated successfully!', severity: 'success' });
     } catch (err) {
       setError('Failed to upload logo');
       setSnackbar({ 

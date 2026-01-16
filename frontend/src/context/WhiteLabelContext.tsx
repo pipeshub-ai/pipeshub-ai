@@ -83,7 +83,7 @@ const getDisplayName = (orgData: OrganizationData | null): string => {
 };
 
 const shouldWhiteLabel = (accountType: string | undefined): boolean =>
-  BUSINESS_ACCOUNT_TYPES.includes(accountType as any);
+  !!accountType && (BUSINESS_ACCOUNT_TYPES as readonly string[]).includes(accountType);
 
 const createDefaultData = (loading = false): WhiteLabelData => ({
   logo: null,
