@@ -22,13 +22,11 @@ export type LogoProps = BoxProps & {
 export const Logo = forwardRef<HTMLDivElement, LogoProps>(
   ({ width, href = '/', height, disableLink = false, className, sx, ...other }, ref) => {
     const { logo, isWhiteLabeled, loading } = useWhiteLabel();
-    const [imageLoaded, setImageLoaded] = useState(false);
     const [imageError, setImageError] = useState(false);
 
-    // Reset states when logo changes
+    // Reset error state when logo changes
     useEffect(() => {
       if (logo) {
-        setImageLoaded(false);
         setImageError(false);
       }
     }, [logo]);
@@ -64,57 +62,31 @@ export const Logo = forwardRef<HTMLDivElement, LogoProps>(
           <Box
             sx={{
               width: DEFAULT_SIZE,
+              minWidth: DEFAULT_SIZE,
               height: DEFAULT_SIZE,
+              minHeight: DEFAULT_SIZE,
+              flexShrink: 0,
               opacity: 0,
             }}
           />
         ) : shouldShowCustomLogo ? (
-          // Custom organization logo
+          // Custom organization logo - displayed exactly like default
           <Box
-            sx={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 60,
-              height: 30,
-              cursor: 'pointer',
-              position: 'relative',
+            component="img"
+            src={logo}
+            alt="Organization Logo"
+            onError={() => {
+              console.warn('[Logo] Failed to load custom logo, falling back to default');
+              setImageError(true);
             }}
-          >
-            <Box
-              component="img"
-              src={logo}
-              alt="Organization Logo"
-              onLoad={() => setImageLoaded(true)}
-              onError={() => {
-                console.warn('[Logo] Failed to load custom logo, falling back to default');
-                setImageError(true);
-              }}
-              sx={{
-                maxWidth: '100%',
-                maxHeight: '100%',
-                width: 'auto',
-                height: 'auto',
-                objectFit: 'contain',
-                opacity: imageLoaded ? 1 : 0,
-                transition: 'opacity 0.2s ease-in-out',
-              }}
-            />
-            {!imageLoaded && !imageError && (
-              // Placeholder while custom logo loads
-              <Box
-                component="img"
-                src={DEFAULT_LOGO_PATH}
-                alt="Loading"
-                sx={{
-                  position: 'absolute',
-                  width: DEFAULT_SIZE,
-                  height: DEFAULT_SIZE,
-                  opacity: 0.3,
-                }}
-              />
-            )}
-          </Box>
+            sx={{
+              width: DEFAULT_SIZE,
+              minWidth: DEFAULT_SIZE,
+              height: DEFAULT_SIZE,
+              minHeight: DEFAULT_SIZE,
+              flexShrink: 0,
+            }}
+          />
         ) : (
           // Default Pipeshub logo
           <Box
@@ -123,7 +95,10 @@ export const Logo = forwardRef<HTMLDivElement, LogoProps>(
             alt="Pipeshub Logo"
             sx={{
               width: DEFAULT_SIZE,
+              minWidth: DEFAULT_SIZE,
               height: DEFAULT_SIZE,
+              minHeight: DEFAULT_SIZE,
+              flexShrink: 0,
             }}
           />
         )}

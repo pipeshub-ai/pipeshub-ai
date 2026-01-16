@@ -1,7 +1,7 @@
 import { ReactNode } from 'react';
 import { useAuthContext } from 'src/auth/hooks';
 import { LoadingScreen } from 'src/components/loading-screen';
-import { useWhiteLabel } from './WhiteLabelContext';
+import { useWhiteLabel, shouldWhiteLabel } from './WhiteLabelContext';
 
 // ----------------------------------------------------------------------
 
@@ -27,7 +27,7 @@ export function WhiteLabelGuard({ children }: Props) {
   // 1. User is authenticated
   // 2. Account type is business/organization (needs white-labeling)
   // 3. White-label data is still loading
-  const needsWhiteLabeling = user?.accountType === 'business' || user?.accountType === 'organization';
+  const needsWhiteLabeling = shouldWhiteLabel(user?.accountType);
   
   if (authenticated && needsWhiteLabeling && whiteLabelLoading) {
     return <LoadingScreen />;

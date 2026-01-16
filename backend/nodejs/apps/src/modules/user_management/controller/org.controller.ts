@@ -385,30 +385,43 @@ export class OrgController {
         throw new BadRequestError('Organisation logo file is required');
       }
 
-      let quality = 100;
-      let compressedImageBuffer = await sharp(logoFile.buffer)
-        .jpeg({ quality })
-        .toBuffer();
+      const isSvg = logoFile.mimetype === 'image/svg+xml';
+      let processedBuffer: Buffer;
+      let mimeType: string;
 
-      while (compressedImageBuffer.length > 100 * 1024 && quality > 10) {
-        quality -= 10;
-        compressedImageBuffer = await sharp(logoFile.buffer)
+      if (isSvg) {
+        // For SVG files, preserve the original format to maintain transparency
+        // SVGs are already text-based and typically small, so no compression needed
+        processedBuffer = logoFile.buffer;
+        mimeType = 'image/svg+xml';
+      } else {
+        // For raster images (PNG, JPEG, etc.), convert to JPEG for compression
+        let quality = 100;
+        processedBuffer = await sharp(logoFile.buffer)
           .jpeg({ quality })
           .toBuffer();
+
+        // Compress if file is too large
+        while (processedBuffer.length > 100 * 1024 && quality > 10) {
+          quality -= 10;
+          processedBuffer = await sharp(logoFile.buffer)
+            .jpeg({ quality })
+            .toBuffer();
+        }
+        mimeType = 'image/jpeg';
       }
 
-      const compressedPic = compressedImageBuffer.toString('base64');
-      const compressedPicMimeType = 'image/jpeg';
+      const base64Logo = processedBuffer.toString('base64');
       await OrgLogos.findOneAndUpdate(
         {
           orgId,
         },
-        { orgId, logo: compressedPic, mimeType: compressedPicMimeType },
+        { orgId, logo: base64Logo, mimeType },
         { new: true, upsert: true },
       );
 
-      res.setHeader('Content-Type', compressedPicMimeType);
-      res.status(201).send(compressedImageBuffer);
+      res.setHeader('Content-Type', mimeType);
+      res.status(201).send(processedBuffer);
       return;
     } catch (error) {
       next(error);

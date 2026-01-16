@@ -788,53 +788,24 @@ export default function CompanyProfile() {
                 <Box sx={{ position: 'relative', mb: 3 }}>
                   {logo ? (
                     <Box
+                      component="img"
+                      src={logo}
+                      alt="Company Logo"
                       sx={{
-                        width: 150,
-                        height: 150,
-                        borderRadius: 2,
-                        border: `1px solid ${alpha(theme.palette.divider, 0.2)}`,
-                        boxShadow: theme.shadows[2],
-                        position: 'relative',
+                        width: 160,
+                        height: 160,
+                        objectFit: 'contain',
+                        display: 'block',
                         margin: '0 auto',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        backgroundColor: 'transparent',
-                        padding: 2, // Add padding to ensure logo doesn't touch the borders
                       }}
-                    >
-                      <Box
-                        sx={{
-                          width: '100%',
-                          height: '100%',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          position: 'relative',
-                        }}
-                      >
-                        <img
-                          src={logo}
-                          alt="Company Logo"
-                          style={{
-                            maxWidth: '100%',
-                            maxHeight: '100%',
-                            width: 'auto',
-                            height: 'auto',
-                            objectFit: 'contain',
-                            display: 'block',
-                          }}
-                        />
-                      </Box>
-                    </Box>
+                    />
                   ) : (
                     <Box
                       sx={{
-                        width: 150,
-                        height: 150,
-                        borderRadius: 2,
-                        bgcolor: alpha(theme.palette.primary.main, 0.08),
-                        boxShadow: `0 0 0 1px ${alpha(theme.palette.divider, 0.2)}`,
+                        width: 160,
+                        height: 160,
+                        borderRadius: 2.5,
+                        border: `2px dashed ${alpha(theme.palette.primary.main, 0.3)}`,
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
@@ -843,9 +814,9 @@ export default function CompanyProfile() {
                     >
                       <Iconify
                         icon={officeBuildingIcon}
-                        width={70}
-                        height={70}
-                        color={alpha(theme.palette.primary.main, 0.7)}
+                        width={64}
+                        height={64}
+                        color={alpha(theme.palette.primary.main, 0.6)}
                       />
                     </Box>
                   )}
