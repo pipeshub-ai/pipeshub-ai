@@ -386,7 +386,6 @@ class OneDriveConnector(BaseConnector):
         """
         permissions = []
 
-
         for perm in msgraph_permissions:
             try:
                 # Handle user permissions
@@ -735,17 +734,22 @@ class OneDriveConnector(BaseConnector):
 
                 # 3. Process each group in the current page
                 for group in groups:
-                    # A) Check for DELETION marker
+                    # A) Check for group DELETION 
                     if hasattr(group, 'additional_data') and group.additional_data and '@removed' in group.additional_data:
                          self.logger.info(f"[DELTA ACTION] 🗑️ REMOVE Group: {group.id}")
-                         await self.handle_delete_group(group.id)
+                         success = await self.handle_delete_group(group.id)
+                         if not success:
+                            self.logger.error(f"❌ Error handling group delete for {group.id}")
                          continue
 
 
                     # B) Process ADD/UPDATE
                     # Note: For a brand new initial sync, everything will fall into this bucket.
                     self.logger.info(f"[DELTA ACTION] ✅ ADD/UPDATE Group: {getattr(group, 'display_name', 'N/A')} ({group.id})")
-                    await self.handle_group_create(group)
+                    success = await self.handle_group_create(group)
+                    if not success:
+                        self.logger.error(f"❌ Error handling group create for {group.id}")
+                        continue
 
                     # C) Trigger member sync for this group
                     # C) Check for specific MEMBER changes in this delta
@@ -767,11 +771,13 @@ class OneDriveConnector(BaseConnector):
                         # 2. Handle based on change type
                         if '@removed' in member_change:
                             self.logger.info(f"    -> [ACTION] 👤⛔ REMOVING member: {email} ({user_id}) from group {group.id}")
-                            await self.data_entities_processor.on_user_group_member_removed(
+                            success = await self.data_entities_processor.on_user_group_member_removed(
                                 external_group_id=group.id,
                                 user_email=email,
                                 connector_id=self.connector_id
                             )
+                            if not success:
+                                self.logger.error(f"❌ Error handling group member remove for {email} ({user_id}) from group {group.id}")
                         else:
                             self.logger.info(f"    -> [ACTION] 👤✨ ADDING member: {email} ({user_id}) to group {group.id}")
 
@@ -800,13 +806,20 @@ class OneDriveConnector(BaseConnector):
             self.logger.error(f"❌ Error in unified user group sync: {e}", exc_info=True)
             raise
 
-    async def handle_group_create(self, group: Group) -> None:
+    async def handle_group_create(self, group: Group) -> bool:
         """
         Handles the creation or update of a single user group.
         Fetches members and sends to data processor.
+
+        Supported member types:
+        - User: Added directly
+        - Group (nested): Fetch its users and add them (only one level deep)
+        - Device, Service Principal, Org Contact: Ignored
+
+        Returns:
+            True if group creation/update was successful, False otherwise.
         """
         try:
-
             # 1. Fetch latest members for this group
             members = await self.msgraph_client.get_group_members(group.id)
 
@@ -820,48 +833,108 @@ class OneDriveConnector(BaseConnector):
                 source_created_at=group.created_date_time.timestamp() if group.created_date_time else get_epoch_timestamp_in_ms(),
             )
 
-            # 3. Create AppUser entities for members
+            # 3. Create AppUser entities for members (filter by type)
             app_users = []
             for member in members:
-                app_user = AppUser(
-                    app_name=self.connector_name,
-                    source_user_id=member.id,
-                    email=member.mail or member.user_principal_name,
-                    full_name=member.display_name,
-                    source_created_at=member.created_date_time.timestamp() if member.created_date_time else get_epoch_timestamp_in_ms(),
-                    connector_id=self.connector_id,
-                )
-                app_users.append(app_user)
+                # Check the odata type to determine member type
+                odata_type = getattr(member, 'odata_type', None) or (member.additional_data or {}).get('@odata.type', '')
+
+                if '#microsoft.graph.user' in odata_type:
+                    # Direct user member
+                    app_user = self._create_app_user_from_member(member)
+                    if app_user:
+                        app_users.append(app_user)
+
+                elif '#microsoft.graph.group' in odata_type:
+                    # Nested group - fetch its users (one level deep only)
+                    nested_group_name = getattr(member, 'display_name', member.id)
+                    self.logger.info(f"Processing nested group member: {nested_group_name}")
+                    
+                    try:
+                        nested_members = await self.msgraph_client.get_group_members(member.id)
+                        
+                        for nested_member in nested_members:
+                            nested_odata_type = getattr(nested_member, 'odata_type', None) or (nested_member.additional_data or {}).get('@odata.type', '')
+                            
+                            # Only add users from nested group, ignore nested-nested groups and other types
+                            if '#microsoft.graph.user' in nested_odata_type:
+                                app_user = self._create_app_user_from_member(nested_member)
+                                if app_user:
+                                    app_users.append(app_user)
+                            else:
+                                self.logger.debug(f"Skipping non-user member '{nested_odata_type}' in nested group {nested_group_name}")
+                                
+                    except Exception as e:
+                        self.logger.warning(f"Failed to fetch members from nested group {nested_group_name}: {e}")
+                else:
+                    self.logger.warning(f"Skipping member type '{odata_type}' for member {member.id}")
 
             # 4. Send to processor (wrapped in list as expected by on_new_user_groups)
             await self.data_entities_processor.on_new_user_groups([(user_group, app_users)])
 
-            self.logger.info(f"Processed group creation/update for: {group.display_name}")
+            self.logger.info(f"Processed group creation/update for: {group.display_name} with {len(app_users)} user members")
+            return True
 
         except Exception as e:
             self.logger.error(f"❌ Error handling group create for {getattr(group, 'id', 'unknown')}: {e}", exc_info=True)
+            return False
 
-    async def handle_delete_group(self, group_id: str) -> None:
+
+    def _create_app_user_from_member(self, member) -> Optional[AppUser]:
+        """
+        Helper method to create an AppUser from a Graph API user member.
+        
+        Args:
+            member: A user object from Microsoft Graph API
+            
+        Returns:
+            AppUser if successful, None if user has no valid email
+        """
+        email = getattr(member, 'mail', None) or getattr(member, 'user_principal_name', None)
+        
+        if not email:
+            self.logger.warning(f"User {member.id} has no email or user_principal_name, skipping")
+            return None
+        
+        return AppUser(
+            app_name=self.connector_name,
+            source_user_id=member.id,
+            email=email,
+            full_name=getattr(member, 'display_name', None),
+            source_created_at=member.created_date_time.timestamp() if hasattr(member, 'created_date_time') and member.created_date_time else get_epoch_timestamp_in_ms(),
+            connector_id=self.connector_id,
+        )
+
+    async def handle_delete_group(self, group_id: str) -> bool:
         """
         Handles the deletion of a single user group.
         Calls the data processor to remove it from the database.
 
         Args:
             group_id: The external ID of the group to be deleted.
+
+        Returns:
+            True if group deletion was successful, False otherwise.
         """
         try:
             self.logger.info(f"Handling group deletion for: {group_id}")
 
             # Call the data entities processor to handle the deletion logic
-            await self.data_entities_processor.on_user_group_deleted(
+            success = await self.data_entities_processor.on_user_group_deleted(
                 external_group_id=group_id,
                 connector_id=self.connector_id
             )
 
+            if not success:
+                self.logger.error(f"❌ Error handling group delete for {group_id}")
+                return False
+
             self.logger.info(f"Successfully processed group deletion for: {group_id}")
+            return True
 
         except Exception as e:
             self.logger.error(f"❌ Error handling group delete for {group_id}: {e}", exc_info=True)
+            return False
 
     async def _run_sync_with_yield(self, user_id: str) -> None:
         """
