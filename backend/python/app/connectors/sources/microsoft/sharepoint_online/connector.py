@@ -201,7 +201,7 @@ class SiteMetadata:
             option_source_type=OptionSourceType.DYNAMIC
         ))
         .add_filter_field(FilterField(
-            name="document_library_ids",
+            name="drive_ids",
             display_name="Document Library Names",
             description="Filter specific document libraries by name.",
             filter_type=FilterType.LIST,
@@ -842,6 +842,13 @@ class SharePointConnector(BaseConnector):
 
                     if not drive_id:
                         self.logger.warning(f"⚠️ No drive ID found for drive {drive_name}")
+                        continue
+
+                    drive_web_url = getattr(drive, 'web_url', None)
+                    normalized_url = self._normalize_document_library_url(drive_web_url)
+
+                    if not self._pass_drive_key_filters(normalized_url):
+                        self.logger.debug(f"Skipping drive (Document Library filter) '{normalized_url}' {drive_name}")
                         continue
 
                     # Create document library record
@@ -1642,9 +1649,10 @@ class SharePointConnector(BaseConnector):
                     if not self._pass_page_date_filters(page):
                         self.logger.debug(f"⏭️ Skipping page (date filter) '{page_id}' {page_name}")
                         continue
-
-                    if not self._pass_page_ids_filters(page_id):
-                        self.logger.debug(f"⏭️ Skipping page (ID filter) '{page_id}' {page_name}")
+                    
+                    page_key = f"{page_id}:{site_id}"
+                    if not self._pass_page_ids_filters(page_key):
+                        self.logger.debug(f"⏭️ Skipping page (ID filter) '{page_key}' {page_name}")
                         continue
 
                     # Check the 'created_by' field to skip System Account created pages
@@ -1863,7 +1871,57 @@ class SharePointConnector(BaseConnector):
         self.logger.warning(f"Unknown filter operator '{operator_str}' for SITE_IDS filter, allowing site")
         return True
 
-    def _pass_page_ids_filters(self, page_id: str) -> bool:
+    def _pass_drive_key_filters(self, drive_key: str) -> bool:
+        """
+        Checks if the drive passes the configured drive IDs filter.
+
+        For MULTISELECT filters:
+        - Operator IN: Only allow drives with IDs in the selected list (inclusion list)
+        - Operator NOT_IN: Allow drives with IDs NOT in the selected list (exclusion list)
+
+        Args:
+            drive_key: The SharePoint drive key/ID to check
+
+        Returns:
+            True if the drive should be synced, False if it should be skipped
+        """
+        # Get the drive IDs filter
+        drive_ids_filter = self.sync_filters.get(SyncFilterKey.DRIVE_IDS)
+
+        # If no filter configured or filter is empty, allow all drives
+        if drive_ids_filter is None or drive_ids_filter.is_empty():
+            return True
+
+        # Get the list of drive IDs from the filter value
+        filter_drive_ids = drive_ids_filter.value
+        if not isinstance(filter_drive_ids, list):
+            return True  # Invalid filter value, allow the drive
+
+        # Handle empty or None drive_key
+        if not drive_key:
+            self.logger.warning("Drive key is empty or None, skipping")
+            return False
+
+        # Create set for O(1) lookup (case-sensitive for GUIDs)
+        filter_drive_ids_set = {did.strip() for did in filter_drive_ids if did}
+        drive_key_normalized = drive_key.strip()
+
+        # Apply the filter based on operator
+        operator = drive_ids_filter.get_operator()
+        operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+
+        if operator_str == FilterOperator.IN:
+            # Only allow drives with IDs in the inclusion list
+            return drive_key_normalized in filter_drive_ids_set
+        elif operator_str == FilterOperator.NOT_IN:
+            # Allow drives with IDs NOT in the exclusion list
+            return drive_key_normalized not in filter_drive_ids_set
+
+        # Unknown operator, default to allowing the drive
+        self.logger.warning(f"Unknown filter operator '{operator_str}' for DRIVE_IDS filter, allowing drive")
+        return True
+
+    def _pass_page_ids_filters(self, page_key: str) -> bool:
         """
         Checks if the page passes the configured page IDs filter.
 
@@ -1872,7 +1930,7 @@ class SharePointConnector(BaseConnector):
         - Operator NOT_IN: Allow pages with IDs NOT in the selected list (exclusion list)
 
         Args:
-            page_id: The SharePoint page ID to check
+            page_key: The SharePoint page key to check
 
         Returns:
             True if the page should be synced, False if it should be skipped
@@ -1889,14 +1947,14 @@ class SharePointConnector(BaseConnector):
         if not isinstance(filter_page_ids, list):
             return True  # Invalid filter value, allow the page
 
-        # Handle empty or None page_id
-        if not page_id:
-            self.logger.warning("Page ID is empty or None, skipping")
+        # Handle empty or None page_key
+        if not page_key:
+            self.logger.warning("Page key is empty or None, skipping")
             return False
 
         # Create set for O(1) lookup (case-sensitive for GUIDs)
         filter_page_ids_set = {pid.strip() for pid in filter_page_ids if pid}
-        page_id_normalized = page_id.strip()
+        page_key_normalized = page_key.strip()
 
         # Apply the filter based on operator
         operator = page_ids_filter.get_operator()
@@ -1904,10 +1962,10 @@ class SharePointConnector(BaseConnector):
 
         if operator_str == FilterOperator.IN:
             # Only allow pages with IDs in the inclusion list
-            return page_id_normalized in filter_page_ids_set
+            return page_key_normalized in filter_page_ids_set
         elif operator_str == FilterOperator.NOT_IN:
             # Allow pages with IDs NOT in the exclusion list
-            return page_id_normalized not in filter_page_ids_set
+            return page_key_normalized not in filter_page_ids_set
 
         # Unknown operator, default to allowing the page
         self.logger.warning(f"Unknown filter operator '{operator_str}' for PAGE_IDS filter, allowing page")
@@ -3664,7 +3722,7 @@ class SharePointConnector(BaseConnector):
             return await self._get_site_options(page, limit, search)
         elif filter_key == SyncFilterKey.PAGE_IDS:
             return await self._get_page_options(page, limit, search)
-        elif filter_key == SyncFilterKey.DOCUMENT_LIBRARY_IDS:  # Add this
+        elif filter_key == SyncFilterKey.DRIVE_IDS:  # Add this
             return await self._get_document_library_options(page, limit, search)
         else:
             raise ValueError(f"Unsupported filter key: {filter_key}")
@@ -3756,6 +3814,30 @@ class SharePointConnector(BaseConnector):
             limit=limit
         )
 
+        # Save raw_result to file in Documents folder
+        try:
+            documents_dir = os.path.expanduser("~/Documents/sharepoint-logs")
+            os.makedirs(documents_dir, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"sharepoint_raw_result_pages_{timestamp}.txt"
+            filepath = os.path.join(documents_dir, filename)
+            
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write("raw_result:\n")
+                f.write("=" * 80 + "\n")
+                # Try to serialize as JSON if possible, otherwise use str representation
+                try:
+                    if hasattr(raw_result, '__dict__'):
+                        f.write(json.dumps(raw_result.__dict__, indent=2, default=str))
+                    else:
+                        f.write(json.dumps(raw_result, indent=2, default=str))
+                except (TypeError, ValueError):
+                    f.write(str(raw_result))
+                f.write("\n")
+        except Exception as e:
+            # Silently fail if file writing fails to avoid disrupting the main flow
+            pass
+
         options = []
         total = 0
 
@@ -3774,8 +3856,19 @@ class SharePointConnector(BaseConnector):
 
                         item_id = resource.get('id')
                         web_url = resource.get('webUrl')
+                        site_id = resource.get('parentReference', {}).get('siteId')
 
-                        if not item_id and not web_url:
+                        # Skip System Account pages (templates)
+                        created_by = resource.get('createdBy', {})
+                        user = created_by.get('user', {})
+                        display_name = user.get('displayName', '').lower()
+
+                        if not site_id:
+                            continue
+
+                        unique_key = f"{item_id}:{site_id}"
+
+                        if not item_id:
                             continue
 
                         # --- 1. Extract Page Name ---
@@ -3805,9 +3898,10 @@ class SharePointConnector(BaseConnector):
 
                         # --- 3. Format Final Label ---
                         final_label = f"{page_label} ({site_name})"
+                        page_key = f"{item_id}:{site_id}"
 
                         options.append(FilterOption(
-                            id=item_id or web_url,
+                            id=page_key,
                             label=final_label
                         ))
 
@@ -3876,6 +3970,8 @@ class SharePointConnector(BaseConnector):
                         name = resource.get('name', '')
                         display_name = resource.get('displayName', '')
                         site_id = resource.get('parentReference', {}).get('siteId', '')
+                        if not site_id:
+                            continue
                         unique_key = f"{list_id}:{site_id}"
                         
                         # Skip if no ID or already seen (duplicates in results)
@@ -3883,31 +3979,24 @@ class SharePointConnector(BaseConnector):
                             continue
                         
                         # === FILTERING LOGIC ===
-                        
                         # 1. Must have "DocumentLibrary" in summary (skip GenericList, Events, etc.)
                         if 'DocumentLibrary' not in summary:
                             continue
-                        
                         # 2. Skip SharePoint Lists (URL contains /Lists/)
                         if '/Lists/' in web_url:
                             continue
-                        
                         # 3. Skip system libraries by name
                         if name in SYSTEM_LIBRARY_NAMES:
                             continue
-                        
                         # 4. Skip contentstorage (internal Microsoft storage)
                         if '/contentstorage/' in web_url:
                             continue
-                        
                         # 5. Skip OneDrive personal libraries
                         if '-my.sharepoint.com' in web_url:
                             continue
-                        
                         # 6. Skip calendar/events URLs
                         if '/calendar.aspx' in web_url:
                             continue
-                        
                         # === PASSED ALL FILTERS - This is a valid drive ===
                         
                         seen_keys.add(unique_key)
@@ -3933,9 +4022,10 @@ class SharePointConnector(BaseConnector):
                             library_name = library_name.split(" - ")[-1]
                         
                         final_label = f"{library_name} ({site_name})"
+                        normalized_url = self._normalize_document_library_url(web_url)
 
                         options.append(FilterOption(
-                            id=list_id,
+                            id=normalized_url,
                             label=final_label
                         ))
 
@@ -3949,6 +4039,40 @@ class SharePointConnector(BaseConnector):
             has_more=has_more,
             cursor=None
         )
+
+    def _normalize_document_library_url(self, web_url: str) -> str:
+        """
+        Normalize a SharePoint document library URL to a consistent format.
+        
+        Examples:
+            Input:  'https://pipeshubinc.sharepoint.com/sites/okay/Shared%20Documents'
+            Output: 'pipeshubinc.sharepoint.com/sites/okay/shared documents'
+            
+            Input:  'https://pipeshubinc.sharepoint.com/sites/ITTeamSite/Shared Documents/Forms/AllItems.aspx'
+            Output: 'pipeshubinc.sharepoint.com/sites/itteamsite/shared documents'
+        """
+        if not web_url:
+            return ""
+        
+        # Decode URL encoding (%20 -> space, etc.)
+        decoded_url = unquote(web_url)
+        
+        # Remove protocol (https://)
+        if "://" in decoded_url:
+            decoded_url = decoded_url.split("://", 1)[1]
+        
+        # Remove trailing /Forms/AllItems.aspx or similar view pages
+        # Common patterns: /Forms/AllItems.aspx, /Forms/AllItems.aspx?viewid=...
+        if "/Forms/" in decoded_url:
+            decoded_url = decoded_url.split("/Forms/")[0]
+        
+        # Lowercase for consistent comparison
+        decoded_url = decoded_url.lower()
+        
+        # Remove trailing slashes
+        decoded_url = decoded_url.rstrip("/")
+        
+        return decoded_url
 
     @classmethod
     async def create_connector(cls, logger: Logger,
