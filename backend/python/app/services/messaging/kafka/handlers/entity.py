@@ -447,7 +447,7 @@ class EntityEventService(BaseEventService):
                         # Gmail and Google Drive need both init and start events
                         # They have specialized event handlers that require init to call initialize()
                         # Use case-insensitive comparison since app_name comes as lowercase from payload
-                        if app_name.upper() in [Connectors.GOOGLE_MAIL.value, Connectors.GOOGLE_DRIVE.value]:
+                        if app_name.upper() in [Connectors.GOOGLE_MAIL.value]:
                             # Initialize app (this will fetch and create users)
                             await self.__handle_sync_event(
                                 event_type=f"{app_name.lower()}.init",
@@ -488,7 +488,7 @@ class EntityEventService(BaseEventService):
                         # Gmail and Google Drive need both init and start events
                         # They have specialized event handlers that require init to call initialize()
                         # Use case-insensitive comparison since app_name comes as lowercase from payload
-                        if app_name.upper() in [Connectors.GOOGLE_MAIL.value, Connectors.GOOGLE_DRIVE.value]:
+                        if app_name.upper() in [Connectors.GOOGLE_MAIL.value]:
                             # Initialize app
                             await self.__handle_sync_event(
                                 event_type=f"{app_name.lower()}.init",

@@ -264,7 +264,7 @@ file_record_schema = {
         "type": "object",
         "properties": {
             "orgId": {"type": "string"},
-            "recordGroupId": {"type":"string"},  # kb id
+            "recordGroupId": {"type": ["string", "null"]},  # kb id
             "name": {"type": "string", "minLength": 1},
             "isFile": {"type": "boolean"},
             "extension": {"type": ["string", "null"]},

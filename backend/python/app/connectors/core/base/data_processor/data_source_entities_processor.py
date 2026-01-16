@@ -191,6 +191,9 @@ class DataSourceEntitiesProcessor:
                 await tx_store.create_record_relation(parent_record.id, record.id, relation_type)
 
     async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> None:
+        if record.external_record_group_id is None:
+            return
+
         record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id,
                                                                       external_id=record.external_record_group_id)
 
@@ -1438,6 +1441,34 @@ class DataSourceEntitiesProcessor:
 
         except Exception as e:
             self.logger.error(f"Error deleting organization edges for group {group_internal_id}: {e}")
+
+    async def add_permission_to_record(self, record: Record, permissions: List[Permission]) -> None:
+        """Add permissions to a record."""
+
+        async with self.data_store_provider.transaction() as tx_store:
+            await self._handle_record_permissions(record, permissions, tx_store)
+
+    async def delete_permission_from_record(self, record_id: str, user_email: str) -> None:
+        """Delete permissions from a record."""
+
+        async with self.data_store_provider.transaction() as tx_store:
+            user = await tx_store.get_user_by_email(user_email)
+            if not user:
+                self.logger.warning(f"User with email {user_email} not found in database")
+                return
+
+            success = await tx_store.delete_edge(
+                from_id=user.id,
+                from_collection=CollectionNames.USERS.value,
+                to_id=record_id,
+                to_collection=CollectionNames.RECORDS.value,
+                collection=CollectionNames.PERMISSION.value
+            )
+
+            if success:
+                self.logger.info(f"Deleted permission from record {record_id} for user {user_email}")
+            else:
+                self.logger.warning(f"Failed to delete permission from record {record_id} for user {user_email}")
 
     #IMPORTANT: DO NOT USE THIS METHOD
     #TODO: When an user is delelted from a connetor we need to delete the userAppRelation b/w the app and user

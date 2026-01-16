@@ -31,6 +31,12 @@ from app.connectors.sources.dropbox.connector import DropboxConnector
 from app.connectors.sources.dropbox_individual.connector import (
     DropboxIndividualConnector,
 )
+from app.connectors.sources.google.drive.individual.connector import (
+    GoogleDriveIndividualConnector,
+)
+from app.connectors.sources.google.drive.team.connector import (
+    GoogleDriveTeamConnector,
+)
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
@@ -55,6 +61,8 @@ class ConnectorFactory:
         "confluence": ConfluenceConnector,
         "jira": JiraConnector,
         "box": BoxConnector,
+        "drive": GoogleDriveIndividualConnector,
+        "driveworkspace": GoogleDriveTeamConnector,
         "dropbox": DropboxConnector,
         "dropboxpersonal": DropboxIndividualConnector,
         "servicenow": ServiceNowConnector,
