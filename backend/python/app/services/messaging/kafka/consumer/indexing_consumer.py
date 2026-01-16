@@ -12,7 +12,7 @@ from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 
 # Concurrency control settings - read from environment variables
 MAX_CONCURRENT_PARSING = int(os.getenv('MAX_CONCURRENT_PARSING', '5'))
-MAX_CONCURRENT_INDEXING = int(os.getenv('MAX_CONCURRENT_INDEXING', '100'))
+MAX_CONCURRENT_INDEXING = int(os.getenv('MAX_CONCURRENT_INDEXING', '15'))
 SHUTDOWN_TASK_TIMEOUT = 30.0
 
 
