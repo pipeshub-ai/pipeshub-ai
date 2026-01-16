@@ -68,6 +68,7 @@ from app.schema.arango.edges import (
     is_of_type_schema,
     permissions_schema,
     record_relations_schema,
+    ticket_relations_schema,
     user_app_relation_schema,
     user_drive_relation_schema,
 )
@@ -129,6 +130,7 @@ EDGE_COLLECTIONS = [
     (CollectionNames.BELONGS_TO_RECORD_GROUP.value, basic_edge_schema),
     (CollectionNames.INTER_CATEGORY_RELATIONS.value, basic_edge_schema),
     (CollectionNames.PERMISSION.value, permissions_schema),
+    (CollectionNames.TICKET_RELATIONS.value, ticket_relations_schema),
 ]
 
 class BaseArangoService:
