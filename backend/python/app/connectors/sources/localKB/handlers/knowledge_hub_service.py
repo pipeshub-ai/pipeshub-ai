@@ -653,7 +653,6 @@ class KnowledgeHubService:
 
     async def _get_recursive_search_nodes(
         self,
-        user_key: str,
         org_id: str,
         parent_id: str,
         parent_type: str,

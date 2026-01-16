@@ -5449,7 +5449,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     parentId: @rg_doc_id, source: "{source}",
                     connector: child_rg.connectorName,
                     connectorId: "{source}" == "CONNECTOR" ? child_rg.connectorId : null,
-                    kbId: "{source}" == "KB" ? @rg_doc_id : null,
+                    kbId: "{source}" == "KB" ? PARSE_IDENTIFIER(@rg_doc_id).key : null,
                     recordType: null, indexingStatus: null,
                     createdAt: child_rg.createdAtTimestamp, updatedAt: child_rg.updatedAtTimestamp,
                     sizeInBytes: null, mimeType: null, extension: null,
