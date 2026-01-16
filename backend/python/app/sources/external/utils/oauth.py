@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlencode, urlparse
 
-import requests
+import requests # type: ignore
 
 # --- 1. The Generic Client (Reusable Library Code) ---
 
@@ -269,7 +269,7 @@ def perform_oauth_flow(
     server = start_server(port)
     auth_url = client.get_authorization_url(state=state, scopes=scopes)
 
-    print(f"Opening Browser: {auth_url}")
+    print(f"Opening Browser")
     webbrowser.open(auth_url)
 
     # Wait for callback
