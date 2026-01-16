@@ -1649,7 +1649,7 @@ class SharePointConnector(BaseConnector):
                     if not self._pass_page_date_filters(page):
                         self.logger.debug(f"⏭️ Skipping page (date filter) '{page_id}' {page_name}")
                         continue
-                    
+
                     page_key = f"{page_id}:{site_id}"
                     if not self._pass_page_ids_filters(page_key):
                         self.logger.debug(f"⏭️ Skipping page (ID filter) '{page_key}' {page_name}")
@@ -3814,30 +3814,6 @@ class SharePointConnector(BaseConnector):
             limit=limit
         )
 
-        # Save raw_result to file in Documents folder
-        try:
-            documents_dir = os.path.expanduser("~/Documents/sharepoint-logs")
-            os.makedirs(documents_dir, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"sharepoint_raw_result_pages_{timestamp}.txt"
-            filepath = os.path.join(documents_dir, filename)
-            
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write("raw_result:\n")
-                f.write("=" * 80 + "\n")
-                # Try to serialize as JSON if possible, otherwise use str representation
-                try:
-                    if hasattr(raw_result, '__dict__'):
-                        f.write(json.dumps(raw_result.__dict__, indent=2, default=str))
-                    else:
-                        f.write(json.dumps(raw_result, indent=2, default=str))
-                except (TypeError, ValueError):
-                    f.write(str(raw_result))
-                f.write("\n")
-        except Exception as e:
-            # Silently fail if file writing fails to avoid disrupting the main flow
-            pass
-
         options = []
         total = 0
 
@@ -3861,12 +3837,11 @@ class SharePointConnector(BaseConnector):
                         # Skip System Account pages (templates)
                         created_by = resource.get('createdBy', {})
                         user = created_by.get('user', {})
-                        display_name = user.get('displayName', '').lower()
+                        user.get('displayName', '').lower()
 
                         if not site_id:
                             continue
 
-                        unique_key = f"{item_id}:{site_id}"
 
                         if not item_id:
                             continue
@@ -3925,7 +3900,7 @@ class SharePointConnector(BaseConnector):
         """Get dynamic filter options for SharePoint document libraries (drives only)."""
 
         search_query = search.strip() if search else ""
-        
+
         # Search query - best effort to narrow down
         full_query = f"{search_query}* contentclass:STS_List_DocumentLibrary"
 
@@ -3964,7 +3939,7 @@ class SharePointConnector(BaseConnector):
                     for hit in container.get('hits', []):
                         resource = hit.get('resource', {})
                         summary = hit.get('summary', '')
-                        
+
                         list_id = resource.get('id')
                         web_url = resource.get('webUrl', '')
                         name = resource.get('name', '')
@@ -3973,11 +3948,11 @@ class SharePointConnector(BaseConnector):
                         if not site_id:
                             continue
                         unique_key = f"{list_id}:{site_id}"
-                        
+
                         # Skip if no ID or already seen (duplicates in results)
                         if not list_id or unique_key in seen_keys:
                             continue
-                        
+
                         # === FILTERING LOGIC ===
                         # 1. Must have "DocumentLibrary" in summary (skip GenericList, Events, etc.)
                         if 'DocumentLibrary' not in summary:
@@ -3992,18 +3967,19 @@ class SharePointConnector(BaseConnector):
                         if '/contentstorage/' in web_url:
                             continue
                         # 5. Skip OneDrive personal libraries
-                        if '-my.sharepoint.com' in web_url:
+                        parsed_url = urlparse(web_url)
+                        if parsed_url.netloc.endswith('-my.sharepoint.com'):
                             continue
                         # 6. Skip calendar/events URLs
                         if '/calendar.aspx' in web_url:
                             continue
                         # === PASSED ALL FILTERS - This is a valid drive ===
-                        
+
                         seen_keys.add(unique_key)
-                        
+
                         # Extract library name
                         library_name = display_name or name or "Unknown Library"
-                        
+
                         # Extract site name from URL
                         site_name = "Unknown Site"
                         if web_url and "/sites/" in web_url:
@@ -4015,12 +3991,12 @@ class SharePointConnector(BaseConnector):
                                 pass
                         elif web_url:
                             site_name = "Root Site"
-                        
+
                         # Clean up display name if it already contains site info
                         # e.g., "IT Team Site - Documents" -> "Documents"
                         if " - " in library_name and site_name != "Unknown Site":
                             library_name = library_name.split(" - ")[-1]
-                        
+
                         final_label = f"{library_name} ({site_name})"
                         normalized_url = self._normalize_document_library_url(web_url)
 
@@ -4043,35 +4019,35 @@ class SharePointConnector(BaseConnector):
     def _normalize_document_library_url(self, web_url: str) -> str:
         """
         Normalize a SharePoint document library URL to a consistent format.
-        
+
         Examples:
             Input:  'https://pipeshubinc.sharepoint.com/sites/okay/Shared%20Documents'
             Output: 'pipeshubinc.sharepoint.com/sites/okay/shared documents'
-            
+
             Input:  'https://pipeshubinc.sharepoint.com/sites/ITTeamSite/Shared Documents/Forms/AllItems.aspx'
             Output: 'pipeshubinc.sharepoint.com/sites/itteamsite/shared documents'
         """
         if not web_url:
             return ""
-        
+
         # Decode URL encoding (%20 -> space, etc.)
         decoded_url = unquote(web_url)
-        
+
         # Remove protocol (https://)
         if "://" in decoded_url:
             decoded_url = decoded_url.split("://", 1)[1]
-        
+
         # Remove trailing /Forms/AllItems.aspx or similar view pages
         # Common patterns: /Forms/AllItems.aspx, /Forms/AllItems.aspx?viewid=...
         if "/Forms/" in decoded_url:
             decoded_url = decoded_url.split("/Forms/")[0]
-        
+
         # Lowercase for consistent comparison
         decoded_url = decoded_url.lower()
-        
+
         # Remove trailing slashes
         decoded_url = decoded_url.rstrip("/")
-        
+
         return decoded_url
 
     @classmethod

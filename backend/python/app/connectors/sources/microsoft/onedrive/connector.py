@@ -734,7 +734,7 @@ class OneDriveConnector(BaseConnector):
 
                 # 3. Process each group in the current page
                 for group in groups:
-                    # A) Check for group DELETION 
+                    # A) Check for group DELETION
                     if hasattr(group, 'additional_data') and group.additional_data and '@removed' in group.additional_data:
                          self.logger.info(f"[DELTA ACTION] 🗑️ REMOVE Group: {group.id}")
                          success = await self.handle_delete_group(group.id)
@@ -847,27 +847,11 @@ class OneDriveConnector(BaseConnector):
 
                 elif '#microsoft.graph.group' in odata_type:
                     # Nested group - fetch its users (one level deep only)
-                    nested_group_name = getattr(member, 'display_name', member.id)
-                    self.logger.info(f"Processing nested group member: {nested_group_name}")
-                    
-                    try:
-                        nested_members = await self.msgraph_client.get_group_members(member.id)
-                        
-                        for nested_member in nested_members:
-                            nested_odata_type = getattr(nested_member, 'odata_type', None) or (nested_member.additional_data or {}).get('@odata.type', '')
-                            
-                            # Only add users from nested group, ignore nested-nested groups and other types
-                            if '#microsoft.graph.user' in nested_odata_type:
-                                app_user = self._create_app_user_from_member(nested_member)
-                                if app_user:
-                                    app_users.append(app_user)
-                            else:
-                                self.logger.debug(f"Skipping non-user member '{nested_odata_type}' in nested group {nested_group_name}")
-                                
-                    except Exception as e:
-                        self.logger.warning(f"Failed to fetch members from nested group {nested_group_name}: {e}")
+                    nested_users = await self._get_users_from_nested_group(member)
+                    app_users.extend(nested_users)
+
                 else:
-                    self.logger.warning(f"Skipping member type '{odata_type}' for member {member.id}")
+                    self.logger.debug(f"Skipping member type '{odata_type}' for member {member.id}")
 
             # 4. Send to processor (wrapped in list as expected by on_new_user_groups)
             await self.data_entities_processor.on_new_user_groups([(user_group, app_users)])
@@ -880,22 +864,56 @@ class OneDriveConnector(BaseConnector):
             return False
 
 
+    async def _get_users_from_nested_group(self, nested_group) -> List[AppUser]:
+        """
+        Fetches users from a nested group (one level deep only).
+
+        Args:
+            nested_group: A group member object from Microsoft Graph API
+
+        Returns:
+            List of AppUser entities from the nested group
+        """
+        nested_group_name = getattr(nested_group, 'display_name', nested_group.id)
+        self.logger.info(f"Processing nested group member: {nested_group_name}")
+
+        app_users = []
+
+        try:
+            nested_members = await self.msgraph_client.get_group_members(nested_group.id)
+
+            for nested_member in nested_members:
+                nested_odata_type = getattr(nested_member, 'odata_type', None) or (nested_member.additional_data or {}).get('@odata.type', '')
+
+                if '#microsoft.graph.user' in nested_odata_type:
+                    app_user = self._create_app_user_from_member(nested_member)
+                    if app_user:
+                        app_users.append(app_user)
+                else:
+                    self.logger.debug(f"Skipping non-user member '{nested_odata_type}' in nested group {nested_group_name}")
+
+        except Exception as e:
+            self.logger.warning(f"Failed to fetch members from nested group {nested_group_name}: {e}")
+
+        return app_users
+
+
     def _create_app_user_from_member(self, member) -> Optional[AppUser]:
         """
         Helper method to create an AppUser from a Graph API user member.
-        
+
         Args:
             member: A user object from Microsoft Graph API
-            
+
         Returns:
             AppUser if successful, None if user has no valid email
         """
         email = getattr(member, 'mail', None) or getattr(member, 'user_principal_name', None)
-        
+
         if not email:
             self.logger.warning(f"User {member.id} has no email or user_principal_name, skipping")
             return None
-        
+
         return AppUser(
             app_name=self.connector_name,
             source_user_id=member.id,
