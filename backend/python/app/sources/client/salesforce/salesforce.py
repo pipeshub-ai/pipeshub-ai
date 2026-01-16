@@ -28,7 +28,7 @@ class SalesforceResponse(BaseModel):
 
 class SalesforceRESTClient(HTTPClient):
     """Salesforce REST client via Bearer Token (OAuth Access Token)
-    
+
     Args:
         instance_url: The Salesforce instance URL (e.g., https://my-domain.my.salesforce.com)
         access_token: The OAuth access token
@@ -37,14 +37,14 @@ class SalesforceRESTClient(HTTPClient):
 
     def __init__(self, instance_url: str, access_token: str, api_version: str = "59.0") -> None:
         super().__init__(access_token, "Bearer")
-        
+
         # Ensure instance_url doesn't end with a slash
         self.instance_url = instance_url.rstrip('/')
         self.api_version = api_version
-        
+
         # Construct the base API URL
         # Format: https://instance.salesforce.com/services/data/vXX.X
-        self.base_url = f"{self.instance_url}/services/data/v{self.api_version}"
+        self.base_url = f"{self.instance_url}"
 
         # Add Salesforce-specific headers
         self.headers.update({
@@ -55,7 +55,7 @@ class SalesforceRESTClient(HTTPClient):
     def get_base_url(self) -> str:
         """Get the base URL"""
         return self.base_url
-        
+
     def get_instance_url(self) -> str:
         """Get the raw instance URL"""
         return self.instance_url
@@ -63,7 +63,7 @@ class SalesforceRESTClient(HTTPClient):
 
 class SalesforceConfig(BaseModel):
     """Configuration for Salesforce REST client
-    
+
     Args:
         instance_url: The Salesforce instance URL
         access_token: The OAuth access token
@@ -114,7 +114,7 @@ class SalesforceClient(IClient):
     @classmethod
     def build_with_config(cls, config: SalesforceConfig) -> "SalesforceClient":
         """Build SalesforceClient with configuration
-        
+
         Args:
             config: SalesforceConfig instance
         Returns:
@@ -129,7 +129,7 @@ class SalesforceClient(IClient):
         config_service: ConfigurationService,
     ) -> "SalesforceClient":
         """Build SalesforceClient using configuration service
-        
+
         Args:
             logger: Logger instance
             config_service: Configuration service instance
@@ -145,16 +145,16 @@ class SalesforceClient(IClient):
             # Extract auth configuration
             auth_config = config_data.get("auth", {})
             auth_type = config_data.get("authType", "OAUTH") # Default to OAUTH
-            
+
             # For Salesforce, we typically need the instance URL and the access token
             # regardless of whether the flow was OAUTH or a manual TOKEN entry.
-            
+
             if auth_type == "OAUTH" or auth_type == "ACCESS_TOKEN":
                 credentials = auth_config.get("credentials", {}) if auth_type == "OAUTH" else auth_config
-                
+
                 access_token = credentials.get("accessToken") or auth_config.get("accessToken")
                 instance_url = credentials.get("instanceUrl") or auth_config.get("instanceUrl")
-                
+
                 if not access_token:
                     raise ValueError("Access token is required")
                 if not instance_url:
