@@ -173,14 +173,6 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
             default_value=True
         ))
         .add_filter_field(FilterField(
-            name="issue_comments",
-            display_name="Index Issue Comments",
-            filter_type=FilterType.BOOLEAN,
-            category=FilterCategory.INDEXING,
-            description="Enable indexing of issue comments",
-            default_value=True
-        ))
-        .add_filter_field(FilterField(
             name="issue_attachments",
             display_name="Index Issue Attachments",
             filter_type=FilterType.BOOLEAN,
@@ -198,7 +190,7 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
         ))
         .add_filter_field(FilterField(
             name="files",
-            display_name="Index Issue Files",
+            display_name="Index Issue and Comment Files",
             filter_type=FilterType.BOOLEAN,
             category=FilterCategory.INDEXING,
             description="Enable indexing of files extracted from issue descriptions and comments",
@@ -1024,6 +1016,36 @@ class LinearConnector(BaseConnector):
                                 exclude_images=True
                             )
                             batch_records.extend(file_records)
+
+                        # Extract files from comment bodies and create FileRecords
+                        comments_data = issue_data.get("comments", {}).get("nodes", [])
+                        if comments_data:
+                            for comment_data in comments_data:
+                                comment_id = comment_data.get("id", "")
+                                comment_body = comment_data.get("body", "")
+
+                                if not comment_id or not comment_body:
+                                    continue
+
+                                # Get comment timestamps for file records
+                                comment_created_at = self._parse_linear_datetime(comment_data.get("createdAt", "")) or 0
+                                comment_updated_at = self._parse_linear_datetime(comment_data.get("updatedAt", "")) or 0
+                                comment_url = comment_data.get("url", ticket_record.weburl)
+
+                                comment_file_records = await self._extract_files_from_markdown(
+                                    markdown_text=comment_body,
+                                    parent_external_id=issue_id,
+                                    parent_node_id=ticket_record.id,
+                                    parent_record_type=RecordType.TICKET,
+                                    team_id=team_id,
+                                    tx_store=tx_store,
+                                    parent_created_at=comment_created_at,
+                                    parent_updated_at=comment_updated_at,
+                                    parent_weburl=comment_url,
+                                    exclude_images=True,
+                                    indexing_filter_key=IndexingFilterKey.FILES
+                                )
+                                batch_records.extend(comment_file_records)
 
                     except Exception as e:
                         issue_id = issue_data.get("id", "unknown")
@@ -2036,7 +2058,9 @@ class LinearConnector(BaseConnector):
         tx_store,
     ) -> Dict[str, List[ChildRecord]]:
         """
-        Process files from comment bodies, create FileRecords, and return a map of comment_id -> ChildRecords.
+        Process files from comment bodies and return a map of comment_id -> ChildRecords.
+        Fetches already-synced FileRecords from database, or creates them if they don't exist (excluding images).
+        Uses the same indexing keys as issue files.
 
         Args:
             comments_data: List of comment data from Linear API
@@ -2061,11 +2085,12 @@ class LinearConnector(BaseConnector):
             if not comment_id or not comment_body:
                 continue
 
-            # Extract files from comment body and create FileRecords
+            # Get comment timestamps for file records
             comment_created_at = self._parse_linear_datetime(comment_data.get("createdAt", "")) or 0
             comment_updated_at = self._parse_linear_datetime(comment_data.get("updatedAt", "")) or 0
             comment_url = comment_data.get("url", issue_weburl)
 
+            # Extract files from comment body and create FileRecords if they don't exist
             file_records = await self._extract_files_from_markdown(
                 markdown_text=comment_body,
                 parent_external_id=issue_id,
@@ -2080,7 +2105,7 @@ class LinearConnector(BaseConnector):
                 indexing_filter_key=IndexingFilterKey.FILES
             )
 
-            # Save FileRecords if any were created
+            # Save FileRecords if any were created (new files added after sync)
             if file_records:
                 await self.data_entities_processor.on_new_records(file_records)
 
