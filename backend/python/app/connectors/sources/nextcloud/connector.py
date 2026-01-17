@@ -804,31 +804,8 @@ class NextcloudConnector(BaseConnector):
                             )
                         )
 
-                # Always ensure owner has permission
-                owner_has_permission = any(
-                    perm.external_id == user_id for perm in new_permissions
-                )
-                if not owner_has_permission:
-                    new_permissions.append(
-                        Permission(
-                            external_id=user_id,
-                            email=user_email,
-                            type=PermissionType.WRITE,
-                            entity_type=EntityType.USER
-                        )
-                    )
-
             except Exception as perm_ex:
                 self.logger.debug(f"Could not fetch permissions for {path}: {perm_ex}")
-                # Fallback to owner permission
-                new_permissions = [
-                    Permission(
-                        external_id=user_id,
-                        email=user_email,
-                        type=PermissionType.WRITE,
-                        entity_type=EntityType.USER
-                    )
-                ]
 
             permissions_changed = False
 
