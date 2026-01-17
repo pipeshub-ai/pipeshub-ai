@@ -70,7 +70,7 @@ export interface UnifiedApiDocs {
 
 @injectable()
 export class ApiDocsService {
-  private mergedSpec: any = null;
+  private mergedSpec: Record<string, any> | null = null;
   private modules: ModuleInfo[] = [];
   private logger: Logger;
   private initialized: boolean = false;
@@ -262,44 +262,69 @@ export class ApiDocsService {
    * Get unified API documentation
    */
   getUnifiedDocs(): UnifiedApiDocs {
-    const endpoints: EndpointInfo[] = [];
-    const schemas: Record<string, any> = {};
+    return {
+      info: this._buildApiInfo(),
+      categories: this._buildCategories(),
+      modules: this.modules.sort((a, b) => a.order - b.order),
+      endpoints: this._extractEndpoints(),
+      schemas: this._extractSchemas(),
+    };
+  }
 
-    // Extract endpoints from merged spec
-    if (this.mergedSpec?.paths) {
-      for (const [pathKey, pathValue] of Object.entries(this.mergedSpec.paths)) {
-        const pathObj = pathValue as any;
-        for (const [method, operation] of Object.entries(pathObj)) {
-          if (['get', 'post', 'put', 'patch', 'delete'].includes(method)) {
-            const op = operation as any;
-            const tags = op.tags || [];
-            const moduleId = this.findModuleByTags(tags, pathKey, op.summary);
-            endpoints.push({
-              path: pathKey,
-              method: method.toUpperCase(),
-              summary: op.summary || '',
-              description: op.description || '',
-              operationId: op.operationId || '',
-              tags,
-              parameters: op.parameters || [],
-              requestBody: op.requestBody,
-              responses: op.responses || {},
-              security: op.security,
-              moduleId,
-            });
-          }
+  /**
+   * Extract endpoints from merged OpenAPI spec
+   */
+  private _extractEndpoints(): EndpointInfo[] {
+    const endpoints: EndpointInfo[] = [];
+
+    if (!this.mergedSpec?.paths) {
+      return endpoints;
+    }
+
+    for (const [pathKey, pathValue] of Object.entries(this.mergedSpec.paths)) {
+      const pathObj = pathValue as any;
+      for (const [method, operation] of Object.entries(pathObj)) {
+        if (['get', 'post', 'put', 'patch', 'delete'].includes(method)) {
+          const op = operation as any;
+          const tags = op.tags || [];
+          // Use x-service-id extension if present, otherwise fall back to tag-based matching
+          const xServiceId = op['x-service-id'] as string | undefined;
+          const moduleId = this.findModuleByTags(tags, pathKey, op.summary, xServiceId);
+          endpoints.push({
+            path: pathKey,
+            method: method.toUpperCase(),
+            summary: op.summary || '',
+            description: op.description || '',
+            operationId: op.operationId || '',
+            tags,
+            parameters: op.parameters || [],
+            requestBody: op.requestBody,
+            responses: op.responses || {},
+            security: op.security,
+            moduleId,
+          });
         }
       }
     }
 
+    return endpoints;
+  }
 
-    // Extract schemas from merged spec
-    if (this.mergedSpec?.components?.schemas) {
-      Object.assign(schemas, this.mergedSpec.components.schemas);
+  /**
+   * Extract schemas from merged OpenAPI spec
+   */
+  private _extractSchemas(): Record<string, any> {
+    if (!this.mergedSpec?.components?.schemas) {
+      return {};
     }
+    return { ...this.mergedSpec.components.schemas };
+  }
 
-    // Group modules into categories
-    const categories: CategoryInfo[] = [
+  /**
+   * Build category groupings for modules
+   */
+  private _buildCategories(): CategoryInfo[] {
+    return [
       {
         id: 'identity',
         name: 'Identity & Access',
@@ -337,29 +362,40 @@ export class ApiDocsService {
         modules: this.modules.filter(m => ['query-service', 'indexing-service', 'connector-service-internal', 'docling-service'].includes(m.id)),
       },
     ];
+  }
 
+  /**
+   * Build API info object
+   */
+  private _buildApiInfo(): UnifiedApiDocs['info'] {
     return {
-      info: {
-        title: this.mergedSpec?.info?.title || 'PipesHub API',
-        version: this.mergedSpec?.info?.version || '1.0.0',
-        description: this.mergedSpec?.info?.description || 'Unified API documentation for PipesHub services',
-        contact: this.mergedSpec?.info?.contact || {
-          name: 'API Support',
-          email: 'support@pipeshub.com',
-        },
+      title: this.mergedSpec?.info?.title || 'PipesHub API',
+      version: this.mergedSpec?.info?.version || '1.0.0',
+      description: this.mergedSpec?.info?.description || 'Unified API documentation for PipesHub services',
+      contact: this.mergedSpec?.info?.contact || {
+        name: 'API Support',
+        email: 'support@pipeshub.com',
       },
-      categories,
-      modules: this.modules.sort((a, b) => a.order - b.order),
-      endpoints,
-      schemas,
     };
   }
 
   /**
    * Find module ID by endpoint tags
+   * @param tags - The tags associated with the endpoint
+   * @param path - The endpoint path (optional, for legacy fallback)
+   * @param summary - The endpoint summary (optional, for legacy fallback)
+   * @param xServiceId - The x-service-id extension value if present (preferred)
    */
-  private findModuleByTags(tags: string[], path?: string, summary?: string): string {
-    // First try direct tag matching
+  private findModuleByTags(tags: string[], path?: string, summary?: string, xServiceId?: string): string {
+    // First priority: use x-service-id extension if present (most reliable)
+    if (xServiceId) {
+      const validServiceIds = this.modules.map(m => m.id);
+      if (validServiceIds.includes(xServiceId)) {
+        return xServiceId;
+      }
+    }
+
+    // Second priority: direct tag matching
     for (const module of this.modules) {
       for (const tag of tags) {
         if (module.tags.includes(tag)) {
@@ -368,7 +404,7 @@ export class ApiDocsService {
       }
     }
 
-    // For legacy 'Internal Services' tag, use path/summary to determine the service
+    // Legacy fallback: for 'Internal Services' tag, use path/summary to determine the service
     if (tags.includes('Internal Services') && path) {
       return this.getInternalServiceModuleId(path, summary || '');
     }
@@ -377,7 +413,11 @@ export class ApiDocsService {
   }
 
   /**
-   * Determine which internal service module an endpoint belongs to based on path and summary
+   * Determine which internal service module an endpoint belongs to based on path and summary.
+   *
+   * @deprecated This method uses brittle string matching as a legacy fallback.
+   * Prefer adding `x-service-id` extension to OpenAPI operations for explicit service association.
+   * This method is only used for backwards compatibility with specs that don't have x-service-id.
    */
   private getInternalServiceModuleId(path: string, summary: string): string {
     const pathLower = path.toLowerCase();
@@ -446,16 +486,28 @@ export class ApiDocsService {
             if (['get', 'post', 'put', 'patch', 'delete'].includes(method)) {
               const op = operation as any;
               const opTags = op.tags || [];
-              // Check if this endpoint belongs to this service's tag or 'Internal Services' tag
-              if (opTags.includes(serviceTag) || opTags.includes('Internal Services')) {
-                // For 'Internal Services' tag, use path/summary to determine service
-                if (opTags.includes('Internal Services') && !opTags.includes(serviceTag)) {
-                  const endpointModuleId = this.getInternalServiceModuleId(pathKey, op.summary || '');
-                  if (endpointModuleId !== moduleId) {
-                    continue;
-                  }
+              const xServiceId = op['x-service-id'] as string | undefined;
+
+              // First priority: use x-service-id extension if present
+              if (xServiceId) {
+                if (xServiceId === moduleId) {
+                  filteredMethods[method] = operation;
                 }
+                continue;
+              }
+
+              // Second priority: check if endpoint belongs to this service's tag
+              if (opTags.includes(serviceTag)) {
                 filteredMethods[method] = operation;
+                continue;
+              }
+
+              // Legacy fallback: for 'Internal Services' tag, use path/summary to determine service
+              if (opTags.includes('Internal Services')) {
+                const endpointModuleId = this.getInternalServiceModuleId(pathKey, op.summary || '');
+                if (endpointModuleId === moduleId) {
+                  filteredMethods[method] = operation;
+                }
               }
             }
           }
