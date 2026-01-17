@@ -1,209 +1,44 @@
 /**
  * API Documentation Routes
- * Serves the unified API documentation UI and API endpoints
+ * Serves the API documentation HTML UI
  */
 import { Router, Request, Response } from 'express';
 import { Container } from 'inversify';
-import axios from 'axios';
 import { ApiDocsService } from './docs.service';
-import { Logger } from '../../libs/services/logger.service';
-
-/**
- * Service health status
- */
-interface ServiceHealth {
-  name: string;
-  status: 'healthy' | 'unhealthy' | 'unknown';
-  port: number;
-  responseTime?: number;
-  error?: string;
-}
-
-interface HealthCheckResponse {
-  timestamp: string;
-  overallStatus: 'healthy' | 'degraded' | 'unhealthy';
-  services: ServiceHealth[];
-}
 
 export function createApiDocsRouter(container: Container): Router {
   const router = Router();
   const apiDocsService = container.get<ApiDocsService>(ApiDocsService);
-  const logger = container.get<Logger>('Logger');
+
+  /**
+   * Health check endpoint for the docs service
+   */
+  router.get('/health', (_req: Request, res: Response) => {
+    res.json({ status: 'ok', service: 'api-docs' });
+  });
+
+  /**
+   * Get unified API documentation data
+   */
+  router.get('/json', (_req: Request, res: Response) => {
+    try {
+      const unifiedDocs = apiDocsService.getUnifiedDocs();
+      res.json(unifiedDocs);
+    } catch (error) {
+      console.error('Error in /json:', error);
+      res.status(500).json({
+        error: 'Failed to load API documentation',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  });
 
   /**
    * Serve the custom API documentation UI
+   * This handles both / and any sub-paths for SPA routing
    */
-  router.get('/', (_req: Request, res: Response) => {
+  router.get('*', (_req: Request, res: Response) => {
     res.send(getDocumentationHtml());
-  });
-
-  /**
-   * Get unified API documentation data (JSON)
-   */
-  router.get('/api/unified', (_req: Request, res: Response) => {
-    try {
-      const docs = apiDocsService.getUnifiedDocs();
-      res.json(docs);
-    } catch (error) {
-      logger.error('Failed to get unified docs', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-      res.status(500).json({ error: 'Failed to load documentation' });
-    }
-  });
-
-  /**
-   * Get combined OpenAPI spec (for compatibility with OpenAPI tools)
-   */
-  router.get('/api/openapi.json', (_req: Request, res: Response) => {
-    try {
-      const spec = apiDocsService.getCombinedSpec();
-      res.json(spec);
-    } catch (error) {
-      logger.error('Failed to get combined spec', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-      res.status(500).json({ error: 'Failed to load OpenAPI spec' });
-    }
-  });
-
-  /**
-   * Get all modules metadata
-   */
-  router.get('/api/modules', (_req: Request, res: Response) => {
-    try {
-      const modules = apiDocsService.getModules();
-      res.json({ modules });
-    } catch (error) {
-      logger.error('Failed to get modules', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-      res.status(500).json({ error: 'Failed to load modules' });
-    }
-  });
-
-  /**
-   * Get specific module's OpenAPI spec
-   */
-  router.get('/api/modules/:moduleId', (req: Request, res: Response) => {
-    try {
-      const moduleId = req.params.moduleId;
-      if (!moduleId) {
-        res.status(400).json({ error: 'Module ID is required' });
-        return;
-      }
-      const spec = apiDocsService.getModuleSpec(moduleId);
-      if (!spec) {
-        res.status(404).json({ error: 'Module not found' });
-        return;
-      }
-      res.json(spec);
-    } catch (error) {
-      logger.error('Failed to get module spec', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-        moduleId: req.params.moduleId || 'unknown',
-      });
-      res.status(500).json({ error: 'Failed to load module spec' });
-    }
-  });
-
-  /**
-   * Refresh Python spec from remote service
-   */
-  router.post('/api/refresh-python', async (_req: Request, res: Response) => {
-    try {
-      const success = await apiDocsService.refreshPythonSpec();
-      if (success) {
-        res.json({ message: 'Python spec refreshed successfully' });
-      } else {
-        res.status(503).json({ error: 'Failed to refresh Python spec' });
-      }
-    } catch (error) {
-      logger.error('Failed to refresh Python spec', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-      res.status(500).json({ error: 'Failed to refresh Python spec' });
-    }
-  });
-
-  /**
-   * Health check endpoint for all services
-   */
-  router.get('/api/health', async (_req: Request, res: Response) => {
-    const services = [
-      { name: 'Node.js API', port: 3001, url: 'http://localhost:3001/health' },
-      { name: 'Query Service', port: 8000, url: 'http://localhost:8000/health' },
-      { name: 'Docling Service', port: 8001, url: 'http://localhost:8001/health' },
-      { name: 'Connectors Service', port: 8088, url: 'http://localhost:8088/health' },
-      { name: 'Indexing Service', port: 8091, url: 'http://localhost:8091/health' },
-    ];
-
-    const checkService = async (service: { name: string; port: number; url: string }): Promise<ServiceHealth> => {
-      const startTime = Date.now();
-      try {
-        // For Node.js API, we're already running so just mark as healthy
-        if (service.port === 3001) {
-          return {
-            name: service.name,
-            status: 'healthy',
-            port: service.port,
-            responseTime: 0,
-          };
-        }
-
-        const response = await axios.get(service.url, { timeout: 3000 });
-        const responseTime = Date.now() - startTime;
-
-        // Check if response indicates healthy status
-        const isHealthy = response.status === 200 &&
-          (response.data?.status === 'healthy' || response.data?.status === 'ok' || response.status === 200);
-
-        return {
-          name: service.name,
-          status: isHealthy ? 'healthy' : 'unhealthy',
-          port: service.port,
-          responseTime,
-        };
-      } catch (error: any) {
-        return {
-          name: service.name,
-          status: 'unhealthy',
-          port: service.port,
-          responseTime: Date.now() - startTime,
-          error: error.code === 'ECONNREFUSED' ? 'Service not running' :
-                 error.code === 'ETIMEDOUT' ? 'Connection timeout' :
-                 error.message || 'Unknown error',
-        };
-      }
-    };
-
-    try {
-      const results = await Promise.all(services.map(checkService));
-
-      const healthyCount = results.filter(s => s.status === 'healthy').length;
-      let overallStatus: 'healthy' | 'degraded' | 'unhealthy';
-
-      if (healthyCount === results.length) {
-        overallStatus = 'healthy';
-      } else if (healthyCount > 0) {
-        overallStatus = 'degraded';
-      } else {
-        overallStatus = 'unhealthy';
-      }
-
-      const response: HealthCheckResponse = {
-        timestamp: new Date().toISOString(),
-        overallStatus,
-        services: results,
-      };
-
-      res.json(response);
-    } catch (error) {
-      logger.error('Health check failed', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-      res.status(500).json({ error: 'Health check failed' });
-    }
   });
 
   return router;
@@ -2094,7 +1929,7 @@ function getDocumentationHtml(): string {
   <div id="app" class="app-container">
     <aside class="sidebar">
       <div class="sidebar-header">
-        <a href="/docs" class="logo">
+        <a href="/api/v1/docs" class="logo">
           <div class="logo-icon">
             <svg width="24" height="24" viewBox="0 0 614 614" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path fill-rule="evenodd" clip-rule="evenodd" d="M110.72 110.72V186.212L186.217 186.212L186.217 110.72L110.72 110.72Z" fill="#00ac3a"/>
@@ -2283,7 +2118,7 @@ function getDocumentationHtml(): string {
     // Load health status on page load
     async function loadInitialHealthStatus() {
       try {
-        const response = await fetch('/docs/api/health');
+        const response = await fetch('/api/v1/docs/health');
         if (!response.ok) throw new Error('Health check failed');
         const healthData = await response.json();
 
@@ -2449,7 +2284,7 @@ function getDocumentationHtml(): string {
     // Load API documentation
     async function loadApiDocs() {
       try {
-        const response = await fetch('/docs/api/unified');
+        const response = await fetch('/api/v1/docs/json');
         apiDocs = await response.json();
         renderSidebar();
       } catch (error) {
@@ -2817,53 +2652,80 @@ function getDocumentationHtml(): string {
         html += '<div class="category-header">' + escapeHtml(category.name) + '</div>';
 
         for (const module of category.modules) {
-          html += '<a class="nav-item" data-module="' + module.id + '">';
-          html += '  <span class="nav-item-icon">';
-          html += getModuleIcon(module.id);
-          html += '  </span>';
-          html += '  <span>' + escapeHtml(module.name) + '</span>';
-          html += '</a>';
-
-          // Group endpoints by tag
-          const moduleEndpoints = apiDocs.endpoints.filter(e => e.moduleId === module.id);
-          if (moduleEndpoints.length > 0) {
-            // Group by tag
-            const byTag = {};
-            for (const ep of moduleEndpoints) {
-              const tag = ep.tags[0] || 'Other';
-              if (!byTag[tag]) byTag[tag] = [];
-              byTag[tag].push(ep);
-            }
-
-            html += '<div class="endpoint-list" data-module="' + module.id + '" style="display: none;">';
-
-            // Render each tag as a subsection
-            for (const [tag, endpoints] of Object.entries(byTag)) {
-              html += '<div class="tag-section" data-module="' + module.id + '" data-tag="' + escapeHtml(tag) + '">';
-              html += '<div class="tag-header">';
-              html += '<svg class="tag-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>';
-              html += '<span class="tag-name">' + escapeHtml(tag) + '</span>';
-              html += '<span class="tag-count">' + endpoints.length + '</span>';
-              html += '</div>';
-
-              html += '<div class="tag-endpoints">';
-              for (const endpoint of endpoints) {
-                html += '<div class="endpoint-item" data-endpoint="' + endpoint.operationId + '">';
-                html += '  <span class="method-badge method-' + endpoint.method.toLowerCase() + '">' + endpoint.method + '</span>';
-                html += '  <span>' + escapeHtml(endpoint.summary || endpoint.path) + '</span>';
-                html += '</div>';
-              }
-              html += '</div>';
-              html += '</div>';
-            }
-
-            html += '</div>';
-          }
+          html += renderModuleNavItem(module);
         }
+
         html += '</div>';
       }
 
       nav.innerHTML = html;
+    }
+
+    // Render a single module nav item with its endpoints
+    function renderModuleNavItem(module) {
+      let html = '';
+      html += '<a class="nav-item" data-module="' + module.id + '">';
+      html += '  <span class="nav-item-icon">';
+      html += getModuleIcon(module.id);
+      html += '  </span>';
+      html += '  <span>' + escapeHtml(module.name) + '</span>';
+      html += '</a>';
+
+      // Group endpoints by tag
+      const moduleEndpoints = apiDocs.endpoints.filter(e => e.moduleId === module.id);
+      if (moduleEndpoints.length > 0) {
+        // Check if this is an internal service module
+        const internalServiceIds = ['query-service', 'indexing-service', 'connector-service-internal', 'docling-service'];
+        const isInternalService = internalServiceIds.includes(module.id);
+
+        // Group by tag
+        const byTag = {};
+        for (const ep of moduleEndpoints) {
+          const tag = ep.tags[0] || 'Other';
+          if (!byTag[tag]) byTag[tag] = [];
+          byTag[tag].push(ep);
+        }
+
+        html += '<div class="endpoint-list" data-module="' + module.id + '" style="display: none;">';
+
+        // For internal services, render endpoints directly without tag headers
+        if (isInternalService) {
+          html += '<div class="tag-section" data-module="' + module.id + '">';
+          html += '<div class="tag-endpoints" style="display: block;">';
+          for (const endpoint of moduleEndpoints) {
+            html += '<div class="endpoint-item" data-endpoint="' + endpoint.operationId + '">';
+            html += '  <span class="method-badge method-' + endpoint.method.toLowerCase() + '">' + endpoint.method + '</span>';
+            html += '  <span>' + escapeHtml(endpoint.summary || endpoint.path) + '</span>';
+            html += '</div>';
+          }
+          html += '</div>';
+          html += '</div>';
+        } else {
+          // Render each tag as a subsection for non-internal services
+          for (const [tag, endpoints] of Object.entries(byTag)) {
+            html += '<div class="tag-section" data-module="' + module.id + '" data-tag="' + escapeHtml(tag) + '">';
+            html += '<div class="tag-header">';
+            html += '<svg class="tag-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>';
+            html += '<span class="tag-name">' + escapeHtml(tag) + '</span>';
+            html += '<span class="tag-count">' + endpoints.length + '</span>';
+            html += '</div>';
+
+            html += '<div class="tag-endpoints">';
+            for (const endpoint of endpoints) {
+              html += '<div class="endpoint-item" data-endpoint="' + endpoint.operationId + '">';
+              html += '  <span class="method-badge method-' + endpoint.method.toLowerCase() + '">' + endpoint.method + '</span>';
+              html += '  <span>' + escapeHtml(endpoint.summary || endpoint.path) + '</span>';
+              html += '</div>';
+            }
+            html += '</div>';
+            html += '</div>';
+          }
+        }
+
+        html += '</div>';
+      }
+
+      return html;
     }
 
     // Get module icon SVG
@@ -3580,7 +3442,7 @@ function getDocumentationHtml(): string {
     // Fetch and render health status
     async function fetchHealthStatus() {
       try {
-        const response = await fetch('/docs/api/health');
+        const response = await fetch('/api/v1/docs/health');
         if (!response.ok) throw new Error('Health check failed');
         return await response.json();
       } catch (error) {

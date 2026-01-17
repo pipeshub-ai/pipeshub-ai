@@ -447,15 +447,9 @@ export class Application {
 
   private setupApiDocs(): void {
     try {
-      // Mount the API documentation routes
-      this.app.use('/docs', createApiDocsRouter(this.apiDocsContainer));
-
-      // Redirect /api-docs to /docs for backward compatibility
-      this.app.get('/api-docs', (_req, res) => {
-        res.redirect('/docs');
-      });
-
-      this.logger.info('API documentation initialized at /docs');
+      // Mount the API documentation UI at /api/v1/docs
+      this.app.use('/api/v1/docs', createApiDocsRouter(this.apiDocsContainer));
+      this.logger.info('API documentation initialized at /api/v1/docs');
     } catch (error) {
       this.logger.error('Failed to initialize API documentation', {
         error: error instanceof Error ? error.message : 'Unknown error',
