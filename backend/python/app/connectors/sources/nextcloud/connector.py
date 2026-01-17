@@ -230,7 +230,6 @@ def parse_share_response(response_body: bytes) -> List[Dict]:
 
         # Handle case where data might be a list or single dict
         if isinstance(ocs_data, dict):
-            # Single share response
             share_list = [ocs_data] if ocs_data else []
         elif isinstance(ocs_data, list):
             share_list = ocs_data
@@ -243,29 +242,17 @@ def parse_share_response(response_body: bytes) -> List[Dict]:
 
             share = {}
 
-            # Extract share properties with safe type conversion
             if 'share_type' in share_item:
                 try:
                     share['share_type'] = int(share_item['share_type'])
                 except (ValueError, TypeError):
                     logger = logging.getLogger(__name__)
-                    logger.debug(
-                        f"Invalid share_type value: {share_item.get('share_type')}, "
-                        f"skipping this field"
-                    )
+                    logger.debug(f"Invalid share_type: {share_item.get('share_type')}")
 
             if 'share_with' in share_item:
                 share_with_value = share_item['share_with']
                 if share_with_value and isinstance(share_with_value, str):
                     share['share_with'] = share_with_value.strip()
-
-            if 'share_with_displayname' in share_item:
-                display_name = share_item['share_with_displayname']
-                if display_name and isinstance(display_name, str):
-                    share['share_with_displayname'] = display_name.strip()
-                else:
-                    if 'share_with' in share:
-                        share['share_with_displayname'] = share['share_with']
 
             if 'permissions' in share_item:
                 try:
@@ -277,26 +264,16 @@ def parse_share_response(response_body: bytes) -> List[Dict]:
                 except (ValueError, TypeError):
                     share['permissions'] = 1
 
-            if 'uid_owner' in share_item:
-                uid_owner = share_item['uid_owner']
-                if uid_owner and isinstance(uid_owner, str):
-                    share['uid_owner'] = uid_owner.strip()
-
             if share and ('share_type' in share or 'share_with' in share):
                 shares.append(share)
 
     except json.JSONDecodeError as e:
-        error_context = response_body[:500].decode('utf-8', errors='replace') if response_body else 'empty'
         logger = logging.getLogger(__name__)
-        logger.error(
-            f"Failed to parse OCS share response as JSON: {e}. "
-            f"Response preview: {error_context}...",
-            exc_info=True
-        )
+        logger.error(f"Failed to parse share response: {e}", exc_info=True)
         return []
     except Exception as e:
         logger = logging.getLogger(__name__)
-        logger.error(f"Unexpected error parsing share response: {e}", exc_info=True)
+        logger.error(f"Error parsing share response: {e}", exc_info=True)
         return []
 
     return shares
@@ -431,8 +408,11 @@ def get_response_error(response) -> str:
             'https://docs.pipeshub.com/connectors/nextcloud',
             'pipeshub'
         ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
-        # Optional: Keep batch size
+        # Filters
+        .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
+        .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.file_extension_filter())
         .add_sync_custom_field(CommonFields.batch_size_field())
         .with_sync_support(True)
@@ -471,6 +451,7 @@ class NextcloudConnector(BaseConnector):
         # Store current user info for personal account
         self.current_user_id: Optional[str] = None
         self.current_user_email: Optional[str] = None
+        self.base_url: Optional[str] = None
 
         self.data_source: Optional[NextcloudDataSource] = None
         self.batch_size = 100
@@ -481,6 +462,9 @@ class NextcloudConnector(BaseConnector):
 
         # Cache for path-to-external-id mapping during sync
         self._path_to_external_id_cache: Dict[str, str] = {}
+        
+        # Cache for date filters (performance optimization)
+        self._cached_date_filters: Tuple[Optional[datetime], Optional[datetime], Optional[datetime], Optional[datetime]] = (None, None, None, None)
 
     async def init(self) -> bool:
         """Initialize the Nextcloud client for personal account."""
@@ -489,53 +473,58 @@ class NextcloudConnector(BaseConnector):
             config = await self.config_service.get_config(
                 f"/services/connectors/{self.connector_id}/config"
             )
-            
+
             if not config:
                 self.logger.error("Nextcloud connector configuration not found")
                 return False
-            
+
             # Debug: Log the config structure (without sensitive data)
             self.logger.debug(f"Config keys: {list(config.keys())}")
-            
+
             auth_config = config.get("auth", {}) or {}
             credentials_config = config.get("credentials", {}) or {}
-            
+
             self.logger.debug(f"Auth config keys: {list(auth_config.keys()) if auth_config else 'None'}")
             self.logger.debug(f"Credentials config keys: {list(credentials_config.keys()) if credentials_config else 'None'}")
-            
+
             if not auth_config:
                 self.logger.error("Auth configuration not found")
                 return False
-            
+
             # Extract credentials - check both locations
             base_url = (
-                auth_config.get("baseUrl") or 
-                credentials_config.get("baseUrl") or 
+                auth_config.get("baseUrl") or
+                credentials_config.get("baseUrl") or
                 config.get("baseUrl")
             )
-            
+
             if not base_url:
-                self.logger.error(f"Nextcloud 'baseUrl' is required in configuration. Checked auth_config, credentials_config, and root config")
+                self.logger.error("Nextcloud 'baseUrl' is required in configuration. Checked auth_config, credentials_config, and root config")
                 return False
-            
+
+            # Store base_url for later use (e.g., constructing web URLs)
+            self.base_url = base_url.rstrip('/')
+
             username = auth_config.get("username")
             password = auth_config.get("password")
-            
+
             if not username or not password:
                 self.logger.error("Username and Password are required for Nextcloud")
                 return False
-            
+
             # Build client directly
-            from app.sources.client.nextcloud.nextcloud import NextcloudRESTClientViaUsernamePassword
+            from app.sources.client.nextcloud.nextcloud import (
+                NextcloudRESTClientViaUsernamePassword,
+            )
             client = NextcloudRESTClientViaUsernamePassword(base_url, username, password)
             nextcloud_client = NextcloudClient(client)
-            
+
             # Initialize data source
             self.data_source = NextcloudDataSource(nextcloud_client)
-            
+
             # Store current user info
             self.current_user_id = username
-            
+
             # Try to get user email from Nextcloud
             try:
                 response = await self.data_source.get_user_details(self.current_user_id)
@@ -550,7 +539,7 @@ class NextcloudConnector(BaseConnector):
             except Exception as e:
                 self.logger.warning(f"Could not fetch user email: {e}")
                 self.current_user_email = f"{self.current_user_id}@nextcloud.local"
-            
+
             self.logger.info(f"Nextcloud client initialized for user: {self.current_user_id}")
             return True
         except Exception as e:
@@ -665,6 +654,10 @@ class NextcloudConnector(BaseConnector):
             content_changed = False
             permissions_changed = False
 
+            # Store old parent and path for comparison (before resolution)
+            old_parent_id = existing_record.parent_external_record_id if existing_record else None
+            old_path = getattr(existing_record, 'path', None) if existing_record else None
+
             if existing_record:
                 if existing_record.record_name != display_name:
                     metadata_changed = True
@@ -712,6 +705,42 @@ class NextcloudConnector(BaseConnector):
                     except Exception as parent_ex:
                         self.logger.debug(f"Parent lookup failed: {parent_ex}")
 
+            # Detect parent or path changes (file/folder move)
+            force_update = False
+            if existing_record:
+                # Check if parent changed (file/folder moved to different parent)
+                if old_parent_id != parent_external_record_id:
+                    metadata_changed = True
+                    content_changed = True  # Re-index due to location context change
+                    is_updated = True
+                    force_update = True
+                    self.logger.info(
+                        f"📦 Parent changed for {display_name}: "
+                        f"{old_parent_id or 'root'} -> {parent_external_record_id or 'root'}"
+                    )
+                
+                # Check if path changed (covers renames within same parent or moves)
+                if old_path != path:
+                    metadata_changed = True
+                    content_changed = True  # Re-index due to location context change
+                    is_updated = True
+                    force_update = True
+                    self.logger.info(f"📍 Path changed for {display_name}: {old_path} -> {path}")
+                
+                # Force etag change to ensure database update when parent/path changed
+                if force_update and existing_record.external_revision_id == etag:
+                    etag = f"{etag}-moved-{timestamp_ms}"
+                    self.logger.debug(f"🔄 Modified etag to force update: {etag}")
+
+            # Construct web URL for the file/folder
+            web_url = ""
+            if self.base_url and path:
+                # Nextcloud web URLs follow the pattern: https://instance.com/f/{file_id} for files
+                # and https://instance.com/f/{file_id} for folders as well
+                web_url = f"{self.base_url}/f/{file_id}"
+
+            is_file = not is_collection
+
             # Create FileRecord
             file_record = FileRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
@@ -729,12 +758,13 @@ class NextcloudConnector(BaseConnector):
                 updated_at=timestamp_ms,
                 source_created_at=timestamp_ms,
                 source_updated_at=timestamp_ms,
-                weburl="",
+                weburl=web_url,
                 signed_url=None,
                 parent_external_record_id=parent_external_record_id,
                 size_in_bytes=size,
-                is_file=not is_collection,
-                extension=get_file_extension(display_name) if not is_collection else "",
+                is_file=is_file,
+                preview_renderable=is_file,
+                extension=get_file_extension(display_name) if is_file else "",
                 path=path,
                 mime_type=get_mimetype_enum_for_nextcloud(content_type, is_collection),
                 etag=etag,
@@ -744,68 +774,63 @@ class NextcloudConnector(BaseConnector):
             if file_id:
                 path_to_external_id[clean_path] = file_id
 
-            # Fetch permissions
+            # Fetch permissions (like Dropbox Personal, we support sharing)
             new_permissions = []
             try:
-                new_permissions = await self._convert_nextcloud_permissions_to_permissions(
-                    path=path,
-                    user_id=user_id
-                )
+                shares = await self._get_file_shares(path, user_id)
 
-                if not new_permissions:
-                    new_permissions = [
-                        Permission(
-                            external_id=user_id,
-                            email=user_email,
-                            type=PermissionType.OWNER,
-                            entity_type=EntityType.USER
-                        )
-                    ]
-                else:
-                    user_already_has_permission = any(
-                        perm.email == user_email for perm in new_permissions
-                    )
-                    if not user_already_has_permission:
+                for share in shares:
+                    share_type = share.get('share_type')
+                    share_with = share.get('share_with')
+                    permission_int = share.get('permissions', 1)
+
+                    if share_type == 0:  # User share
                         new_permissions.append(
                             Permission(
-                                external_id=user_id,
-                                email=user_email,
-                                type=PermissionType.OWNER,
+                                external_id=share_with,
+                                email=None,
+                                type=nextcloud_permissions_to_permission_type(permission_int),
                                 entity_type=EntityType.USER
                             )
                         )
+                    elif share_type == 1:  # Group share
+                        new_permissions.append(
+                            Permission(
+                                external_id=share_with,
+                                email=None,
+                                type=nextcloud_permissions_to_permission_type(permission_int),
+                                entity_type=EntityType.GROUP
+                            )
+                        )
+
+                # Always ensure owner has permission (like Dropbox Personal uses WRITE for owner)
+                owner_has_permission = any(
+                    perm.external_id == user_id for perm in new_permissions
+                )
+                if not owner_has_permission:
+                    new_permissions.append(
+                        Permission(
+                            external_id=user_id,
+                            email=user_email,
+                            type=PermissionType.WRITE,  # Like Dropbox Personal
+                            entity_type=EntityType.USER
+                        )
+                    )
 
             except Exception as perm_ex:
-                self.logger.debug(f"Using default permissions for {path}: {perm_ex}")
+                self.logger.debug(f"Could not fetch permissions for {path}: {perm_ex}")
+                # Fallback to owner permission
                 new_permissions = [
                     Permission(
                         external_id=user_id,
                         email=user_email,
-                        type=PermissionType.OWNER,
+                        type=PermissionType.WRITE,
                         entity_type=EntityType.USER
                     )
                 ]
 
-            # Compare permissions
-            old_permissions = []
-            if existing_record:
-                try:
-                    async with self.data_store_provider.transaction() as tx_store:
-                        old_permissions = await tx_store.get_permissions_for_record(
-                            record_id=existing_record.id
-                        )
-
-                    permissions_changed = self._compare_permissions(
-                        old_permissions,
-                        new_permissions
-                    )
-
-                    if permissions_changed:
-                        is_updated = True
-
-                except Exception:
-                    permissions_changed = True
-                    is_updated = True
+            # Permission changes not tracked in personal/free tier (like Dropbox Personal)
+            permissions_changed = False
 
             return RecordUpdate(
                 record=file_record,
@@ -815,7 +840,7 @@ class NextcloudConnector(BaseConnector):
                 metadata_changed=metadata_changed,
                 content_changed=content_changed,
                 permissions_changed=permissions_changed,
-                old_permissions=old_permissions,
+                old_permissions=[],
                 new_permissions=new_permissions,
                 external_record_id=file_id
             )
@@ -859,37 +884,17 @@ class NextcloudConnector(BaseConnector):
                 self.logger.error(f"Error processing item in generator: {e}", exc_info=True)
                 continue
 
-    def _compare_permissions(
-        self,
-        old_permissions: List[Permission],
-        new_permissions: List[Permission]
-    ) -> bool:
-        """Compare two permission lists to detect changes."""
-        if len(old_permissions) != len(new_permissions):
-            return True
-
-        old_set = {
-            (p.email, p.type.value if hasattr(p.type, 'value') else p.type,
-             p.entity_type.value if hasattr(p.entity_type, 'value') else p.entity_type)
-            for p in old_permissions
-        }
-        new_set = {
-            (p.email, p.type.value if hasattr(p.type, 'value') else p.type,
-             p.entity_type.value if hasattr(p.entity_type, 'value') else p.entity_type)
-            for p in new_permissions
-        }
-
-        return old_set != new_set
-
-    async def _convert_nextcloud_permissions_to_permissions(
-        self,
-        path: str,
-        user_id: str
-    ) -> List[Permission]:
-        """Convert Nextcloud share permissions to Permission model."""
-        permissions = []
-
+    async def _get_file_shares(self, path: str, user_id: str) -> List[Dict]:
+        """
+        Get shares for a file/folder path.
+        Args:
+            path: WebDAV path to the file/folder
+            user_id: Current user ID
+        Returns:
+            List of share dictionaries
+        """
         try:
+            # Convert WebDAV path to relative path for share API
             relative_path = path
             if '/files/' in path:
                 parts = path.split('/files/')
@@ -917,62 +922,34 @@ class NextcloudConnector(BaseConnector):
             if not body:
                 return []
 
-            shares = parse_share_response(body)
-
-            for share in shares:
-                share_type = share.get('share_type')
-                share_with = share.get('share_with')
-                permission_int = share.get('permissions', 1)
-
-                if share_type == 0:  # User share
-                    permissions.append(
-                        Permission(
-                            external_id=share_with,
-                            email=None,
-                            type=nextcloud_permissions_to_permission_type(permission_int),
-                            entity_type=EntityType.USER
-                        )
-                    )
-                elif share_type == 1:  # Group share
-                    permissions.append(
-                        Permission(
-                            external_id=share_with,
-                            email=None,
-                            type=nextcloud_permissions_to_permission_type(permission_int),
-                            entity_type=EntityType.GROUP
-                        )
-                    )
+            return parse_share_response(body)
 
         except Exception as e:
-            self.logger.debug(f"Error converting permissions for {path}: {e}")
-
-        return permissions
+            self.logger.debug(f"Error fetching shares for {path}: {e}")
+            return []
 
     async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
-        """Handle different types of record updates."""
+        """Handle record updates (modified or deleted records). Follows Box connector pattern."""
         try:
             if record_update.is_deleted:
-                await self.data_entities_processor.on_record_deleted(
-                    record_id=record_update.external_record_id
-                )
-            elif record_update.is_new:
-                self.logger.debug(f"New record: {record_update.record.record_name}")
+                async with self.data_store_provider.transaction() as tx_store:
+                    existing_record = await tx_store.get_record_by_external_id(
+                        external_id=record_update.external_record_id,
+                        connector_id=self.connector_id
+                    )
+                    if existing_record:
+                        await self.data_entities_processor.on_record_deleted(
+                            record_id=existing_record.id
+                        )
+
             elif record_update.is_updated:
-                if record_update.metadata_changed:
-                    await self.data_entities_processor.on_record_metadata_update(
-                        record_update.record
-                    )
-                if record_update.permissions_changed:
-                    await self.data_entities_processor.on_updated_record_permissions(
-                        record_update.record,
-                        record_update.new_permissions
-                    )
-                if record_update.content_changed:
-                    await self.data_entities_processor.on_record_content_update(
-                        record_update.record
-                    )
+                # Update the record - this ensures proper indexing queue updates
+                await self.data_entities_processor.on_new_records([
+                    (record_update.record, record_update.new_permissions or [])
+                ])
+
         except Exception as e:
-            self.logger.error(f"Error handling record updates: {e}", exc_info=True)
+            self.logger.error(f"Error handling record update: {e}", exc_info=True)
 
     async def _sync_user_files(
         self,
@@ -1060,6 +1037,7 @@ class NextcloudConnector(BaseConnector):
                     new_count += 1
 
                     if batch_count >= self.batch_size:
+                        self.logger.info(f"Processing batch of {batch_count} records")
                         await self.data_entities_processor.on_new_records(batch_records)
                         batch_records = []
                         batch_count = 0
@@ -1067,6 +1045,7 @@ class NextcloudConnector(BaseConnector):
 
             # Process remaining records
             if batch_records:
+                self.logger.info(f"Processing final batch of {len(batch_records)} records")
                 await self.data_entities_processor.on_new_records(batch_records)
 
             self.logger.info(
@@ -1078,15 +1057,20 @@ class NextcloudConnector(BaseConnector):
 
     async def run_sync(self) -> None:
         """
-        Runs a full synchronization from the Nextcloud personal account.
+        Smart Sync: Automatically decides between Full vs. Incremental sync based on cursor state.
+        - First run: Full sync + initialize cursor
+        - Subsequent runs: Incremental sync using Activity API
         """
         try:
-            self.logger.info("Starting Nextcloud personal account sync.")
+            self.logger.info("🔍 [Smart Sync] Starting Nextcloud sync...")
 
             # Load filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "nextcloud", self.connector_id, self.logger
             )
+
+            # Cache date filters once at sync start for performance
+            self._cached_date_filters = self._get_date_filters()
 
             # Clear cache at start of sync
             self._path_to_external_id_cache.clear()
@@ -1105,6 +1089,44 @@ class NextcloudConnector(BaseConnector):
                 self.logger.error("Current user info not available")
                 return
 
+            # 1. Check if we have an existing activity cursor
+            sync_point_key = "activity_cursor"
+            cursor_data = None
+            try:
+                cursor_data = await self.activity_sync_point.read_sync_point(sync_point_key)
+            except Exception as e:
+                self.logger.debug(f"⚠️ [Smart Sync] Could not read cursor (first run?): {e}")
+
+            # 2. DECISION LOGIC: Incremental vs Full
+            if cursor_data and cursor_data.get('cursor'):
+                cursor_val = cursor_data.get('cursor')
+                self.logger.info(f"✅ [Smart Sync] Found existing cursor: {cursor_val}")
+                self.logger.info("🚀 [Smart Sync] Switching to INCREMENTAL SYNC.")
+
+                # Hand off to incremental sync
+                await self._run_incremental_sync_internal()
+                return
+
+            # NO CURSOR FOUND → FULL SYNC
+            self.logger.info("⚪ [Smart Sync] No cursor found. Starting FULL SYNC.")
+            await self._run_full_sync_internal()
+
+        except Exception as ex:
+            self.logger.error(f"Error in Nextcloud Smart Sync: {ex}", exc_info=True)
+            raise
+        finally:
+            # Clear cache after sync
+            self._path_to_external_id_cache.clear()
+
+    async def _run_full_sync_internal(self) -> None:
+        """
+        Internal method for full synchronization.
+        """
+        try:
+            if not self.current_user_id or not self.current_user_email:
+                self.logger.error("Current user info not available")
+                return
+
             # Create a single app user for the current user
             app_user = AppUser(
                 app_name=self.connector_name,
@@ -1115,7 +1137,7 @@ class NextcloudConnector(BaseConnector):
                 is_active=True,
                 title=None,
             )
-            
+
             await self.data_entities_processor.on_new_app_users([app_user])
 
             # Create a record group for the personal drive
@@ -1145,22 +1167,520 @@ class NextcloudConnector(BaseConnector):
                 self.current_user_id
             )
 
-            self.logger.info("Nextcloud personal account sync completed successfully.")
+            # Initialize cursor for incremental sync
+            # Fetch the latest activity ID to use as baseline for next incremental sync
+            try:
+                self.logger.info("⚓ [Full Sync] Anchoring activity cursor...")
+                response = await self.data_source.get_activities(
+                    activity_filter="files",
+                    limit=1,
+                    sort="desc"  # Get the most recent activity
+                )
+
+                if is_response_successful(response):
+                    activities = self._parse_activity_response(response)
+                    if activities:
+                        latest_activity_id = activities[0].get('activity_id')
+                        if latest_activity_id:
+                            sync_point_key = "activity_cursor"
+                            await self.activity_sync_point.update_sync_point(
+                                sync_point_key,
+                                {"cursor": str(latest_activity_id)}
+                            )
+                            self.logger.info(f"⚓ [Full Sync] Anchored activity cursor to: {latest_activity_id}")
+                    else:
+                        self.logger.warning("⚠️ [Full Sync] No activities found to anchor cursor")
+                else:
+                    self.logger.warning(f"⚠️ [Full Sync] Failed to fetch activities for anchoring: {get_response_error(response)}")
+            except Exception as e:
+                self.logger.warning(f"❌ [Full Sync] Failed to anchor activity cursor: {e}")
+
+            self.logger.info("✅ [Full Sync] Nextcloud full sync completed successfully.")
 
         except Exception as ex:
-            self.logger.error(f"Error in Nextcloud connector run: {ex}", exc_info=True)
+            self.logger.error(f"❌ [Full Sync] Error in full sync: {ex}", exc_info=True)
             raise
-        finally:
-            # Clear cache after sync
-            self._path_to_external_id_cache.clear()
+
+    async def _run_incremental_sync_internal(self) -> None:
+        """
+        Internal method for full synchronization.
+        """
+        try:
+            if not self.current_user_id or not self.current_user_email:
+                self.logger.error("Current user info not available")
+                return
+
+            self.logger.info("📦 [Full Sync] Starting full synchronization...")
+
+            # Create a single app user for the current user
+            app_user = AppUser(
+                app_name=self.connector_name,
+                connector_id=self.connector_id,
+                source_user_id=self.current_user_id,
+                full_name=self.current_user_id,
+                email=self.current_user_email,
+                is_active=True,
+                title=None,
+            )
+
+            await self.data_entities_processor.on_new_app_users([app_user])
+
+            # Create a record group for the personal drive
+            record_group = RecordGroup(
+                name=f"{self.current_user_id}'s Files",
+                org_id=self.data_entities_processor.org_id,
+                description="Personal Nextcloud Folder",
+                external_group_id=self.current_user_id,
+                connector_name=self.connector_name.value,
+                connector_id=self.connector_id,
+                group_type=RecordGroupType.DRIVE,
+            )
+
+            user_permission = Permission(
+                email=self.current_user_email,
+                type=PermissionType.OWNER,
+                entity_type=EntityType.USER
+            )
+
+            await self.data_entities_processor.on_new_record_groups([(record_group, [user_permission])])
+
+            # Sync files for the current user only
+            self.logger.info(f"Syncing files for user: {self.current_user_email}")
+            await self._sync_user_files(
+                self.current_user_id,
+                self.current_user_email,
+                self.current_user_id
+            )
+
+            # Initialize cursor for incremental sync
+            # Fetch the latest activity ID to use as baseline for next incremental sync
+            try:
+                self.logger.info("⚓ [Full Sync] Anchoring activity cursor...")
+                response = await self.data_source.get_activities(
+                    activity_filter="files",
+                    limit=1,
+                    sort="desc"  # Get the most recent activity
+                )
+
+                if is_response_successful(response):
+                    activities = self._parse_activity_response(response)
+                    if activities:
+                        latest_activity_id = activities[0].get('activity_id')
+                        if latest_activity_id:
+                            sync_point_key = "activity_cursor"
+                            await self.activity_sync_point.update_sync_point(
+                                sync_point_key,
+                                {"cursor": str(latest_activity_id)}
+                            )
+                            self.logger.info(f"⚓ [Full Sync] Anchored activity cursor to: {latest_activity_id}")
+                    else:
+                        self.logger.warning("⚠️ [Full Sync] No activities found to anchor cursor")
+                else:
+                    self.logger.warning(f"⚠️ [Full Sync] Failed to fetch activities for anchoring: {get_response_error(response)}")
+            except Exception as e:
+                self.logger.warning(f"❌ [Full Sync] Failed to anchor activity cursor: {e}")
+
+            self.logger.info("✅ [Full Sync] Nextcloud full sync completed successfully.")
+
+        except Exception as ex:
+            self.logger.error(f"❌ [Full Sync] Error in full sync: {ex}", exc_info=True)
+            raise
+
+    async def _run_incremental_sync_internal(self) -> None:
+        """
+        Internal method for incremental synchronization using Activity API.
+        """
+        try:
+            self.logger.info("🔄 [Incremental Sync] Starting incremental sync using Activity API...")
+
+            if not self.data_source:
+                self.logger.error("Data source not initialized")
+                return
+
+            # Get current user info
+            if not self.current_user_id:
+                self.logger.error("Current user ID not set")
+                return
+
+            user_id = self.current_user_id
+            user_email = self.current_user_email or f"{user_id}@nextcloud.local"
+
+            # Get existing record group
+            async with self.data_store_provider.transaction() as tx_store:
+                existing_group = await tx_store.get_record_group_by_external_id(
+                    self.connector_id,
+                    self.current_user_id
+                )
+
+            if not existing_group:
+                self.logger.warning("⚠️ [Incremental Sync] Record group not found. Falling back to full sync.")
+                await self._run_full_sync_internal()
+                return
+
+            # Get last activity cursor from sync point
+            sync_point_key = "activity_cursor"
+            sync_point_data = await self.activity_sync_point.read_sync_point(sync_point_key)
+            last_activity_id = sync_point_data.get('cursor') if sync_point_data else None
+
+            if last_activity_id is None:
+                self.logger.warning("⚠️ [Incremental Sync] No cursor found. Falling back to full sync.")
+                await self._run_full_sync_internal()
+                return
+
+            self.logger.info(f"📋 [Incremental Sync] Fetching activities since ID: {last_activity_id}")
+
+            # Fetch activities from Nextcloud Activity API
+            response = await self.data_source.get_activities(
+                activity_filter="files",
+                since=int(last_activity_id),
+                limit=500,  # Fetch up to 500 activities per sync
+                sort="asc"  # Ascending order to process oldest first
+            )
+
+            # Check response status
+            # HTTP 304 Not Modified means no new activities - this is SUCCESS
+            if hasattr(response, 'status_code'):
+                status_code = response.status_code
+            elif hasattr(response, 'status'):
+                status_code = response.status
+            else:
+                status_code = None
+
+            if status_code == 304:
+                self.logger.info("✅ [Incremental Sync] HTTP 304 - No new activities. Database is up to date.")
+                return
+
+            if not is_response_successful(response):
+                error_msg = get_response_error(response)
+                self.logger.error(
+                    f"❌ [Incremental Sync] Failed to fetch activities: {error_msg}. "
+                    f"Status: {status_code or 'N/A'}"
+                )
+                self.logger.warning("⚠️ [Incremental Sync] Falling back to full sync due to API failure.")
+                await self._run_full_sync_internal()
+                return
+
+            # Parse activity response
+            activities = self._parse_activity_response(response)
+
+            if not activities:
+                self.logger.info("✅ [Incremental Sync] No new activities found. Database is up to date.")
+                return
+
+            self.logger.info(f"📋 [Incremental Sync] Found {len(activities)} new activities to process")
+
+            # Extract unique file paths that were modified
+            modified_paths = set()
+            deleted_file_ids = set()
+            max_activity_id = last_activity_id
+
+            for activity in activities:
+                activity_id = activity.get('activity_id')
+                if activity_id and int(activity_id) > int(max_activity_id):
+                    max_activity_id = activity_id
+
+                # Check activity type
+                activity_type = activity.get('type', '')
+                object_type = activity.get('object_type', '')
+
+                self.logger.debug(
+                    f"Activity {activity_id}: type={activity_type}, "
+                    f"object_type={object_type}, name={activity.get('object_name')}"
+                )
+
+                # Only process file-related activities
+                if object_type == 'files':
+                    file_path = activity.get('object_name', '')
+
+                    if activity_type in ['file_deleted', 'file_trashed']:
+                        # Track deleted files by their ID if available
+                        file_id = activity.get('object_id')
+                        if file_id:
+                            deleted_file_ids.add(file_id)
+                            self.logger.info(f"🗑️  Deletion detected: {file_path} (ID: {file_id})")
+                    elif activity_type in ['file_created', 'file_changed', 'file_renamed', 'file_restored']:
+                        # Track modified files by path
+                        if file_path:
+                            modified_paths.add(file_path)
+                            self.logger.info(f"📝 Modification detected: {file_path} ({activity_type})")
+
+            # Process deletions
+            if deleted_file_ids:
+                self.logger.info(f"🗑️  [Incremental Sync] Processing {len(deleted_file_ids)} deletions")
+                await self._process_deletions(deleted_file_ids)
+
+            # Process modifications and new files
+            if modified_paths:
+                self.logger.info(f"📝 [Incremental Sync] Processing {len(modified_paths)} modified/new files")
+                await self._process_modified_files(
+                    list(modified_paths),
+                    user_id,
+                    user_email,
+                    existing_group.external_group_id
+                )
+
+            # Update cursor to latest activity ID
+            await self.activity_sync_point.update_sync_point(
+                sync_point_key,
+                {"cursor": str(max_activity_id)}
+            )
+
+            self.logger.info(
+                f"✅ [Incremental Sync] Completed. Processed {len(modified_paths)} modified files, "
+                f"{len(deleted_file_ids)} deletions. Cursor updated to {max_activity_id}"
+            )
+
+        except Exception as ex:
+            self.logger.error(f"❌ [Incremental Sync] Error: {ex}", exc_info=True)
+            # Don't fall back to full sync on every error - let the scheduler retry
+            raise
 
     async def run_incremental_sync(self) -> None:
-        """Runs an incremental sync (placeholder for future implementation)."""
-        self.logger.info(
-            "Incremental sync not yet implemented for Nextcloud. "
-            "Running full sync instead."
-        )
-        await self.run_sync()
+        """
+        Public method for manual incremental sync (kept for backward compatibility).
+        Prefer using run_sync() which auto-detects sync mode.
+        """
+        self.logger.info("🔄 Manual incremental sync requested...")
+        await self._run_incremental_sync_internal()
+
+    def _parse_activity_response(self, response) -> List[Dict]:
+        """
+        Parse Nextcloud activity API response.
+        Args:
+            response: HTTP response from activity API
+        Returns:
+            List of activity dictionaries
+        """
+        activities = []
+
+        try:
+            response_body = extract_response_body(response)
+            if not response_body:
+                return activities
+
+            data = json.loads(response_body)
+
+            # OCS API response structure: {"ocs": {"meta": {...}, "data": [...]}}
+            ocs_data = data.get('ocs', {}).get('data', [])
+
+            if isinstance(ocs_data, list):
+                for activity_item in ocs_data:
+                    if not isinstance(activity_item, dict):
+                        continue
+
+                    activity = {
+                        'activity_id': activity_item.get('activity_id'),
+                        'type': activity_item.get('type'),
+                        'object_type': activity_item.get('object_type'),
+                        'object_id': activity_item.get('object_id'),
+                        'object_name': activity_item.get('object_name'),
+                        'datetime': activity_item.get('datetime'),
+                        'subject': activity_item.get('subject'),
+                    }
+
+                    if activity.get('activity_id'):
+                        activities.append(activity)
+
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Failed to parse activity response: {e}", exc_info=True)
+        except Exception as e:
+            self.logger.error(f"Unexpected error parsing activity response: {e}", exc_info=True)
+
+        return activities
+
+    async def _process_deletions(self, file_ids: set) -> None:
+        """
+        Process file deletions from activity feed.
+        Args:
+            file_ids: Set of external file IDs that were deleted
+        """
+        try:
+            for file_id in file_ids:
+                try:
+                    async with self.data_store_provider.transaction() as tx_store:
+                        # Find record by external ID
+                        record = await tx_store.get_record_by_external_id(
+                            self.connector_id,
+                            str(file_id)
+                        )
+
+                        if record:
+                            self.logger.info(f"Deleting record: {record.record_name} (ID: {file_id})")
+                            await self.data_entities_processor.on_record_deleted(
+                                record_id=record.id
+                            )
+                        else:
+                            self.logger.debug(f"Record not found for deletion: {file_id}")
+
+                except Exception as e:
+                    self.logger.error(f"Error deleting record {file_id}: {e}", exc_info=True)
+
+        except Exception as e:
+            self.logger.error(f"Error processing deletions: {e}", exc_info=True)
+
+    async def _process_modified_files(
+        self,
+        file_paths: List[str],
+        user_id: str,
+        user_email: str,
+        record_group_id: str
+    ) -> None:
+        """
+        Process modified files by fetching their latest metadata.
+        For incremental sync, sends new records immediately (no batching needed for small changes).
+        Args:
+            file_paths: List of file paths that were modified
+            user_id: User ID
+            user_email: User email
+            record_group_id: External record group ID
+        """
+        try:
+            # Construct user root path to avoid unnecessary parent lookups
+            # Format: /remote.php/dav/files/{user_id}
+            user_root_path = f"/remote.php/dav/files/{user_id}"
+
+            # Track processed parent folders to avoid duplicate fetches
+            processed_parents = set()
+
+            # Build a shared path-to-external-id map for all files in this batch
+            # This allows parent folders created during processing to be found by children
+            path_to_external_id = {}
+
+            for path in file_paths:
+                try:
+                    # Extract parent path from the activity path
+                    # Activity paths are like: /TEMP/file.txt
+                    # We need to check if parent folder exists
+                    parent_path = get_parent_path_from_path(path)
+
+                    # If parent exists and hasn't been processed, fetch and create it first
+                    if parent_path and parent_path != '/' and parent_path not in processed_parents:
+                        parent_webdav_path = f"{user_root_path}{parent_path}"
+
+                        # Fetch parent metadata from Nextcloud to get its file_id
+                        self.logger.debug(f"📁 [Incremental Sync] Fetching parent folder metadata: {parent_path}")
+                        try:
+                            async with self.rate_limiter:
+                                parent_response = await self.data_source.list_directory(
+                                    user_id=user_id,
+                                    path=parent_path,
+                                    depth="0"
+                                )
+
+                            if is_response_successful(parent_response):
+                                parent_body = extract_response_body(parent_response)
+                                if parent_body:
+                                    parent_entries = parse_webdav_propfind_response(parent_body)
+                                    if parent_entries:
+                                        # Get the parent's file_id from the response
+                                        parent_file_id = parent_entries[0].get('file_id')
+                                        
+                                        if parent_file_id:
+                                            # Check if parent exists in DB by external_id (file_id)
+                                            async with self.data_store_provider.transaction() as tx_store:
+                                                parent_record = await tx_store.get_record_by_external_id(
+                                                    external_id=parent_file_id,
+                                                    connector_id=self.connector_id
+                                                )
+
+                                            # If parent exists, just cache it
+                                            if parent_record:
+                                                clean_path = parent_webdav_path.rstrip('/')
+                                                path_to_external_id[clean_path] = parent_file_id
+                                                processed_parents.add(parent_path)
+                                                self.logger.debug(f"📌 [Incremental Sync] Found existing parent: {clean_path} -> {parent_file_id}")
+                                            else:
+                                                # Parent doesn't exist, create it
+                                                self.logger.info(f"📁 [Incremental Sync] Creating new parent folder: {parent_path}")
+                                                
+                                                # Build path map for parent
+                                                parent_path_map = await self._build_path_to_external_id_map(parent_entries)
+
+                                                # Process parent folder
+                                                for parent_entry in parent_entries:
+                                                    parent_update = await self._process_nextcloud_entry(
+                                                        entry=parent_entry,
+                                                        user_id=user_id,
+                                                        user_email=user_email,
+                                                        record_group_id=record_group_id,
+                                                        user_root_path=user_root_path,
+                                                        path_to_external_id=parent_path_map
+                                                    )
+
+                                                    if parent_update and parent_update.record:
+                                                        if parent_update.is_new:
+                                                            await self.data_entities_processor.on_new_records([
+                                                                (parent_update.record, parent_update.new_permissions or [])
+                                                            ])
+                                                            self.logger.info(f"✅ [Incremental Sync] Created parent folder: {parent_path}")
+                                                        else:
+                                                            await self._handle_record_updates(parent_update)
+                                                            self.logger.debug(f"✅ [Incremental Sync] Updated parent folder: {parent_path}")
+
+                                                        # Cache the parent
+                                                        if parent_update.record.path:
+                                                            clean_path = parent_update.record.path.rstrip('/')
+                                                            path_to_external_id[clean_path] = parent_update.record.external_record_id
+                                                            self.logger.debug(f"📌 [Incremental Sync] Cached parent: {clean_path} -> {parent_update.record.external_record_id}")
+
+                                                processed_parents.add(parent_path)
+                        except Exception as parent_err:
+                            self.logger.warning(f"⚠️ [Incremental Sync] Failed to fetch/process parent {parent_path}: {parent_err}")
+
+                    # Now fetch and process the actual file
+                    async with self.rate_limiter:
+                        response = await self.data_source.list_directory(
+                            user_id=user_id,
+                            path=path,
+                            depth="0"  # Only fetch this item, not children
+                        )
+
+                    if not is_response_successful(response):
+                        self.logger.warning(
+                            f"Failed to fetch metadata for {path}: {get_response_error(response)}"
+                        )
+                        continue
+
+                    # Parse response
+                    response_body = extract_response_body(response)
+                    if not response_body:
+                        continue
+
+                    entries = parse_webdav_propfind_response(response_body)
+
+                    if not entries:
+                        continue
+
+                    # Build path-to-external-id map for this file and merge with existing map
+                    file_path_map = await self._build_path_to_external_id_map(entries)
+                    path_to_external_id.update(file_path_map)
+
+                    # Process each entry
+                    for entry in entries:
+                        record_update = await self._process_nextcloud_entry(
+                            entry=entry,
+                            user_id=user_id,
+                            user_email=user_email,
+                            record_group_id=record_group_id,
+                            user_root_path=user_root_path,
+                            path_to_external_id=path_to_external_id
+                        )
+
+                        if record_update:
+                            # For incremental sync: send new records immediately, handle updates separately
+                            if record_update.is_new and record_update.record:
+                                await self.data_entities_processor.on_new_records([
+                                    (record_update.record, record_update.new_permissions or [])
+                                ])
+                            else:
+                                # Handle updates and deletions
+                                await self._handle_record_updates(record_update)
+
+                except Exception as e:
+                    self.logger.error(f"Error processing modified file {path}: {e}", exc_info=True)
+
+        except Exception as e:
+            self.logger.error(f"Error processing modified files: {e}", exc_info=True)
 
     async def get_signed_url(self, record: Record) -> Optional[str]:
         """
@@ -1179,24 +1699,24 @@ class NextcloudConnector(BaseConnector):
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail="Data source not initialized"
             )
-            
+
         # Get file record to get path
         async with self.data_store_provider.transaction() as tx_store:
             file_record = await tx_store.get_file_record_by_id(record.id)
-        
+
         if not file_record or not file_record.path:
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail="File not found or access denied"
             )
-            
+
         # Check if it's a folder
         if file_record.mime_type == MimeTypes.FOLDER:
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Cannot download folders"
             )
-        
+
         # Extract relative path from full WebDAV path
         path = file_record.path
         relative_path = path
@@ -1211,20 +1731,20 @@ class NextcloudConnector(BaseConnector):
                     relative_path = ''
         else:
             relative_path = path.lstrip('/')
-        
+
         # Download file using authenticated WebDAV client
         try:
             response = await self.data_source.download_file(
                 user_id=self.current_user_id,
                 path=relative_path
             )
-            
+
             if not is_response_successful(response):
                 raise HTTPException(
                     status_code=HttpStatusCode.NOT_FOUND.value,
                     detail=f"Failed to download file: {get_response_error(response)}"
                 )
-            
+
             # Get file content from response
             file_content = extract_response_body(response)
             if not file_content:
@@ -1232,11 +1752,11 @@ class NextcloudConnector(BaseConnector):
                     status_code=HttpStatusCode.NOT_FOUND.value,
                     detail="Empty file content"
                 )
-            
+
             # Create async generator for streaming
             async def generate():
                 yield file_content
-            
+
             return StreamingResponse(
                 generate(),
                 media_type=record.mime_type if record.mime_type else "application/octet-stream",
@@ -1279,9 +1799,45 @@ class NextcloudConnector(BaseConnector):
             "Use scheduled sync instead."
         )
 
+    def _get_date_filters(self) -> Tuple[Optional[datetime], Optional[datetime], Optional[datetime], Optional[datetime]]:
+        """
+        Extract date filter values from sync_filters.
+
+        Returns:
+            Tuple of (modified_after, modified_before, created_after, created_before)
+        """
+        modified_after: Optional[datetime] = None
+        modified_before: Optional[datetime] = None
+        created_after: Optional[datetime] = None
+        created_before: Optional[datetime] = None
+
+        # Get modified date filter
+        modified_date_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
+        if modified_date_filter and not modified_date_filter.is_empty():
+            after_iso, before_iso = modified_date_filter.get_datetime_iso()
+            if after_iso:
+                modified_after = datetime.fromisoformat(after_iso).replace(tzinfo=timezone.utc)
+                self.logger.info(f"Applying modified date filter: after {modified_after}")
+            if before_iso:
+                modified_before = datetime.fromisoformat(before_iso).replace(tzinfo=timezone.utc)
+                self.logger.info(f"Applying modified date filter: before {modified_before}")
+
+        # Get created date filter
+        created_date_filter = self.sync_filters.get(SyncFilterKey.CREATED)
+        if created_date_filter and not created_date_filter.is_empty():
+            after_iso, before_iso = created_date_filter.get_datetime_iso()
+            if after_iso:
+                created_after = datetime.fromisoformat(after_iso).replace(tzinfo=timezone.utc)
+                self.logger.info(f"Applying created date filter: after {created_after}")
+            if before_iso:
+                created_before = datetime.fromisoformat(before_iso).replace(tzinfo=timezone.utc)
+                self.logger.info(f"Applying created date filter: before {created_before}")
+
+        return modified_after, modified_before, created_after, created_before
+
     def _should_include_file(self, entry: Dict) -> bool:
         """
-        Determines if a file should be included based on the file extension filter.
+        Determines if a file should be included based on the file extension filter and date filters.
 
         Args:
             entry: Nextcloud file entry dict
@@ -1293,6 +1849,46 @@ class NextcloudConnector(BaseConnector):
         if entry.get('is_collection'):
             return True
 
+        # Get date filters from cache (performance optimization)
+        modified_after, modified_before, created_after, created_before = self._cached_date_filters
+
+        # Parse Nextcloud timestamps
+        last_modified_str = entry.get('last_modified')
+        modified_at = None
+
+        if last_modified_str:
+            try:
+                modified_at = datetime.strptime(last_modified_str, "%a, %d %b %Y %H:%M:%S %Z")
+                modified_at = modified_at.replace(tzinfo=timezone.utc)
+            except Exception as e:
+                self.logger.debug(f"Could not parse last_modified for {entry.get('display_name')}: {e}")
+
+        # Nextcloud doesn't provide creation date via WebDAV, so we only apply modified date filters
+        
+        # Validate: If modified date filter is configured but file has no date, exclude it
+        if modified_after or modified_before:
+            if not modified_at:
+                self.logger.debug(f"Skipping {entry.get('display_name')}: no modified date available")
+                return False
+
+        # Apply modified date filters
+        if modified_at:
+            if modified_after and modified_at < modified_after:
+                self.logger.debug(f"Skipping {entry.get('display_name')}: modified {modified_at} before cutoff {modified_after}")
+                return False
+            if modified_before and modified_at > modified_before:
+                self.logger.debug(f"Skipping {entry.get('display_name')}: modified {modified_at} after cutoff {modified_before}")
+                return False
+
+        # Note: Nextcloud WebDAV doesn't expose creation date, so created_after/created_before are not applied
+        # If created date filters are set, log a warning once
+        if (created_after or created_before) and not hasattr(self, '_created_filter_warning_logged'):
+            self.logger.warning(
+                "Created date filters are configured but Nextcloud WebDAV API does not provide creation dates. "
+                "Only modification date filters will be applied."
+            )
+            self._created_filter_warning_logged = True
+
         # Get the extensions filter
         extensions_filter = self.sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
 
@@ -1303,7 +1899,7 @@ class NextcloudConnector(BaseConnector):
         # Get the file extension from the entry path or display_name
         path = entry.get('path', '')
         display_name = entry.get('display_name', path.split('/')[-1] if path else '')
-        
+
         file_extension = None
         if display_name and "." in display_name:
             file_extension = display_name.rsplit(".", 1)[-1].lower()

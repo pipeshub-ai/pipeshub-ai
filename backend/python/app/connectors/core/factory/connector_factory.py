@@ -31,13 +31,13 @@ from app.connectors.sources.dropbox.connector import DropboxConnector
 from app.connectors.sources.dropbox_individual.connector import (
     DropboxIndividualConnector,
 )
-from app.connectors.sources.nextcloud.connector import NextcloudConnector
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
 from app.connectors.sources.minio.connector import MinIOConnector
+from app.connectors.sources.nextcloud.connector import NextcloudConnector
 from app.connectors.sources.s3.connector import S3Connector
 from app.connectors.sources.servicenow.servicenow.connector import (
     ServiceNowConnector,
