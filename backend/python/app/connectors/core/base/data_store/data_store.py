@@ -65,6 +65,11 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_record_by_external_revision_id(self, connector_id: str, external_revision_id: str) -> Optional[Record]:
+        """Get record by external revision ID (e.g., etag for S3)."""
+        pass
+
+    @abstractmethod
     async def get_record_by_issue_key(self, connector_id: str, issue_key: str) -> Optional[Record]:
         """Get record by Jira issue key (e.g., PROJ-123) by searching weburl pattern."""
         pass
@@ -223,6 +228,19 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> None:
+        pass
+
+    @abstractmethod
+    async def delete_parent_child_edges_to(self, to_key: str) -> int:
+        """
+        Delete PARENT_CHILD edges pointing to a specific target record.
+
+        Args:
+            to_key: The target node key (e.g., "records/12345")
+
+        Returns:
+            int: Number of edges deleted
+        """
         pass
 
 

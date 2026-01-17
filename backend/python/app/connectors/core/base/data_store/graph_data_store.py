@@ -57,6 +57,9 @@ class GraphTransactionStore(TransactionStore):
     async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
         return await self.graph_provider.get_record_by_external_id(connector_id, external_id, transaction=self.txn)
 
+    async def get_record_by_external_revision_id(self, connector_id: str, external_revision_id: str) -> Optional[Record]:
+        return await self.graph_provider.get_record_by_external_revision_id(connector_id, external_revision_id, transaction=self.txn)
+
     async def get_records_by_status(self, org_id: str, connector_id: str, status_filters: List[str], limit: Optional[int] = None, offset: int = 0) -> List[Record]:
         """Get records by status. Returns properly typed Record instances."""
         return await self.graph_provider.get_records_by_status(org_id, connector_id, status_filters, limit, offset, transaction=self.txn)
@@ -117,6 +120,10 @@ class GraphTransactionStore(TransactionStore):
 
     async def delete_edges_to(self, to_id: str, to_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edges_to(to_id, to_collection, collection, transaction=self.txn)
+
+    async def delete_parent_child_edges_to(self, to_key: str) -> int:
+        """Delete PARENT_CHILD edges pointing to a specific target record."""
+        return await self.graph_provider.delete_parent_child_edges_to(to_key, transaction=self.txn)
 
     async def delete_edges_to_groups(self, from_id: str, from_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edges_to_groups(from_id, from_collection, collection, transaction=self.txn)

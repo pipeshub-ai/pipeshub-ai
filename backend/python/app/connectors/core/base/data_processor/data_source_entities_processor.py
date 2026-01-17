@@ -210,6 +210,8 @@ class DataSourceEntitiesProcessor:
             # Todo: Create a edge between the record group and the App
 
         if record_group:
+            # Set the record_group_id on the record
+            record.record_group_id = record_group.id
             # Create a edge between the record and the record group if it doesn't exist
             await tx_store.create_record_group_relation(record.id, record_group.id)
 
@@ -381,6 +383,9 @@ class DataSourceEntitiesProcessor:
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
 
+        # Handle record group FIRST to set record_group_id before saving the record
+        await self._handle_record_group(record, tx_store)
+
         if existing_record is None:
             self.logger.info("New record: %s", record)
             await self._handle_new_record(record, tx_store)
@@ -393,9 +398,6 @@ class DataSourceEntitiesProcessor:
 
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
         await self._handle_parent_record(record, tx_store)
-
-        # Create a edge between the record and the record group if it doesn't exist and if record_group_id is provided
-        await self._handle_record_group(record, tx_store)
 
         # Create a edge between the base record and the specific record if it doesn't exist - isOfType - File, Mail, Message
 

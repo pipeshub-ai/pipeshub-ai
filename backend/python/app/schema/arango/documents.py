@@ -177,6 +177,7 @@ record_schema = {
             "externalParentId": {"type": ["string", "null"]},
             "externalRevisionId": {"type": ["string", "null"], "default": None},
             "externalRootGroupId": {"type": ["string", "null"]},
+            "recordGroupId": {"type": ["string", "null"]},
             "recordType": {
                 "type": "string",
                 "enum": [record_type.value for record_type in RecordType],
@@ -264,13 +265,9 @@ file_record_schema = {
         "type": "object",
         "properties": {
             "orgId": {"type": "string"},
-            "recordGroupId": {"type": ["string", "null"]},  # kb id
             "name": {"type": "string", "minLength": 1},
             "isFile": {"type": "boolean"},
             "extension": {"type": ["string", "null"]},
-            "mimeType": {"type": ["string", "null"]},
-            "sizeInBytes": {"type": "number"},
-            "webUrl": {"type": "string"},
             "etag": {"type": ["string", "null"]},
             "ctag": {"type": ["string", "null"]},
             "md5Checksum": {"type": ["string", "null"]},

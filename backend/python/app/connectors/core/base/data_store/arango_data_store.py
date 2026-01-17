@@ -59,6 +59,9 @@ class ArangoTransactionStore(TransactionStore):
     async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
         return await self.arango_service.get_record_by_external_id(connector_id, external_id, transaction=self.txn)
 
+    async def get_record_by_external_revision_id(self, connector_id: str, external_revision_id: str) -> Optional[Record]:
+        return await self.arango_service.get_record_by_external_revision_id(connector_id, external_revision_id, transaction=self.txn)
+
     async def get_record_by_issue_key(self, connector_id: str, issue_key: str) -> Optional[Record]:
         return await self.arango_service.get_record_by_issue_key(connector_id, issue_key, transaction=self.txn)
 
@@ -137,6 +140,10 @@ class ArangoTransactionStore(TransactionStore):
 
     async def delete_edges_to(self, to_key: str, collection: str) -> None:
         return await self.arango_service.delete_edges_to(to_key, collection, transaction=self.txn)
+
+    async def delete_parent_child_edges_to(self, to_key: str) -> int:
+        """Delete PARENT_CHILD edges pointing to a specific target record."""
+        return await self.arango_service.delete_parent_child_edges_to(to_key, transaction=self.txn)
 
     async def delete_edges_to_groups(self, from_key: str, collection: str) -> None:
         return await self.arango_service.delete_edges_to_groups(from_key, collection, transaction=self.txn)

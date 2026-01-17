@@ -1053,6 +1053,38 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get record by external ID failed: {str(e)}")
             return None
 
+    async def get_record_by_external_revision_id(
+        self,
+        connector_id: str,
+        external_revision_id: str,
+        transaction: Optional[str] = None
+    ) -> Optional[Record]:
+        """Get record by external revision ID (e.g., etag)"""
+        query = f"""
+        FOR doc IN {CollectionNames.RECORDS.value}
+            FILTER doc.externalRevisionId == @external_revision_id
+            AND doc.connectorId == @connector_id
+            LIMIT 1
+            RETURN doc
+        """
+
+        try:
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "external_revision_id": external_revision_id,
+                    "connector_id": connector_id
+                },
+                txn_id=transaction
+            )
+            if results:
+                record_data = self._translate_node_from_arango(results[0])
+                return Record.from_arango_base_record(record_data)
+            return None
+        except Exception as e:
+            self.logger.error(f"❌ Get record by external revision ID failed: {str(e)}")
+            return None
+
     async def get_record_key_by_external_id(
         self,
         external_id: str,
