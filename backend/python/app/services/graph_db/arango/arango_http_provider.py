@@ -26,6 +26,7 @@ from app.models.entities import (
     CommentRecord,
     FileRecord,
     MailRecord,
+    Person,
     Record,
     RecordGroup,
     RecordType,
@@ -1954,6 +1955,30 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 f"❌ Failed to retrieve user groups for connector {connector_id}: {str(e)}"
             )
             return []
+
+    async def batch_upsert_people(
+        self,
+        people: List[Person],
+        transaction: Optional[str] = None
+    ) -> None:
+        """Upsert people to PEOPLE collection."""
+        try:
+            if not people:
+                return
+
+            docs = [person.to_arango_person() for person in people]
+
+            await self.batch_upsert_nodes(
+                nodes=docs,
+                collection=CollectionNames.PEOPLE.value,
+                transaction=transaction
+            )
+
+            self.logger.debug(f"Upserted {len(people)} people records")
+
+        except Exception as e:
+            self.logger.error(f"Error upserting people: {e}")
+            raise
 
     async def get_app_role_by_external_id(
         self,

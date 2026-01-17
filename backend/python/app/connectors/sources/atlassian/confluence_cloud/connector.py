@@ -153,7 +153,6 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
             description="Filter pages and blogposts by space name",
             filter_type=FilterType.LIST,
             category=FilterCategory.SYNC,
-            default_value=[],
             option_source_type=OptionSourceType.DYNAMIC
         ))
         .add_filter_field(FilterField(
@@ -162,7 +161,6 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
             description="Filter specific pages by their name.",
             filter_type=FilterType.LIST,
             category=FilterCategory.SYNC,
-            default_value=[],
             option_source_type=OptionSourceType.DYNAMIC
         ))
         .add_filter_field(FilterField(
@@ -171,7 +169,6 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
             description="Filter specific blogposts by their name.",
             filter_type=FilterType.LIST,
             category=FilterCategory.SYNC,
-            default_value=[],
             option_source_type=OptionSourceType.DYNAMIC
         ))
         .add_filter_field(CommonFields.modified_date_filter("Filter pages and blogposts by modification date."))

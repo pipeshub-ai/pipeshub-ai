@@ -23,6 +23,7 @@ from app.models.entities import (
     Domain,
     FileRecord,
     Org,
+    Person,
     Record,
     RecordGroup,
     RecordType,
@@ -374,6 +375,9 @@ class ArangoTransactionStore(TransactionStore):
                 collection=CollectionNames.USER_APP_RELATION.value,
                 transaction=self.txn
             )
+
+    async def batch_upsert_people(self, people: List[Person]) -> None:
+        return await self.arango_service.batch_upsert_people(people, transaction=self.txn)
 
     async def batch_upsert_orgs(self, orgs: List[Org]) -> None:
         return await self.arango_service.batch_upsert_orgs(orgs, transaction=self.txn)

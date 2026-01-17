@@ -23,6 +23,7 @@ from app.models.entities import (
     FileRecord,
     IndexingStatus,
     MailRecord,
+    Person,
     Record,
     RecordGroup,
     RecordType,
@@ -64,6 +65,7 @@ class UserGroupWithMembers:
 class DataSourceEntitiesProcessor:
     ATTACHMENT_CONTAINER_TYPES = [
         RecordType.MAIL,
+        RecordType.GROUP_MAIL,
         RecordType.WEBPAGE,
         RecordType.CONFLUENCE_PAGE,
         RecordType.CONFLUENCE_BLOGPOST,
@@ -151,7 +153,7 @@ class DataSourceEntitiesProcessor:
                                      RecordType.CONFLUENCE_BLOGPOST, RecordType.SHAREPOINT_PAGE]:
             # All webpage-like types use WebpageRecord
             return WebpageRecord(**base_params)
-        elif parent_record_type == RecordType.MAIL:
+        elif parent_record_type in [RecordType.MAIL, RecordType.GROUP_MAIL]:
             return MailRecord(**base_params)
         elif parent_record_type == RecordType.TICKET:
             return TicketRecord(**base_params)
@@ -247,9 +249,14 @@ class DataSourceEntitiesProcessor:
                     if permission.email:
                         user = await tx_store.get_user_by_email(permission.email)
 
-                        # If user doesn't exist (external user), create them as inactive
+                        # If user doesn't exist (external user), use PEOPLE collection
                         if not user and permission.email:
-                            user = await self._create_external_user(permission.email, record.connector_id, record.connector_name, tx_store)
+                            self.logger.warning(f"Skipping user/person creation for external user {permission.email}")
+                            # TODO : Handle extenal user/person creation
+                            # person_id = await self._upsert_external_person(permission.email, tx_store)
+                            # if person_id:
+                            #     from_id = person_id
+                            #     from_collection = CollectionNames.PEOPLE.value
 
                     if user:
                         from_id = user.id
@@ -308,28 +315,29 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self.logger.error("Failed to create permission edge: %s", e)
 
-    async def _create_external_user(self, email: str, connector_id: str, connector_name: str, tx_store) -> AppUser:
-        """Create an external user record."""
-        external_source_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, email))
+    async def _upsert_external_person(self, email: str, tx_store) -> Optional[str]:
+        """
+        Upsert person record for external email address.
+        Uses deterministic UUID based on email to ensure only one Person record per email.
+        Returns person_id for creating permission edge.
+        """
+        try:
+            # Use deterministic UUID based on email to ensure consistent ID for same email
+            # This ensures upsert works correctly and only one Person record exists per email
+            person_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, email.lower()))
+            person = Person(email=email.lower(), id=person_id)
 
-        # Create external user record
-        external_user = AppUser(
-            app_name=connector_name,
-            connector_id=connector_id,
-            source_user_id=external_source_id,
-            email=email,
-            full_name=email.split('@')[0],
-            is_active=False
-        )
+            # Upsert to PEOPLE collection (handles both create and update)
+            await tx_store.batch_upsert_people([person])
 
-        # Save the external user
-        await tx_store.batch_upsert_app_users([external_user])
+            self.logger.debug(f"Upserted person record for external email: {email}")
 
-        # Fetch the created user to get the ID
-        user = await tx_store.get_user_by_email(email)
+            # Return the person ID for permission edge
+            return person.id
 
-        self.logger.info(f"Created external user record for: {email}")
-        return user
+        except Exception as e:
+            self.logger.error(f"Error upserting person for {email}: {e}")
+            return None
 
     async def on_updated_record_permissions(self, record: Record, permissions: List[Permission]) -> None:
         self.logger.info(f"Starting permission update for record: {record.record_name} ({record.id})")

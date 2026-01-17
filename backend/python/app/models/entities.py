@@ -31,6 +31,7 @@ class RecordGroupType(str, Enum):
     SERVICENOW_CATEGORY = "SERVICENOW_CATEGORY"
 
     MAILBOX = "MAILBOX"
+    GROUP_MAILBOX = "GROUP_MAILBOX"
     WEB = "WEB"
 
 class RecordType(str, Enum):
@@ -39,6 +40,7 @@ class RecordType(str, Enum):
     WEBPAGE = "WEBPAGE"
     MESSAGE = "MESSAGE"
     MAIL = "MAIL"
+    GROUP_MAIL = "GROUP_MAIL"
     TICKET = "TICKET"
     COMMENT = "COMMENT"
     INLINE_COMMENT = "INLINE_COMMENT"
@@ -984,6 +986,31 @@ class UserGroup(BaseModel):
 
     def key(self) -> str:
         return self.id
+
+
+class Person(BaseModel):
+    """Lightweight entity for external email addresses (not organization members)."""
+    id: str = Field(description="Unique identifier", default_factory=lambda: str(uuid4()))
+    email: str = Field(description="Email address")
+    created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Creation timestamp")
+    updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Update timestamp")
+
+    def to_arango_person(self) -> Dict[str, Any]:
+        return {
+            "_key": self.id,
+            "email": self.email,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+        }
+
+    @staticmethod
+    def from_arango_person(data: Dict[str, Any]) -> 'Person':
+        return Person(
+            id=data.get("_key"),
+            email=data.get("email"),
+            created_at=data.get("createdAtTimestamp", get_epoch_timestamp_in_ms()),
+            updated_at=data.get("updatedAtTimestamp", get_epoch_timestamp_in_ms()),
+        )
 
 
 class AppUser(BaseModel):

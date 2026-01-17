@@ -2,9 +2,7 @@ from contextlib import asynccontextmanager
 from logging import Logger
 from typing import AsyncContextManager, Dict, List, Optional
 
-from app.config.constants.arangodb import (
-    CollectionNames,
-)
+from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
     TransactionStore,
@@ -19,6 +17,7 @@ from app.models.entities import (
     Domain,
     FileRecord,
     Org,
+    Person,
     Record,
     RecordGroup,
     User,
@@ -153,6 +152,9 @@ class GraphTransactionStore(TransactionStore):
 
     async def get_user_groups(self, connector_id: str, org_id: str) -> List[AppUserGroup]:
         return await self.graph_provider.get_user_groups(connector_id, org_id, transaction=self.txn)
+
+    async def batch_upsert_people(self, people: List[Person]) -> None:
+        return await self.graph_provider.batch_upsert_people(people, transaction=self.txn)
 
     async def create_user_group_hierarchy(
         self,

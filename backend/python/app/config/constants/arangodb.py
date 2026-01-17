@@ -248,6 +248,7 @@ class RecordTypes(Enum):
     ATTACHMENT = "ATTACHMENT"
     LINK = "LINK"
     MAIL = "MAIL"
+    GROUP_MAIL = "GROUP_MAIL"
     DRIVE = "DRIVE"
     WEBPAGE = "WEBPAGE"
     COMMENT = "COMMENT"
@@ -313,6 +314,7 @@ class ConnectorScopes(Enum):
 RECORD_TYPE_COLLECTION_MAPPING = {
     "FILE": CollectionNames.FILES.value,
     "MAIL": CollectionNames.MAILS.value,
+    "GROUP_MAIL": CollectionNames.MAILS.value,
     "WEBPAGE": CollectionNames.WEBPAGES.value,
     "SHAREPOINT_PAGE": CollectionNames.WEBPAGES.value,
     "CONFLUENCE_PAGE": CollectionNames.WEBPAGES.value,

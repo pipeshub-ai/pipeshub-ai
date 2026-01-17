@@ -877,3 +877,20 @@ team_schema = {
 #     "level": "strict",
 #     "message": "Document does not match the workflow schema.",
 # }
+
+# people schema - for external email addresses (not organization members)
+people_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_key": {"type": "string"},  # deterministic UUID based on email
+            "email": {"type": "string", "format": "email"},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["email", "createdAtTimestamp", "updatedAtTimestamp"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the people schema.",
+}

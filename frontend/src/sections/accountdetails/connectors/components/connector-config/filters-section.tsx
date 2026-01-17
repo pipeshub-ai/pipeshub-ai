@@ -1001,18 +1001,16 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
     };
   }, []);
 
-  // Initialize indexing filters with default values on mount
   useEffect(() => {
     if (!connectorConfig) return;
 
     const indexingSchema = connectorConfig.config.filters?.indexing?.schema;
-    if (!indexingSchema?.fields) return;
+    const syncSchema = connectorConfig.config.filters?.sync?.schema;
 
-    // Initialize each indexing filter field with its default value if not already set
-    indexingSchema.fields.forEach((field) => {
+    // Initialize indexing filters
+    indexingSchema?.fields?.forEach((field) => {
       const existingValue = formData[field.name];
       
-      // Only initialize if not already set in formData
       if (existingValue === undefined || existingValue === null) {
         let defaultValue: FilterValue;
         if (field.defaultValue !== undefined) {
@@ -1037,7 +1035,42 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
         });
       }
     });
-  // Only run once when connectorConfig is first available
+
+    // Initialize sync filters (only those with explicit defaults)
+    let hasExplicitDefaults = false;
+    syncSchema?.fields?.forEach((field) => {
+      const existingValue = formData[field.name];
+      
+      if (existingValue === undefined || existingValue === null) {
+        if ((field.defaultOperator === null || field.defaultOperator === undefined) &&
+            (field.defaultValue === null || field.defaultValue === undefined)) {
+          return;
+        }
+        
+        hasExplicitDefaults = true;
+        let defaultValue: FilterValue;
+        const defaultOperator = field.defaultOperator || '';
+
+        if (defaultOperator.startsWith('last_')) {
+          defaultValue = null;
+        } else if (field.defaultValue !== undefined && field.defaultValue !== null) {
+          defaultValue = field.defaultValue;
+        } else {
+          return;
+        }
+
+        onFieldChange('filters', field.name, {
+          operator: defaultOperator,
+          value: defaultValue,
+          type: field.filterType,
+        });
+      }
+    });
+
+    // Auto-expand sync accordion if any defaults were initialized
+    if (hasExplicitDefaults) {
+      setExpandedAccordions((prev) => ({ ...prev, sync: true }));
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectorConfig?.name]);
 
@@ -1079,11 +1112,8 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
   }
 
 
-  /**
-   * Get default value for a filter field based on its type
-   */
   const getDefaultFilterValue = (field: FilterSchemaField): FilterValue => {
-    if (field.defaultValue !== undefined) {
+    if (field.defaultValue !== undefined && field.defaultValue !== null) {
       return field.defaultValue;
     }
     
@@ -1109,23 +1139,20 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
     
     if (!field) return;
     
-    // Expand accordion first if it's closed
-    const isCurrentlyExpanded = expandedAccordions[filterType] ?? false;
-    if (!isCurrentlyExpanded) {
+    if (!expandedAccordions[filterType]) {
       setExpandedAccordions((prev) => ({ ...prev, [filterType]: true }));
     }
     
-    // Initialize filter with default values
     const defaultValue = getDefaultFilterValue(field);
+    const defaultOperator = field.defaultOperator ?? 
+      (field.operators && field.operators.length > 0 ? field.operators[0] : '');
     
-    // Add the filter
     onFieldChange('filters', fieldName, {
-      operator: field.defaultOperator || '',
+      operator: defaultOperator,
       value: defaultValue,
       type: field.filterType,
     });
     
-    // Close menu after a brief delay to allow accordion expansion to be visible
     setTimeout(() => {
       setAddMenuAnchor((prev) => ({ ...prev, [filterType]: null }));
     }, 150);

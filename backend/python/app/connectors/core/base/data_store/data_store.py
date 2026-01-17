@@ -9,6 +9,7 @@ from app.models.entities import (
     AppUser,
     Domain,
     Org,
+    Person,
     Record,
     RecordGroup,
     User,
@@ -112,6 +113,10 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def get_app_user_by_email(self, email: str) -> Optional[AppUser]:
+        pass
+
+    @abstractmethod
+    async def batch_upsert_people(self, people: List[Person]) -> None:
         pass
 
     @abstractmethod
