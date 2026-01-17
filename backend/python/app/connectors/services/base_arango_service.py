@@ -8557,10 +8557,10 @@ class BaseArangoService:
                 return
 
             # Update indexing status to QUEUED
-            doc = dict(record)
-            doc.update({
+            doc = {
+                "_key": record_id,
                 "indexingStatus": IndexingStatus.QUEUED.value,
-            })
+            }
 
             await self.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
             self.logger.debug(f"✅ Reset record {record_id} status from {current_status} to QUEUED")
