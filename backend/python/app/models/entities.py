@@ -194,6 +194,9 @@ class Record(BaseModel):
     parent_record_id: Optional[str] = None
     child_record_ids: Optional[List[str]] = Field(default_factory=list)
     related_record_ids: Optional[List[str]] = Field(default_factory=list)
+
+    # Related external records (for connectors to specify relations by external IDs)
+    related_external_records: Optional[List[RelatedExternalRecord]] = Field(default_factory=list, description="List of related external records to create LINKED_TO relations (not persisted)")
     # Hierarchy fields
     is_dependent_node: bool = Field(default=False, description="True for dependent records, False for root records")
     parent_node_id: Optional[str] = Field(default=None, description="Internal record ID of the parent node")

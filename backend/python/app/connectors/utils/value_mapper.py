@@ -6,7 +6,7 @@ API-specific status and priority values to the standard Status and Priority
 enums. This ensures consistency across all connectors.
 """
 
-from typing import Any, Dict, Optional, Union
+from typing import Dict, Optional, TypeVar, Union
 
 from app.config.constants.arangodb import LinkRelationshipTag
 from app.models.entities import (
@@ -15,6 +15,9 @@ from app.models.entities import (
     Priority,
     Status,
 )
+
+# TypeVar for generic mapping value types
+_T = TypeVar("_T")
 
 # Priority level constants for numeric priority mapping
 PRIORITY_HIGHEST = 1
@@ -78,7 +81,7 @@ class ValueMapper:
     """Maps connector-specific values to standard enum values"""
 
     @staticmethod
-    def _find_partial_match(normalized: str, mappings: Dict[str, Any]) -> Optional[Any]:
+    def _find_partial_match(normalized: str, mappings: Dict[str, _T]) -> Optional[_T]:
         """Find a partial match in mappings, handling spaces and underscores."""
         for key, value in mappings.items():
             if key.replace("_", " ") == normalized or normalized.replace(" ", "_") == key:

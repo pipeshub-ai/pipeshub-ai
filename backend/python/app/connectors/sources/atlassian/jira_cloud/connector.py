@@ -4286,6 +4286,15 @@ class JiraConnector(BaseConnector):
     ) -> Optional[Tuple[Record, List[Permission]]]:
         """Fetch issue from source for reindexing."""
         try:
+            # Load indexing filters if not already loaded (needed for reindexing context)
+            if self.indexing_filters is None:
+                _, self.indexing_filters = await load_connector_filters(
+                    self.config_service,
+                    "jira",
+                    self.connector_id,
+                    self.logger
+                )
+
             issue_id = record.external_record_id
 
             # Fetch issue from source
@@ -4376,6 +4385,10 @@ class JiraConnector(BaseConnector):
                 parent_node_id=None,  # Tickets have no parent node
             )
 
+            # Set indexing status based on filters (consistent with _build_issue_records)
+            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES):
+                issue_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
             # Permissions: empty list - records inherit project-level permissions via inherit_permissions=True
             permissions = []
 
@@ -4390,6 +4403,15 @@ class JiraConnector(BaseConnector):
     ) -> Optional[Tuple[Record, List[Permission]]]:
         """Fetch attachment from source for reindexing."""
         try:
+            # Load indexing filters if not already loaded (needed for reindexing context)
+            if self.indexing_filters is None:
+                _, self.indexing_filters = await load_connector_filters(
+                    self.config_service,
+                    "jira",
+                    self.connector_id,
+                    self.logger
+                )
+
             # Extract attachment ID (remove "attachment_" prefix)
             external_id = record.external_record_id
             if external_id.startswith("attachment_"):
