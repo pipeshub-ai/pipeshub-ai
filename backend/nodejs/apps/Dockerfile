@@ -51,7 +51,7 @@ COPY --from=builder /build/node_modules ./node_modules
 COPY package*.json ./
 
 COPY --from=builder /build/src/modules/mail/views ./src/modules/mail/views
-COPY --from=builder /build/src/modules/storage/docs/swagger.yaml ./src/modules/storage/docs/swagger.yaml
+COPY --from=builder /build/src/modules/api-docs/pipeshub-openapi.yaml ./dist/modules/api-docs/pipeshub-openapi.yaml
 
 # Expose ports used by the services (adjust based on actual service ports)
 EXPOSE 3000
