@@ -2224,10 +2224,10 @@ class JiraConnector(BaseConnector):
             else:
                 # IN (default) with non-empty list: Use Jira's built-in keys parameter (optimized)
                 self.logger.info(f"📁 Fetching specific projects using keys filter: {project_keys}")
-                datasource = await self._get_fresh_datasource()
                 start_at = 0
 
                 while True:
+                    datasource = await self._get_fresh_datasource()
                     response = await datasource.search_projects(
                         maxResults=DEFAULT_MAX_RESULTS,
                         startAt=start_at,
