@@ -196,7 +196,7 @@ export class ApiDocsService {
         description: 'System-wide configuration management',
         version: '1.0.0',
         basePath: '/api/v1/configurationManager',
-        tags: ['Storage Configuration', 'SMTP Configuration', 'Auth Configuration', 'Database Configuration', 'Platform Settings', 'AI Models Configuration', 'Branding Configuration'],
+        tags: ['Storage Configuration', 'SMTP Configuration', 'Auth Configuration', 'Database Configuration', 'Platform Settings', 'AI Models Configuration', 'Branding Configuration', 'Metrics Collection'],
         source: 'nodejs',
         order: 7,
       },

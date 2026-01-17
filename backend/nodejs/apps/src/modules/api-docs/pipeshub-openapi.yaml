@@ -133,7 +133,27 @@ tags:
   - name: Public URLs
     description: Configure public URLs for frontend application and connector callbacks.
   - name: Metrics Collection
-    description: Configure telemetry and metrics collection settings.
+    description: |
+      Configure telemetry and metrics collection for application monitoring and analytics.
+
+      PipesHub collects anonymized usage metrics to help improve the product. Metrics are pushed
+      to a configurable remote server at regular intervals.
+
+      **Collected Metrics:**
+      - API request counts and response times
+      - User activity patterns (anonymized)
+      - Feature usage statistics
+      - Error rates and types
+
+      **Configuration Options:**
+      - Enable/disable metrics collection entirely
+      - Configure push interval (minimum 1 second, default 60 seconds)
+      - Set custom metrics server URL for self-hosted analytics
+
+      **Privacy:**
+      - All metrics are anonymized before collection
+      - No personally identifiable information (PII) is collected
+      - Organization can disable collection at any time
   - name: Configuration Internal
     description: Service-to-service internal configuration endpoints
 
@@ -198,6 +218,134 @@ tags:
 
       These endpoints allow dynamic reloading of SMTP configuration without service restart.
       Requires scoped token with `fetch:config` scope.
+
+  # ==================== INTERNAL PYTHON MICROSERVICES ====================
+  # These services run independently and communicate with the main Node.js API
+  # They require scoped tokens for authentication (service-to-service)
+
+  - name: Query Service
+    description: |
+      **Internal Python Microservice** - Runs on port `8000`
+
+      The Query Service handles all AI-powered search and retrieval operations including:
+      - Semantic/vector search across indexed documents
+      - RAG (Retrieval-Augmented Generation) for conversational AI
+      - LLM integration via LiteLLM for multiple providers
+      - Query transformation and reranking
+
+      **Base URL:** `http://localhost:8000`
+
+      **Authentication:** Requires scoped token with appropriate scope OR user JWT for user-facing endpoints.
+
+      **Key Capabilities:**
+      - Semantic search with embeddings
+      - Chat/conversation with knowledge base context
+      - Multi-model LLM support (OpenAI, Anthropic, Ollama, etc.)
+      - Streaming responses for real-time AI interactions
+      - Agent tools execution
+
+      **Dependencies:**
+      - Qdrant (vector database)
+      - ArangoDB (graph/document database)
+      - Redis (caching)
+      - Kafka (messaging)
+      - Connector Service (for health checks)
+
+  - name: Indexing Service
+    description: |
+      **Internal Python Microservice** - Runs on port `8091`
+
+      The Indexing Service handles document processing and embedding generation:
+      - Document parsing (PDF, DOCX, images, etc.)
+      - Text chunking and embedding generation
+      - Vector storage in Qdrant
+      - Graph indexing in ArangoDB
+
+      **Base URL:** `http://localhost:8091`
+
+      **Authentication:** This service is internal-only and consumes Kafka messages.
+      No direct HTTP API endpoints exposed to users.
+
+      **Key Capabilities:**
+      - Multi-format document parsing
+      - Intelligent text chunking
+      - Embedding generation via configured models
+      - Automatic reindexing on document updates
+      - Recovery of failed indexing jobs
+
+      **Kafka Topics Consumed:**
+      - `record-events`: New record, update, delete, reindex events
+
+      **Dependencies:**
+      - Qdrant (vector database)
+      - ArangoDB (graph/document database)
+      - Kafka (messaging)
+      - Connector Service (for file retrieval)
+      - Docling Service (for advanced document parsing)
+
+  - name: Connector Service
+    description: |
+      **Internal Python Microservice** - Runs on port `8088`
+
+      The Connector Service manages all data source integrations and OAuth flows:
+      - OAuth token management and refresh
+      - Data sync from 30+ enterprise connectors
+      - Webhook handlers for real-time updates
+      - File streaming and signed URLs
+
+      **Base URL:** `http://localhost:8088`
+
+      **Authentication:** Requires scoped token OR user JWT depending on endpoint.
+
+      **Supported Connectors:**
+      - Google Workspace (Drive, Gmail, Calendar)
+      - Microsoft 365 (OneDrive, SharePoint, Outlook)
+      - Atlassian (Confluence, Jira)
+      - Slack, Notion, Salesforce, and more
+
+      **Key Capabilities:**
+      - OAuth 2.0 authorization flows
+      - Automatic token refresh
+      - Incremental and full sync
+      - Webhook processing for real-time updates
+      - File content streaming
+
+      **Webhook Endpoints (No Auth Required):**
+      - `/drive/webhook` - Google Drive push notifications
+      - `/gmail/webhook` - Gmail Pub/Sub notifications
+      - `/admin/webhook` - Admin directory notifications
+
+      **Dependencies:**
+      - ArangoDB (graph/document database)
+      - Redis (caching, token storage)
+      - Kafka (messaging)
+      - etcd (configuration)
+
+  - name: Docling Service
+    description: |
+      **Internal Python Microservice** - Runs on port `8081`
+
+      The Docling Service provides advanced document parsing capabilities:
+      - PDF parsing with layout analysis
+      - OCR for scanned documents
+      - Table extraction
+      - Image analysis
+
+      **Base URL:** `http://localhost:8081`
+
+      **Authentication:** This service is internal-only, called by the Indexing Service.
+      No direct user-facing endpoints.
+
+      **Key Capabilities:**
+      - High-quality PDF parsing with Docling library
+      - OCR for scanned documents and images
+      - Table structure extraction
+      - Multi-page document processing
+      - Markdown output generation
+
+      **Dependencies:**
+      - Docling library
+      - etcd (configuration)
 
 components:
   securitySchemes:
@@ -3274,29 +3422,52 @@ components:
     # Metrics Collection Schemas
     MetricsCollectionConfig:
       type: object
-      description: Metrics collection configuration
+      description: |
+        Configuration for application telemetry and metrics collection.
+        Metrics are collected anonymously and pushed to a remote server for analytics.
       properties:
         enableMetricCollection:
           type: boolean
-          description: Whether metrics collection is enabled
+          description: |
+            Master switch for metrics collection. When disabled, no metrics are collected or pushed.
+            Default: true
+          example: true
         pushIntervalMs:
           type: integer
-          description: Interval for pushing metrics (milliseconds)
+          description: |
+            Interval in milliseconds between metrics pushes to the remote server.
+            Minimum: 1000ms (1 second), Default: 60000ms (1 minute)
           minimum: 1000
+          default: 60000
           example: 60000
-        metricsServerUrl:
+        serverUrl:
           type: string
           format: uri
-          description: Remote metrics server URL
+          description: |
+            URL of the metrics collection server. For self-hosted analytics, point this
+            to your own Prometheus-compatible endpoint.
+          example: "https://metrics-collector.example.com/collect-metrics"
         apiKey:
           type: string
-          description: API key for metrics server
+          description: |
+            API key for authenticating with the metrics server. Auto-generated if not provided.
+          example: "54523f794e23d96e"
         instanceId:
           type: string
-          description: Unique instance identifier
+          description: |
+            Unique identifier for this PipesHub instance. Auto-generated based on hostname.
+          example: "638bc1b45c03e03d"
         appVersion:
           type: string
-          description: Application version
+          description: Current application version for metrics tagging.
+          example: "1.0.0"
+      example:
+        enableMetricCollection: true
+        pushIntervalMs: 60000
+        serverUrl: "https://metrics-collector.example.com/collect-metrics"
+        apiKey: "54523f794e23d96e"
+        instanceId: "638bc1b45c03e03d"
+        appVersion: "1.0.0"
 
     # Feature Flags Schema
     FeatureFlag:
@@ -3646,7 +3817,6 @@ components:
 
     # Unified ScheduleConfig using oneOf for discriminated union
     ScheduleConfig:
-      type: object
       description: |
         Schedule configuration for crawling jobs. The structure varies based on <code>scheduleType</code>.<br><br>
         <b>Schedule Type Configurations:</b><br>
@@ -3731,13 +3901,14 @@ components:
         data:
           $ref: '#/components/schemas/CrawlingJobData'
         progress:
-          type: object
-          description: Job progress information (can be number or object)
+          description: Job progress information (can be number 0-100 or object with percentage/current/total)
           oneOf:
             - type: number
               minimum: 0
               maximum: 100
+              description: Progress percentage (0-100)
             - type: object
+              description: Detailed progress object
               properties:
                 percentage:
                   type: number
@@ -3745,8 +3916,10 @@ components:
                   maximum: 100
                 current:
                   type: integer
+                  description: Current items processed
                 total:
                   type: integer
+                  description: Total items to process
         delay:
           type: integer
           nullable: true
@@ -3901,7 +4074,6 @@ components:
           description: Email subject line
           example: "Your OTP Code for PipesHub"
         templateData:
-          type: object
           description: |
             Dynamic data to populate the email template. Required fields depend on <code>emailTemplateType</code>.<br><br>
             <b>Template Data Requirements:</b><br>
@@ -15903,26 +16075,55 @@ paths:
       tags:
         - Metrics Collection
       summary: Get metrics collection configuration
-      description: Retrieve current metrics collection settings.
+      description: |
+        Retrieve the current metrics collection configuration including:
+        - Whether collection is enabled
+        - Push interval settings
+        - Server URL configuration
+        - Instance identification
+
+        **Admin Access Required:** This endpoint requires administrator privileges.
       operationId: getMetricsCollection
       security:
         - bearerAuth: []
       responses:
         '200':
-          description: Metrics configuration retrieved
+          description: Metrics configuration retrieved successfully
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/MetricsCollectionConfig'
+              example:
+                enableMetricCollection: true
+                pushIntervalMs: 60000
+                serverUrl: "https://metrics-collector.example.com/collect-metrics"
+                apiKey: "54523f794e23d96e"
+                instanceId: "638bc1b45c03e03d"
+                appVersion: "1.0.0"
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid authentication required
+        '403':
+          description: Forbidden - Admin access required
 
   /configurationManager/metricsCollection/toggle:
     put:
       tags:
         - Metrics Collection
-      summary: Toggle metrics collection
-      description: Enable or disable metrics collection.
+      summary: Enable or disable metrics collection
+      description: |
+        Toggle the master switch for metrics collection.
+
+        **When Enabled:**
+        - Application metrics are collected in the background
+        - Metrics are pushed to the configured server at regular intervals
+        - Activity counters track API usage patterns
+
+        **When Disabled:**
+        - No metrics are collected or stored
+        - No data is sent to the metrics server
+        - Existing scheduled push jobs are stopped
+
+        **Admin Access Required:** This endpoint requires administrator privileges.
       operationId: toggleMetricsCollection
       security:
         - bearerAuth: []
@@ -15937,21 +16138,54 @@ paths:
               properties:
                 enableMetricCollection:
                   type: boolean
-                  description: Whether to enable metrics collection
+                  description: Set to true to enable metrics collection, false to disable
+                  example: true
+            examples:
+              enable:
+                summary: Enable metrics collection
+                value:
+                  enableMetricCollection: true
+              disable:
+                summary: Disable metrics collection
+                value:
+                  enableMetricCollection: false
       responses:
         '200':
-          description: Metrics collection toggled
+          description: Metrics collection toggled successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Metrics collection toggled successfully"
+        '400':
+          description: Bad Request - Invalid request body
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid authentication required
         '403':
-          description: Admin access required
+          description: Forbidden - Admin access required
 
   /configurationManager/metricsCollection/pushInterval:
     patch:
       tags:
         - Metrics Collection
-      summary: Set metrics push interval
-      description: Configure how often metrics are pushed to the remote server.
+      summary: Configure metrics push interval
+      description: |
+        Set how frequently collected metrics are pushed to the remote server.
+
+        **Interval Guidelines:**
+        - Minimum: 1000ms (1 second) - for real-time monitoring
+        - Recommended: 60000ms (1 minute) - balanced performance
+        - Maximum: No hard limit, but longer intervals may delay insights
+
+        **Performance Considerations:**
+        - Shorter intervals provide more real-time data but increase network traffic
+        - Longer intervals reduce overhead but delay metric visibility
+        - Changes take effect on the next push cycle
+
+        **Admin Access Required:** This endpoint requires administrator privileges.
       operationId: setMetricsPushInterval
       security:
         - bearerAuth: []
@@ -15967,24 +16201,58 @@ paths:
                 pushIntervalMs:
                   type: integer
                   minimum: 1000
-                  description: Push interval in milliseconds
+                  description: Push interval in milliseconds (minimum 1000ms)
                   example: 60000
+            examples:
+              default:
+                summary: Default interval (1 minute)
+                value:
+                  pushIntervalMs: 60000
+              realtime:
+                summary: Near real-time (10 seconds)
+                value:
+                  pushIntervalMs: 10000
+              lowFrequency:
+                summary: Low frequency (5 minutes)
+                value:
+                  pushIntervalMs: 300000
       responses:
         '200':
-          description: Push interval updated
+          description: Push interval updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Metrics collection push interval set successfully"
         '400':
-          description: Invalid interval
+          description: Bad Request - Invalid interval value (must be >= 1000ms)
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid authentication required
         '403':
-          description: Admin access required
+          description: Forbidden - Admin access required
 
   /configurationManager/metricsCollection/serverUrl:
     patch:
       tags:
         - Metrics Collection
-      summary: Set metrics server URL
-      description: Configure the remote server URL for pushing metrics.
+      summary: Configure metrics server URL
+      description: |
+        Set the remote server URL where metrics will be pushed.
+
+        **Use Cases:**
+        - Self-hosted analytics: Point to your own Prometheus-compatible endpoint
+        - Custom monitoring: Integrate with your organization's monitoring stack
+        - Development: Use a local endpoint for testing
+
+        **URL Requirements:**
+        - Must be a valid URL (http or https)
+        - Server must accept POST requests with JSON payload
+        - Server should return 2xx status for successful pushes
+
+        **Admin Access Required:** This endpoint requires administrator privileges.
       operationId: setMetricsServerUrl
       security:
         - bearerAuth: []
@@ -16000,16 +16268,34 @@ paths:
                 serverUrl:
                   type: string
                   format: uri
-                  description: Metrics server URL
+                  description: Full URL of the metrics collection server
+                  example: "https://metrics.mycompany.com/collect"
+            examples:
+              selfHosted:
+                summary: Self-hosted metrics server
+                value:
+                  serverUrl: "https://metrics.mycompany.com/collect"
+              localDev:
+                summary: Local development server
+                value:
+                  serverUrl: "http://localhost:9090/metrics"
       responses:
         '200':
-          description: Server URL updated
+          description: Server URL updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Metrics collection remote server set successfully"
         '400':
-          description: Invalid URL
+          description: Bad Request - Invalid URL format
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid authentication required
         '403':
-          description: Admin access required
+          description: Forbidden - Admin access required
 
   # ==================== CRAWLING MANAGER ENDPOINTS ====================
   /crawlingManager/{connector}/{connectorId}/schedule:
@@ -16927,3 +17213,423 @@ paths:
             <li>etcd connection failure</li>
             <li>Invalid configuration format</li>
             </ul>
+
+  # ==================== INTERNAL PYTHON MICROSERVICE ENDPOINTS ====================
+  # These endpoints are served by independent Python FastAPI services
+  # They communicate with the main Node.js API via HTTP and Kafka
+  # Authentication: Scoped tokens for service-to-service, JWT for user-facing
+
+  # -------------------- QUERY SERVICE (Port 8000) --------------------
+  # Base URL: http://localhost:8000
+
+  /query/health:
+    get:
+      tags:
+        - Query Service
+      summary: Query Service health check
+      description: |
+        Health check endpoint for the Query Service (Python FastAPI).<br><br>
+
+        <b>Service:</b> Query Service<br>
+        <b>Port:</b> 8000<br>
+        <b>Base URL:</b> <code>http://localhost:8000</code><br><br>
+
+        <b>Note:</b> This is an internal service health endpoint. It also verifies
+        connectivity to the Connector Service as a dependency check.
+      operationId: queryServiceHealth
+      servers:
+        - url: http://localhost:8000
+          description: Query Service
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [healthy]
+                  timestamp:
+                    type: integer
+                    description: Unix timestamp in milliseconds
+              example:
+                status: "healthy"
+                timestamp: 1703520000000
+        '500':
+          description: Service is unhealthy or dependency check failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [fail]
+                  error:
+                    type: string
+                  timestamp:
+                    type: integer
+
+  /query/api/v1/search:
+    post:
+      tags:
+        - Query Service
+      summary: Semantic search
+      description: |
+        Perform semantic search across indexed documents using vector embeddings.<br><br>
+
+        <b>Service:</b> Query Service<br>
+        <b>Port:</b> 8000<br>
+        <b>Base URL:</b> <code>http://localhost:8000</code><br><br>
+
+        <b>How It Works:</b><br>
+        <ol>
+        <li>Query is transformed and expanded using LLM</li>
+        <li>Embeddings are generated for search queries</li>
+        <li>Vector similarity search in Qdrant</li>
+        <li>Results filtered by user permissions</li>
+        <li>Optional knowledge base filtering</li>
+        </ol>
+
+        <b>Authentication:</b> Requires user JWT token.
+      operationId: queryServiceSearch
+      servers:
+        - url: http://localhost:8000
+          description: Query Service
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+                  description: Search query text
+                  example: "How do I configure SSO?"
+                limit:
+                  type: integer
+                  default: 5
+                  description: Maximum number of results
+                filters:
+                  type: object
+                  description: Optional filters (e.g., kb IDs)
+                  properties:
+                    kb:
+                      type: array
+                      items:
+                        type: string
+                      description: Knowledge base IDs to filter
+              required:
+                - query
+      responses:
+        '200':
+          description: Search results retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  searchResults:
+                    type: array
+                    items:
+                      type: object
+                  status_code:
+                    type: integer
+        '401':
+          description: Unauthorized
+        '403':
+          description: Access denied to specified knowledge bases
+        '500':
+          description: Search failed
+
+  /query/api/v1/chat:
+    post:
+      tags:
+        - Query Service
+      summary: Chat with knowledge base
+      description: |
+        Conversational AI endpoint with RAG (Retrieval-Augmented Generation).<br><br>
+
+        <b>Service:</b> Query Service<br>
+        <b>Port:</b> 8000<br>
+        <b>Base URL:</b> <code>http://localhost:8000</code><br><br>
+
+        <b>Features:</b><br>
+        <ul>
+        <li>Multi-turn conversation support</li>
+        <li>Context from knowledge base</li>
+        <li>Citation of source documents</li>
+        <li>Multiple chat modes (quick, analysis, deep_research, creative, precise)</li>
+        <li>Multi-model support (OpenAI, Anthropic, Ollama, etc.)</li>
+        </ul>
+
+        <b>Authentication:</b> Requires user JWT token.
+      operationId: queryServiceChat
+      servers:
+        - url: http://localhost:8000
+          description: Query Service
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+                  description: User's question
+                limit:
+                  type: integer
+                  default: 50
+                previousConversations:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      role:
+                        type: string
+                        enum: [user_query, bot_response]
+                      content:
+                        type: string
+                filters:
+                  type: object
+                retrievalMode:
+                  type: string
+                  enum: [HYBRID, VECTOR, KEYWORD]
+                  default: HYBRID
+                quickMode:
+                  type: boolean
+                  default: false
+                modelKey:
+                  type: string
+                  description: UUID of the model configuration
+                modelName:
+                  type: string
+                  description: Model name (e.g., gpt-4o-mini, claude-3-5-sonnet)
+                chatMode:
+                  type: string
+                  enum: [quick, analysis, deep_research, creative, precise, standard]
+                  default: standard
+              required:
+                - query
+      responses:
+        '200':
+          description: Chat response with citations
+        '401':
+          description: Unauthorized
+        '500':
+          description: Chat failed
+
+  /query/api/v1/chat/stream:
+    post:
+      tags:
+        - Query Service
+      summary: Streaming chat with knowledge base
+      description: |
+        Streaming conversational AI endpoint with real-time token delivery.<br><br>
+
+        <b>Service:</b> Query Service<br>
+        <b>Port:</b> 8000<br>
+        <b>Base URL:</b> <code>http://localhost:8000</code><br><br>
+
+        <b>SSE Events:</b><br>
+        <ul>
+        <li><code>status</code>: Processing status updates</li>
+        <li><code>chunk</code>: Token/text chunks</li>
+        <li><code>citations</code>: Source citations</li>
+        <li><code>done</code>: Stream complete</li>
+        <li><code>error</code>: Error occurred</li>
+        </ul>
+
+        <b>Authentication:</b> Requires user JWT token.
+      operationId: queryServiceChatStream
+      servers:
+        - url: http://localhost:8000
+          description: Query Service
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Server-Sent Events stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '401':
+          description: Unauthorized
+
+  # -------------------- INDEXING SERVICE (Port 8091) --------------------
+  # Base URL: http://localhost:8091
+
+  /indexing/health:
+    get:
+      tags:
+        - Indexing Service
+      summary: Indexing Service health check
+      description: |
+        Health check endpoint for the Indexing Service (Python FastAPI).<br><br>
+
+        <b>Service:</b> Indexing Service<br>
+        <b>Port:</b> 8091<br>
+        <b>Base URL:</b> <code>http://localhost:8091</code><br><br>
+
+        <b>Note:</b> This is an internal service. It processes Kafka messages
+        for document indexing and does not expose user-facing endpoints.
+        Health check also verifies Connector Service connectivity.
+      operationId: indexingServiceHealth
+      servers:
+        - url: http://localhost:8091
+          description: Indexing Service
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [healthy]
+                  timestamp:
+                    type: integer
+              example:
+                status: "healthy"
+                timestamp: 1703520000000
+        '500':
+          description: Service is unhealthy
+
+  # -------------------- CONNECTOR SERVICE (Port 8088) --------------------
+  # Base URL: http://localhost:8088
+
+  /connector/health:
+    get:
+      tags:
+        - Connector Service
+      summary: Connector Service health check
+      description: |
+        Health check endpoint for the Connector Service (Python FastAPI).<br><br>
+
+        <b>Service:</b> Connector Service<br>
+        <b>Port:</b> 8088<br>
+        <b>Base URL:</b> <code>http://localhost:8088</code><br><br>
+
+        <b>Note:</b> This is the core internal service that manages all
+        data source connectors and OAuth flows.
+      operationId: connectorServiceHealth
+      servers:
+        - url: http://localhost:8088
+          description: Connector Service
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [healthy]
+                  timestamp:
+                    type: integer
+              example:
+                status: "healthy"
+                timestamp: 1703520000000
+        '500':
+          description: Service is unhealthy
+
+  /connector/drive/webhook:
+    post:
+      tags:
+        - Connector Service
+      summary: Google Drive webhook
+      description: |
+        Webhook endpoint for Google Drive push notifications.<br><br>
+
+        <b>Service:</b> Connector Service<br>
+        <b>Port:</b> 8088<br><br>
+
+        <b>Authentication:</b> None required - uses Google's push notification verification.
+
+        <b>Note:</b> This endpoint receives real-time change notifications from
+        Google Drive when files are created, modified, or deleted.
+      operationId: driveWebhook
+      servers:
+        - url: http://localhost:8088
+          description: Connector Service
+      responses:
+        '200':
+          description: Webhook processed
+        '400':
+          description: Invalid webhook payload
+
+  /connector/gmail/webhook:
+    post:
+      tags:
+        - Connector Service
+      summary: Gmail webhook
+      description: |
+        Webhook endpoint for Gmail Pub/Sub notifications.<br><br>
+
+        <b>Service:</b> Connector Service<br>
+        <b>Port:</b> 8088<br><br>
+
+        <b>Authentication:</b> None required - uses Google Pub/Sub verification.
+
+        <b>Note:</b> This endpoint receives notifications when new emails arrive
+        or email labels change.
+      operationId: gmailWebhook
+      servers:
+        - url: http://localhost:8088
+          description: Connector Service
+      responses:
+        '200':
+          description: Webhook processed
+
+  # -------------------- DOCLING SERVICE (Port 8081) --------------------
+  # Base URL: http://localhost:8081
+
+  /docling/health:
+    get:
+      tags:
+        - Docling Service
+      summary: Docling Service health check
+      description: |
+        Health check endpoint for the Docling Service (Python FastAPI).<br><br>
+
+        <b>Service:</b> Docling Service<br>
+        <b>Port:</b> 8081<br>
+        <b>Base URL:</b> <code>http://localhost:8081</code><br><br>
+
+        <b>Note:</b> This is an internal service used by the Indexing Service
+        for advanced document parsing. No user-facing endpoints.
+      operationId: doclingServiceHealth
+      servers:
+        - url: http://localhost:8081
+          description: Docling Service
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [healthy]
+                  service:
+                    type: string
+                    example: "docling"
+                  timestamp:
+                    type: integer
+        '503':
+          description: Service is unhealthy or not initialized
