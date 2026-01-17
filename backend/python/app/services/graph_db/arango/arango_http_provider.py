@@ -1372,6 +1372,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> Optional[Record]:
         """
         Get Jira issue record by issue key (e.g., PROJ-123) by searching weburl pattern.
+        Returns a TicketRecord with the type field populated for proper Epic detection.
 
         Args:
             connector_id: Connector ID
@@ -1379,7 +1380,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             transaction: Optional transaction ID
 
         Returns:
-            Optional[Record]: Record if found, None otherwise
+            Optional[Record]: TicketRecord if found, None otherwise
         """
         try:
             self.logger.info(
@@ -1387,14 +1388,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             # Search for record where weburl contains "/browse/{issue_key}" and record_type is TICKET
+            # Also join with tickets collection to get the type field (for Epic detection)
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
                 FILTER record.connectorId == @connector_id
                     AND record.recordType == @record_type
                     AND record.webUrl != null
                     AND CONTAINS(record.webUrl, @browse_pattern)
+                LET ticket = DOCUMENT({CollectionNames.TICKETS.value}, record._key)
                 LIMIT 1
-                RETURN record
+                RETURN {{ record: record, ticket: ticket }}
             """
 
             browse_pattern = f"/browse/{issue_key}"
@@ -1406,12 +1409,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             results = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
 
-            if results:
+            if results and results[0]:
+                result = results[0]
+                record_dict = result.get("record")
+                ticket_doc = result.get("ticket")
+
                 self.logger.info(
                     "✅ Successfully retrieved record for Jira issue key %s %s", connector_id, issue_key
                 )
-                record_data = self._translate_node_from_arango(results[0])
-                return Record.from_arango_base_record(record_data)
+
+                # Use the typed record factory to get a TicketRecord with the type field
+                return self._create_typed_record_from_arango(record_dict, ticket_doc)
             else:
                 self.logger.warning(
                     "⚠️ No record found for Jira issue key %s %s", connector_id, issue_key
