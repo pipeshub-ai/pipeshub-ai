@@ -16,7 +16,6 @@ from app.connectors.core.registry.connector import (
     FormsConnector,
     LinearConnector,
     MeetConnector,
-    NotionConnector,
     SlackConnector,
     SlidesConnector,
     ZendeskConnector,
@@ -43,10 +42,9 @@ from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
 from app.connectors.sources.minio.connector import MinIOConnector
+from app.connectors.sources.notion.connector import NotionConnector
 from app.connectors.sources.s3.connector import S3Connector
-from app.connectors.sources.servicenow.servicenow.connector import (
-    ServiceNowConnector,
-)
+from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector
 from app.connectors.sources.web.connector import WebConnector
 
 
@@ -70,6 +68,7 @@ class ConnectorFactory:
         "bookstack": BookStackConnector,
         "s3": S3Connector,
         "minio": MinIOConnector,
+        "notion": NotionConnector,
     }
 
     # Beta connector definitions - single source of truth
@@ -83,7 +82,6 @@ class ConnectorFactory:
         'docs': DocsConnector,
         'zendesk': ZendeskConnector,
         'linear': LinearConnector,
-        'notion': NotionConnector,
         'airtable': AirtableConnector,
         'azureblob': AzureBlobConnector,
     }

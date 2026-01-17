@@ -995,7 +995,12 @@ class VectorStore(Transformer):
             if text_blocks:
                 try:
                     for block in text_blocks:
-                        block_text = block.data
+                        # Handle dict data (e.g., COMMENT blocks with full metadata)
+                        if isinstance(block.data, dict):
+                            block_text = block.data.get("text", "")
+                        else:
+                            block_text = block.data
+
                         metadata = {
                             "virtualRecordId": virtual_record_id,
                             "blockIndex": block.index,
