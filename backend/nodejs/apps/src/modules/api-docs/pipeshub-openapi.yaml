@@ -226,47 +226,13 @@ tags:
   # Authentication: All internal endpoints require a SCOPED SERVICE TOKEN
   # obtained through the PipesHub token service.
 
-  - name: Internal Services
+  - name: Query Service
     description: |
-      ## Internal PipesHub Services
+      ## Query Service (Internal)
 
-      **These services are INTERNAL to PipesHub and are NOT meant for direct external API access.**
+      **⚠️ INTERNAL SERVICE - NOT for direct external API access**
 
-      The following Python microservices run independently and communicate with the main Node.js API.
-      They require **scoped service tokens** for authentication.
-
-      ---
-
-      ### Service Overview
-
-      | Service | Port | Base URL | Purpose |
-      |---------|------|----------|---------|
-      | **Query Service** | 8000 | `http://localhost:8000` | AI search, RAG, conversational AI |
-      | **Indexing Service** | 8091 | `http://localhost:8091` | Document processing, embeddings |
-      | **Connector Service** | 8088 | `http://localhost:8088` | Data source integrations, OAuth |
-      | **Docling Service** | 8081 | `http://localhost:8081` | Advanced PDF/document parsing |
-
-      ---
-
-      ### Authentication Requirements
-
-      **Scoped Service Token Required**
-
-      All internal service endpoints require a scoped JWT token for service-to-service authentication:
-      - Tokens are generated internally by PipesHub services
-      - Each token includes specific scopes for the operation (e.g., `fetch:config`, `mail:send`)
-      - Tokens are NOT available for external API consumers
-      - Pass token in `Authorization: Bearer {scoped_token}` header
-
-      **Exceptions:**
-      - Health check endpoints (`/health`) - No authentication required
-      - Webhook endpoints (e.g., `/drive/webhook`, `/gmail/webhook`) - Verified by provider signatures
-
-      ---
-
-      ### Query Service (Port 8000)
-
-      **Base URL:** `http://localhost:8000`
+      **Port:** 8000 | **Base URL:** `http://localhost:8000`
 
       Handles AI-powered search and retrieval:
       - Semantic/vector search across indexed documents
@@ -274,19 +240,25 @@ tags:
       - LLM integration via LiteLLM for multiple providers
       - AI Agent execution
 
+      **Authentication:** Requires scoped service token (except health checks)
+
       **Key Endpoints:**
-      - `GET /health` - Health check
-      - `POST /api/v1/search` - Semantic search (requires scoped token)
-      - `POST /api/v1/chat` - Chat with knowledge base (requires scoped token)
-      - `POST /api/v1/chat/stream` - Streaming chat (requires scoped token)
-      - `POST /api/v1/agent-chat` - Agent-based chat (requires scoped token)
-      - `POST /api/v1/health-check/{model_type}` - LLM/Embedding health check
+      - `GET /health` - Health check (no auth)
+      - `POST /api/v1/search` - Semantic search
+      - `POST /api/v1/chat` - Chat with knowledge base
+      - `POST /api/v1/chat/stream` - Streaming chat
+      - `POST /api/v1/agent-chat` - Agent-based chat
+      - `POST /api/v1/llm-health-check` - LLM model validation
+      - `POST /api/v1/embedding-health-check` - Embedding model validation
+      - `POST /api/v1/health-check/{model_type}` - Generic model health check
 
-      ---
+  - name: Indexing Service
+    description: |
+      ## Indexing Service (Internal)
 
-      ### Indexing Service (Port 8091)
+      **⚠️ INTERNAL SERVICE - NOT for direct external API access**
 
-      **Base URL:** `http://localhost:8091`
+      **Port:** 8091 | **Base URL:** `http://localhost:8091`
 
       Handles document processing and embedding generation:
       - Document parsing (PDF, DOCX, images, etc.)
@@ -294,17 +266,21 @@ tags:
       - Vector storage in Qdrant
       - Graph indexing in ArangoDB
 
+      **Authentication:** Internal only (Kafka consumer)
+
       **Key Endpoints:**
-      - `GET /health` - Health check
+      - `GET /health` - Health check (no auth)
 
       **Note:** This service primarily consumes Kafka messages for indexing tasks.
       It listens to the `record-events` topic for new, update, delete, and reindex events.
 
-      ---
+  - name: Connector Service
+    description: |
+      ## Connector Service (Internal)
 
-      ### Connector Service (Port 8088)
+      **⚠️ INTERNAL SERVICE - NOT for direct external API access**
 
-      **Base URL:** `http://localhost:8088`
+      **Port:** 8088 | **Base URL:** `http://localhost:8088`
 
       Manages all data source integrations and OAuth flows:
       - OAuth token management and refresh
@@ -312,24 +288,28 @@ tags:
       - Webhook handlers for real-time updates
       - File streaming and signed URLs
 
-      **Key Endpoints (require scoped token):**
+      **Authentication:** Requires scoped service token (except health checks and webhooks)
+
+      **Key Endpoints:**
       - `GET /health` - Health check (no auth)
       - `GET /api/v1/connectors/` - List all connectors
       - `GET /api/v1/records` - List records
-      - `GET /api/v1/records/{record_id}` - Get record details
-      - `POST /api/v1/records/{record_id}/reindex` - Trigger reindex
+      - `GET /api/v1/stats` - Get connector statistics
+      - `POST /api/v1/records/reindex-failed` - Reindex failed records
       - `GET /api/v1/stream/record/{record_id}` - Stream file content
+      - `GET /api/v1/internal/stream/record/{record_id}` - Internal streaming
 
       **Webhook Endpoints (no auth - verified by provider signatures):**
       - `POST /drive/webhook` - Google Drive push notifications
       - `POST /gmail/webhook` - Gmail Pub/Sub notifications
-      - `POST /admin/webhook` - Admin directory notifications
 
-      ---
+  - name: Docling Service
+    description: |
+      ## Docling Service (Internal)
 
-      ### Docling Service (Port 8081)
+      **⚠️ INTERNAL SERVICE - NOT for direct external API access**
 
-      **Base URL:** `http://localhost:8081`
+      **Port:** 8081 | **Base URL:** `http://localhost:8081`
 
       Provides advanced document parsing capabilities:
       - PDF parsing with layout analysis
@@ -337,22 +317,13 @@ tags:
       - Table extraction
       - Image analysis
 
-      **Key Endpoints (internal only - called by Indexing Service):**
-      - `GET /health` - Health check
+      **Authentication:** Internal only (called by Indexing Service)
+
+      **Key Endpoints:**
+      - `GET /health` - Health check (no auth)
       - `POST /process-pdf` - Full PDF processing
-      - `POST /parse-pdf` - Parse PDF without block creation
-      - `POST /create-blocks` - Create blocks from parse result
-
-      ---
-
-      ### When to Use These Services
-
-      These endpoints are documented for:
-      - PipesHub internal development
-      - Debugging and monitoring
-      - Understanding the system architecture
-
-      **External integrations should use the main Node.js API endpoints (`/api/v1/...`) instead.**
+      - `POST /parse-pdf` - Parse PDF without block creation (Phase 1)
+      - `POST /create-blocks` - Create blocks from parse result (Phase 2)
 
 components:
   securitySchemes:
@@ -17244,7 +17215,7 @@ paths:
   /query/health:
     get:
       tags:
-        - Internal Services
+        - Query Service
       summary: "[Query Service] Health check"
       description: |
         ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
@@ -17299,7 +17270,7 @@ paths:
   /query/api/v1/search:
     post:
       tags:
-        - Internal Services
+        - Query Service
       summary: "[Query Service] Semantic search"
       description: |
         ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
@@ -17376,7 +17347,7 @@ paths:
   /query/api/v1/chat:
     post:
       tags:
-        - Internal Services
+        - Query Service
       summary: "[Query Service] Chat with knowledge base"
       description: |
         ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
@@ -17458,7 +17429,7 @@ paths:
   /query/api/v1/chat/stream:
     post:
       tags:
-        - Internal Services
+        - Query Service
       summary: "[Query Service] Streaming chat with knowledge base"
       description: |
         ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
@@ -17498,7 +17469,7 @@ paths:
   /query/api/v1/agent-chat:
     post:
       tags:
-        - Internal Services
+        - Query Service
       summary: "[Query Service] Agent-based chat"
       description: |
         ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
@@ -17569,7 +17540,7 @@ paths:
   /query/api/v1/agent-chat-stream:
     post:
       tags:
-        - Internal Services
+        - Query Service
       summary: "[Query Service] Streaming agent-based chat"
       description: |
         ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
@@ -17600,7 +17571,7 @@ paths:
   /query/api/v1/health-check/{model_type}:
     post:
       tags:
-        - Internal Services
+        - Query Service
       summary: "[Query Service] AI model health check"
       description: |
         ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
@@ -17686,6 +17657,167 @@ paths:
                   details:
                     type: object
 
+  /query/api/v1/llm-health-check:
+    post:
+      tags:
+        - Query Service
+      summary: "[Query Service] LLM model health check"
+      description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
+        Validate user-provided LLM configurations by making a test call to the language model.<br><br>
+
+        <b>Service:</b> Query Service<br>
+        <b>Port:</b> 8000<br>
+        <b>Base URL:</b> <code>http://localhost:8000</code><br><br>
+
+        <b>Authentication:</b> Requires scoped service token<br><br>
+
+        <b>Use Case:</b> Verify LLM API keys and model availability before saving configuration.
+      operationId: queryServiceLlmHealthCheck
+      servers:
+        - url: http://localhost:8000
+          description: Query Service (Internal)
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                properties:
+                  provider:
+                    type: string
+                    description: Model provider (openai, anthropic, ollama, etc.)
+                  configuration:
+                    type: object
+                    properties:
+                      model:
+                        type: string
+                        description: Model name
+                      apiKey:
+                        type: string
+                        description: API key for the provider
+                    additionalProperties: true
+                  isMultimodal:
+                    type: boolean
+                    description: Whether model supports vision/images
+                  isDefault:
+                    type: boolean
+                    description: Whether this is the default model
+      responses:
+        '200':
+          description: LLM service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [healthy]
+                  message:
+                    type: string
+                  timestamp:
+                    type: integer
+                    format: int64
+        '500':
+          description: LLM service health check failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [fail, not healthy]
+                  error:
+                    type: string
+                  message:
+                    type: string
+
+  /query/api/v1/embedding-health-check:
+    post:
+      tags:
+        - Query Service
+      summary: "[Query Service] Embedding model health check"
+      description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
+        Validate embedding model configurations and verify that the embedding service is responding.<br><br>
+
+        <b>Service:</b> Query Service<br>
+        <b>Port:</b> 8000<br>
+        <b>Base URL:</b> <code>http://localhost:8000</code><br><br>
+
+        <b>Authentication:</b> Requires scoped service token<br><br>
+
+        <b>Use Case:</b> Tests the embedding model with sample text and validates vector store connectivity.
+      operationId: queryServiceEmbeddingHealthCheck
+      servers:
+        - url: http://localhost:8000
+          description: Query Service (Internal)
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                properties:
+                  provider:
+                    type: string
+                    description: Embedding provider (openai, cohere, ollama, etc.)
+                  configuration:
+                    type: object
+                    properties:
+                      model:
+                        type: string
+                        description: Embedding model name
+                      apiKey:
+                        type: string
+                        description: API key for the provider
+                    additionalProperties: true
+                  isDefault:
+                    type: boolean
+                    description: Whether this is the default embedding model
+      responses:
+        '200':
+          description: Embedding service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [healthy]
+                  message:
+                    type: string
+                  timestamp:
+                    type: integer
+                    format: int64
+        '500':
+          description: Embedding service health check failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [fail, not healthy]
+                  error:
+                    type: string
+                  message:
+                    type: string
+
   # -------------------- INDEXING SERVICE (Port 8091) --------------------
   # Base URL: http://localhost:8091
   # Authentication: Internal only (Kafka consumer)
@@ -17693,7 +17825,7 @@ paths:
   /indexing/health:
     get:
       tags:
-        - Internal Services
+        - Indexing Service
       summary: "[Indexing Service] Health check"
       description: |
         ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
@@ -17740,7 +17872,7 @@ paths:
   /connector/health:
     get:
       tags:
-        - Internal Services
+        - Connector Service
       summary: "[Connector Service] Health check"
       description: |
         ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
@@ -17782,7 +17914,7 @@ paths:
   /connector/drive/webhook:
     post:
       tags:
-        - Internal Services
+        - Connector Service
       summary: "[Connector Service] Google Drive webhook"
       description: |
         ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
@@ -17811,7 +17943,7 @@ paths:
   /connector/gmail/webhook:
     post:
       tags:
-        - Internal Services
+        - Connector Service
       summary: "[Connector Service] Gmail webhook"
       description: |
         ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
@@ -17835,6 +17967,276 @@ paths:
         '200':
           description: Webhook processed
 
+  /connector/api/v1/internal/stream/record/{record_id}:
+    get:
+      tags:
+        - Connector Service
+      summary: "[Connector Service] Internal stream record"
+      description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
+        Internal endpoint for streaming record content (service-to-service).<br><br>
+
+        <b>Service:</b> Connector Service<br>
+        <b>Port:</b> 8088<br>
+        <b>Base URL:</b> <code>http://localhost:8088</code><br><br>
+
+        <b>Authentication:</b> Requires scoped service token<br><br>
+
+        <b>Use Case:</b> Used by Indexing Service to fetch file content for processing.
+      operationId: connectorInternalStreamRecord
+      servers:
+        - url: http://localhost:8088
+          description: Connector Service (Internal)
+      security:
+        - scopedToken: []
+      parameters:
+        - name: record_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Record ID to stream
+      responses:
+        '200':
+          description: File content stream
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Record not found
+
+  /connector/api/v1/record/buffer/convert:
+    post:
+      tags:
+        - Connector Service
+      summary: "[Connector Service] Convert record buffer"
+      description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
+        Convert a record buffer to a different format.<br><br>
+
+        <b>Service:</b> Connector Service<br>
+        <b>Port:</b> 8088<br>
+        <b>Base URL:</b> <code>http://localhost:8088</code><br><br>
+
+        <b>Authentication:</b> Requires scoped service token<br><br>
+
+        <b>Supported Conversions:</b> PDF to text, DOCX to text, etc.
+      operationId: connectorConvertRecordBuffer
+      servers:
+        - url: http://localhost:8088
+          description: Connector Service (Internal)
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                buffer:
+                  type: string
+                  format: byte
+                  description: Base64 encoded file content
+                convertTo:
+                  type: string
+                  description: Target format (e.g., 'text', 'markdown')
+                mimeType:
+                  type: string
+                  description: Original MIME type of the file
+              required:
+                - buffer
+                - convertTo
+      responses:
+        '200':
+          description: Conversion successful
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Invalid request or unsupported conversion
+
+  /connector/api/v1/stats:
+    get:
+      tags:
+        - Connector Service
+      summary: "[Connector Service] Get connector statistics"
+      description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
+        Get statistics for a specific connector.<br><br>
+
+        <b>Service:</b> Connector Service<br>
+        <b>Port:</b> 8088<br>
+        <b>Base URL:</b> <code>http://localhost:8088</code><br><br>
+
+        <b>Authentication:</b> Requires scoped service token
+      operationId: connectorGetStats
+      servers:
+        - url: http://localhost:8088
+          description: Connector Service (Internal)
+      security:
+        - scopedToken: []
+      parameters:
+        - name: org_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Organization ID
+        - name: connector
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Connector name (e.g., GOOGLE_DRIVE, ONEDRIVE)
+      responses:
+        '200':
+          description: Connector statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  totalRecords:
+                    type: integer
+                    description: Total number of records
+                  indexedRecords:
+                    type: integer
+                    description: Number of successfully indexed records
+                  failedRecords:
+                    type: integer
+                    description: Number of failed records
+                  pendingRecords:
+                    type: integer
+                    description: Number of pending records
+                  lastSyncTimestamp:
+                    type: integer
+                    format: int64
+                    description: Last sync timestamp
+
+  /connector/api/v1/records/reindex-failed:
+    post:
+      tags:
+        - Connector Service
+      summary: "[Connector Service] Reindex all failed records"
+      description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
+        Trigger reindexing of all failed records for a specific connector.<br><br>
+
+        <b>Service:</b> Connector Service<br>
+        <b>Port:</b> 8088<br>
+        <b>Base URL:</b> <code>http://localhost:8088</code><br><br>
+
+        <b>Authentication:</b> Requires scoped service token
+      operationId: connectorReindexFailedRecords
+      servers:
+        - url: http://localhost:8088
+          description: Connector Service (Internal)
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                connector:
+                  type: string
+                  description: Connector name to reindex failed records for
+      responses:
+        '200':
+          description: Reindexing triggered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  count:
+                    type: integer
+                    description: Number of records queued for reindexing
+
+  /connector/api/v1/{org_id}/{user_id}/{connector}/record/{record_id}/signedUrl:
+    get:
+      tags:
+        - Connector Service
+      summary: "[Connector Service] Get signed URL for record"
+      description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
+        Get a signed URL for direct file access from the connector source.<br><br>
+
+        <b>Service:</b> Connector Service<br>
+        <b>Port:</b> 8088<br>
+        <b>Base URL:</b> <code>http://localhost:8088</code><br><br>
+
+        <b>Authentication:</b> Requires scoped service token<br><br>
+
+        <b>Use Case:</b> Generate temporary signed URLs for file downloads from
+        Google Drive, OneDrive, SharePoint, etc.
+      operationId: connectorGetSignedUrl
+      servers:
+        - url: http://localhost:8088
+          description: Connector Service (Internal)
+      security:
+        - scopedToken: []
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Organization ID
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: User ID
+        - name: connector
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Connector name
+        - name: record_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Record ID
+      responses:
+        '200':
+          description: Signed URL generated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  signedUrl:
+                    type: string
+                    description: Temporary signed URL for file access
+                  expiresAt:
+                    type: integer
+                    format: int64
+                    description: URL expiration timestamp
+        '404':
+          description: Record not found
+        '403':
+          description: Access denied
+
   # -------------------- DOCLING SERVICE (Port 8081) --------------------
   # Base URL: http://localhost:8081
   # Authentication: Internal only (called by Indexing Service)
@@ -17842,7 +18244,7 @@ paths:
   /docling/health:
     get:
       tags:
-        - Internal Services
+        - Docling Service
       summary: "[Docling Service] Health check"
       description: |
         ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
@@ -17882,7 +18284,7 @@ paths:
   /docling/process-pdf:
     post:
       tags:
-        - Internal Services
+        - Docling Service
       summary: "[Docling Service] Process PDF document"
       description: |
         ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
@@ -17951,7 +18353,7 @@ paths:
   /docling/parse-pdf:
     post:
       tags:
-        - Internal Services
+        - Docling Service
       summary: "[Docling Service] Parse PDF (Phase 1)"
       description: |
         ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
@@ -18008,7 +18410,7 @@ paths:
   /docling/create-blocks:
     post:
       tags:
-        - Internal Services
+        - Docling Service
       summary: "[Docling Service] Create blocks from parse result (Phase 2)"
       description: |
         ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>

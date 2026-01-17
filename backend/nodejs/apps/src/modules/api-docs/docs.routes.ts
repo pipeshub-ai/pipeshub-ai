@@ -178,6 +178,93 @@ function getDocumentationHtml(): string {
       border-color: var(--border-color);
     }
 
+    /* Light mode code panel styles */
+    :root:not([data-theme="dark"]) .code-panel,
+    html:not([data-theme="dark"]) .code-panel {
+      background: #ffffff;
+      border-left: 1px solid var(--border-color);
+    }
+
+    :root:not([data-theme="dark"]) .code-panel-header,
+    html:not([data-theme="dark"]) .code-panel-header {
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    :root:not([data-theme="dark"]) .code-tab,
+    html:not([data-theme="dark"]) .code-tab {
+      color: var(--text-secondary);
+    }
+
+    :root:not([data-theme="dark"]) .code-tab.active,
+    html:not([data-theme="dark"]) .code-tab.active {
+      color: var(--text-primary);
+      background: var(--bg-tertiary);
+    }
+
+    :root:not([data-theme="dark"]) .try-it-label,
+    html:not([data-theme="dark"]) .try-it-label {
+      color: var(--text-secondary);
+    }
+
+    :root:not([data-theme="dark"]) .try-it-input,
+    html:not([data-theme="dark"]) .try-it-input,
+    :root:not([data-theme="dark"]) .try-it-textarea,
+    html:not([data-theme="dark"]) .try-it-textarea {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+    }
+
+    :root:not([data-theme="dark"]) .try-it-input::placeholder,
+    html:not([data-theme="dark"]) .try-it-input::placeholder {
+      color: var(--text-muted);
+    }
+
+    :root:not([data-theme="dark"]) .file-upload-input,
+    html:not([data-theme="dark"]) .file-upload-input {
+      background: var(--bg-secondary);
+      border-color: var(--border-color);
+      color: var(--text-primary);
+    }
+
+    :root:not([data-theme="dark"]) .code-block,
+    html:not([data-theme="dark"]) .code-block {
+      background: var(--bg-secondary);
+    }
+
+    :root:not([data-theme="dark"]) .code-block-header,
+    html:not([data-theme="dark"]) .code-block-header {
+      background: var(--bg-tertiary);
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    :root:not([data-theme="dark"]) .code-block-title,
+    html:not([data-theme="dark"]) .code-block-title {
+      color: var(--text-secondary);
+    }
+
+    :root:not([data-theme="dark"]) .code-block pre,
+    html:not([data-theme="dark"]) .code-block pre {
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+    }
+
+    :root:not([data-theme="dark"]) #tryItPanel,
+    html:not([data-theme="dark"]) #tryItPanel {
+      background: #ffffff;
+    }
+
+    :root:not([data-theme="dark"]) #codeExamplesPanel,
+    html:not([data-theme="dark"]) #codeExamplesPanel {
+      background: #ffffff;
+    }
+
+    :root:not([data-theme="dark"]) #codeExamplesPanel pre,
+    html:not([data-theme="dark"]) #codeExamplesPanel pre {
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+    }
+
     * {
       margin: 0;
       padding: 0;
@@ -2890,11 +2977,12 @@ function getDocumentationHtml(): string {
 
       const ep = currentEndpoint;
       const module = apiDocs.modules.find(m => m.id === ep.moduleId);
-      const baseUrl = document.getElementById('baseUrlInput').value || config.baseUrl;
+      const configuredBaseUrl = document.getElementById('baseUrlInput').value || config.baseUrl;
       const authToken = document.getElementById('authTokenInput').value || config.authToken;
 
-      // Build URL with path params
-      let url = baseUrl + module.basePath + ep.path;
+      // Build URL with path params - check if basePath is already a full URL
+      const isFullUrl = module.basePath.startsWith('http://') || module.basePath.startsWith('https://');
+      let url = isFullUrl ? module.basePath + ep.path : configuredBaseUrl + module.basePath + ep.path;
 
       // Replace path parameters
       const pathParams = ep.parameters?.filter(p => p.in === 'path') || [];
@@ -3090,10 +3178,15 @@ function getDocumentationHtml(): string {
       const ep = currentEndpoint;
       const module = apiDocs.modules.find(m => m.id === ep.moduleId);
 
-      // Set default base URL
+      // Set base URL based on module - Python services have full URLs in basePath
       const baseUrlInput = document.getElementById('baseUrlInput');
-      if (!baseUrlInput.value) {
-        baseUrlInput.value = window.location.origin;
+      const isFullUrl = module.basePath.startsWith('http://') || module.basePath.startsWith('https://');
+      if (isFullUrl) {
+        // For Python services, show the actual service URL
+        baseUrlInput.value = module.basePath;
+      } else {
+        // For Node.js services, use localhost:3000
+        baseUrlInput.value = 'http://localhost:3000';
       }
 
       // Header parameters
@@ -3834,7 +3927,9 @@ function getDocumentationHtml(): string {
       const ep = currentEndpoint;
       const module = apiDocs.modules.find(m => m.id === ep.moduleId);
       const configuredBaseUrl = document.getElementById('baseUrlInput')?.value || config.baseUrl || window.location.origin;
-      const baseUrl = configuredBaseUrl + module.basePath;
+      // Check if basePath is already a full URL (for Python services)
+      const isFullUrl = module.basePath.startsWith('http://') || module.basePath.startsWith('https://');
+      const baseUrl = isFullUrl ? module.basePath : configuredBaseUrl + module.basePath;
 
       let code = '';
       let bodyExample = '';
