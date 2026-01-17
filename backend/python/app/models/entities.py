@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Type, TypeVar, Union
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -12,6 +12,9 @@ from app.config.constants.arangodb import (
 )
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+# Type variable for enum classes (must be after Enum import)
+EnumType = TypeVar('EnumType', bound=Enum)
 
 
 class RecordGroupType(str, Enum):
@@ -56,6 +59,60 @@ class IndexingStatus(str, Enum):
     FAILED = "FAILED"
     AUTO_INDEX_OFF = "AUTO_INDEX_OFF"  # Record saved but not indexed (filtered out)
 
+
+class TicketPriority(str, Enum):
+    """Standard ticket priority values for all ticketing connectors"""
+    LOWEST = "LOWEST"
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    HIGHEST = "HIGHEST"
+    CRITICAL = "CRITICAL"
+    BLOCKER = "BLOCKER"
+    UNKNOWN = "UNKNOWN"  # For unmapped or missing priority values
+
+
+class TicketStatus(str, Enum):
+    """Standard ticket status values for all ticketing connectors"""
+    NEW = "NEW"
+    OPEN = "OPEN"
+    IN_PROGRESS = "IN_PROGRESS"
+    RESOLVED = "RESOLVED"
+    CLOSED = "CLOSED"
+    CANCELLED = "CANCELLED"
+    REOPENED = "REOPENED"
+    PENDING = "PENDING"
+    WAITING = "WAITING"
+    BLOCKED = "BLOCKED"
+    DONE = "DONE"
+    UNKNOWN = "UNKNOWN"  # For unmapped or missing status values
+
+
+class TicketType(str, Enum):
+    """Standard ticket type values for all ticketing connectors"""
+    TASK = "TASK"  # General task
+    BUG = "BUG"  # Bug/defect
+    STORY = "STORY"  # User story
+    EPIC = "EPIC"  # Epic/large feature
+    FEATURE = "FEATURE"  # Feature request
+    SUBTASK = "SUBTASK"  # Subtask
+    INCIDENT = "INCIDENT"  # Incident/outage
+    IMPROVEMENT = "IMPROVEMENT"  # Improvement/enhancement
+    QUESTION = "QUESTION"  # Question/inquiry
+    DOCUMENTATION = "DOCUMENTATION"  # Documentation task
+    TEST = "TEST"  # Test case
+    UNKNOWN = "UNKNOWN"  # Unknown or unmapped ticket type
+
+
+class TicketDeliveryStatus(str, Enum):
+    """Standard ticket delivery status values for all ticketing connectors"""
+    ON_TRACK = "ON_TRACK"  # On track - progressing as expected
+    AT_RISK = "AT_RISK"  # At risk - some concerns but manageable
+    OFF_TRACK = "OFF_TRACK"  # Off track - significant issues or delays
+    HIGH_RISK = "HIGH_RISK"  # High risk - major concerns (Jira Align)
+    SOME_RISK = "SOME_RISK"  # Some risk - minor concerns (Jira Align)
+    UNKNOWN = "UNKNOWN"  # Unknown or unmapped delivery status
+
 class Record(BaseModel):
     # Core record properties
     id: str = Field(description="Unique identifier for the record", default_factory=lambda: str(uuid4()))
@@ -80,6 +137,7 @@ class Record(BaseModel):
     mime_type: str = Field(default=MimeTypes.UNKNOWN.value, description="MIME type of the record")
     inherit_permissions: bool = Field(default=True, description="Inherit permissions from parent record") # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
     indexing_status: str = Field(default=IndexingStatus.NOT_STARTED.value, description="Indexing status for the record")
+    extraction_status: str = Field(default=IndexingStatus.NOT_STARTED.value, description="Extraction status for the record")
     # Epoch Timestamps
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record update")
@@ -92,6 +150,7 @@ class Record(BaseModel):
     fetch_signed_url: Optional[str] = None
     preview_renderable: Optional[bool] = True
     is_shared: Optional[bool] = False
+    is_shared_with_me: Optional[bool] = False
     hide_weburl: bool = Field(default=False, description="Flag indicating if web URL should be hidden")
     is_internal: bool = Field(default=False, description="Flag indicating if record is internal")
 
@@ -129,7 +188,7 @@ class Record(BaseModel):
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
             "indexingStatus": self.indexing_status,
-            "extractionStatus": IndexingStatus.NOT_STARTED.value,
+            "extractionStatus": self.extraction_status,
             "isDeleted": False,
             "isArchived": False,
             "deletedByUserId": None,
@@ -178,6 +237,8 @@ class Record(BaseModel):
             source_created_at=arango_base_record.get("sourceCreatedAtTimestamp", None),
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp", None),
             virtual_record_id=arango_base_record.get("virtualRecordId", None),
+            indexing_status=arango_base_record.get("indexingStatus", IndexingStatus.NOT_STARTED.value),
+            extraction_status=arango_base_record.get("extractionStatus", IndexingStatus.NOT_STARTED.value),
             preview_renderable=arango_base_record.get("previewRenderable", True),
             is_shared=arango_base_record.get("isShared", False),
             is_vlm_ocr_processed=arango_base_record.get("isVLMOcrProcessed", False),
@@ -513,9 +574,10 @@ class CommentRecord(Record):
         )
 
 class TicketRecord(Record):
-    status: Optional[str] = None
-    priority: Optional[str] = None
-    type: Optional[str] = None
+    status: Optional[Union[TicketStatus, str]] = None
+    priority: Optional[Union[TicketPriority, str]] = None
+    type: Optional[Union[TicketType, str]] = None
+    delivery_status: Optional[Union[TicketDeliveryStatus, str]] = None
     assignee: Optional[str] = None
     reporter_email: Optional[str] = None
     assignee_email: Optional[str] = None
@@ -524,18 +586,44 @@ class TicketRecord(Record):
     creator_name: Optional[str] = None
 
     def to_arango_record(self) -> Dict:
+        def _get_value(field_value: Optional[Union[Enum, str]]) -> Optional[str]:
+            """Extract string value from enum or return original string"""
+            if field_value is None:
+                return None
+            if isinstance(field_value, Enum):
+                return field_value.value
+            return str(field_value)
+
         return {
             "_key": self.id,
             "orgId": self.org_id,
-            "status": self.status,
-            "priority": self.priority,
-            "type": self.type,
+            "status": _get_value(self.status),
+            "priority": _get_value(self.priority),
+            "type": _get_value(self.type),
+            "deliveryStatus": _get_value(self.delivery_status),
             "assignee": self.assignee,
             "reporterEmail": self.reporter_email,
+            "reporterName": self.reporter_name,
             "assigneeEmail": self.assignee_email,
             "creatorEmail": self.creator_email,
             "creatorName": self.creator_name,
         }
+
+    @staticmethod
+    def _safe_enum_parse(value: Optional[str], enum_class: Type[EnumType]) -> Optional[Union[EnumType, str]]:
+        """Safely parse enum value, returning original string if invalid (preserves connector-specific values)"""
+        if not value:
+            return None
+        try:
+            return enum_class(value)
+        except (ValueError, KeyError):
+            # If value doesn't match enum, try to find by value (case-insensitive)
+            value_upper = value.upper()
+            for enum_item in enum_class:
+                if enum_item.value.upper() == value_upper:
+                    return enum_item
+            # If still no match, return original value instead of UNKNOWN to preserve connector-specific values
+            return value
 
     @staticmethod
     def from_arango_record(ticket_doc: Dict, record_doc: Dict) -> "TicketRecord":
@@ -569,11 +657,10 @@ class TicketRecord(Record):
             preview_renderable=record_doc.get("previewRenderable", True),
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId", None),
-            summary=ticket_doc.get("summary"),
-            description=ticket_doc.get("description"),
-            status=ticket_doc.get("status"),
-            priority=ticket_doc.get("priority"),
-            type=ticket_doc.get("type"),
+            status=TicketRecord._safe_enum_parse(ticket_doc.get("status"), TicketStatus),
+            priority=TicketRecord._safe_enum_parse(ticket_doc.get("priority"), TicketPriority),
+            type=TicketRecord._safe_enum_parse(ticket_doc.get("type"), TicketType),
+            delivery_status=TicketRecord._safe_enum_parse(ticket_doc.get("deliveryStatus"), TicketDeliveryStatus),
             assignee=ticket_doc.get("assignee"),
             reporter_email=ticket_doc.get("reporterEmail"),
             assignee_email=ticket_doc.get("assigneeEmail"),

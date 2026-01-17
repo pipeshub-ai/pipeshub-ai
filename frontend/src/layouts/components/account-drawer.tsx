@@ -22,7 +22,7 @@ import { Iconify } from 'src/components/iconify';
 import { Scrollbar } from 'src/components/scrollbar';
 import { AnimateAvatar } from 'src/components/animate';
 
-import { getOrgLogo, getOrgIdFromToken, getUserEmailFromToken } from 'src/sections/accountdetails/utils';
+import { getOrgIdFromToken, getUserEmailFromToken } from 'src/sections/accountdetails/utils';
 
 import { useAuthContext } from 'src/auth/hooks';
 
@@ -169,28 +169,12 @@ export function AccountDrawer({ data = [], sx, ...other }: AccountDrawerProps) {
 
   const [open, setOpen] = useState(false);
   const [menuItems, setMenuItems] = useState(data);
-  const [customLogo, setCustomLogo] = useState<string | null>('');
   const isBusiness =
     user?.accountType === 'business' ||
     user?.accountType === 'organization' ||
     user?.role === 'business';
 
   const email = useMemo(() => getUserEmailFromToken(), []);
-    
-  useEffect(() => {
-    const fetchLogo = async () => {
-      try {
-        const orgId = await getOrgIdFromToken();
-        if (isBusiness) {
-          const logoUrl = await getOrgLogo(orgId);
-          setCustomLogo(logoUrl);
-        }
-      } catch (err) {
-        console.error(err, 'error in fetching logo');
-      }
-    };
-    fetchLogo();
-  }, [isBusiness]);
 
   // Build menu items when user data changes
   useEffect(() => {
@@ -249,7 +233,7 @@ export function AccountDrawer({ data = [], sx, ...other }: AccountDrawerProps) {
     <>
       <AccountButton
         onClick={handleOpenDrawer}
-        photoURL={customLogo || user?.photoURL}
+        photoURL={user?.photoURL}
         displayName={user?.fullName}
         sx={sx}
         {...other}

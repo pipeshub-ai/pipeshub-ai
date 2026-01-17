@@ -36,6 +36,7 @@ import {
   safeParsePagination,
 } from '../../../utils/safe-integer';
 import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
+import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
 const logger = Logger.getInstance({
   service: 'Knowledge Base Controller',
 });
@@ -77,7 +78,7 @@ export const getKnowledgeHubNodes =
         q: 'q',
         nodeTypes: 'node_types',
         recordTypes: 'record_types',
-        sources: 'sources',
+        origins: 'origins',
         connectorIds: 'connector_ids',
         kbIds: 'kb_ids',
         indexingStatus: 'indexing_status',
@@ -687,7 +688,11 @@ export const deleteFolder =
     }
   };
 
-//  Upload records in KB along with folder creation and folder record creation new controller
+/**
+ * Upload records to Knowledge Base.
+ * Files are processed by file processor middleware which attaches
+ * filePath and lastModified to each file buffer.
+ */
 export const uploadRecordsToKB =
   (
     recordRelationService: RecordRelationService,
@@ -700,13 +705,11 @@ export const uploadRecordsToKB =
     next: NextFunction,
   ): Promise<void> => {
     try {
-      const files = req.body.fileBuffers;
+      const fileBuffers: FileBufferInfo[] = req.body.fileBuffers || [];
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
-      const { kbId } = req.params; // should be sent in params instead of req.body
-      const filePaths = req.body.file_paths || [];
-      const lastModifiedTimes = req.body.last_modified || [];
-      const isVersioned = req.body?.isVersioned || true;
+      const { kbId } = req.params;
+      const isVersioned = req.body?.isVersioned ?? true;
 
       // Validation
       if (!userId || !orgId) {
@@ -715,37 +718,22 @@ export const uploadRecordsToKB =
         );
       }
 
-      if (!kbId || !files || files.length === 0) {
+      if (!kbId || fileBuffers.length === 0) {
         throw new BadRequestError('Knowledge Base ID and files are required');
       }
 
-      if (
-        files.length !== filePaths.length ||
-        files.length !== lastModifiedTimes.length
-      ) {
-        throw new BadRequestError(
-          'Files, paths, and timestamps arrays must have the same length',
-        );
-      }
-
-      console.log('📦 Processing optimized upload:', {
-        totalFiles: files.length,
+      logger.info('Processing file upload to KB', {
+        totalFiles: fileBuffers.length,
         kbId,
         userId,
-        samplePaths: filePaths.slice(0, 3),
+        samplePaths: fileBuffers.slice(0, 3).map((f) => f.filePath),
       });
 
       const currentTime = Date.now();
-
-      // Process files and create records (storage operations)
       const processedFiles = [];
 
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const filePath = filePaths[i];
-        const lastModified = parseInt(lastModifiedTimes[i]) || currentTime;
-
-        const { originalname, mimetype, size } = file;
+      for (const file of fileBuffers) {
+        const { originalname, mimetype, size, filePath, lastModified } = file;
 
         // Extract filename from path
         const fileName = filePath.includes('/')
@@ -759,6 +747,7 @@ export const uploadRecordsToKB =
         // Use correct MIME type mapping instead of browser detection
         const correctMimeType =
           (extension && getMimeType(extension)) || mimetype;
+
         // Generate unique ID for the record
         const key: string = uuidv4();
         const webUrl = `/record/${key}`;
@@ -799,7 +788,6 @@ export const uploadRecordsToKB =
           mimeType: correctMimeType,
           sizeInBytes: size,
           webUrl: webUrl,
-          // path: filePath,
         };
 
         // Save file to storage and get document ID
@@ -829,7 +817,9 @@ export const uploadRecordsToKB =
         });
       }
 
-      console.log('✅ Files processed, calling Python service');
+      logger.info('Files processed, sending to Python service', {
+        count: processedFiles.length,
+      });
 
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/kb/${kbId}/upload`,
@@ -852,16 +842,21 @@ export const uploadRecordsToKB =
         'Failed to process upload',
       );
     } catch (error: any) {
-      console.error('❌ Record upload failed:', {
+      logger.error('Record upload failed', {
         error: error.message,
         userId: req.user?.userId,
-        kbId: req.body.kb_id,
+        kbId: req.params.kbId,
       });
       const backendError = handleBackendError(error, 'Record upload api');
       next(backendError);
     }
   };
 
+/**
+ * Upload records to a specific folder within a Knowledge Base.
+ * Files are processed by file processor middleware which attaches
+ * filePath and lastModified to each file buffer.
+ */
 export const uploadRecordsToFolder =
   (
     recordRelationService: RecordRelationService,
@@ -874,13 +869,11 @@ export const uploadRecordsToFolder =
     next: NextFunction,
   ): Promise<void> => {
     try {
-      const files = req.body.fileBuffers;
+      const fileBuffers: FileBufferInfo[] = req.body.fileBuffers || [];
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
       const { kbId, folderId } = req.params;
-      const filePaths = req.body.file_paths || [];
-      const lastModifiedTimes = req.body.last_modified || [];
-      const isVersioned = req.body?.isVersioned || true;
+      const isVersioned = req.body?.isVersioned ?? true;
 
       // Validation
       if (!userId || !orgId) {
@@ -889,40 +882,25 @@ export const uploadRecordsToFolder =
         );
       }
 
-      if (!kbId || !folderId || !files || files.length === 0) {
+      if (!kbId || !folderId || fileBuffers.length === 0) {
         throw new BadRequestError(
           'Knowledge Base ID, Folder ID, and files are required',
         );
       }
 
-      if (
-        files.length !== filePaths.length ||
-        files.length !== lastModifiedTimes.length
-      ) {
-        throw new BadRequestError(
-          'Files, paths, and timestamps arrays must have the same length',
-        );
-      }
-
-      console.log('📦 Processing folder upload:', {
-        totalFiles: files.length,
+      logger.info('Processing file upload to folder', {
+        totalFiles: fileBuffers.length,
         kbId,
         folderId,
         userId,
-        samplePaths: filePaths.slice(0, 3),
+        samplePaths: fileBuffers.slice(0, 3).map((f) => f.filePath),
       });
 
       const currentTime = Date.now();
-
-      // Process files and create records (storage operations)
       const processedFiles = [];
 
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const filePath = filePaths[i];
-        const lastModified = parseInt(lastModifiedTimes[i]) || currentTime;
-
-        const { originalname, mimetype, size } = file;
+      for (const file of fileBuffers) {
+        const { originalname, mimetype, size, filePath, lastModified } = file;
 
         // Extract filename from path
         const fileName = filePath.includes('/')
@@ -934,7 +912,8 @@ export const uploadRecordsToFolder =
           : null;
 
         // Use correct MIME type mapping instead of browser detection
-        const correctMimeType = extension ? getMimeType(extension) : mimetype;
+        const correctMimeType =
+          (extension && getMimeType(extension)) || mimetype;
 
         // Generate unique ID for the record
         const key: string = uuidv4();
@@ -963,7 +942,7 @@ export const uploadRecordsToFolder =
           version: 1,
           webUrl: webUrl,
           mimeType: correctMimeType,
-          connectorId: kbId
+          connectorId: kbId,
         };
 
         const fileRecord: IFileRecordDocument = {
@@ -975,7 +954,6 @@ export const uploadRecordsToFolder =
           mimeType: correctMimeType,
           sizeInBytes: size,
           webUrl: webUrl,
-          // path: filePath,
         };
 
         // Save file to storage and get document ID
@@ -1005,9 +983,10 @@ export const uploadRecordsToFolder =
         });
       }
 
-      console.log(
-        '✅ Files processed, calling Python service for folder upload',
-      );
+      logger.info('Files processed, sending to Python service for folder upload', {
+        count: processedFiles.length,
+        folderId,
+      });
 
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/upload`,
@@ -1026,11 +1005,11 @@ export const uploadRecordsToFolder =
       handleConnectorResponse(
         response,
         res,
-        'Uploading records to KB',
+        'Uploading records to folder',
         'Records not found',
       );
     } catch (error: any) {
-      console.error('❌ Folder record upload failed:', {
+      logger.error('Folder record upload failed', {
         error: error.message,
         userId: req.user?.userId,
         kbId: req.params.kbId,

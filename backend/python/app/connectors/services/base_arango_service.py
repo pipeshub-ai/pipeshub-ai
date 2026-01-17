@@ -68,6 +68,7 @@ from app.schema.arango.edges import (
     is_of_type_schema,
     permissions_schema,
     record_relations_schema,
+    ticket_relations_schema,
     user_app_relation_schema,
     user_drive_relation_schema,
 )
@@ -129,6 +130,7 @@ EDGE_COLLECTIONS = [
     (CollectionNames.BELONGS_TO_RECORD_GROUP.value, basic_edge_schema),
     (CollectionNames.INTER_CATEGORY_RELATIONS.value, basic_edge_schema),
     (CollectionNames.PERMISSION.value, permissions_schema),
+    (CollectionNames.TICKET_RELATIONS.value, ticket_relations_schema),
 ]
 
 class BaseArangoService:
@@ -14608,6 +14610,7 @@ class BaseArangoService:
                 LET directKbRecords = (
                     FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
                         FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                        FILTER kb._key IN @kb_ids
                     FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
                     RETURN DISTINCT records
                 )
@@ -14620,6 +14623,7 @@ class BaseArangoService:
                     FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
                         FILTER IS_SAME_COLLECTION("recordGroups", kb)
                         FILTER teamKbEdge.type == "TEAM"
+                        FILTER kb._key IN @kb_ids
                     FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
                     RETURN DISTINCT records
                 )

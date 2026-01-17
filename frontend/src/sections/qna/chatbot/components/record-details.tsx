@@ -397,7 +397,10 @@ const RecordDetails = ({ recordId, onExternalLink }: RecordDetailsProps) => {
     webUrl = newWebUrl;
   }
 
-  // Get connector info
+  // Check hideWeburl flag
+  const hideWeburl = record.hideWeburl ?? false;
+
+    // Get connector info
   const connectorName = record.connectorName || (record.origin === 'UPLOAD' ? 'UPLOAD' : '');
   const connectorInfo = connectorData[connectorName?.toUpperCase()] || {
     iconPath: '/assets/icons/connectors/default.svg',
@@ -428,7 +431,7 @@ const RecordDetails = ({ recordId, onExternalLink }: RecordDetailsProps) => {
             style={{ color: theme.palette.primary.main }}
           />
           {record.recordName}
-          {webUrl && (
+          {webUrl && !hideWeburl && (
             <Tooltip title="View document">
               <Button
                 size="small"

@@ -57,271 +57,125 @@ export const getConnectorStatsSchema = z.object({
   params: z.object({ connectorId: z.string().min(1) }),
 });
 
+/**
+ * Schema for the processed file buffer with metadata attached.
+ * This is set by the file processor middleware after parsing files_metadata.
+ */
+const fileBufferSchema = z.object({
+  buffer: z.any(),
+  mimetype: z.string().refine(
+    (value) => Object.values(extensionToMimeType).includes(value),
+    { message: 'Invalid MIME type' },
+  ),
+  originalname: z.string(),
+  size: z.number(),
+  lastModified: z.number(),
+  filePath: z.string(),
+});
+
 export const uploadRecordsSchema = z.object({
-  body: z
-    .object({
-      recordName: z.string().min(1).optional(),
-      recordType: z.string().min(1).default('FILE').optional(),
-      origin: z.string().min(1).default('UPLOAD').optional(),
-      isVersioned: z
-        .union([
-          z.boolean(),
-          z.string().transform((val) => {
-            if (val === '') return false;
-            if (val === 'true' || val === '1') return true;
-            if (val === 'false' || val === '0') return false;
-            throw new Error('Invalid boolean string value');
-          }),
-        ])
-        .default(false)
-        .optional(),
-      fileBuffers: z
-        .array(
-          z.object({
-            buffer: z.any(),
-            mimetype: z
-              .string()
-              .refine(
-                (value) => Object.values(extensionToMimeType).includes(value),
-                { message: 'Invalid MIME type' },
-              ),
-            originalname: z.string(),
-            size: z.number(),
-            lastModified: z.number().optional(),
-          }),
-        )
-        .optional(),
-      fileBuffer: z
-        .object({
-          buffer: z.any(),
-          mimetype: z
-            .string()
-            .refine(
-              (value) => Object.values(extensionToMimeType).includes(value),
-              { message: 'Invalid MIME type' },
-            ),
-          originalname: z.string(),
-          size: z.number(),
-          lastModified: z.number().optional(),
-        })
-        .optional(),
+  body: z.object({
+    recordName: z.string().min(1).optional(),
+    recordType: z.string().min(1).default('FILE').optional(),
+    origin: z.string().min(1).default('UPLOAD').optional(),
+    isVersioned: z
+      .union([
+        z.boolean(),
+        z.string().transform((val) => {
+          if (val === '' || val === 'false' || val === '0') return false;
+          if (val === 'true' || val === '1') return true;
+          throw new Error('Invalid boolean string value');
+        }),
+      ])
+      .default(false)
+      .optional(),
 
-      file_paths: z.preprocess(
-        (val) => (typeof val === 'string' ? [val] : val),
-        z
-          .array(z.string().min(1, 'File path cannot be empty'))
-          .min(1, 'At least one file path is required')
-          .max(1000, 'Maximum 1000 files allowed per upload')
-          .refine(
-            (paths) => {
-              // Check for duplicate paths
-              const uniquePaths = new Set(paths);
-              return uniquePaths.size === paths.length;
-            },
-            {
-              message: 'Duplicate file paths are not allowed',
-            },
-          )
-          .refine(
-            (paths) => {
-              // Validate path format - no leading/trailing slashes, no double slashes
-              const invalidPaths = paths.filter(
-                (path) =>
-                  path.startsWith('/') ||
-                  path.endsWith('/') ||
-                  path.includes('//') ||
-                  path.includes('\\') ||
-                  /[<>:"|?*\x00-\x1f]/.test(path), // Invalid filename characters
-              );
-              return invalidPaths.length === 0;
-            },
-            {
-              message: 'Invalid file path format detected',
-            },
-          ),
-      ),
+    // Processed file buffers (set by file processor middleware)
+    fileBuffers: z.array(fileBufferSchema).optional(),
+    fileBuffer: fileBufferSchema.optional(),
 
-      last_modified: z.preprocess(
-        (val) => (typeof val === 'string' ? [val] : val),
-        z
-          .array(
-            z
-              .string()
-              .regex(/^\d+$/, 'Last modified must be a numeric timestamp'),
-          )
-          .min(1, 'At least one last modified timestamp is required')
-          .transform((timestamps) =>
-            timestamps.map((ts) => {
-              const parsed = parseInt(ts, 10);
-              if (isNaN(parsed) || parsed < 0) {
-                throw new Error(`Invalid timestamp: ${ts}`);
-              }
-              return parsed;
-            }),
-          )
-          .refine(
-            (timestamps) => {
-              // Validate timestamps are reasonable (after 1970, before year 3000)
-              const minTimestamp = 0; // 1970-01-01
-              const maxTimestamp = 32503680000000; // Year 3000
-              return timestamps.every(
-                (ts) => ts >= minTimestamp && ts <= maxTimestamp,
-              );
-            },
-            {
-              message: 'Timestamps must be valid Unix timestamps',
-            },
-          ),
+    // Files metadata JSON string - parsed by file processor
+    // Format: [{ file_path: string, last_modified: number }, ...]
+    files_metadata: z
+      .string()
+      .optional()
+      .refine(
+        (val) => {
+          if (!val) return true;
+          try {
+            const parsed = JSON.parse(val);
+            if (!Array.isArray(parsed)) return false;
+            // Validate each entry has required fields
+            return parsed.every(
+              (entry: any) =>
+                typeof entry.file_path === 'string' &&
+                typeof entry.last_modified === 'number',
+            );
+          } catch {
+            return false;
+          }
+        },
+        {
+          message:
+            'files_metadata must be a valid JSON array with { file_path, last_modified } objects',
+        },
       ),
-    })
-    .refine(
-      (data) => {
-        // Validate that last_modified array length matches file_paths array length
-        if (data.file_paths && data.last_modified) {
-          return data.last_modified.length === data.file_paths.length;
-        }
-        return true;
-      },
-      {
-        message: 'Last modified array must match file paths array length',
-        path: ['last_modified'],
-      },
-    ),
+  }),
   params: z.object({
     kbId: z.string().uuid(),
   }),
 });
 
 export const uploadRecordsToFolderSchema = z.object({
-  body: z
-    .object({
-      recordName: z.string().min(1).optional(),
-      recordType: z.string().min(1).default('FILE').optional(),
-      origin: z.string().min(1).default('UPLOAD').optional(),
-      isVersioned: z
-        .union([
-          z.boolean(),
-          z.string().transform((val) => {
-            if (val === '') return false;
-            if (val === 'true' || val === '1') return true;
-            if (val === 'false' || val === '0') return false;
-            throw new Error('Invalid boolean string value');
-          }),
-        ])
-        .default(false)
-        .optional(),
-      fileBuffers: z
-        .array(
-          z.object({
-            buffer: z.any(),
-            mimetype: z
-              .string()
-              .refine(
-                (value) => Object.values(extensionToMimeType).includes(value),
-                { message: 'Invalid MIME type' },
-              ),
-            originalname: z.string(),
-            size: z.number(),
-            lastModified: z.number().optional(),
-          }),
-        )
-        .optional(),
-      fileBuffer: z
-        .object({
-          buffer: z.any(),
-          mimetype: z
-            .string()
-            .refine(
-              (value) => Object.values(extensionToMimeType).includes(value),
-              { message: 'Invalid MIME type' },
-            ),
-          originalname: z.string(),
-          size: z.number(),
-          lastModified: z.number().optional(),
-        })
-        .optional(),
+  body: z.object({
+    recordName: z.string().min(1).optional(),
+    recordType: z.string().min(1).default('FILE').optional(),
+    origin: z.string().min(1).default('UPLOAD').optional(),
+    isVersioned: z
+      .union([
+        z.boolean(),
+        z.string().transform((val) => {
+          if (val === '' || val === 'false' || val === '0') return false;
+          if (val === 'true' || val === '1') return true;
+          throw new Error('Invalid boolean string value');
+        }),
+      ])
+      .default(false)
+      .optional(),
 
-      file_paths: z.preprocess(
-        (val) => (typeof val === 'string' ? [val] : val),
-        z
-          .array(z.string().min(1, 'File path cannot be empty'))
-          .min(1, 'At least one file path is required')
-          .max(1000, 'Maximum 1000 files allowed per upload')
-          .refine(
-            (paths) => {
-              const uniquePaths = new Set(paths);
-              return uniquePaths.size === paths.length;
-            },
-            {
-              message: 'Duplicate file paths are not allowed',
-            },
-          )
-          .refine(
-            (paths) => {
-              const invalidPaths = paths.filter(
-                (path) =>
-                  path.startsWith('/') ||
-                  path.endsWith('/') ||
-                  path.includes('//') ||
-                  path.includes('\\') ||
-                  /[<>:"|?*\x00-\x1f]/.test(path),
-              );
-              return invalidPaths.length === 0;
-            },
-            {
-              message: 'Invalid file path format detected',
-            },
-          ),
-      ),
+    // Processed file buffers (set by file processor middleware)
+    fileBuffers: z.array(fileBufferSchema).optional(),
+    fileBuffer: fileBufferSchema.optional(),
 
-      last_modified: z.preprocess(
-        (val) => (typeof val === 'string' ? [val] : val),
-        z
-          .array(
-            z
-              .string()
-              .regex(/^\d+$/, 'Last modified must be a numeric timestamp'),
-          )
-          .min(1, 'At least one last modified timestamp is required')
-          .transform((timestamps) =>
-            timestamps.map((ts) => {
-              const parsed = parseInt(ts, 10);
-              if (isNaN(parsed) || parsed < 0) {
-                throw new Error(`Invalid timestamp: ${ts}`);
-              }
-              return parsed;
-            }),
-          )
-          .refine(
-            (timestamps) => {
-              const minTimestamp = 0;
-              const maxTimestamp = 32503680000000;
-              return timestamps.every(
-                (ts) => ts >= minTimestamp && ts <= maxTimestamp,
-              );
-            },
-            {
-              message: 'Timestamps must be valid Unix timestamps',
-            },
-          ),
+    // Files metadata JSON string - parsed by file processor
+    // Format: [{ file_path: string, last_modified: number }, ...]
+    files_metadata: z
+      .string()
+      .optional()
+      .refine(
+        (val) => {
+          if (!val) return true;
+          try {
+            const parsed = JSON.parse(val);
+            if (!Array.isArray(parsed)) return false;
+            return parsed.every(
+              (entry: any) =>
+                typeof entry.file_path === 'string' &&
+                typeof entry.last_modified === 'number',
+            );
+          } catch {
+            return false;
+          }
+        },
+        {
+          message:
+            'files_metadata must be a valid JSON array with { file_path, last_modified } objects',
+        },
       ),
-    })
-    .refine(
-      (data) => {
-        // Validate that last_modified array length matches file_paths array length
-        if (data.file_paths && data.last_modified) {
-          return data.last_modified.length === data.file_paths.length;
-        }
-        return true;
-      },
-      {
-        message: 'Last modified array must match file paths array length',
-        path: ['last_modified'],
-      },
-    ),
+  }),
   params: z.object({
     kbId: z.string().uuid(),
-    folderId: z.string().min(1), // Folder ID validation
+    folderId: z.string().min(1),
   }),
 });
 

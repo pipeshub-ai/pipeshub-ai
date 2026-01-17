@@ -137,14 +137,14 @@ class RecordEventHandler(BaseEventService):
 
             doc = dict(record)
 
-            if event_type == EventTypes.NEW_RECORD.value and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
+            if (event_type == EventTypes.NEW_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value) and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
                 self.logger.info(f"🔍 Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")
                 yield {"event": "parsing_complete", "data": {"record_id": record_id}}
                 yield {"event": "indexing_complete", "data": {"record_id": record_id}}
                 return
 
             # Check if record is from a connector and if the connector is active
-            if event_type == EventTypes.NEW_RECORD.value:
+            if event_type == EventTypes.NEW_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value:
                 connector_id = record.get("connectorId")
                 origin = record.get("origin")
                 if connector_id and origin == OriginTypes.CONNECTOR.value:
@@ -304,7 +304,7 @@ class RecordEventHandler(BaseEventService):
                     return
                 except Exception as e:
                     error_occurred = True
-                    error_msg = f"Failed to process signed URL: {str(e)}"
+                    error_msg = str(e)
                     raise Exception(error_msg)
 
             elif payload and payload.get("signedUrl"):
@@ -330,7 +330,7 @@ class RecordEventHandler(BaseEventService):
                     return
                 except Exception as e:
                     error_occurred = True
-                    error_msg = f"Failed to process signed URL: {str(e)}"
+                    error_msg = str(e)
                     raise Exception(error_msg)
             else:
                 try:
@@ -367,16 +367,16 @@ class RecordEventHandler(BaseEventService):
                     return
                 except Exception as e:
                     error_occurred = True
-                    error_msg = f"Failed to process signed URL: {str(e)}"
+                    error_msg = str(e)
                     raise Exception(error_msg)
         except IndexingError as e:
             error_occurred = True
-            error_msg = f"❌ Indexing error for record {record_id}: {str(e)}"
+            error_msg = str(e)
             self.logger.error(error_msg, exc_info=True)
             raise Exception(error_msg)
         except Exception as e:
             error_occurred = True
-            error_msg = f"Error processing message {message_id}: {str(e)}"
+            error_msg = str(e)
             self.logger.error(error_msg, exc_info=True)
             raise Exception(error_msg)
         finally:

@@ -191,6 +191,9 @@ class DataSourceEntitiesProcessor:
                 await tx_store.create_record_relation(parent_record.id, record.id, relation_type)
 
     async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> None:
+        if record.external_record_group_id is None:
+            return
+
         record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id,
                                                                       external_id=record.external_record_group_id)
 
@@ -475,7 +478,7 @@ class DataSourceEntitiesProcessor:
         """
         Publish reindex events for existing records without DB operations.
         Used for reindexing functionality where records already exist in DB.
-        This method only publishes newRecord events to trigger re-indexing in the indexing service.
+        This method publishes reindexRecord events to trigger re-indexing in the indexing service.
 
         Args:
             records: List of properly typed Record instances (FileRecord, MailRecord, etc.)
@@ -491,7 +494,7 @@ class DataSourceEntitiesProcessor:
                 await self.messaging_producer.send_message(
                     "record-events",
                     {
-                        "eventType": "newRecord",
+                        "eventType": "reindexRecord",
                         "timestamp": get_epoch_timestamp_in_ms(),
                         "payload": payload
                     },
@@ -1103,8 +1106,8 @@ class DataSourceEntitiesProcessor:
         group_id: str,
         user_email: str,
         connector_id: str,
-        target_collections: Optional[List[str]] = None
-    ) -> Tuple[int, int]:
+        tx_store: Optional[TransactionStore] = None
+    ) -> None:
         """
         Migrate all permissions from a group to a user.
 
@@ -1119,151 +1122,199 @@ class DataSourceEntitiesProcessor:
             group_id: The internal ID of the group to migrate permissions from
             user_email: Email of the user to migrate permissions to
             connector_id: Connector ID for logging
-            target_collections: Optional list of target collections to filter
-                          (defaults to RECORDS and RECORD_GROUPS)
-
-        Returns:
-            Tuple[int, int]: (migrated_count, skipped_count)
+            tx_store: Optional transaction store to participate in caller's transaction.
+                     If not provided, a new transaction will be created.
         """
-        if target_collections is None:
-            target_collections = [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value]
-
-        async with self.data_store_provider.transaction() as tx_store:
-            # Get the user object
-            user = await tx_store.get_user_by_email(user_email)
-            if not user:
-                self.logger.warning(
-                    f"User {user_email} not found in users collection, "
-                    f"cannot migrate permissions. Skipping."
+        # If no transaction provided, create one and recursively call with it
+        if tx_store is None:
+            async with self.data_store_provider.transaction() as tx_store:
+                return await self.migrate_group_permissions_to_user(
+                    group_id, user_email, connector_id, tx_store
                 )
-                return (0, 0)
 
-            # Get all permission edges FROM the group
-            group_node_id = f"{CollectionNames.GROUPS.value}/{group_id}"
-            permission_edges = await tx_store.get_edges_from_node(
-                from_node_id=group_node_id,
-                edge_collection=CollectionNames.PERMISSION.value
+        # Get the user object
+        user = await tx_store.get_user_by_email(user_email)
+        if not user:
+            self.logger.warning(
+                f"User {user_email} not found in users collection, "
+                f"cannot migrate permissions. Skipping."
             )
+            return
 
-            if not permission_edges:
-                self.logger.debug(f"No permissions found for group {group_id}")
-                return (0, 0)
+        # Get all permission edges FROM the group
+        group_node_id = f"{CollectionNames.GROUPS.value}/{group_id}"
+        permission_edges = await tx_store.get_edges_from_node(
+            from_node_id=group_node_id,
+            edge_collection=CollectionNames.PERMISSION.value
+        )
 
-            migrated_count = 0
-            skipped_count = 0
-            new_permission_edges = []
+        if not permission_edges:
+            self.logger.debug(f"No permissions found for group {group_id}")
+            return
 
-            # Process each permission edge
-            for edge in permission_edges:
+        migrated_count = 0
+        skipped_count = 0
+        new_permission_edges = []
+
+        # Process each permission edge
+        for edge in permission_edges:
+            try:
+                target_node_id = edge.get("_to")
+                if not target_node_id:
+                    continue
+
+                # Extract target ID and collection from _to
+                target_parts = target_node_id.split("/", 1)
+                if len(target_parts) != ARANGO_NODE_ID_PARTS:
+                    continue
+
+                target_collection, target_id = target_parts
+
+                # Get permission type from edge
+                role_str = edge.get("role", "READER")
                 try:
-                    target_node_id = edge.get("_to")
-                    if not target_node_id:
-                        continue
+                    permission_type = PermissionType(role_str)
+                except ValueError:
+                    permission_type = PermissionType.READ  # Default fallback
 
-                    # Extract target ID and collection from _to
-                    target_parts = target_node_id.split("/", 1)
-                    if len(target_parts) != ARANGO_NODE_ID_PARTS:
-                        continue
+                # Check if user already has permission to this target
+                existing_edge = await tx_store.get_edge(
+                    from_id=user.id,
+                    from_collection=CollectionNames.USERS.value,
+                    to_id=target_id,
+                    to_collection=target_collection,
+                    collection=CollectionNames.PERMISSION.value
+                )
 
-                    target_collection, target_id = target_parts
+                if existing_edge:
+                    # User already has permission, check if we need to upgrade it
+                    existing_role = existing_edge.get("role", "READER")
+                    existing_role_level = PERMISSION_HIERARCHY.get(existing_role, 0)
+                    new_role_level = PERMISSION_HIERARCHY.get(permission_type.value, 0)
 
-                    # Filter by target collections if specified
-                    if target_collection not in target_collections:
-                        continue
+                    if new_role_level > existing_role_level:
+                        # Delete old edge and create new one with upgraded permission
+                        await tx_store.delete_edge(
+                            from_id=user.id,
+                            from_collection=CollectionNames.USERS.value,
+                            to_id=target_id,
+                            to_collection=target_collection,
+                            collection=CollectionNames.PERMISSION.value
+                        )
 
-                    # Get permission type from edge
-                    role_str = edge.get("role", "READER")
-                    try:
-                        permission_type = PermissionType(role_str)
-                    except ValueError:
-                        permission_type = PermissionType.READ  # Default fallback
-
-                    # Check if user already has permission to this target
-                    existing_edge = await tx_store.get_edge(
-                        from_id=user.id,
-                        from_collection=CollectionNames.USERS.value,
-                        to_id=target_id,
-                        to_collection=target_collection,
-                        collection=CollectionNames.PERMISSION.value
-                    )
-
-                    if existing_edge:
-                        # User already has permission, check if we need to upgrade it
-                        existing_role = existing_edge.get("role", "READER")
-                        existing_role_level = PERMISSION_HIERARCHY.get(existing_role, 0)
-                        new_role_level = PERMISSION_HIERARCHY.get(permission_type.value, 0)
-
-                        if new_role_level > existing_role_level:
-                            # Delete old edge and create new one with upgraded permission
-                            await tx_store.delete_edge(
-                                from_id=user.id,
-                                from_collection=CollectionNames.USERS.value,
-                                to_id=target_id,
-                                to_collection=target_collection,
-                                collection=CollectionNames.PERMISSION.value
-                            )
-
-                            # Create new edge with upgraded permission
-                            permission = Permission(
-                                email=user_email,
-                                type=permission_type,
-                                entity_type=EntityType.USER
-                            )
-                            edge_data = permission.to_arango_permission(
-                                from_id=user.id,
-                                from_collection=CollectionNames.USERS.value,
-                                to_id=target_id,
-                                to_collection=target_collection
-                            )
-                            new_permission_edges.append(edge_data)
-                            migrated_count += 1
-                            self.logger.debug(
-                                f"Upgraded permission for user {user_email} to {target_node_id} "
-                                f"(from {existing_role} to {permission_type.value})"
-                            )
-                        else:
-                            skipped_count += 1
-                            self.logger.debug(
-                                f"User {user_email} already has permission to {target_node_id} "
-                                f"(existing: {existing_role}, group: {permission_type.value}), skipping"
-                            )
-                    else:
-                        # Create new permission edge for user (batch create later)
+                        # Create new edge with upgraded permission
                         permission = Permission(
                             email=user_email,
                             type=permission_type,
                             entity_type=EntityType.USER
                         )
-
                         edge_data = permission.to_arango_permission(
                             from_id=user.id,
                             from_collection=CollectionNames.USERS.value,
                             to_id=target_id,
                             to_collection=target_collection
                         )
-
                         new_permission_edges.append(edge_data)
                         migrated_count += 1
-
-                except Exception as e:
-                    self.logger.warning(
-                        f"Failed to process permission edge {edge.get('_key', 'unknown')} "
-                        f"for user {user_email}: {e}",
-                        exc_info=True
+                        self.logger.debug(
+                            f"Upgraded permission for user {user_email} to {target_node_id} "
+                            f"(from {existing_role} to {permission_type.value})"
+                        )
+                    else:
+                        skipped_count += 1
+                        self.logger.debug(
+                            f"User {user_email} already has permission to {target_node_id} "
+                            f"(existing: {existing_role}, group: {permission_type.value}), skipping"
+                        )
+                else:
+                    # Create new permission edge for user (batch create later)
+                    permission = Permission(
+                        email=user_email,
+                        type=permission_type,
+                        entity_type=EntityType.USER
                     )
-                    continue
 
-            # Batch create all new permission edges
-            if new_permission_edges:
-                await tx_store.batch_create_edges(
-                    new_permission_edges,
-                    collection=CollectionNames.PERMISSION.value
+                    edge_data = permission.to_arango_permission(
+                        from_id=user.id,
+                        from_collection=CollectionNames.USERS.value,
+                        to_id=target_id,
+                        to_collection=target_collection
+                    )
+
+                    new_permission_edges.append(edge_data)
+                    migrated_count += 1
+
+            except Exception as e:
+                self.logger.warning(
+                    f"Failed to process permission edge {edge.get('_key', 'unknown')} "
+                    f"for user {user_email}: {e}",
+                    exc_info=True
                 )
+                continue
+
+        # Batch create all new permission edges
+        if new_permission_edges:
+            await tx_store.batch_create_edges(
+                new_permission_edges,
+                collection=CollectionNames.PERMISSION.value
+            )
+
+        if migrated_count > 0 or skipped_count > 0:
+            self.logger.info(
+                f"✅ Permission migration complete for user {user_email}: "
+                f"migrated {migrated_count}, skipped {skipped_count} duplicates"
+            )
+
+    async def migrate_group_to_user_by_external_id(
+        self,
+        group_external_id: str,
+        user_email: str,
+        connector_id: str
+    ) -> None:
+        """
+        Migrate permissions from a group to a user and delete the group.
+        This is a convenience method that handles the entire flow atomically.
+
+        This method:
+        1. Finds the group by external ID
+        2. Migrates all permissions from group to user
+        3. Deletes the group
+        All in a single transaction.
+
+        Args:
+            group_external_id: External ID of the group to migrate from
+            user_email: Email of the user to migrate permissions to
+            connector_id: Connector ID
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            # Find the group by external ID
+            group = await tx_store.get_user_group_by_external_id(
+                connector_id=connector_id,
+                external_id=group_external_id
+            )
+
+            if not group:
                 self.logger.debug(
-                    f"Created {len(new_permission_edges)} new permission edges for user {user_email}"
+                    f"Group with external ID {group_external_id} not found for connector {connector_id}"
                 )
+                return
 
-            return (migrated_count, skipped_count)
+            self.logger.info(
+                f"Migrating group '{group.name}' ({group.id}) to user '{user_email}'"
+            )
+
+            # Migrate permissions (using the same transaction)
+            await self.migrate_group_permissions_to_user(
+                group_id=group.id,
+                user_email=user_email,
+                connector_id=connector_id,
+                tx_store=tx_store
+            )
+
+            # Delete the group (this will also delete all its edges)
+            await tx_store.delete_user_group_by_id(group.id)
+
+            self.logger.info(f"✅ Completed migration and deleted group '{group.name}'")
 
     async def on_app_role_deleted(
         self,
@@ -1390,6 +1441,34 @@ class DataSourceEntitiesProcessor:
 
         except Exception as e:
             self.logger.error(f"Error deleting organization edges for group {group_internal_id}: {e}")
+
+    async def add_permission_to_record(self, record: Record, permissions: List[Permission]) -> None:
+        """Add permissions to a record."""
+
+        async with self.data_store_provider.transaction() as tx_store:
+            await self._handle_record_permissions(record, permissions, tx_store)
+
+    async def delete_permission_from_record(self, record_id: str, user_email: str) -> None:
+        """Delete permissions from a record."""
+
+        async with self.data_store_provider.transaction() as tx_store:
+            user = await tx_store.get_user_by_email(user_email)
+            if not user:
+                self.logger.warning(f"User with email {user_email} not found in database")
+                return
+
+            success = await tx_store.delete_edge(
+                from_id=user.id,
+                from_collection=CollectionNames.USERS.value,
+                to_id=record_id,
+                to_collection=CollectionNames.RECORDS.value,
+                collection=CollectionNames.PERMISSION.value
+            )
+
+            if success:
+                self.logger.info(f"Deleted permission from record {record_id} for user {user_email}")
+            else:
+                self.logger.warning(f"Failed to delete permission from record {record_id} for user {user_email}")
 
     #IMPORTANT: DO NOT USE THIS METHOD
     #TODO: When an user is delelted from a connetor we need to delete the userAppRelation b/w the app and user

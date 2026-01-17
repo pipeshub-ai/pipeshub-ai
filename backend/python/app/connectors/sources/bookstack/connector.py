@@ -297,10 +297,6 @@ class BookStackConnector(BaseConnector):
             The web URL of the record or None
         """
         signed_url = f"{self.bookstack_base_url}api/pages/{record.external_record_id}/export/markdown"
-        if not record.weburl:
-            self.logger.warning(f"No web URL found for record {record.id}")
-            return None
-
         return signed_url
 
     async def stream_record(self, record: Record) -> StreamingResponse:

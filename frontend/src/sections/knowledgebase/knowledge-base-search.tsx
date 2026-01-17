@@ -393,6 +393,11 @@ export default function KnowledgeBaseSearch() {
           
           let webUrl = record?.webUrl;
 
+          const hideWeburl = record?.hideWeburl ?? false;
+          if (hideWeburl) {
+            webUrl = '';
+          }
+
           if (record.origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
             const baseUrl = `${window.location.protocol}//${window.location.host}`;
             webUrl = baseUrl + webUrl;

@@ -14,7 +14,6 @@ from qdrant_client.http.models import PointStruct
 from spacy.language import Language
 from spacy.tokens import Doc
 
-from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
@@ -33,7 +32,6 @@ from app.utils.aimodels import (
     get_embedding_model,
 )
 from app.utils.llm import get_llm
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Module-level shared spaCy pipeline to avoid repeated heavy loads
 _SHARED_NLP: Optional[Language] = None
@@ -818,37 +816,7 @@ class VectorStore(Transformer):
                     details={"error": str(result), "batch_index": i},
                 )
 
-    async def _update_record_status(
-        self, record_id: str,virtual_record_id: str
-    ) -> None:
-        """Update record indexing status in the database."""
-        record = await self.arango_service.get_document(
-            record_id, CollectionNames.RECORDS.value
-        )
-        if not record:
-            raise DocumentProcessingError(
-                "Record not found in database",
-                doc_id=record_id,
-            )
 
-        doc = dict(record)
-        doc.update(
-            {
-                "indexingStatus": "COMPLETED",
-                "isDirty": False,
-                "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
-                "virtualRecordId": virtual_record_id,
-            }
-        )
-
-        docs = [doc]
-        success = await self.arango_service.batch_upsert_nodes(
-            docs, CollectionNames.RECORDS.value
-        )
-        if not success:
-            raise DocumentProcessingError(
-                "Failed to update indexing status", doc_id=record_id
-            )
 
     async def _create_embeddings(
         self, chunks: List[Document], record_id: str, virtual_record_id: str
@@ -903,8 +871,6 @@ class VectorStore(Transformer):
                         details={"error": str(e)},
                     )
 
-            # Update record status
-            await self._update_record_status(record_id, virtual_record_id)
             self.logger.info(f"✅ Embeddings created and stored for record: {record_id}")
 
         except (
@@ -1146,7 +1112,6 @@ class VectorStore(Transformer):
                 self.logger.warning(
                     "⚠️ No documents to embed after filtering by block type"
                 )
-                await self._update_record_status(record_id, virtual_record_id)
                 return True
 
             # Create and store embeddings

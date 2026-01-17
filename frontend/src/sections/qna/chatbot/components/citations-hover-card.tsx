@@ -223,6 +223,11 @@ const CitationHoverCard = ({
 
   const getWebUrl = () => {
     try {
+      // Return undefined early if hideWeburl is true
+      if (citation?.metadata?.hideWeburl === true) {
+        return undefined;
+      }
+
       let webUrl = citation?.metadata?.webUrl;
       if (!webUrl) {
         return undefined;
@@ -315,6 +320,7 @@ const CitationHoverCard = ({
   const blockNumber = getBlockNumber();
   const extension = getExtension();
   const webUrl = getWebUrl();
+  const hideWeburl = citation?.metadata?.hideWeburl ?? false;
 
   return (
     <Fade in={isVisible} timeout={150}>
@@ -366,7 +372,7 @@ const CitationHoverCard = ({
             </DocumentTitle>
 
             <Box sx={{ display: 'flex', alignItems: 'center' }}>
-              {webUrl && (
+              {webUrl && !hideWeburl && (
                 <Tooltip
                   title="Open in new tab"
                   arrow

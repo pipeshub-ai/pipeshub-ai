@@ -1036,12 +1036,9 @@ class DropboxIndividualConnector(BaseConnector):
             id=str(uuid.uuid4()),
             name=display_name,
             group_type=RecordGroupType.DRIVE.value,
-            origin=OriginTypes.CONNECTOR.value,
             connector_name=self.connector_name,
             connector_id=self.connector_id,
             external_group_id=user_id,
-            external_user_id=user_id,
-            is_active=True
         )
         # Permissions: Owner
         permissions = [Permission(external_id=user_id, email=user_email, type=PermissionType.OWNER, entity_type=EntityType.USER)]

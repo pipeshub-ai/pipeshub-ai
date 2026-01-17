@@ -10,6 +10,8 @@ import {
   alpha,
   useTheme,
 } from '@mui/material';
+import { Iconify } from 'src/components/iconify';
+import infoIcon from '@iconify-icons/mdi/information-outline';
 import { Connector } from '../../types/types';
 import { isNoneAuthType } from '../../utils/auth';
 
@@ -217,6 +219,40 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
           </Stack>
         </Box>
       </Stack>
+
+      {/* Connector Info - Highlighted at the top */}
+      {connector.connectorInfo && (
+        <Box
+          sx={{
+            mb: 2.5,
+            px: 2.5,
+            py: 1.8,
+            borderRadius: 1.5,
+            bgcolor: isDark
+              ? alpha(theme.palette.info.main, 0.15)
+              : alpha(theme.palette.info.main, 0.08),
+            border: `2px solid ${alpha(theme.palette.info.main, 0.4)}`,
+            position: 'relative',
+            boxShadow: `0 2px 8px ${alpha(theme.palette.info.main, 0.1)}`,
+          }}
+        >
+          <Stack direction="row" spacing={1.5} alignItems="flex-start">
+            <Box sx={{ flex: 1 }}>
+              <Typography
+                variant="body2"
+                sx={{
+                  color: theme.palette.text.primary,
+                  fontSize: '0.875rem',
+                  lineHeight: 1.6 ,
+                  whiteSpace: 'pre-wrap',
+                }}
+              >
+                {connector.connectorInfo}
+              </Typography>
+            </Box>
+          </Stack>
+        </Box>
+      )}
 
       {supportsSync && (
         <Box

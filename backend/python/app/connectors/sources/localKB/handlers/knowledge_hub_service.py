@@ -13,6 +13,7 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     CurrentNode,
     FilterOption,
     FiltersInfo,
+    IndexingStatusFilter,
     ItemPermission,
     KnowledgeHubNodesResponse,
     NodeItem,
@@ -20,6 +21,7 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     OriginType,
     PaginationInfo,
     PermissionsInfo,
+    RecordTypeFilter,
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -72,8 +74,8 @@ class KnowledgeHubService:
         only_containers: bool = False,
         page: int = 1,
         limit: int = 50,
-        sort_by: str = "name",
-        sort_order: str = "asc",
+        sort_by: str = "updatedAt",
+        sort_order: str = "desc",
         q: Optional[str] = None,
         node_types: Optional[List[str]] = None,
         record_types: Optional[List[str]] = None,
@@ -118,8 +120,41 @@ class KnowledgeHubService:
             user_key = user.get('_key')
 
             # Get nodes based on request type
-            if is_search:
-                # Global search across all nodes
+            # If parent_id is provided with search query, do recursive search within that parent
+            # If parent_id is provided without search, browse direct children only
+            # If no parent_id with search filters, do global search
+
+            # Initialize available_filters
+            available_filters = None
+
+            if parent_id and q:
+                # Recursive search within parent and all its descendants
+                items, total_count, _ = await self._get_recursive_search_nodes(
+                    user_key=user_key,
+                    org_id=org_id,
+                    parent_id=parent_id,
+                    parent_type=parent_type,
+                    skip=skip,
+                    limit=limit,
+                    sort_by=sort_by,
+                    sort_order=sort_order,
+                    q=q,
+                    node_types=node_types,
+                    record_types=record_types,
+                    origins=origins,
+                    connector_ids=connector_ids,
+                    kb_ids=kb_ids,
+                    indexing_status=indexing_status,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                    size=size,
+                    only_containers=only_containers,
+                )
+                # Fetch available filters if requested
+                if include and 'availableFilters' in include:
+                    available_filters = await self._get_available_filters(user_key, org_id)
+            elif is_search and parent_id is None:
+                # Global search across all nodes (only when no parent_id)
                 items, total_count, available_filters = await self._get_search_nodes(
                     user_key=user_key,
                     org_id=org_id,
@@ -140,16 +175,17 @@ class KnowledgeHubService:
                     only_containers=only_containers,
                 )
             else:
-                # Browse mode - get children of parent
+                # Browse mode - get direct children of parent only
                 items, total_count, _ = await self._get_children_nodes(
                     user_key=user_key,
                     org_id=org_id,
                     parent_id=parent_id,
-                    parent_type=parent_type,  # Now passed directly!
+                    parent_type=parent_type,
                     skip=skip,
                     limit=limit,
                     sort_by=sort_by,
                     sort_order=sort_order,
+                    q=None,  # No search query for browse mode
                     node_types=node_types,
                     record_types=record_types,
                     origins=origins,
@@ -162,7 +198,6 @@ class KnowledgeHubService:
                     only_containers=only_containers,
                 )
                 # In browse mode, fetch available filters only if requested
-                available_filters = None
                 if include and 'availableFilters' in include:
                     available_filters = await self._get_available_filters(user_key, org_id)
 
@@ -312,6 +347,7 @@ class KnowledgeHubService:
         limit: int,
         sort_by: str,
         sort_order: str,
+        q: Optional[str],  # Search query to filter within children
         node_types: Optional[List[str]],
         record_types: Optional[List[str]],
         origins: Optional[List[str]],
@@ -350,6 +386,11 @@ class KnowledgeHubService:
         # Build filter conditions manually for unified query (uses 'node' variable)
         filter_conditions = []
         bind_vars = {}
+
+        # Search query filter (search within children by name)
+        if q:
+            bind_vars["search_query"] = q.lower()
+            filter_conditions.append("LOWER(node.name) LIKE CONCAT('%', @search_query, '%')")
 
         # Node type filter (folder vs record)
         if node_types:
@@ -532,6 +573,35 @@ class KnowledgeHubService:
 
 
 
+    def _get_record_type_label(self, record_type: str) -> str:
+        """Convert record type enum value to human-readable label"""
+        label_map = {
+            "FILE": "File",
+            "WEBPAGE": "Webpage",
+            "MESSAGE": "Message",
+            "EMAIL": "Email",
+            "TICKET": "Ticket",
+            "COMMENT": "Comment",
+            "MAIL": "Mail",
+            "OTHERS": "Others",
+        }
+        return label_map.get(record_type, record_type.replace("_", " ").title())
+
+    def _get_indexing_status_label(self, status: str) -> str:
+        """Convert indexing status enum value to human-readable label"""
+        label_map = {
+            "NOT_STARTED": "Not Started",
+            "IN_PROGRESS": "In Progress",
+            "COMPLETED": "Completed",
+            "FAILED": "Failed",
+            "QUEUED": "Queued",
+            "PAUSED": "Paused",
+            "FILE_TYPE_NOT_SUPPORTED": "File Type Not Supported",
+            "AUTO_INDEX_OFF": "Auto-Index Off",
+            "EMPTY": "Empty",
+        }
+        return label_map.get(status, status.replace("_", " ").title())
+
     async def _get_available_filters(self, user_key: str, org_id: str) -> AvailableFilters:
         """Get filter options (dynamic KBs/Apps + static others)"""
         try:
@@ -551,11 +621,8 @@ class KnowledgeHubService:
                     FilterOption(id="kb", label="Knowledge Base"),
                 ],
                 recordTypes=[
-                    FilterOption(id="FILE", label="File"),
-                    FilterOption(id="WEBPAGE", label="Webpage"),
-                    FilterOption(id="MESSAGE", label="Message"),
-                    FilterOption(id="EMAIL", label="Email"),
-                    FilterOption(id="TICKET", label="Ticket"),
+                    FilterOption(id=rt.value, label=self._get_record_type_label(rt.value))
+                    for rt in RecordTypeFilter
                 ],
                 origins=[
                     FilterOption(id="KB", label="Knowledge Base"),
@@ -564,15 +631,152 @@ class KnowledgeHubService:
                 connectors=app_options,
                 kbs=kb_options,
                 indexingStatus=[
-                    FilterOption(id="COMPLETED", label="Completed"),
-                    FilterOption(id="IN_PROGRESS", label="In Progress"),
-                    FilterOption(id="FAILED", label="Failed"),
+                    FilterOption(id=status.value, label=self._get_indexing_status_label(status.value))
+                    for status in IndexingStatusFilter
+                ],
+                sortBy=[
+                    FilterOption(id="name", label="Name"),
+                    FilterOption(id="createdAt", label="Created Date"),
+                    FilterOption(id="updatedAt", label="Modified Date"),
+                    FilterOption(id="size", label="Size"),
+                    FilterOption(id="type", label="Type"),
+                ],
+                sortOrder=[
+                    FilterOption(id="asc", label="Ascending"),
+                    FilterOption(id="desc", label="Descending"),
                 ]
             )
         except Exception as e:
             self.logger.error(f"Failed to get available filters: {e}")
             return AvailableFilters()
 
+
+    async def _get_recursive_search_nodes(
+        self,
+        org_id: str,
+        parent_id: str,
+        parent_type: str,
+        skip: int,
+        limit: int,
+        sort_by: str,
+        sort_order: str,
+        q: Optional[str],
+        node_types: Optional[List[str]],
+        record_types: Optional[List[str]],
+        origins: Optional[List[str]],
+        connector_ids: Optional[List[str]],
+        kb_ids: Optional[List[str]],
+        indexing_status: Optional[List[str]],
+        created_at: Optional[Dict[str, Optional[int]]],
+        updated_at: Optional[Dict[str, Optional[int]]],
+        size: Optional[Dict[str, Optional[int]]],
+        only_containers: bool,
+    ) -> Tuple[List[NodeItem], int, Optional[AvailableFilters]]:
+        """Search recursively within a parent node and all its descendants."""
+        try:
+            # Build sort clause
+            sort_field_map = {
+                "name": "name",
+                "createdAt": "createdAt",
+                "updatedAt": "updatedAt",
+                "size": "sizeInBytes",
+                "type": "nodeType",
+            }
+            sort_field = sort_field_map.get(sort_by, "name")
+            sort_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
+
+            # Build filter conditions
+            filter_conditions = []
+            bind_vars = {}
+
+            if node_types:
+                type_conditions = []
+                for nt in node_types:
+                    if nt == "folder":
+                        type_conditions.append('node.nodeType == "folder"')
+                    elif nt == "record":
+                        type_conditions.append('node.nodeType == "record"')
+                    elif nt == "recordGroup":
+                        type_conditions.append('node.nodeType == "recordGroup"')
+                if type_conditions:
+                    filter_conditions.append(f"({' OR '.join(type_conditions)})")
+
+            if record_types:
+                bind_vars["record_types"] = record_types
+                filter_conditions.append("(node.recordType == null OR node.recordType IN @record_types)")
+
+            if indexing_status:
+                bind_vars["indexing_status"] = indexing_status
+                filter_conditions.append("(node.indexingStatus == null OR node.indexingStatus IN @indexing_status)")
+
+            if created_at:
+                if created_at.get("gte"):
+                    bind_vars["created_at_gte"] = created_at["gte"]
+                    filter_conditions.append("node.createdAt >= @created_at_gte")
+                if created_at.get("lte"):
+                    bind_vars["created_at_lte"] = created_at["lte"]
+                    filter_conditions.append("node.createdAt <= @created_at_lte")
+
+            if updated_at:
+                if updated_at.get("gte"):
+                    bind_vars["updated_at_gte"] = updated_at["gte"]
+                    filter_conditions.append("node.updatedAt >= @updated_at_gte")
+                if updated_at.get("lte"):
+                    bind_vars["updated_at_lte"] = updated_at["lte"]
+                    filter_conditions.append("node.updatedAt <= @updated_at_lte")
+
+            if size:
+                if size.get("gte"):
+                    bind_vars["size_gte"] = size["gte"]
+                    filter_conditions.append("(node.sizeInBytes == null OR node.sizeInBytes >= @size_gte)")
+                if size.get("lte"):
+                    bind_vars["size_lte"] = size["lte"]
+                    filter_conditions.append("(node.sizeInBytes == null OR node.sizeInBytes <= @size_lte)")
+
+            if origins:
+                bind_vars["origins"] = origins
+                filter_conditions.append("node.source IN @origins")
+
+            if connector_ids:
+                bind_vars["connector_ids"] = connector_ids
+                # Match App nodes by ID or records/recordGroups by connectorId
+                filter_conditions.append("(node.nodeType == 'app' AND node.id IN @connector_ids) OR (node.connectorId IN @connector_ids)")
+
+            if kb_ids:
+                bind_vars["kb_ids"] = kb_ids
+                # Match KB nodes by ID or records/recordGroups by kbId
+                filter_conditions.append("(node.nodeType == 'kb' AND node.id IN @kb_ids) OR (node.kbId IN @kb_ids)")
+
+            filter_clause = " AND ".join(filter_conditions) if filter_conditions else "true"
+
+            # Use the provider method for recursive search
+            result = await self.graph_provider.get_knowledge_hub_recursive_search(
+                parent_id=parent_id,
+                parent_type=parent_type,
+                org_id=org_id,
+                skip=skip,
+                limit=limit,
+                sort_field=sort_field,
+                sort_dir=sort_dir,
+                search_query=q,
+                filter_clause=filter_clause,
+                bind_vars=bind_vars,
+                only_containers=only_containers,
+            )
+
+            nodes_data = result.get('nodes', [])
+            total_count = result.get('total', 0)
+
+            # Convert to NodeItem objects
+            items = [self._doc_to_node_item(node_doc) for node_doc in nodes_data]
+
+            return items, total_count, None
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get recursive search nodes: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            raise
 
     async def _get_search_nodes(
         self,
@@ -682,7 +886,7 @@ class KnowledgeHubService:
         # Validate type matches
         if actual_type != expected_type:
             raise ValueError(
-                f"Node type mismatch: expected '{expected_type}' but found '{actual_type}' for node ID '{node_id}'"
+                f"Node type mismatch: node '{node_id}' is not '{expected_type}', it is '{actual_type}'. Use /nodes/{actual_type}/{node_id} instead."
             )
 
         # Validate user has access (check permissions)

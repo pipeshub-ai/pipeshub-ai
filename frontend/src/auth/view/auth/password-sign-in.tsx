@@ -1,7 +1,7 @@
 import type { Theme, SxProps } from '@mui/material';
 
 import { z as zod } from 'zod';
-import { useState } from 'react';
+import { useRef, useState, useCallback } from 'react';
 import { useForm } from 'react-hook-form';
 import emailIcon from '@iconify-icons/mdi/email';
 import eyeIcon from '@iconify-icons/solar/eye-bold';
@@ -31,7 +31,7 @@ import { CONFIG } from 'src/config-global';
 
 import { Iconify } from 'src/components/iconify';
 import { Form, Field } from 'src/components/hook-form';
-import { TurnstileWidget } from 'src/components/turnstile/turnstile-widget';
+import { TurnstileWidget, type TurnstileWidgetHandle } from 'src/components/turnstile/turnstile-widget';
 
 import { useAuthContext } from 'src/auth/hooks';
 import { signInWithPassword } from 'src/auth/context/jwt';
@@ -65,7 +65,7 @@ interface AuthResponse {
 interface PasswordSignInProps {
   email: string;
   onNextStep?: (response: AuthResponse) => void;
-  onAuthComplete?: () => void;
+  onAuthComplete?: () => void | Promise<void>;
   onForgotPassword: (turnstileToken?: string | null) => void;
   redirectPath?: string;
   sx?: SxProps<Theme>;
@@ -89,7 +89,15 @@ export default function PasswordSignIn({
   const { checkUserSession } = useAuthContext();
   const showPassword = useBoolean();
   const [isProcessing, setIsProcessing] = useState(false);
-  const { turnstileToken, handleSuccess, handleError, handleExpire } = useTurnstile();
+  const { turnstileToken, handleSuccess, handleError, handleExpire, resetTurnstile } = useTurnstile();
+  const turnstileRef = useRef<TurnstileWidgetHandle>(null);
+
+  const resetCaptcha = useCallback(() => {
+    if (CONFIG.turnstileSiteKey) {
+      turnstileRef.current?.reset();
+      resetTurnstile();
+    }
+  }, [resetTurnstile]);
 
   const methods = useForm<SignInSchemaType>({
     resolver: zodResolver(SignInSchema),
@@ -127,7 +135,7 @@ export default function PasswordSignIn({
           await checkUserSession?.();
           // router.refresh();
           if (onAuthComplete) {
-            onAuthComplete();
+            await onAuthComplete();
           } else {
             // Navigate to specified redirect path after successful login
             router.push('/');
@@ -138,6 +146,8 @@ export default function PasswordSignIn({
             type: 'server',
             message: 'Unexpected response from the server. Please try again.',
           });
+          // Reset CAPTCHA on error
+          resetCaptcha();
         }
       }
     } catch (error) {
@@ -148,6 +158,9 @@ export default function PasswordSignIn({
         type: 'server',
         message: errorMessage || 'Authentication failed. Please try again.',
       });
+      
+      // Reset CAPTCHA on error
+      resetCaptcha();
     } finally {
       setIsProcessing(false);
     }
@@ -216,7 +229,11 @@ export default function PasswordSignIn({
                 <Link
                   variant="body2"
                   color="inherit"
-                  onClick={() => onForgotPassword(turnstileToken)}
+                  onClick={() => {
+                    onForgotPassword(turnstileToken);
+                    // Reset CAPTCHA when navigating to forgot password
+                    resetCaptcha();
+                  }}
                   sx={{
                     display: 'inline-block',
                     cursor: CONFIG.turnstileSiteKey && !turnstileToken ? 'not-allowed' : 'pointer',
@@ -237,6 +254,7 @@ export default function PasswordSignIn({
           {/* Turnstile widget */}
           {CONFIG.turnstileSiteKey && (
             <TurnstileWidget
+              ref={turnstileRef}
               siteKey={CONFIG.turnstileSiteKey}
               onSuccess={handleSuccess}
               onError={handleError}

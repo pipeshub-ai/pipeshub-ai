@@ -77,7 +77,7 @@ export function AuthProvider({ children }: Props) {
       navigate('/');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checkAuthenticated]);
+  }, [checkAuthenticated, path.pathname]);
 
   const memoizedValue = useMemo(
     () => ({

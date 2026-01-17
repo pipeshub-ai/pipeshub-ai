@@ -503,6 +503,11 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
   // Helper function to get webUrl with text fragment (similar to other components)
   const getWebUrl = useCallback((): string | null => {
     try {
+      const hideWeburl = record.hideWeburl ?? false;
+      if (hideWeburl) {
+        return null;
+      }
+
       let webUrl = record.webUrl;
       if (!webUrl) {
         return null;

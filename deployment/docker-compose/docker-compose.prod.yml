@@ -92,7 +92,7 @@ services:
       - "host.docker.internal:host-gateway"
 
   mongodb:
-    image: mongo:8.0.6
+    image: mongo:8.0.17
     container_name: mongodb
     restart: always
     ports:

@@ -59,6 +59,9 @@ from app.core.celery_app import CeleryApp
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
 from app.health.health import Health
 from app.migrations.connector_migration_service import ConnectorMigrationService
+from app.migrations.drive_to_drive_workspace_migration import (
+    run_drive_to_drive_workspace_migration,
+)
 from app.migrations.files_to_records_migration import run_files_to_records_migration
 from app.migrations.folder_hierarchy_migration import run_folder_hierarchy_migration
 from app.migrations.permission_edge_migration import (
@@ -970,6 +973,55 @@ async def run_files_to_records_migration_wrapper(container) -> bool:
         # Migration is idempotent and can be retried
         return False
 
+async def run_drive_to_drive_workspace_migration_wrapper(container) -> bool:
+    """
+    Run drive to drive workspace migration.
+    This should be called once during system initialization.
+
+    Returns:
+        bool: True if migration completed successfully or was not needed, False on error
+    """
+    logger = container.logger()
+
+    try:
+        logger.info("🔍 Checking if Drive to Drive Workspace migration is needed...")
+
+        # Get required services
+        arango_service = await container.arango_service()
+        config_service = container.config_service()
+
+        # Run the migration
+        migration_result = await run_drive_to_drive_workspace_migration(
+            arango_service=arango_service,
+            config_service=config_service,
+            logger=logger
+        )
+
+        if migration_result.get("success"):
+            connectors_updated = migration_result.get("connectors_updated", 0)
+            records_updated = migration_result.get("records_updated", 0)
+            if connectors_updated > 0 or records_updated > 0:
+                logger.info(
+                    f"✅ Drive to Drive Workspace migration completed: "
+                    f"{connectors_updated} connector(s) updated, "
+                    f"{records_updated} record(s) updated"
+                )
+            else:
+                logger.info("✅ No Drive to Drive Workspace migration needed")
+            return True
+        else:
+            logger.error(
+                f"❌ Drive to Drive Workspace migration failed: "
+                f"{migration_result.get('error', 'Unknown error')}"
+            )
+            return False
+
+    except Exception as e:
+        logger.error(f"❌ Drive to Drive Workspace migration error: {str(e)}")
+        # Don't fail startup - log error and continue
+        # Migration is idempotent and can be retried
+        return False
+
 async def run_knowledge_base_migration(container) -> bool:
     """
     Run knowledge base migration from old system to new system
@@ -1049,6 +1101,18 @@ async def initialize_container(container) -> bool:
         files_to_records_migration_success = await run_files_to_records_migration_wrapper(container)
         if not files_to_records_migration_success:
             logger.warning("⚠️ Files to Records MD5/Size migration had issues but continuing initialization")
+
+        migration_state = await get_migration_state()
+
+        if migration_completed(migration_state, "driveToDriveWorkspace"):
+            logger.info("⏭️ Drive to Drive Workspace migration already completed, skipping.")
+        else:
+            logger.info("🔄 Running Drive to Drive Workspace migration...")
+            drive_to_drive_workspace_migration_success = await run_drive_to_drive_workspace_migration_wrapper(container)
+            if drive_to_drive_workspace_migration_success:
+                await mark_migration_completed("driveToDriveWorkspace", {})
+            else:
+                logger.warning("⚠️ Drive to Drive Workspace migration had issues but continuing initialization")
 
         logger.info("🔄 Running Knowledge Base migration...")
         migration_success = await run_knowledge_base_migration(container)

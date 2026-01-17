@@ -468,12 +468,13 @@ class ArangoHTTPClient:
     # ==================== Batch Operations ====================
 
     async def batch_insert_documents(
-        self,
-        collection: str,
-        documents: List[Dict],
-        txn_id: Optional[str] = None,
-        overwrite: bool = True
-    ) -> Dict[str, Any]:
+    self,
+    collection: str,
+    documents: List[Dict],
+    txn_id: Optional[str] = None,
+    overwrite: bool = True,
+    overwrite_mode: str = "update"  # New parameter: "replace", "update", "ignore", or "conflict"
+) -> Dict[str, Any]:
         """
         Batch insert/update documents.
 
@@ -481,7 +482,12 @@ class ArangoHTTPClient:
             collection: Collection name
             documents: List of documents
             txn_id: Optional transaction ID
-            overwrite: Whether to overwrite existing documents
+            overwrite: Whether to overwrite existing documents (legacy param, use overwrite_mode instead)
+            overwrite_mode: How to handle existing documents:
+                - "replace": Replace entire document (old behavior, destructive)
+                - "update": Merge/partial update, preserves fields not in input (recommended)
+                - "ignore": Keep existing document, ignore new one
+                - "conflict": Return error if document exists
 
         Returns:
             Dict: Result with created/updated counts
@@ -493,7 +499,14 @@ class ArangoHTTPClient:
             return {"created": 0, "updated": 0, "errors": 0}
 
         url = f"{self.base_url}/_db/{self.database}/_api/document/{collection}"
-        params = {"overwrite": "true" if overwrite else "false"}
+
+        # Build params - overwriteMode takes precedence over legacy overwrite param
+        params = {}
+        if overwrite:
+            params["overwriteMode"] = overwrite_mode
+        else:
+            params["overwrite"] = "false"
+
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 
         try:
@@ -510,10 +523,30 @@ class ArangoHTTPClient:
                     # Check for errors in response
                     self._check_response_for_errors(result, "Batch insert")
 
+                    # Count created vs updated based on response
+                    created_count = 0
+                    updated_count = 0
+                    error_count = 0
+
+                    if isinstance(result, list):
+                        for item in result:
+                            if isinstance(item, dict):
+                                if item.get("error"):
+                                    error_count += 1
+                                elif item.get("_oldRev"):
+                                    # Document had a previous revision = updated
+                                    updated_count += 1
+                                else:
+                                    # New document = created
+                                    created_count += 1
+                    else:
+                        # Single document response
+                        created_count = 1
+
                     return {
-                        "created": len(documents),
-                        "updated": 0,
-                        "errors": 0,
+                        "created": created_count,
+                        "updated": updated_count,
+                        "errors": error_count,
                         "result": result
                     }
                 else:

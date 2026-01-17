@@ -13,6 +13,7 @@ from msgraph import GraphServiceClient
 from msgraph.generated.models.base_delta_function_response import (
     BaseDeltaFunctionResponse,
 )
+from msgraph.generated.models.drive import Drive
 from msgraph.generated.models.drive_item import DriveItem
 from msgraph.generated.models.group import Group
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
@@ -286,6 +287,30 @@ class MSGraphClient:
             # Log debug instead of error because sometimes users might be deleted before we fetch them
             self.logger.warning(f"Could not fetch details for user {user_id}: {ex}")
             return None
+
+    async def get_user_drive(self, user_id: str) -> Optional[Drive]:
+        """
+        Check if a user has a OneDrive drive provisioned.
+
+        Args:
+            user_id: The user identifier
+
+        Returns:
+            Drive object if user has OneDrive, None otherwise
+
+        Raises:
+            ODataError: If user doesn't have OneDrive or other API errors
+        """
+        try:
+            async with self.rate_limiter:
+                drive = await self.client.users.by_user_id(user_id).drive.get()
+                return drive
+        except ODataError as e:
+            # Re-raise to let caller handle it
+            raise e
+        except Exception as ex:
+            self.logger.error(f"Error fetching drive for user {user_id}: {ex}")
+            raise ex
 
     async def get_delta_response_sharepoint(self, url: str) -> dict:
         response = {'delta_link': None, 'next_link': None, 'drive_items': []}

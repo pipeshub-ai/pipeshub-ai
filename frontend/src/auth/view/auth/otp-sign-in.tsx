@@ -43,7 +43,7 @@ interface OtpSignInProps {
   email: string;
   initialOtpSent?: boolean; // Flag to indicate OTP was already sent
   onNextStep?: (response: any) => void;
-  onAuthComplete?: () => void;
+  onAuthComplete?: () => void | Promise<void>;
   redirectPath?: string;
   sx?: SxProps<Theme>;
 }
@@ -158,7 +158,7 @@ export default function OtpSignIn({
         await checkUserSession?.();
         // router.refresh();
         if (onAuthComplete) {
-          onAuthComplete();
+          await onAuthComplete();
         } else {
           // Navigate to specified redirect path after successful login
           router.push('/');
