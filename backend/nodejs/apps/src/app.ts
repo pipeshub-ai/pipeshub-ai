@@ -45,19 +45,12 @@ import {
 } from './modules/tokens_manager/config/config';
 import { NotificationService } from './modules/notification/service/notification.service';
 import { createGlobalRateLimiter } from './libs/middlewares/rate-limit.middleware';
-import {
-  createSwaggerContainer,
-  SwaggerConfig,
-  SwaggerService,
-} from './modules/docs/swagger.container';
-import { registerStorageSwagger } from './modules/storage/docs/swagger';
+import { ApiDocsContainer } from './modules/api-docs/docs.container';
+import { createApiDocsRouter } from './modules/api-docs/docs.routes';
 import { CrawlingManagerContainer } from './modules/crawling_manager/container/cm_container';
 import createCrawlingManagerRouter from './modules/crawling_manager/routes/cm_routes';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
 import { createTeamsRouter } from './modules/user_management/routes/teams.routes';
-import { registerAuthSwagger } from './modules/auth/docs/swagger';
-import { registerConfigurationManagerSwagger } from './modules/configuration_manager/docs/swagger';
-import { registerCrawlingManagerSwagger } from './modules/crawling_manager/docs/swagger';
 
 const loggerConfig = {
   service: 'Application',
@@ -77,6 +70,7 @@ export class Application {
   private mailServiceContainer!: Container;
   private notificationContainer!: Container;
   private crawlingManagerContainer!: Container;
+  private apiDocsContainer!: Container;
   private port: number;
 
   constructor() {
@@ -184,10 +178,13 @@ export class Application {
         .toSelf()
         .inSingletonScope();
 
+      // Initialize API Documentation
+      this.apiDocsContainer = await ApiDocsContainer.initialize();
+
       // Configure Express
       this.configureMiddleware(appConfig);
       this.configureRoutes();
-      this.setupSwagger();
+      this.setupApiDocs();
       this.configureErrorHandling();
 
       this.notificationContainer
@@ -420,6 +417,7 @@ export class Application {
       await ConfigurationManagerContainer.dispose();
       await MailServiceContainer.dispose();
       await CrawlingManagerContainer.dispose();
+      await ApiDocsContainer.dispose();
 
       this.logger.info('Application stopped successfully');
     } catch (error) {
@@ -447,45 +445,19 @@ export class Application {
     }
   }
 
-  private setupSwagger() {
+  private setupApiDocs(): void {
     try {
-      // Create the Swagger configuration
-      const swaggerConfig: SwaggerConfig = {
-        title: 'PipesHub API',
-        version: '1.0.0',
-        description: 'RESTful API for PipesHub services',
-        contact: {
-          name: 'API Support',
-          email: 'contact@pipeshub.com',
-        },
-        basePath: '/api-docs',
-      };
+      // Mount the API documentation routes
+      this.app.use('/docs', createApiDocsRouter(this.apiDocsContainer));
 
-      // Create container
-      const swaggerContainer = createSwaggerContainer();
+      // Redirect /api-docs to /docs for backward compatibility
+      this.app.get('/api-docs', (_req, res) => {
+        res.redirect('/docs');
+      });
 
-      // Get SwaggerService from container - IMPORTANT: Use the class directly, not as a string token
-      const swaggerService = swaggerContainer.get(SwaggerService);
-
-      // Initialize with app and config
-      swaggerService.initialize(this.app, swaggerConfig);
-
-      // Register module documentation
-      registerStorageSwagger(swaggerService);
-
-      registerAuthSwagger(swaggerService);
-
-      registerConfigurationManagerSwagger(swaggerService);
-
-      registerCrawlingManagerSwagger(swaggerService);
-      // Register other modules as needed
-
-      // Setup the Swagger UI routes
-      swaggerService.setupSwaggerRoutes();
-
-      this.logger.info('Swagger documentation initialized successfully');
+      this.logger.info('API documentation initialized at /docs');
     } catch (error) {
-      this.logger.error('Failed to initialize Swagger documentation', {
+      this.logger.error('Failed to initialize API documentation', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }
