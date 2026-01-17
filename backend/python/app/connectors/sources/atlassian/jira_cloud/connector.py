@@ -4385,6 +4385,10 @@ class JiraConnector(BaseConnector):
                 parent_node_id=None,  # Tickets have no parent node
             )
 
+            # Set indexing status based on filters (consistent with _build_issue_records)
+            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES):
+                issue_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
             # Permissions: empty list - records inherit project-level permissions via inherit_permissions=True
             permissions = []
 
