@@ -93,6 +93,7 @@ export interface Record {
   reason:string
   mimeType?: string;
   previewRenderable?: boolean;
+  hideWeburl?: boolean;
 }
 
 export interface FileRecord {
