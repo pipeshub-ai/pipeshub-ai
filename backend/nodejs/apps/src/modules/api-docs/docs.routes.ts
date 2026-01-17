@@ -4,8 +4,26 @@
  */
 import { Router, Request, Response } from 'express';
 import { Container } from 'inversify';
+import axios from 'axios';
 import { ApiDocsService } from './docs.service';
 import { Logger } from '../../libs/services/logger.service';
+
+/**
+ * Service health status
+ */
+interface ServiceHealth {
+  name: string;
+  status: 'healthy' | 'unhealthy' | 'unknown';
+  port: number;
+  responseTime?: number;
+  error?: string;
+}
+
+interface HealthCheckResponse {
+  timestamp: string;
+  overallStatus: 'healthy' | 'degraded' | 'unhealthy';
+  services: ServiceHealth[];
+}
 
 export function createApiDocsRouter(container: Container): Router {
   const router = Router();
@@ -108,6 +126,86 @@ export function createApiDocsRouter(container: Container): Router {
     }
   });
 
+  /**
+   * Health check endpoint for all services
+   */
+  router.get('/api/health', async (_req: Request, res: Response) => {
+    const services = [
+      { name: 'Node.js API', port: 3001, url: 'http://localhost:3001/health' },
+      { name: 'Query Service', port: 8000, url: 'http://localhost:8000/health' },
+      { name: 'Docling Service', port: 8001, url: 'http://localhost:8001/health' },
+      { name: 'Connectors Service', port: 8088, url: 'http://localhost:8088/health' },
+      { name: 'Indexing Service', port: 8091, url: 'http://localhost:8091/health' },
+    ];
+
+    const checkService = async (service: { name: string; port: number; url: string }): Promise<ServiceHealth> => {
+      const startTime = Date.now();
+      try {
+        // For Node.js API, we're already running so just mark as healthy
+        if (service.port === 3001) {
+          return {
+            name: service.name,
+            status: 'healthy',
+            port: service.port,
+            responseTime: 0,
+          };
+        }
+
+        const response = await axios.get(service.url, { timeout: 3000 });
+        const responseTime = Date.now() - startTime;
+
+        // Check if response indicates healthy status
+        const isHealthy = response.status === 200 &&
+          (response.data?.status === 'healthy' || response.data?.status === 'ok' || response.status === 200);
+
+        return {
+          name: service.name,
+          status: isHealthy ? 'healthy' : 'unhealthy',
+          port: service.port,
+          responseTime,
+        };
+      } catch (error: any) {
+        return {
+          name: service.name,
+          status: 'unhealthy',
+          port: service.port,
+          responseTime: Date.now() - startTime,
+          error: error.code === 'ECONNREFUSED' ? 'Service not running' :
+                 error.code === 'ETIMEDOUT' ? 'Connection timeout' :
+                 error.message || 'Unknown error',
+        };
+      }
+    };
+
+    try {
+      const results = await Promise.all(services.map(checkService));
+
+      const healthyCount = results.filter(s => s.status === 'healthy').length;
+      let overallStatus: 'healthy' | 'degraded' | 'unhealthy';
+
+      if (healthyCount === results.length) {
+        overallStatus = 'healthy';
+      } else if (healthyCount > 0) {
+        overallStatus = 'degraded';
+      } else {
+        overallStatus = 'unhealthy';
+      }
+
+      const response: HealthCheckResponse = {
+        timestamp: new Date().toISOString(),
+        overallStatus,
+        services: results,
+      };
+
+      res.json(response);
+    } catch (error) {
+      logger.error('Health check failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      res.status(500).json({ error: 'Health check failed' });
+    }
+  });
+
   return router;
 }
 
@@ -123,7 +221,7 @@ function getDocumentationHtml(): string {
   <title>PipesHub API Documentation</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg-primary: #ffffff;
@@ -134,51 +232,52 @@ function getDocumentationHtml(): string {
       --text-secondary: #475569;
       --text-muted: #94a3b8;
       --border-color: #e2e8f0;
-      --accent-blue: #3b82f6;
-      --accent-green: #22c55e;
+      --accent-primary: #00ac3a;
+      --accent-blue: #0099ff;
+      --accent-green: #00ac3a;
       --accent-orange: #f97316;
       --accent-red: #ef4444;
       --accent-purple: #8b5cf6;
-      --method-get: #22c55e;
-      --method-post: #3b82f6;
+      --method-get: #00ac3a;
+      --method-post: #0099ff;
       --method-put: #f97316;
       --method-patch: #8b5cf6;
       --method-delete: #ef4444;
-      --code-bg: #1e293b;
+      --code-bg: #1f1f1f;
       --code-text: #e2e8f0;
       --scrollbar-bg: #f1f5f9;
       --scrollbar-thumb: #cbd5e1;
     }
 
     [data-theme="dark"] {
-      --bg-primary: #0f172a;
-      --bg-secondary: #1e293b;
-      --bg-tertiary: #334155;
-      --bg-sidebar: #1e293b;
-      --text-primary: #f1f5f9;
+      --bg-primary: #0a0a0a;
+      --bg-secondary: #1f1f1f;
+      --bg-tertiary: #2e2e2e;
+      --bg-sidebar: #1f1f1f;
+      --text-primary: #f8fafc;
       --text-secondary: #cbd5e1;
-      --text-muted: #64748b;
-      --border-color: #334155;
-      --code-bg: #0f172a;
+      --text-muted: #6b7280;
+      --border-color: #2e2e2e;
+      --code-bg: #0a0a0a;
       --code-text: #e2e8f0;
-      --scrollbar-bg: #1e293b;
-      --scrollbar-thumb: #475569;
+      --scrollbar-bg: #1f1f1f;
+      --scrollbar-thumb: #404040;
     }
 
-    [data-theme="dark"] .method-get { background: #064e3b; color: #6ee7b7; }
-    [data-theme="dark"] .method-post { background: #1e3a5f; color: #93c5fd; }
-    [data-theme="dark"] .method-put { background: #7c2d12; color: #fdba74; }
-    [data-theme="dark"] .method-patch { background: #4c1d95; color: #c4b5fd; }
-    [data-theme="dark"] .method-delete { background: #7f1d1d; color: #fca5a5; }
+    [data-theme="dark"] .method-get { background: rgba(0, 172, 58, 0.15); color: #00d147; }
+    [data-theme="dark"] .method-post { background: rgba(0, 153, 255, 0.15); color: #3db5ff; }
+    [data-theme="dark"] .method-put { background: rgba(249, 115, 22, 0.15); color: #fdba74; }
+    [data-theme="dark"] .method-patch { background: rgba(139, 92, 246, 0.15); color: #c4b5fd; }
+    [data-theme="dark"] .method-delete { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
 
-    [data-theme="dark"] .response-code-2xx { background: #064e3b; color: #6ee7b7; }
-    [data-theme="dark"] .response-code-4xx { background: #7c2d12; color: #fdba74; }
-    [data-theme="dark"] .response-code-5xx { background: #7f1d1d; color: #fca5a5; }
+    [data-theme="dark"] .response-code-2xx { background: rgba(0, 172, 58, 0.15); color: #00d147; }
+    [data-theme="dark"] .response-code-4xx { background: rgba(249, 115, 22, 0.15); color: #fdba74; }
+    [data-theme="dark"] .response-code-5xx { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
 
-    [data-theme="dark"] .param-required { background: #7f1d1d; color: #fca5a5; }
+    [data-theme="dark"] .param-required { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
 
-    [data-theme="dark"] .response-status.success { background: #064e3b; color: #6ee7b7; }
-    [data-theme="dark"] .response-status.error { background: #7f1d1d; color: #fca5a5; }
+    [data-theme="dark"] .response-status.success { background: rgba(0, 172, 58, 0.15); color: #00d147; }
+    [data-theme="dark"] .response-status.error { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
 
     [data-theme="dark"] .module-card {
       background: var(--bg-secondary);
@@ -186,8 +285,8 @@ function getDocumentationHtml(): string {
     }
 
     [data-theme="dark"] .module-card:hover {
-      border-color: var(--accent-blue);
-      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      border-color: var(--accent-green);
+      box-shadow: 0 4px 12px rgba(0, 172, 58, 0.1);
     }
 
     [data-theme="dark"] .logo-icon {
@@ -289,11 +388,69 @@ function getDocumentationHtml(): string {
     /* Sidebar */
     .sidebar {
       width: 280px;
+      min-width: 200px;
+      max-width: 500px;
       background: var(--bg-sidebar);
       border-right: 1px solid var(--border-color);
       display: flex;
       flex-direction: column;
       flex-shrink: 0;
+    }
+
+    /* Resize handles */
+    .resize-handle {
+      width: 6px;
+      background: transparent;
+      cursor: col-resize;
+      flex-shrink: 0;
+      position: relative;
+      z-index: 10;
+      transition: background 0.15s;
+    }
+
+    .resize-handle:hover,
+    .resize-handle.dragging {
+      background: var(--accent-green);
+    }
+
+    .resize-handle::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 2px;
+      height: 40px;
+      background: var(--border-color);
+      border-radius: 1px;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+
+    .resize-handle:hover::before,
+    .resize-handle.dragging::before {
+      opacity: 1;
+      background: white;
+    }
+
+    .resize-handle-right {
+      margin-left: -3px;
+      margin-right: -3px;
+    }
+
+    .resize-handle-left {
+      margin-left: -3px;
+      margin-right: -3px;
+    }
+
+    /* Prevent text selection while resizing */
+    body.resizing {
+      user-select: none;
+      cursor: col-resize;
+    }
+
+    body.resizing * {
+      cursor: col-resize !important;
     }
 
     .sidebar-header {
@@ -305,6 +462,7 @@ function getDocumentationHtml(): string {
       display: flex;
       align-items: center;
       gap: 10px;
+      font-family: 'Manrope', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
       font-weight: 700;
       font-size: 18px;
       color: var(--text-primary);
@@ -348,7 +506,7 @@ function getDocumentationHtml(): string {
     }
 
     .search-input:focus {
-      border-color: var(--accent-blue);
+      border-color: var(--accent-green);
     }
 
     .search-icon {
@@ -397,7 +555,7 @@ function getDocumentationHtml(): string {
 
     .nav-item.active {
       background: var(--bg-tertiary);
-      color: var(--accent-blue);
+      color: var(--accent-green);
       font-weight: 500;
     }
 
@@ -495,7 +653,7 @@ function getDocumentationHtml(): string {
     }
 
     .breadcrumb-link:hover {
-      color: var(--accent-blue);
+      color: var(--accent-green);
     }
 
     /* Theme toggle */
@@ -539,11 +697,11 @@ function getDocumentationHtml(): string {
       font-family: 'JetBrains Mono', monospace;
     }
 
-    .method-get { background: #dcfce7; color: #166534; }
-    .method-post { background: #dbeafe; color: #1e40af; }
-    .method-put { background: #ffedd5; color: #9a3412; }
-    .method-patch { background: #ede9fe; color: #5b21b6; }
-    .method-delete { background: #fee2e2; color: #991b1b; }
+    .method-get { background: rgba(0, 172, 58, 0.12); color: #00862d; }
+    .method-post { background: rgba(0, 153, 255, 0.12); color: #0077cc; }
+    .method-put { background: rgba(249, 115, 22, 0.12); color: #9a3412; }
+    .method-patch { background: rgba(139, 92, 246, 0.12); color: #5b21b6; }
+    .method-delete { background: rgba(239, 68, 68, 0.12); color: #991b1b; }
 
     /* Main content */
     .main-content {
@@ -603,6 +761,7 @@ function getDocumentationHtml(): string {
     }
 
     .endpoint-title h1 {
+      font-family: 'Manrope', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
       font-size: 24px;
       font-weight: 600;
     }
@@ -712,7 +871,7 @@ function getDocumentationHtml(): string {
     .param-required {
       display: inline-block;
       padding: 2px 6px;
-      background: #fee2e2;
+      background: rgba(239, 68, 68, 0.12);
       color: #991b1b;
       font-size: 10px;
       font-weight: 600;
@@ -744,9 +903,9 @@ function getDocumentationHtml(): string {
       border-radius: 4px;
     }
 
-    .response-code-2xx { background: #dcfce7; color: #166534; }
-    .response-code-4xx { background: #ffedd5; color: #9a3412; }
-    .response-code-5xx { background: #fee2e2; color: #991b1b; }
+    .response-code-2xx { background: rgba(0, 172, 58, 0.12); color: #00862d; }
+    .response-code-4xx { background: rgba(249, 115, 22, 0.12); color: #9a3412; }
+    .response-code-5xx { background: rgba(239, 68, 68, 0.12); color: #991b1b; }
 
     .response-body {
       padding: 16px;
@@ -760,6 +919,8 @@ function getDocumentationHtml(): string {
     /* Code panel */
     .code-panel {
       width: 480px;
+      min-width: 300px;
+      max-width: 800px;
       background: var(--code-bg);
       border-left: 1px solid var(--border-color);
       display: flex;
@@ -886,7 +1047,7 @@ function getDocumentationHtml(): string {
     }
 
     .try-it-input:focus {
-      border-color: var(--accent-blue);
+      border-color: var(--accent-green);
     }
 
     .try-it-input::placeholder {
@@ -909,7 +1070,7 @@ function getDocumentationHtml(): string {
     }
 
     .try-it-textarea:focus {
-      border-color: var(--accent-blue);
+      border-color: var(--accent-green);
     }
 
     .file-upload-container {
@@ -932,18 +1093,18 @@ function getDocumentationHtml(): string {
     }
 
     .file-upload-input:hover {
-      border-color: var(--accent-blue);
-      background: rgba(59, 130, 246, 0.1);
+      border-color: var(--accent-green);
+      background: rgba(0, 172, 58, 0.1);
     }
 
     .file-upload-input:focus {
-      border-color: var(--accent-blue);
+      border-color: var(--accent-green);
     }
 
     .file-upload-input::file-selector-button {
       padding: 8px 16px;
       margin-right: 12px;
-      background: var(--accent-blue);
+      background: var(--accent-green);
       border: none;
       border-radius: 6px;
       color: white;
@@ -953,7 +1114,7 @@ function getDocumentationHtml(): string {
     }
 
     .file-upload-input::file-selector-button:hover {
-      background: #2563eb;
+      background: #009933;
     }
 
     .file-upload-label {
@@ -971,9 +1132,9 @@ function getDocumentationHtml(): string {
     }
 
     .file-upload-label:hover {
-      border-color: var(--accent-blue);
-      background: rgba(59, 130, 246, 0.1);
-      color: var(--accent-blue);
+      border-color: var(--accent-green);
+      background: rgba(0, 172, 58, 0.1);
+      color: var(--accent-green);
     }
 
     .file-upload-label.has-file {
@@ -1109,7 +1270,7 @@ function getDocumentationHtml(): string {
     .body-field-input input:focus,
     .body-field-input select:focus,
     .body-field-input textarea:focus {
-      border-color: var(--accent-blue);
+      border-color: var(--accent-green);
     }
 
     .body-field-input input::placeholder,
@@ -1202,7 +1363,7 @@ function getDocumentationHtml(): string {
       gap: 8px;
       width: 100%;
       padding: 12px;
-      background: var(--accent-blue);
+      background: var(--accent-green);
       color: white;
       border: none;
       border-radius: 8px;
@@ -1213,7 +1374,7 @@ function getDocumentationHtml(): string {
     }
 
     .execute-btn:hover {
-      background: #2563eb;
+      background: #009933;
     }
 
     .execute-btn:disabled {
@@ -1244,12 +1405,12 @@ function getDocumentationHtml(): string {
     }
 
     .response-status.success {
-      background: #dcfce7;
-      color: #166534;
+      background: rgba(0, 172, 58, 0.12);
+      color: #00862d;
     }
 
     .response-status.error {
-      background: #fee2e2;
+      background: rgba(239, 68, 68, 0.12);
       color: #991b1b;
     }
 
@@ -1538,7 +1699,7 @@ function getDocumentationHtml(): string {
       align-items: center;
       gap: 6px;
       padding: 10px 20px;
-      background: var(--accent-blue);
+      background: var(--accent-green);
       color: white;
       border: none;
       border-radius: 8px;
@@ -1549,7 +1710,7 @@ function getDocumentationHtml(): string {
     }
 
     .try-it-btn:hover {
-      background: #2563eb;
+      background: #009933;
     }
 
     /* Loading state */
@@ -1565,7 +1726,7 @@ function getDocumentationHtml(): string {
       width: 40px;
       height: 40px;
       border: 3px solid var(--border-color);
-      border-top-color: var(--accent-blue);
+      border-top-color: var(--accent-green);
       border-radius: 50%;
       animation: spin 1s linear infinite;
     }
@@ -1588,7 +1749,7 @@ function getDocumentationHtml(): string {
     .welcome-icon {
       width: 80px;
       height: 80px;
-      background: #047857;
+      background: #00ac3a;
       border-radius: 20px;
       display: flex;
       align-items: center;
@@ -1602,6 +1763,7 @@ function getDocumentationHtml(): string {
     }
 
     .welcome-title {
+      font-family: 'Manrope', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
       font-size: 28px;
       font-weight: 700;
       margin-bottom: 12px;
@@ -1632,8 +1794,8 @@ function getDocumentationHtml(): string {
     }
 
     .module-card:hover {
-      border-color: var(--accent-blue);
-      box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+      border-color: var(--accent-green);
+      box-shadow: 0 4px 12px rgba(0, 172, 58, 0.08);
     }
 
     .module-card-header {
@@ -1654,6 +1816,7 @@ function getDocumentationHtml(): string {
     }
 
     .module-card-title {
+      font-family: 'Manrope', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
       font-weight: 600;
       font-size: 16px;
     }
@@ -1670,6 +1833,227 @@ function getDocumentationHtml(): string {
       margin-top: 16px;
       font-size: 12px;
       color: var(--text-muted);
+    }
+
+    /* Health Section */
+    .health-section {
+      margin-top: 32px;
+      padding: 24px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+    }
+
+    .health-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+    }
+
+    .health-title {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-family: 'Manrope', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .health-title-icon {
+      width: 32px;
+      height: 32px;
+      background: var(--bg-tertiary);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .health-refresh-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 16px;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      color: var(--text-secondary);
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .health-refresh-btn:hover {
+      background: var(--border-color);
+      color: var(--text-primary);
+    }
+
+    .health-refresh-btn.loading {
+      pointer-events: none;
+      opacity: 0.7;
+    }
+
+    .health-refresh-btn.loading svg {
+      animation: spin 1s linear infinite;
+    }
+
+    .health-overall {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 20px;
+      padding: 12px 16px;
+      background: var(--bg-primary);
+      border-radius: 8px;
+    }
+
+    .health-overall-label {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .health-overall-status {
+      font-weight: 600;
+      font-size: 14px;
+      padding: 4px 12px;
+      border-radius: 20px;
+    }
+
+    .health-overall-status.healthy {
+      background: rgba(0, 172, 58, 0.12);
+      color: #00ac3a;
+    }
+
+    .health-overall-status.degraded {
+      background: rgba(249, 115, 22, 0.12);
+      color: #f97316;
+    }
+
+    .health-overall-status.unhealthy {
+      background: rgba(239, 68, 68, 0.12);
+      color: #ef4444;
+    }
+
+    [data-theme="dark"] .health-overall-status.healthy {
+      background: rgba(0, 172, 58, 0.15);
+      color: #00d147;
+    }
+
+    [data-theme="dark"] .health-overall-status.degraded {
+      background: rgba(249, 115, 22, 0.15);
+      color: #fdba74;
+    }
+
+    [data-theme="dark"] .health-overall-status.unhealthy {
+      background: rgba(239, 68, 68, 0.15);
+      color: #fca5a5;
+    }
+
+    .health-timestamp {
+      margin-left: auto;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .health-services {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 12px;
+    }
+
+    .health-service-card {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 16px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      transition: all 0.15s;
+    }
+
+    .health-service-card:hover {
+      border-color: var(--accent-green);
+    }
+
+    .health-service-indicator {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .health-service-indicator.healthy {
+      background: #00ac3a;
+      box-shadow: 0 0 8px rgba(0, 172, 58, 0.4);
+    }
+
+    .health-service-indicator.unhealthy {
+      background: #ef4444;
+      box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+    }
+
+    .health-service-indicator.unknown {
+      background: #6b7280;
+    }
+
+    .health-service-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .health-service-name {
+      font-weight: 500;
+      font-size: 14px;
+      margin-bottom: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .health-service-details {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .health-service-port {
+      font-family: 'JetBrains Mono', monospace;
+      background: var(--bg-tertiary);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    .health-service-time {
+      color: var(--text-muted);
+    }
+
+    .health-service-error {
+      font-size: 11px;
+      color: #ef4444;
+      margin-top: 4px;
+    }
+
+    [data-theme="dark"] .health-service-error {
+      color: #fca5a5;
+    }
+
+    .health-loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 40px;
+      color: var(--text-muted);
+    }
+
+    .health-loading .spinner {
+      width: 24px;
+      height: 24px;
+      border-width: 2px;
+      margin-right: 12px;
     }
 
     /* Responsive */
@@ -1713,15 +2097,15 @@ function getDocumentationHtml(): string {
         <a href="/docs" class="logo">
           <div class="logo-icon">
             <svg width="24" height="24" viewBox="0 0 614 614" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path fill-rule="evenodd" clip-rule="evenodd" d="M110.72 110.72V186.212L186.217 186.212L186.217 110.72L110.72 110.72Z" fill="#047857"/>
-              <path fill-rule="evenodd" clip-rule="evenodd" d="M110.72 427.786V503.277L186.217 503.277L186.217 427.786L110.72 427.786Z" fill="#047857"/>
-              <path fill-rule="evenodd" clip-rule="evenodd" d="M427.783 110.72V186.212L503.28 186.212L503.28 110.72L427.783 110.72Z" fill="#047857"/>
-              <path fill-rule="evenodd" clip-rule="evenodd" d="M427.779 427.786V503.277L503.275 503.277L503.275 427.786L427.779 427.786Z" fill="#047857"/>
-              <path d="M306.998 447.914L362.358 503.277L306.998 558.64L251.637 503.277L306.998 447.914Z" fill="#047857"/>
-              <path d="M306.998 55.3602L362.358 110.723L306.998 166.085L251.637 110.723L306.998 55.3602Z" fill="#047857"/>
-              <path d="M306.998 251.642L362.358 307.005L306.998 362.367L251.637 307.005L306.998 251.642Z" fill="#047857"/>
-              <path d="M503.275 251.637L558.635 307L503.275 362.363L447.914 307L503.275 251.637Z" fill="#047857"/>
-              <path d="M110.72 251.637L166.081 307L110.72 362.363L55.3602 307L110.72 251.637Z" fill="#047857"/>
+              <path fill-rule="evenodd" clip-rule="evenodd" d="M110.72 110.72V186.212L186.217 186.212L186.217 110.72L110.72 110.72Z" fill="#00ac3a"/>
+              <path fill-rule="evenodd" clip-rule="evenodd" d="M110.72 427.786V503.277L186.217 503.277L186.217 427.786L110.72 427.786Z" fill="#00ac3a"/>
+              <path fill-rule="evenodd" clip-rule="evenodd" d="M427.783 110.72V186.212L503.28 186.212L503.28 110.72L427.783 110.72Z" fill="#00ac3a"/>
+              <path fill-rule="evenodd" clip-rule="evenodd" d="M427.779 427.786V503.277L503.275 503.277L503.275 427.786L427.779 427.786Z" fill="#00ac3a"/>
+              <path d="M306.998 447.914L362.358 503.277L306.998 558.64L251.637 503.277L306.998 447.914Z" fill="#00ac3a"/>
+              <path d="M306.998 55.3602L362.358 110.723L306.998 166.085L251.637 110.723L306.998 55.3602Z" fill="#00ac3a"/>
+              <path d="M306.998 251.642L362.358 307.005L306.998 362.367L251.637 307.005L306.998 251.642Z" fill="#00ac3a"/>
+              <path d="M503.275 251.637L558.635 307L503.275 362.363L447.914 307L503.275 251.637Z" fill="#00ac3a"/>
+              <path d="M110.72 251.637L166.081 307L110.72 362.363L55.3602 307L110.72 251.637Z" fill="#00ac3a"/>
             </svg>
           </div>
           <span>PipesHub API</span>
@@ -1740,6 +2124,8 @@ function getDocumentationHtml(): string {
         </div>
       </nav>
     </aside>
+
+    <div class="resize-handle resize-handle-right" id="sidebarResizeHandle"></div>
 
     <main class="main-content">
       <header class="content-header">
@@ -1794,7 +2180,27 @@ function getDocumentationHtml(): string {
               to view available endpoints and learn how to integrate with PipesHub.
             </p>
           </div>
+
+          <!-- Health Section - Initial Loading State -->
+          <div class="health-section" id="healthSection">
+            <div class="health-header">
+              <div class="health-title">
+                <div class="health-title-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>
+                  </svg>
+                </div>
+                <span>Service Health</span>
+              </div>
+            </div>
+            <div class="health-loading">
+              <div class="spinner"></div>
+              <span>Checking service health...</span>
+            </div>
+          </div>
         </div>
+
+        <div class="resize-handle resize-handle-left" id="codePanelResizeHandle" style="display: none;"></div>
 
         <div class="code-panel" id="codePanel" style="display: none;">
           <div class="code-panel-header">
@@ -1868,7 +2274,139 @@ function getDocumentationHtml(): string {
       await loadApiDocs();
       setupEventListeners();
       loadSavedConfig();
+      initializeResizeHandles();
+
+      // Load initial health status
+      loadInitialHealthStatus();
     });
+
+    // Load health status on page load
+    async function loadInitialHealthStatus() {
+      try {
+        const response = await fetch('/docs/api/health');
+        if (!response.ok) throw new Error('Health check failed');
+        const healthData = await response.json();
+
+        const healthSection = document.getElementById('healthSection');
+        if (healthSection) {
+          healthSection.outerHTML = renderHealthSection(healthData);
+        }
+      } catch (error) {
+        console.error('Failed to load initial health status:', error);
+        // Keep the loading state or show error
+        const healthSection = document.getElementById('healthSection');
+        if (healthSection) {
+          healthSection.innerHTML =
+            '<div class="health-header">' +
+            '<div class="health-title">' +
+            '<div class="health-title-icon">' +
+            '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+            '<path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>' +
+            '</svg>' +
+            '</div>' +
+            '<span>Service Health</span>' +
+            '</div>' +
+            '<button class="health-refresh-btn" onclick="refreshHealth()">' +
+            '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+            '<path d="M23 4v6h-6"></path>' +
+            '<path d="M1 20v-6h6"></path>' +
+            '<path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>' +
+            '</svg>' +
+            '<span>Retry</span>' +
+            '</button>' +
+            '</div>' +
+            '<div class="health-overall">' +
+            '<span class="health-overall-label">Status:</span>' +
+            '<span class="health-overall-status unhealthy">Unable to check</span>' +
+            '</div>';
+        }
+      }
+    }
+
+    // Initialize resizable panels
+    function initializeResizeHandles() {
+      const sidebar = document.querySelector('.sidebar');
+      const sidebarResizeHandle = document.getElementById('sidebarResizeHandle');
+      const codePanel = document.getElementById('codePanel');
+      const codePanelResizeHandle = document.getElementById('codePanelResizeHandle');
+
+      // Sidebar resize
+      setupResize(sidebarResizeHandle, sidebar, {
+        minWidth: 200,
+        maxWidth: 500,
+        direction: 'right',
+        storageKey: 'pipeshub_docs_sidebar_width'
+      });
+
+      // Code panel resize
+      setupResize(codePanelResizeHandle, codePanel, {
+        minWidth: 300,
+        maxWidth: 800,
+        direction: 'left',
+        storageKey: 'pipeshub_docs_codepanel_width'
+      });
+
+      // Restore saved widths
+      const savedSidebarWidth = localStorage.getItem('pipeshub_docs_sidebar_width');
+      if (savedSidebarWidth) {
+        sidebar.style.width = savedSidebarWidth + 'px';
+      }
+
+      const savedCodePanelWidth = localStorage.getItem('pipeshub_docs_codepanel_width');
+      if (savedCodePanelWidth) {
+        codePanel.style.width = savedCodePanelWidth + 'px';
+      }
+    }
+
+    function setupResize(handle, panel, options) {
+      if (!handle || !panel) return;
+
+      let isResizing = false;
+      let startX = 0;
+      let startWidth = 0;
+
+      handle.addEventListener('mousedown', (e) => {
+        isResizing = true;
+        startX = e.clientX;
+        startWidth = panel.offsetWidth;
+
+        handle.classList.add('dragging');
+        document.body.classList.add('resizing');
+
+        e.preventDefault();
+      });
+
+      document.addEventListener('mousemove', (e) => {
+        if (!isResizing) return;
+
+        let newWidth;
+        if (options.direction === 'right') {
+          // Sidebar: dragging right increases width
+          newWidth = startWidth + (e.clientX - startX);
+        } else {
+          // Code panel: dragging left increases width
+          newWidth = startWidth - (e.clientX - startX);
+        }
+
+        // Apply constraints
+        newWidth = Math.max(options.minWidth, Math.min(options.maxWidth, newWidth));
+
+        panel.style.width = newWidth + 'px';
+      });
+
+      document.addEventListener('mouseup', () => {
+        if (isResizing) {
+          isResizing = false;
+          handle.classList.remove('dragging');
+          document.body.classList.remove('resizing');
+
+          // Save width to localStorage
+          if (options.storageKey) {
+            localStorage.setItem(options.storageKey, panel.offsetWidth);
+          }
+        }
+      });
+    }
 
     // Initialize theme from localStorage or system preference
     function initializeTheme() {
@@ -2340,7 +2878,10 @@ function getDocumentationHtml(): string {
         'configuration-manager': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"></path></svg>',
         'crawling-manager': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>',
         'mail': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>',
-        'python-connector': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path></svg>',
+        'query-service': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><path d="M21 21l-4.35-4.35"></path><path d="M11 8v6"></path><path d="M8 11h6"></path></svg>',
+        'indexing-service': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>',
+        'connector-service-internal': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path></svg>',
+        'docling-service': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline><path d="M12 18v-6"></path><path d="M9 15h6"></path></svg>',
       };
       return icons[moduleId] || '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle></svg>';
     }
@@ -3036,6 +3577,107 @@ function getDocumentationHtml(): string {
     window.addArrayItem = addArrayItem;
     window.removeArrayItem = removeArrayItem;
 
+    // Fetch and render health status
+    async function fetchHealthStatus() {
+      try {
+        const response = await fetch('/docs/api/health');
+        if (!response.ok) throw new Error('Health check failed');
+        return await response.json();
+      } catch (error) {
+        console.error('Failed to fetch health status:', error);
+        return null;
+      }
+    }
+
+    function renderHealthSection(healthData) {
+      if (!healthData) {
+        return '<div class="health-section">' +
+          '<div class="health-header">' +
+          '<div class="health-title">' +
+          '<div class="health-title-icon">' +
+          '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+          '<path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>' +
+          '</svg>' +
+          '</div>' +
+          '<span>Service Health</span>' +
+          '</div>' +
+          '</div>' +
+          '<div class="health-loading">' +
+          '<div class="spinner"></div>' +
+          '<span>Checking service health...</span>' +
+          '</div>' +
+          '</div>';
+      }
+
+      const timestamp = new Date(healthData.timestamp).toLocaleTimeString();
+      let html = '<div class="health-section">' +
+        '<div class="health-header">' +
+        '<div class="health-title">' +
+        '<div class="health-title-icon">' +
+        '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+        '<path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>' +
+        '</svg>' +
+        '</div>' +
+        '<span>Service Health</span>' +
+        '</div>' +
+        '<button class="health-refresh-btn" onclick="refreshHealth()">' +
+        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+        '<path d="M23 4v6h-6"></path>' +
+        '<path d="M1 20v-6h6"></path>' +
+        '<path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>' +
+        '</svg>' +
+        '<span>Refresh</span>' +
+        '</button>' +
+        '</div>';
+
+      html += '<div class="health-overall">' +
+        '<span class="health-overall-label">Overall Status:</span>' +
+        '<span class="health-overall-status ' + healthData.overallStatus + '">' +
+        healthData.overallStatus.charAt(0).toUpperCase() + healthData.overallStatus.slice(1) +
+        '</span>' +
+        '<span class="health-timestamp">Last checked: ' + timestamp + '</span>' +
+        '</div>';
+
+      html += '<div class="health-services">';
+      for (const service of healthData.services) {
+        html += '<div class="health-service-card">' +
+          '<div class="health-service-indicator ' + service.status + '"></div>' +
+          '<div class="health-service-info">' +
+          '<div class="health-service-name">' + escapeHtml(service.name) + '</div>' +
+          '<div class="health-service-details">' +
+          '<span class="health-service-port">:' + service.port + '</span>';
+
+        if (service.responseTime !== undefined && service.status === 'healthy') {
+          html += '<span class="health-service-time">' + service.responseTime + 'ms</span>';
+        }
+        html += '</div>';
+
+        if (service.error) {
+          html += '<div class="health-service-error">' + escapeHtml(service.error) + '</div>';
+        }
+        html += '</div></div>';
+      }
+      html += '</div></div>';
+
+      return html;
+    }
+
+    async function refreshHealth() {
+      const btn = document.querySelector('.health-refresh-btn');
+      if (btn) {
+        btn.classList.add('loading');
+      }
+
+      const healthData = await fetchHealthStatus();
+      const healthSection = document.querySelector('.health-section');
+      if (healthSection) {
+        healthSection.outerHTML = renderHealthSection(healthData);
+      }
+    }
+
+    // Make refreshHealth globally accessible
+    window.refreshHealth = refreshHealth;
+
     // Show welcome screen
     function showWelcomeScreen() {
       currentModule = null;
@@ -3047,6 +3689,7 @@ function getDocumentationHtml(): string {
 
       document.getElementById('breadcrumb').innerHTML = '<span class="breadcrumb-current">API Reference</span>';
       document.getElementById('codePanel').style.display = 'none';
+      document.getElementById('codePanelResizeHandle').style.display = 'none';
       document.getElementById('tryItBtn').style.display = 'none';
 
       document.getElementById('docPanel').innerHTML =
@@ -3069,7 +3712,16 @@ function getDocumentationHtml(): string {
         'Explore our comprehensive API documentation. Select a module from the sidebar ' +
         'to view available endpoints and learn how to integrate with PipesHub.' +
         '</p>' +
-        '</div>';
+        '</div>' +
+        renderHealthSection(null);
+
+      // Fetch and update health status asynchronously
+      fetchHealthStatus().then(healthData => {
+        const healthSection = document.querySelector('.health-section');
+        if (healthSection) {
+          healthSection.outerHTML = renderHealthSection(healthData);
+        }
+      });
     }
 
     // Select module
@@ -3123,6 +3775,7 @@ function getDocumentationHtml(): string {
         '<span class="breadcrumb-current">' + escapeHtml(module.name) + '</span>';
 
       document.getElementById('codePanel').style.display = 'none';
+      document.getElementById('codePanelResizeHandle').style.display = 'none';
       document.getElementById('tryItBtn').style.display = 'none';
 
       let html = '<div class="endpoint-header">';
@@ -3175,6 +3828,7 @@ function getDocumentationHtml(): string {
         '<span class="breadcrumb-current">' + escapeHtml(tag) + '</span>';
 
       document.getElementById('codePanel').style.display = 'none';
+      document.getElementById('codePanelResizeHandle').style.display = 'none';
       document.getElementById('tryItBtn').style.display = 'none';
 
       let html = '<div class="endpoint-header">';
@@ -3221,6 +3875,7 @@ function getDocumentationHtml(): string {
         '<span class="breadcrumb-current">' + escapeHtml(currentEndpoint.summary || currentEndpoint.operationId) + '</span>';
 
       document.getElementById('codePanel').style.display = 'flex';
+      document.getElementById('codePanelResizeHandle').style.display = 'block';
       document.getElementById('tryItBtn').style.display = 'none'; // Hide Try It button, we have it in panel
 
       showEndpointDetails();

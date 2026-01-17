@@ -220,15 +220,47 @@ export class ApiDocsService {
         source: 'nodejs',
         order: 9,
       },
+      // ==================== INTERNAL SERVICES ====================
+      // These are internal PipesHub microservices that require scoped service tokens
       {
-        id: 'python-connector',
-        name: 'Python Connector Service',
-        description: 'Knowledge base, records, connectors, and streaming (Python backend)',
+        id: 'query-service',
+        name: 'Query Service',
+        description: 'AI search, RAG, and conversational AI (Port 8000). Requires scoped service token.',
         version: '1.0.0',
-        basePath: '/api/v1',
-        tags: ['Knowledge Base', 'Records', 'Connectors', 'OAuth', 'Streaming'],
+        basePath: 'http://localhost:8000',
+        tags: ['Internal Services'],
         source: 'python',
         order: 10,
+      },
+      {
+        id: 'indexing-service',
+        name: 'Indexing Service',
+        description: 'Document processing and embeddings (Port 8091). Requires scoped service token.',
+        version: '1.0.0',
+        basePath: 'http://localhost:8091',
+        tags: ['Internal Services'],
+        source: 'python',
+        order: 11,
+      },
+      {
+        id: 'connector-service-internal',
+        name: 'Connector Service',
+        description: 'Data source integrations and OAuth (Port 8088). Requires scoped service token.',
+        version: '1.0.0',
+        basePath: 'http://localhost:8088',
+        tags: ['Internal Services'],
+        source: 'python',
+        order: 12,
+      },
+      {
+        id: 'docling-service',
+        name: 'Docling Service',
+        description: 'Advanced PDF/document parsing (Port 8081). Internal only.',
+        version: '1.0.0',
+        basePath: 'http://localhost:8081',
+        tags: ['Internal Services'],
+        source: 'python',
+        order: 13,
       },
     ];
   }
@@ -241,15 +273,11 @@ export class ApiDocsService {
       const pythonSpec = await this.fetchPythonSpec();
       if (pythonSpec) {
         this.pythonSpec = pythonSpec;
-        // Update Python module tags
-        const pythonModule = this.modules.find(m => m.id === 'python-connector');
-        if (pythonModule) {
-          pythonModule.tags = pythonSpec.tags?.map((t: any) => t.name) || [];
-        }
-        this.logger.info('Python connector spec loaded successfully');
+        // Internal services all share the 'Internal Services' tag
+        this.logger.info('Python internal services spec loaded successfully');
       }
     } catch (error) {
-      this.logger.warn('Failed to fetch Python connector spec', {
+      this.logger.warn('Failed to fetch Python internal services spec', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }
@@ -328,6 +356,8 @@ export class ApiDocsService {
         for (const [method, operation] of Object.entries(pathObj)) {
           if (['get', 'post', 'put', 'patch', 'delete'].includes(method)) {
             const op = operation as any;
+            // Determine which internal service this endpoint belongs to
+            const internalModuleId = this.getInternalServiceModuleId(pathKey, op.summary || '');
             endpoints.push({
               path: pathKey,
               method: method.toUpperCase(),
@@ -339,7 +369,7 @@ export class ApiDocsService {
               requestBody: op.requestBody,
               responses: op.responses || {},
               security: op.security,
-              moduleId: 'python-connector',
+              moduleId: internalModuleId,
             });
           }
         }
@@ -386,13 +416,19 @@ export class ApiDocsService {
         id: 'integrations',
         name: 'Integrations',
         description: 'Third-party connectors and data sync',
-        modules: this.modules.filter(m => ['connector-manager', 'python-connector'].includes(m.id)),
+        modules: this.modules.filter(m => ['connector-manager'].includes(m.id)),
       },
       {
         id: 'system',
         name: 'System',
         description: 'Configuration, crawling, and mail services',
         modules: this.modules.filter(m => ['configuration-manager', 'crawling-manager', 'mail'].includes(m.id)),
+      },
+      {
+        id: 'internal',
+        name: 'Internal Services',
+        description: 'Internal PipesHub microservices (requires scoped token)',
+        modules: this.modules.filter(m => ['query-service', 'indexing-service', 'connector-service-internal', 'docling-service'].includes(m.id)),
       },
     ];
 
@@ -428,6 +464,45 @@ export class ApiDocsService {
   }
 
   /**
+   * Determine which internal service module an endpoint belongs to based on path and summary
+   */
+  private getInternalServiceModuleId(path: string, summary: string): string {
+    const pathLower = path.toLowerCase();
+    const summaryLower = summary.toLowerCase();
+
+    // Check path prefix first
+    if (pathLower.startsWith('/query/') || pathLower.includes('/search') || pathLower.includes('/chat')) {
+      return 'query-service';
+    }
+    if (pathLower.startsWith('/indexing/')) {
+      return 'indexing-service';
+    }
+    if (pathLower.startsWith('/connector/')) {
+      return 'connector-service-internal';
+    }
+    if (pathLower.startsWith('/docling/')) {
+      return 'docling-service';
+    }
+
+    // Check summary for service indicators
+    if (summaryLower.includes('[query service]')) {
+      return 'query-service';
+    }
+    if (summaryLower.includes('[indexing service]')) {
+      return 'indexing-service';
+    }
+    if (summaryLower.includes('[connector service]')) {
+      return 'connector-service-internal';
+    }
+    if (summaryLower.includes('[docling service]')) {
+      return 'docling-service';
+    }
+
+    // Default to query service for unmatched internal endpoints
+    return 'query-service';
+  }
+
+  /**
    * Get a specific module's OpenAPI spec (filtered from merged spec)
    */
   getModuleSpec(moduleId: string): any | null {
@@ -436,9 +511,48 @@ export class ApiDocsService {
       return null;
     }
 
-    // For Python module, return the Python spec
-    if (moduleId === 'python-connector') {
-      return this.pythonSpec;
+    // For internal service modules, filter from merged spec by path/summary patterns
+    const internalServiceIds = ['query-service', 'indexing-service', 'connector-service-internal', 'docling-service'];
+    if (internalServiceIds.includes(moduleId)) {
+      // Filter paths from merged spec that belong to this internal service
+      const filteredPaths: Record<string, any> = {};
+      if (this.mergedSpec?.paths) {
+        for (const [pathKey, pathValue] of Object.entries(this.mergedSpec.paths)) {
+          const pathObj = pathValue as any;
+          const filteredMethods: Record<string, any> = {};
+
+          for (const [method, operation] of Object.entries(pathObj)) {
+            if (['get', 'post', 'put', 'patch', 'delete'].includes(method)) {
+              const op = operation as any;
+              const opTags = op.tags || [];
+              // Check if this endpoint belongs to 'Internal Services' tag and matches this service
+              if (opTags.includes('Internal Services')) {
+                const endpointModuleId = this.getInternalServiceModuleId(pathKey, op.summary || '');
+                if (endpointModuleId === moduleId) {
+                  filteredMethods[method] = operation;
+                }
+              }
+            }
+          }
+
+          if (Object.keys(filteredMethods).length > 0) {
+            filteredPaths[pathKey] = filteredMethods;
+          }
+        }
+      }
+
+      return {
+        openapi: '3.0.0',
+        info: {
+          title: module.name,
+          version: module.version,
+          description: module.description,
+        },
+        servers: [{ url: module.basePath, description: `${module.name} (Internal)` }],
+        tags: [{ name: 'Internal Services', description: module.description }],
+        paths: filteredPaths,
+        components: this.mergedSpec?.components || {},
+      };
     }
 
     // Filter paths by module tags
@@ -565,10 +679,6 @@ export class ApiDocsService {
       const pythonSpec = await this.fetchPythonSpec();
       if (pythonSpec) {
         this.pythonSpec = pythonSpec;
-        const pythonModule = this.modules.find(m => m.id === 'python-connector');
-        if (pythonModule) {
-          pythonModule.tags = pythonSpec.tags?.map((t: any) => t.name) || [];
-        }
         return true;
       }
       return false;

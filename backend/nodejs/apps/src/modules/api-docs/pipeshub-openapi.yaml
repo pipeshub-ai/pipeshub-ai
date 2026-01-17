@@ -219,133 +219,140 @@ tags:
       These endpoints allow dynamic reloading of SMTP configuration without service restart.
       Requires scoped token with `fetch:config` scope.
 
-  # ==================== INTERNAL PYTHON MICROSERVICES ====================
-  # These services run independently and communicate with the main Node.js API
-  # They require scoped tokens for authentication (service-to-service)
+  # ==================== INTERNAL PIPESHUB MICROSERVICES ====================
+  # IMPORTANT: These are INTERNAL services used for service-to-service communication
+  # within PipesHub. They are NOT meant for direct external access.
+  #
+  # Authentication: All internal endpoints require a SCOPED SERVICE TOKEN
+  # obtained through the PipesHub token service.
 
-  - name: Query Service
+  - name: Internal Services
     description: |
-      **Internal Python Microservice** - Runs on port `8000`
+      ## Internal PipesHub Services
 
-      The Query Service handles all AI-powered search and retrieval operations including:
-      - Semantic/vector search across indexed documents
-      - RAG (Retrieval-Augmented Generation) for conversational AI
-      - LLM integration via LiteLLM for multiple providers
-      - Query transformation and reranking
+      **These services are INTERNAL to PipesHub and are NOT meant for direct external API access.**
+
+      The following Python microservices run independently and communicate with the main Node.js API.
+      They require **scoped service tokens** for authentication.
+
+      ---
+
+      ### Service Overview
+
+      | Service | Port | Base URL | Purpose |
+      |---------|------|----------|---------|
+      | **Query Service** | 8000 | `http://localhost:8000` | AI search, RAG, conversational AI |
+      | **Indexing Service** | 8091 | `http://localhost:8091` | Document processing, embeddings |
+      | **Connector Service** | 8088 | `http://localhost:8088` | Data source integrations, OAuth |
+      | **Docling Service** | 8081 | `http://localhost:8081` | Advanced PDF/document parsing |
+
+      ---
+
+      ### Authentication Requirements
+
+      **Scoped Service Token Required**
+
+      All internal service endpoints require a scoped JWT token for service-to-service authentication:
+      - Tokens are generated internally by PipesHub services
+      - Each token includes specific scopes for the operation (e.g., `fetch:config`, `mail:send`)
+      - Tokens are NOT available for external API consumers
+      - Pass token in `Authorization: Bearer {scoped_token}` header
+
+      **Exceptions:**
+      - Health check endpoints (`/health`) - No authentication required
+      - Webhook endpoints (e.g., `/drive/webhook`, `/gmail/webhook`) - Verified by provider signatures
+
+      ---
+
+      ### Query Service (Port 8000)
 
       **Base URL:** `http://localhost:8000`
 
-      **Authentication:** Requires scoped token with appropriate scope OR user JWT for user-facing endpoints.
+      Handles AI-powered search and retrieval:
+      - Semantic/vector search across indexed documents
+      - RAG (Retrieval-Augmented Generation) for conversational AI
+      - LLM integration via LiteLLM for multiple providers
+      - AI Agent execution
 
-      **Key Capabilities:**
-      - Semantic search with embeddings
-      - Chat/conversation with knowledge base context
-      - Multi-model LLM support (OpenAI, Anthropic, Ollama, etc.)
-      - Streaming responses for real-time AI interactions
-      - Agent tools execution
+      **Key Endpoints:**
+      - `GET /health` - Health check
+      - `POST /api/v1/search` - Semantic search (requires scoped token)
+      - `POST /api/v1/chat` - Chat with knowledge base (requires scoped token)
+      - `POST /api/v1/chat/stream` - Streaming chat (requires scoped token)
+      - `POST /api/v1/agent-chat` - Agent-based chat (requires scoped token)
+      - `POST /api/v1/health-check/{model_type}` - LLM/Embedding health check
 
-      **Dependencies:**
-      - Qdrant (vector database)
-      - ArangoDB (graph/document database)
-      - Redis (caching)
-      - Kafka (messaging)
-      - Connector Service (for health checks)
+      ---
 
-  - name: Indexing Service
-    description: |
-      **Internal Python Microservice** - Runs on port `8091`
+      ### Indexing Service (Port 8091)
 
-      The Indexing Service handles document processing and embedding generation:
+      **Base URL:** `http://localhost:8091`
+
+      Handles document processing and embedding generation:
       - Document parsing (PDF, DOCX, images, etc.)
       - Text chunking and embedding generation
       - Vector storage in Qdrant
       - Graph indexing in ArangoDB
 
-      **Base URL:** `http://localhost:8091`
+      **Key Endpoints:**
+      - `GET /health` - Health check
 
-      **Authentication:** This service is internal-only and consumes Kafka messages.
-      No direct HTTP API endpoints exposed to users.
+      **Note:** This service primarily consumes Kafka messages for indexing tasks.
+      It listens to the `record-events` topic for new, update, delete, and reindex events.
 
-      **Key Capabilities:**
-      - Multi-format document parsing
-      - Intelligent text chunking
-      - Embedding generation via configured models
-      - Automatic reindexing on document updates
-      - Recovery of failed indexing jobs
+      ---
 
-      **Kafka Topics Consumed:**
-      - `record-events`: New record, update, delete, reindex events
+      ### Connector Service (Port 8088)
 
-      **Dependencies:**
-      - Qdrant (vector database)
-      - ArangoDB (graph/document database)
-      - Kafka (messaging)
-      - Connector Service (for file retrieval)
-      - Docling Service (for advanced document parsing)
+      **Base URL:** `http://localhost:8088`
 
-  - name: Connector Service
-    description: |
-      **Internal Python Microservice** - Runs on port `8088`
-
-      The Connector Service manages all data source integrations and OAuth flows:
+      Manages all data source integrations and OAuth flows:
       - OAuth token management and refresh
       - Data sync from 30+ enterprise connectors
       - Webhook handlers for real-time updates
       - File streaming and signed URLs
 
-      **Base URL:** `http://localhost:8088`
+      **Key Endpoints (require scoped token):**
+      - `GET /health` - Health check (no auth)
+      - `GET /api/v1/connectors/` - List all connectors
+      - `GET /api/v1/records` - List records
+      - `GET /api/v1/records/{record_id}` - Get record details
+      - `POST /api/v1/records/{record_id}/reindex` - Trigger reindex
+      - `GET /api/v1/stream/record/{record_id}` - Stream file content
 
-      **Authentication:** Requires scoped token OR user JWT depending on endpoint.
+      **Webhook Endpoints (no auth - verified by provider signatures):**
+      - `POST /drive/webhook` - Google Drive push notifications
+      - `POST /gmail/webhook` - Gmail Pub/Sub notifications
+      - `POST /admin/webhook` - Admin directory notifications
 
-      **Supported Connectors:**
-      - Google Workspace (Drive, Gmail, Calendar)
-      - Microsoft 365 (OneDrive, SharePoint, Outlook)
-      - Atlassian (Confluence, Jira)
-      - Slack, Notion, Salesforce, and more
+      ---
 
-      **Key Capabilities:**
-      - OAuth 2.0 authorization flows
-      - Automatic token refresh
-      - Incremental and full sync
-      - Webhook processing for real-time updates
-      - File content streaming
+      ### Docling Service (Port 8081)
 
-      **Webhook Endpoints (No Auth Required):**
-      - `/drive/webhook` - Google Drive push notifications
-      - `/gmail/webhook` - Gmail Pub/Sub notifications
-      - `/admin/webhook` - Admin directory notifications
+      **Base URL:** `http://localhost:8081`
 
-      **Dependencies:**
-      - ArangoDB (graph/document database)
-      - Redis (caching, token storage)
-      - Kafka (messaging)
-      - etcd (configuration)
-
-  - name: Docling Service
-    description: |
-      **Internal Python Microservice** - Runs on port `8081`
-
-      The Docling Service provides advanced document parsing capabilities:
+      Provides advanced document parsing capabilities:
       - PDF parsing with layout analysis
       - OCR for scanned documents
       - Table extraction
       - Image analysis
 
-      **Base URL:** `http://localhost:8081`
+      **Key Endpoints (internal only - called by Indexing Service):**
+      - `GET /health` - Health check
+      - `POST /process-pdf` - Full PDF processing
+      - `POST /parse-pdf` - Parse PDF without block creation
+      - `POST /create-blocks` - Create blocks from parse result
 
-      **Authentication:** This service is internal-only, called by the Indexing Service.
-      No direct user-facing endpoints.
+      ---
 
-      **Key Capabilities:**
-      - High-quality PDF parsing with Docling library
-      - OCR for scanned documents and images
-      - Table structure extraction
-      - Multi-page document processing
-      - Markdown output generation
+      ### When to Use These Services
 
-      **Dependencies:**
-      - Docling library
-      - etcd (configuration)
+      These endpoints are documented for:
+      - PipesHub internal development
+      - Debugging and monitoring
+      - Understanding the system architecture
+
+      **External integrations should use the main Node.js API endpoints (`/api/v1/...`) instead.**
 
 components:
   securitySchemes:
@@ -17215,31 +17222,48 @@ paths:
             </ul>
 
   # ==================== INTERNAL PYTHON MICROSERVICE ENDPOINTS ====================
-  # These endpoints are served by independent Python FastAPI services
-  # They communicate with the main Node.js API via HTTP and Kafka
-  # Authentication: Scoped tokens for service-to-service, JWT for user-facing
+  #
+  # ⚠️ IMPORTANT: These endpoints are INTERNAL to PipesHub services.
+  #
+  # These endpoints are served by independent Python FastAPI microservices that run
+  # on different ports. They communicate with the main Node.js API via HTTP and Kafka.
+  #
+  # AUTHENTICATION REQUIREMENTS:
+  # - Internal service calls: Require SCOPED SERVICE TOKEN (not available externally)
+  # - User-facing endpoints: Accept user JWT token (proxied through main Node.js API)
+  # - Webhook endpoints: No auth (verified by provider signatures like Google, Microsoft)
+  #
+  # For external API access, use the main Node.js API endpoints (/api/v1/...) instead.
+  #
+  # ==============================================================================
 
   # -------------------- QUERY SERVICE (Port 8000) --------------------
   # Base URL: http://localhost:8000
+  # Authentication: User JWT or Scoped Token (depending on endpoint)
 
   /query/health:
     get:
       tags:
-        - Query Service
-      summary: Query Service health check
+        - Internal Services
+      summary: "[Query Service] Health check"
       description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
         Health check endpoint for the Query Service (Python FastAPI).<br><br>
 
         <b>Service:</b> Query Service<br>
         <b>Port:</b> 8000<br>
         <b>Base URL:</b> <code>http://localhost:8000</code><br><br>
 
+        <b>Authentication:</b> None required for health check<br><br>
+
         <b>Note:</b> This is an internal service health endpoint. It also verifies
         connectivity to the Connector Service as a dependency check.
       operationId: queryServiceHealth
+      security: []
       servers:
         - url: http://localhost:8000
-          description: Query Service
+          description: Query Service (Internal)
       responses:
         '200':
           description: Service is healthy
@@ -17275,14 +17299,18 @@ paths:
   /query/api/v1/search:
     post:
       tags:
-        - Query Service
-      summary: Semantic search
+        - Internal Services
+      summary: "[Query Service] Semantic search"
       description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
         Perform semantic search across indexed documents using vector embeddings.<br><br>
 
         <b>Service:</b> Query Service<br>
         <b>Port:</b> 8000<br>
         <b>Base URL:</b> <code>http://localhost:8000</code><br><br>
+
+        <b>Authentication:</b> Requires user JWT token (proxied from main API) or scoped service token<br><br>
 
         <b>How It Works:</b><br>
         <ol>
@@ -17292,12 +17320,10 @@ paths:
         <li>Results filtered by user permissions</li>
         <li>Optional knowledge base filtering</li>
         </ol>
-
-        <b>Authentication:</b> Requires user JWT token.
       operationId: queryServiceSearch
       servers:
         - url: http://localhost:8000
-          description: Query Service
+          description: Query Service (Internal)
       security:
         - bearerAuth: []
       requestBody:
@@ -17350,14 +17376,18 @@ paths:
   /query/api/v1/chat:
     post:
       tags:
-        - Query Service
-      summary: Chat with knowledge base
+        - Internal Services
+      summary: "[Query Service] Chat with knowledge base"
       description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
         Conversational AI endpoint with RAG (Retrieval-Augmented Generation).<br><br>
 
         <b>Service:</b> Query Service<br>
         <b>Port:</b> 8000<br>
         <b>Base URL:</b> <code>http://localhost:8000</code><br><br>
+
+        <b>Authentication:</b> Requires user JWT token (proxied from main API) or scoped service token<br><br>
 
         <b>Features:</b><br>
         <ul>
@@ -17367,12 +17397,10 @@ paths:
         <li>Multiple chat modes (quick, analysis, deep_research, creative, precise)</li>
         <li>Multi-model support (OpenAI, Anthropic, Ollama, etc.)</li>
         </ul>
-
-        <b>Authentication:</b> Requires user JWT token.
       operationId: queryServiceChat
       servers:
         - url: http://localhost:8000
-          description: Query Service
+          description: Query Service (Internal)
       security:
         - bearerAuth: []
       requestBody:
@@ -17430,14 +17458,18 @@ paths:
   /query/api/v1/chat/stream:
     post:
       tags:
-        - Query Service
-      summary: Streaming chat with knowledge base
+        - Internal Services
+      summary: "[Query Service] Streaming chat with knowledge base"
       description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
         Streaming conversational AI endpoint with real-time token delivery.<br><br>
 
         <b>Service:</b> Query Service<br>
         <b>Port:</b> 8000<br>
         <b>Base URL:</b> <code>http://localhost:8000</code><br><br>
+
+        <b>Authentication:</b> Requires user JWT token (proxied from main API) or scoped service token<br><br>
 
         <b>SSE Events:</b><br>
         <ul>
@@ -17447,12 +17479,10 @@ paths:
         <li><code>done</code>: Stream complete</li>
         <li><code>error</code>: Error occurred</li>
         </ul>
-
-        <b>Authentication:</b> Requires user JWT token.
       operationId: queryServiceChatStream
       servers:
         - url: http://localhost:8000
-          description: Query Service
+          description: Query Service (Internal)
       security:
         - bearerAuth: []
       responses:
@@ -17465,28 +17495,225 @@ paths:
         '401':
           description: Unauthorized
 
+  /query/api/v1/agent-chat:
+    post:
+      tags:
+        - Internal Services
+      summary: "[Query Service] Agent-based chat"
+      description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
+        Chat with AI agent using LangGraph for complex reasoning.<br><br>
+
+        <b>Service:</b> Query Service<br>
+        <b>Port:</b> 8000<br>
+        <b>Base URL:</b> <code>http://localhost:8000</code><br><br>
+
+        <b>Authentication:</b> Requires user JWT token (proxied from main API) or scoped service token<br><br>
+
+        <b>Features:</b>
+        <ul>
+        <li>LangGraph-based agent execution</li>
+        <li>Tool calling capabilities</li>
+        <li>Multi-step reasoning</li>
+        <li>Knowledge base integration</li>
+        </ul>
+      operationId: queryServiceAgentChat
+      servers:
+        - url: http://localhost:8000
+          description: Query Service (Internal)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+                  description: User's question
+                limit:
+                  type: integer
+                  default: 50
+                previousConversations:
+                  type: array
+                  items:
+                    type: object
+                quickMode:
+                  type: boolean
+                  default: false
+                filters:
+                  type: object
+                systemPrompt:
+                  type: string
+                tools:
+                  type: array
+                  items:
+                    type: string
+              required:
+                - query
+      responses:
+        '200':
+          description: Agent response
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          description: Unauthorized
+        '500':
+          description: Agent execution failed
+
+  /query/api/v1/agent-chat-stream:
+    post:
+      tags:
+        - Internal Services
+      summary: "[Query Service] Streaming agent-based chat"
+      description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
+        Streaming chat with AI agent using LangGraph.<br><br>
+
+        <b>Service:</b> Query Service<br>
+        <b>Port:</b> 8000<br>
+        <b>Base URL:</b> <code>http://localhost:8000</code><br><br>
+
+        <b>Authentication:</b> Requires user JWT token (proxied from main API) or scoped service token
+      operationId: queryServiceAgentChatStream
+      servers:
+        - url: http://localhost:8000
+          description: Query Service (Internal)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Server-Sent Events stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '401':
+          description: Unauthorized
+
+  /query/api/v1/health-check/{model_type}:
+    post:
+      tags:
+        - Internal Services
+      summary: "[Query Service] AI model health check"
+      description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
+        Validate LLM or embedding model configuration.<br><br>
+
+        <b>Service:</b> Query Service<br>
+        <b>Port:</b> 8000<br>
+        <b>Base URL:</b> <code>http://localhost:8000</code><br><br>
+
+        <b>Authentication:</b> Requires scoped service token<br><br>
+
+        <b>Model Types:</b>
+        <ul>
+        <li><code>llm</code> - Test LLM configuration (text generation)</li>
+        <li><code>embedding</code> - Test embedding model configuration</li>
+        </ul>
+      operationId: queryServiceHealthCheck
+      servers:
+        - url: http://localhost:8000
+          description: Query Service (Internal)
+      security:
+        - scopedToken: []
+      parameters:
+        - name: model_type
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [llm, embedding]
+          description: Type of model to health check
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                provider:
+                  type: string
+                  description: Model provider (openai, anthropic, ollama, etc.)
+                configuration:
+                  type: object
+                  properties:
+                    model:
+                      type: string
+                      description: Model name(s), comma-separated
+                    apiKey:
+                      type: string
+                isMultimodal:
+                  type: boolean
+                  description: Whether model supports vision/images
+              required:
+                - provider
+                - configuration
+      responses:
+        '200':
+          description: Model is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [healthy]
+                  message:
+                    type: string
+                  timestamp:
+                    type: integer
+        '500':
+          description: Model health check failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [error, not healthy]
+                  message:
+                    type: string
+                  details:
+                    type: object
+
   # -------------------- INDEXING SERVICE (Port 8091) --------------------
   # Base URL: http://localhost:8091
+  # Authentication: Internal only (Kafka consumer)
 
   /indexing/health:
     get:
       tags:
-        - Indexing Service
-      summary: Indexing Service health check
+        - Internal Services
+      summary: "[Indexing Service] Health check"
       description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
         Health check endpoint for the Indexing Service (Python FastAPI).<br><br>
 
         <b>Service:</b> Indexing Service<br>
         <b>Port:</b> 8091<br>
         <b>Base URL:</b> <code>http://localhost:8091</code><br><br>
 
+        <b>Authentication:</b> None required for health check<br><br>
+
         <b>Note:</b> This is an internal service. It processes Kafka messages
         for document indexing and does not expose user-facing endpoints.
         Health check also verifies Connector Service connectivity.
       operationId: indexingServiceHealth
+      security: []
       servers:
         - url: http://localhost:8091
-          description: Indexing Service
+          description: Indexing Service (Internal)
       responses:
         '200':
           description: Service is healthy
@@ -17508,25 +17735,31 @@ paths:
 
   # -------------------- CONNECTOR SERVICE (Port 8088) --------------------
   # Base URL: http://localhost:8088
+  # Authentication: Scoped Token or User JWT (depending on endpoint)
 
   /connector/health:
     get:
       tags:
-        - Connector Service
-      summary: Connector Service health check
+        - Internal Services
+      summary: "[Connector Service] Health check"
       description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
         Health check endpoint for the Connector Service (Python FastAPI).<br><br>
 
         <b>Service:</b> Connector Service<br>
         <b>Port:</b> 8088<br>
         <b>Base URL:</b> <code>http://localhost:8088</code><br><br>
 
+        <b>Authentication:</b> None required for health check<br><br>
+
         <b>Note:</b> This is the core internal service that manages all
         data source connectors and OAuth flows.
       operationId: connectorServiceHealth
+      security: []
       servers:
         - url: http://localhost:8088
-          description: Connector Service
+          description: Connector Service (Internal)
       responses:
         '200':
           description: Service is healthy
@@ -17549,22 +17782,26 @@ paths:
   /connector/drive/webhook:
     post:
       tags:
-        - Connector Service
-      summary: Google Drive webhook
+        - Internal Services
+      summary: "[Connector Service] Google Drive webhook"
       description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
         Webhook endpoint for Google Drive push notifications.<br><br>
 
         <b>Service:</b> Connector Service<br>
-        <b>Port:</b> 8088<br><br>
+        <b>Port:</b> 8088<br>
+        <b>Base URL:</b> <code>http://localhost:8088</code><br><br>
 
-        <b>Authentication:</b> None required - uses Google's push notification verification.
+        <b>Authentication:</b> None required - uses Google's push notification verification<br><br>
 
         <b>Note:</b> This endpoint receives real-time change notifications from
         Google Drive when files are created, modified, or deleted.
       operationId: driveWebhook
+      security: []
       servers:
         - url: http://localhost:8088
-          description: Connector Service
+          description: Connector Service (Internal)
       responses:
         '200':
           description: Webhook processed
@@ -17574,47 +17811,57 @@ paths:
   /connector/gmail/webhook:
     post:
       tags:
-        - Connector Service
-      summary: Gmail webhook
+        - Internal Services
+      summary: "[Connector Service] Gmail webhook"
       description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
         Webhook endpoint for Gmail Pub/Sub notifications.<br><br>
 
         <b>Service:</b> Connector Service<br>
-        <b>Port:</b> 8088<br><br>
+        <b>Port:</b> 8088<br>
+        <b>Base URL:</b> <code>http://localhost:8088</code><br><br>
 
-        <b>Authentication:</b> None required - uses Google Pub/Sub verification.
+        <b>Authentication:</b> None required - uses Google Pub/Sub verification<br><br>
 
         <b>Note:</b> This endpoint receives notifications when new emails arrive
         or email labels change.
       operationId: gmailWebhook
+      security: []
       servers:
         - url: http://localhost:8088
-          description: Connector Service
+          description: Connector Service (Internal)
       responses:
         '200':
           description: Webhook processed
 
   # -------------------- DOCLING SERVICE (Port 8081) --------------------
   # Base URL: http://localhost:8081
+  # Authentication: Internal only (called by Indexing Service)
 
   /docling/health:
     get:
       tags:
-        - Docling Service
-      summary: Docling Service health check
+        - Internal Services
+      summary: "[Docling Service] Health check"
       description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
         Health check endpoint for the Docling Service (Python FastAPI).<br><br>
 
         <b>Service:</b> Docling Service<br>
         <b>Port:</b> 8081<br>
         <b>Base URL:</b> <code>http://localhost:8081</code><br><br>
 
+        <b>Authentication:</b> None required for health check<br><br>
+
         <b>Note:</b> This is an internal service used by the Indexing Service
         for advanced document parsing. No user-facing endpoints.
       operationId: doclingServiceHealth
+      security: []
       servers:
         - url: http://localhost:8081
-          description: Docling Service
+          description: Docling Service (Internal)
       responses:
         '200':
           description: Service is healthy
@@ -17629,7 +17876,187 @@ paths:
                   service:
                     type: string
                     example: "docling"
-                  timestamp:
-                    type: integer
         '503':
           description: Service is unhealthy or not initialized
+
+  /docling/process-pdf:
+    post:
+      tags:
+        - Internal Services
+      summary: "[Docling Service] Process PDF document"
+      description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
+        Full PDF processing endpoint - parses PDF and creates content blocks.<br><br>
+
+        <b>Service:</b> Docling Service<br>
+        <b>Port:</b> 8081<br>
+        <b>Base URL:</b> <code>http://localhost:8081</code><br><br>
+
+        <b>Authentication:</b> Internal only - called by Indexing Service<br><br>
+
+        <b>Processing Steps:</b>
+        <ol>
+        <li>Decode base64 PDF binary</li>
+        <li>Parse document structure using Docling library</li>
+        <li>Extract text, tables, and images</li>
+        <li>Create content blocks for indexing</li>
+        </ol>
+
+        <b>Timeout:</b> 40 minutes (for large documents)
+      operationId: doclingProcessPdf
+      security: []
+      servers:
+        - url: http://localhost:8081
+          description: Docling Service (Internal)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                record_name:
+                  type: string
+                  description: Name/identifier of the document
+                pdf_binary:
+                  type: string
+                  description: Base64 encoded PDF binary data
+                org_id:
+                  type: string
+                  description: Organization ID (optional)
+              required:
+                - record_name
+                - pdf_binary
+      responses:
+        '200':
+          description: PDF processed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  block_containers:
+                    type: object
+                    description: Extracted content blocks
+        '400':
+          description: Invalid base64 PDF data
+        '500':
+          description: Processing failed or service not available
+        '504':
+          description: Processing timed out
+
+  /docling/parse-pdf:
+    post:
+      tags:
+        - Internal Services
+      summary: "[Docling Service] Parse PDF (Phase 1)"
+      description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
+        Phase 1 of two-phase PDF processing - parse PDF without block creation.<br><br>
+
+        <b>Service:</b> Docling Service<br>
+        <b>Port:</b> 8081<br>
+        <b>Base URL:</b> <code>http://localhost:8081</code><br><br>
+
+        <b>Authentication:</b> Internal only - called by Indexing Service<br><br>
+
+        <b>Note:</b> This endpoint only parses the PDF structure without making
+        LLM calls for table processing. Use <code>/create-blocks</code> for Phase 2.
+      operationId: doclingParsePdf
+      security: []
+      servers:
+        - url: http://localhost:8081
+          description: Docling Service (Internal)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                record_name:
+                  type: string
+                  description: Name/identifier of the document
+                pdf_binary:
+                  type: string
+                  description: Base64 encoded PDF binary data
+              required:
+                - record_name
+                - pdf_binary
+      responses:
+        '200':
+          description: PDF parsed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  parse_result:
+                    type: string
+                    description: JSON-encoded DoclingDocument
+        '400':
+          description: Invalid base64 PDF data
+        '500':
+          description: Parsing failed
+
+  /docling/create-blocks:
+    post:
+      tags:
+        - Internal Services
+      summary: "[Docling Service] Create blocks from parse result (Phase 2)"
+      description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
+        Phase 2 of two-phase PDF processing - create blocks from parse result.<br><br>
+
+        <b>Service:</b> Docling Service<br>
+        <b>Port:</b> 8081<br>
+        <b>Base URL:</b> <code>http://localhost:8081</code><br><br>
+
+        <b>Authentication:</b> Internal only - called by Indexing Service<br><br>
+
+        <b>Note:</b> This endpoint creates content blocks from a previously parsed
+        PDF document. It may involve LLM calls for table processing.
+      operationId: doclingCreateBlocks
+      security: []
+      servers:
+        - url: http://localhost:8081
+          description: Docling Service (Internal)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                parse_result:
+                  type: string
+                  description: JSON-encoded DoclingDocument from /parse-pdf
+                page_number:
+                  type: integer
+                  description: Optional - process specific page only
+              required:
+                - parse_result
+      responses:
+        '200':
+          description: Blocks created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  block_containers:
+                    type: object
+                    description: Extracted content blocks
+        '400':
+          description: Invalid parse_result data
+        '500':
+          description: Block creation failed
