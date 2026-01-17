@@ -370,6 +370,7 @@ const statusIcons: Record<string, React.ComponentProps<typeof IconifyIcon>['icon
   EMPTY: fileAlertIcon,
   ENABLE_MULTIMODAL_MODELS: alertCircleOutlineIcon,
   QUEUED: progressClockIcon,
+  CONNECTOR_DISABLED: closeCircleIcon,
 };
 
 // Helper function to format labels
@@ -460,6 +461,7 @@ export default function KnowledgeBaseSideBar({
       EMPTY: theme.palette.grey[500],
       ENABLE_MULTIMODAL_MODELS: theme.palette.info.main,
       QUEUED: theme.palette.info.main,
+      CONNECTOR_DISABLED: theme.palette.warning.main,
     }),
     [
       theme.palette.grey,
@@ -1367,6 +1369,7 @@ export default function KnowledgeBaseSideBar({
               'EMPTY',
               'ENABLE_MULTIMODAL_MODELS',
               'QUEUED',
+              'CONNECTOR_DISABLED',
             ].map((status) => {
               const isChecked = (localFilters.indexingStatus || []).includes(status);
 
@@ -1389,7 +1392,7 @@ export default function KnowledgeBaseSideBar({
                         width={16}
                         height={16}
                       />
-                      {status === 'AUTO_INDEX_OFF' ? 'Manual Sync' : formatLabel(status)}
+                      {status === 'AUTO_INDEX_OFF' ? 'Manual Sync' : status === 'CONNECTOR_DISABLED' ? 'Connector Disabled' : formatLabel(status)}
                     </Box>
                   }
                 />

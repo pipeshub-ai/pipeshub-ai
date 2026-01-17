@@ -213,7 +213,8 @@ record_schema = {
                     "AUTO_INDEX_OFF",
                     "EMPTY",
                     "ENABLE_MULTIMODAL_MODELS",
-                    "QUEUED"
+                    "QUEUED",
+                    "CONNECTOR_DISABLED"
                 ],
             },
             "extractionStatus": {

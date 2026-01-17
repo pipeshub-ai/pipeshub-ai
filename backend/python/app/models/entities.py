@@ -65,6 +65,7 @@ class IndexingStatus(str, Enum):
     EMPTY = "EMPTY"
     ENABLE_MULTIMODAL_MODELS = "ENABLE_MULTIMODAL_MODELS"
     QUEUED = "QUEUED"
+    CONNECTOR_DISABLED = "CONNECTOR_DISABLED"
 
 
 class TicketPriority(str, Enum):

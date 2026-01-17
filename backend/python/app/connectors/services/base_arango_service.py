@@ -595,6 +595,7 @@ class BaseArangoService:
                     EMPTY: LENGTH(records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
                     QUEUED: LENGTH(records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
                     PAUSED: LENGTH(records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
+                    CONNECTOR_DISABLED: LENGTH(records[* FILTER CURRENT.indexingStatus == "CONNECTOR_DISABLED"]),
                 }
             }
 
@@ -617,6 +618,7 @@ class BaseArangoService:
                             EMPTY: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
                             QUEUED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
                             PAUSED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
+                            CONNECTOR_DISABLED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "CONNECTOR_DISABLED"]),
                         }
                     }
             )
@@ -2408,6 +2410,22 @@ class BaseArangoService:
                         "code": 403,
                         "reason": f"Insufficient permissions. User role: {user_role}. Required: OWNER, WRITER, READER"
                     }
+
+                # Check if connector is enabled before allowing reindex
+                if connector_id:
+                    connector_instance = await self.get_document(connector_id, CollectionNames.APPS.value)
+                    if not connector_instance:
+                        return {
+                            "success": False,
+                            "code": 404,
+                            "reason": f"Connector not found: {connector_id}"
+                        }
+                    if not connector_instance.get("isActive", False):
+                        return {
+                            "success": False,
+                            "code": 400,
+                            "reason": f"Cannot reindex: connector '{connector_instance.get('name', connector_name)}' is currently disabled. Please enable the connector first."
+                        }
 
                 connector_type = connector_name
             else:
