@@ -613,7 +613,7 @@ class DriveChangeHandler:
                 "lastSyncTimestamp": get_epoch_timestamp_in_ms(),
                 "isDeleted": existing_record.get("isDeleted", False),
                 "virtualRecordId": existing_record.get("virtualRecordId", None),
-                "indexingStatus": existing_record.get("indexingStatus", "NOT_STARTED"),
+                "indexingStatus": existing_record.get("indexingStatus", "QUEUED"),
                 "extractionStatus": existing_record.get("extractionStatus", "NOT_STARTED"),
                 "lastIndexTimestamp": existing_record.get("lastIndexTimestamp", None),
                 "lastExtractionTimestamp": existing_record.get("lastExtractionTimestamp", None),

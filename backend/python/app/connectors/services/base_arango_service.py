@@ -37,6 +37,7 @@ from app.models.entities import (
     AppUserGroup,
     CommentRecord,
     FileRecord,
+    IndexingStatus,
     MailRecord,
     Record,
     RecordGroup,
@@ -2423,6 +2424,10 @@ class BaseArangoService:
 
             # Determine if we should use batch reindex (depth > 0)
             use_batch_reindex = depth != 0
+
+            # Reset indexing status to QUEUED before reindexing
+            # This ensures the record will be properly queued and re-indexed
+            await self._reset_indexing_status_to_queued(record_id)
 
             # Create and publish reindex event
             try:
@@ -8531,6 +8536,37 @@ class BaseArangoService:
 
         except Exception as e:
             self.logger.error(f"❌ Failed to publish {event_type} event: {str(e)}")
+
+    async def _reset_indexing_status_to_queued(self, record_id: str) -> None:
+        """
+        Reset indexing status to QUEUED before sending update/reindex events.
+        Only resets if status is not already QUEUED or EMPTY.
+        """
+        try:
+            # Get the record
+            record = await self.get_document(record_id, CollectionNames.RECORDS.value)
+            if not record:
+                self.logger.warning(f"Record {record_id} not found for status reset")
+                return
+
+            current_status = record.get("indexingStatus")
+
+            # Only reset if not already QUEUED or EMPTY
+            if current_status in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
+                self.logger.debug(f"Record {record_id} already has status {current_status}, skipping reset")
+                return
+
+            # Update indexing status to QUEUED
+            doc = dict(record)
+            doc.update({
+                "indexingStatus": IndexingStatus.QUEUED.value,
+            })
+
+            await self.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+            self.logger.debug(f"✅ Reset record {record_id} status from {current_status} to QUEUED")
+        except Exception as e:
+            # Log but don't fail the main operation if status update fails
+            self.logger.error(f"❌ Failed to reset record {record_id} to QUEUED: {str(e)}")
 
     def _validation_error(self, code: int, reason: str) -> Dict:
         """Helper to create validation error response"""
