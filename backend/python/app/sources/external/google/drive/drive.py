@@ -42,18 +42,12 @@ class GoogleDriveDataSource:
         request = self.client.operations().get(**kwargs) # type: ignore
         return request.execute()
 
-    async def about_get(self) -> Dict[str, Any]:
-        """Google Drive API: Gets information about the user, the user's Drive, and system capabilities. For more information, see [Return user info](https://developers.google.com/workspace/drive/api/guides/user-info). Required: The `fields` parameter must be set. To return the exact fields you need, see [Return specific fields](https://developers.google.com/workspace/drive/api/guides/fields-parameter).
-
-        HTTP GET about
-
-        Returns:
-            Dict[str, Any]: API response
-        """
+    async def about_get(self, fields: Optional[str] = None) -> Dict[str, Any]:
         kwargs = {}
-        # No parameters for this method
-
-        request = self.client.about().get(**kwargs) # type: ignore
+        if fields is None:
+            fields = 'user(displayName,emailAddress,permissionId),storageQuota'
+        kwargs['fields'] = fields
+        request = self.client.about().get(**kwargs)
         return request.execute()
 
     async def apps_get(
@@ -154,7 +148,8 @@ class GoogleDriveDataSource:
         supportsTeamDrives: Optional[bool] = None,
         teamDriveId: Optional[str] = None,
         includePermissionsForView: Optional[str] = None,
-        includeLabels: Optional[str] = None
+        includeLabels: Optional[str] = None,
+        fields: Optional[str] = None
     ) -> Dict[str, Any]:
         """Google Drive API: Lists the changes for a user or shared drive. For more information, see [Retrieve changes](https://developers.google.com/workspace/drive/api/guides/manage-changes).
 
@@ -175,6 +170,7 @@ class GoogleDriveDataSource:
             teamDriveId (str, optional): Deprecated: Use `driveId` instead.
             includePermissionsForView (str, optional): Specifies which additional view's permissions to include in the response. Only 'published' is supported.
             includeLabels (str, optional): A comma-separated list of IDs of labels to include in the `labelInfo` part of the response.
+            fields (str, optional): Selector specifying which fields to include in a partial response.
 
         Returns:
             Dict[str, Any]: API response
@@ -208,6 +204,8 @@ class GoogleDriveDataSource:
             kwargs['includePermissionsForView'] = includePermissionsForView
         if includeLabels is not None:
             kwargs['includeLabels'] = includeLabels
+        if fields is not None:
+            kwargs['fields'] = fields
 
         request = self.client.changes().list(**kwargs) # type: ignore
         return request.execute()
@@ -1007,7 +1005,8 @@ class GoogleDriveDataSource:
         supportsTeamDrives: Optional[bool] = None,
         teamDriveId: Optional[str] = None,
         includePermissionsForView: Optional[str] = None,
-        includeLabels: Optional[str] = None
+        includeLabels: Optional[str] = None,
+        fields: Optional[str] = None
     ) -> Dict[str, Any]:
         """Google Drive API:  Lists the user's files. This method accepts the `q` parameter, which is a search query combining one or more search terms. For more information, see the [Search for files & folders](/workspace/drive/api/guides/search-files) guide. *Note:* This method returns *all* files by default, including trashed files. If you don't want trashed files to appear in the list, use the `trashed=false` query parameter to remove trashed files from the results.
 
@@ -1029,10 +1028,12 @@ class GoogleDriveDataSource:
             teamDriveId (str, optional): Deprecated: Use `driveId` instead.
             includePermissionsForView (str, optional): Specifies which additional view's permissions to include in the response. Only 'published' is supported.
             includeLabels (str, optional): A comma-separated list of IDs of labels to include in the `labelInfo` part of the response.
+            fields (str, optional): Specifies which fields to include in a partial response. See the [Partial responses](https://developers.google.com/drive/api/guides/performance#partial) guide for more information.
 
         Returns:
             Dict[str, Any]: API response
         """
+
         kwargs = {}
         if corpora is not None:
             kwargs['corpora'] = corpora
@@ -1064,6 +1065,8 @@ class GoogleDriveDataSource:
             kwargs['includePermissionsForView'] = includePermissionsForView
         if includeLabels is not None:
             kwargs['includeLabels'] = includeLabels
+        if fields is not None:
+            kwargs['fields'] = fields
 
         request = self.client.files().list(**kwargs) # type: ignore
         return request.execute()
@@ -1417,7 +1420,8 @@ class GoogleDriveDataSource:
         supportsAllDrives: Optional[bool] = None,
         supportsTeamDrives: Optional[bool] = None,
         useDomainAdminAccess: Optional[bool] = None,
-        includePermissionsForView: Optional[str] = None
+        includePermissionsForView: Optional[str] = None,
+        fields: Optional[str] = None
     ) -> Dict[str, Any]:
         """Google Drive API: Lists a file's or shared drive's permissions.
 
@@ -1431,6 +1435,7 @@ class GoogleDriveDataSource:
             supportsTeamDrives (bool, optional): Deprecated: Use `supportsAllDrives` instead.
             useDomainAdminAccess (bool, optional): Issue the request as a domain administrator; if set to true, then the requester will be granted access if the file ID parameter refers to a shared drive and the requester is an administrator of the domain to which the shared drive belongs.
             includePermissionsForView (str, optional): Specifies which additional view's permissions to include in the response. Only 'published' is supported.
+            fields (str, optional): Selector specifying which fields to include in a partial response. Use this to include emailAddress, displayName, etc. Example: "permissions(id, displayName, type, role, domain, emailAddress, deleted)"
 
         Returns:
             Dict[str, Any]: API response
@@ -1450,6 +1455,8 @@ class GoogleDriveDataSource:
             kwargs['useDomainAdminAccess'] = useDomainAdminAccess
         if includePermissionsForView is not None:
             kwargs['includePermissionsForView'] = includePermissionsForView
+        if fields is not None:
+            kwargs['fields'] = fields
 
         request = self.client.permissions().list(**kwargs) # type: ignore
         return request.execute()

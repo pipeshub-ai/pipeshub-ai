@@ -2,7 +2,6 @@ import type { NavSectionProps } from 'src/components/nav-section';
 import type { Theme, SxProps, Breakpoint } from '@mui/material/styles';
 
 import { useNavigate } from 'react-router';
-import { useState, useEffect } from 'react';
 import githubIcon from '@iconify-icons/mdi/github';
 
 import Box from '@mui/material/Box';
@@ -17,9 +16,8 @@ import { useAdmin } from 'src/context/AdminContext';
 import { Iconify } from 'src/components/iconify';
 import { useSettingsContext } from 'src/components/settings';
 
-import { getOrgLogo, getOrgIdFromToken } from 'src/sections/accountdetails/utils';
-
 import { useAuthContext } from 'src/auth/hooks';
+import { useWhiteLabel } from 'src/context/WhiteLabelContext';
 
 import { Main } from './main';
 import { NavMobile } from './nav-mobile';
@@ -33,8 +31,8 @@ import { HeaderSection } from '../core/header-section';
 import { StyledDivider, useNavColorVars } from './styles';
 import { AccountDrawer } from '../components/account-drawer';
 import { getDashboardNavData } from '../config-nav-dashboard';
-import {ThemeToggleButton } from '../components/theme-toggle-button';
-   
+import { ThemeToggleButton } from '../components/theme-toggle-button';
+
 // ----------------------------------------------------------------------
 
 export type DashboardLayoutProps = {
@@ -67,26 +65,7 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
   const isNavMini = settings.navLayout === 'mini';
   const isNavHorizontal = settings.navLayout === 'horizontal';
   const isNavVertical = isNavMini || settings.navLayout === 'vertical';
-  const [customLogo, setCustomLogo] = useState<string | null>('');
-  const isBusiness =
-    user?.accountType === 'business' ||
-    user?.accountType === 'organization' ||
-    user?.role === 'business';
-  useEffect(() => {
-    const fetchLogo = async () => {
-      try {
-        const orgId = await getOrgIdFromToken();
-        if (isBusiness) {
-          const logoUrl = await getOrgLogo(orgId);
-          setCustomLogo(logoUrl);
-        }
-      } catch (err) {
-        console.error(err, 'error in fetching logo');
-      }
-    };
-
-    fetchLogo();
-  }, [isBusiness]);
+  const { logo, isWhiteLabeled, loading: whiteLabelLoading } = useWhiteLabel();
 
   return (
     <LayoutSection
@@ -108,8 +87,8 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
                   [theme.breakpoints.up(layoutQuery)]: {
                     height: 'var(--layout-nav-horizontal-height)',
                   },
-                   borderBottom: `1px solid ${theme.palette.divider}`,
-                boxShadow: theme.shadows[1],
+                  borderBottom: `1px solid ${theme.palette.divider}`,
+                  boxShadow: theme.shadows[1],
                 }),
               },
             },
@@ -143,56 +122,45 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
                   cssVars={navColorVars.section}
                 />
                 {/* -- Logo -- */}
-                {isNavHorizontal && customLogo ? (
-                  <Box
-                    onClick={() => navigate('/')}
-                    sx={{
-                      display: 'none',
-                      [theme.breakpoints.up(layoutQuery)]: {
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                      },
-                      width: 60,
-                      height: 30,
-                      cursor: 'pointer',
-                      position: 'relative',
-                    }}
-                  >
+                {isNavHorizontal &&
+                  (whiteLabelLoading && isWhiteLabeled ? (
+                    // Show placeholder while loading (prevents flashing)
                     <Box
-                      component="img"
-                      src={customLogo}
-                      alt="Logo"
                       sx={{
-                        maxWidth: '100%',
-                        maxHeight: '100%',
-                        width: 'auto',
-                        height: 'auto',
-                        objectFit: 'contain',
-                        position: 'absolute',
-                        top: '50%',
-                        left: '50%',
-                        transform: 'translate(-50%, -50%)',
+                        display: 'none',
+                        [theme.breakpoints.up(layoutQuery)]: {
+                          display: 'inline-flex',
+                        },
+                        width: 40,
+                        minWidth: 40,
+                        height: 40,
+                        minHeight: 40,
+                        flexShrink: 0,
+                        opacity: 0,
                       }}
                     />
-                  </Box>
-                ) : (
-                  <Box
-                    component="img"
-                    onClick={() => navigate('/')}
-                    src="/logo/logo.svg"
-                    alt="Logo"
-                    sx={{
-                      display: 'none',
-                      [theme.breakpoints.up(layoutQuery)]: {
-                        display: 'inline-flex',
-                      },
-                      width: 40,
-                      height: 40,
-                      cursor: 'pointer',
-                    }}
-                  />
-                )}
+                  ) : (
+                    <Box
+                      component="img"
+                      onClick={() => navigate('/')}
+                      key={isWhiteLabeled && logo ? logo : 'default'}
+                      src={isWhiteLabeled && logo ? logo : '/logo/logo.svg'}
+                      alt={isWhiteLabeled && logo ? 'Organization Logo' : 'Logo'}
+                      sx={{
+                        display: 'none',
+                        [theme.breakpoints.up(layoutQuery)]: {
+                          display: 'inline-flex',
+                        },
+                        width: 44,
+                        minWidth: 44,
+                        height: 44,
+                        minHeight: 44,
+                        flexShrink: 0,
+                        objectFit: 'contain',
+                        cursor: 'pointer',
+                      }}
+                    />
+                  ))}
                 {/* -- Divider -- */}
                 {isNavHorizontal && (
                   <StyledDivider

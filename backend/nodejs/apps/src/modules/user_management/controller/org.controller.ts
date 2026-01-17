@@ -62,6 +62,89 @@ export class OrgController {
     return domain;
   }
 
+  /**
+   * Validates SVG content for dangerous elements and attributes
+   * Throws an error if scripts, event handlers, or other dangerous content is found
+   * Does not modify the buffer - only validates
+   * @param svgBuffer - The SVG file buffer to validate
+   * @throws BadRequestError if dangerous content is detected
+   */
+  private validateSVG(svgBuffer: Buffer): void {
+    try {
+      // Input length limit to prevent DoS attacks
+      const MAX_SVG_SIZE = 10 * 1024 * 1024; // 10MB max
+      if (svgBuffer.length > MAX_SVG_SIZE) {
+        throw new BadRequestError('SVG file is too large (max 10MB)');
+      }
+
+      const svgString = svgBuffer.toString('utf-8');
+      
+      // Limit string length to prevent ReDoS - only check first portion if too long
+      const maxCheckLength = 1000000; // 1MB in characters for validation
+      const checkString = svgString.length > maxCheckLength 
+        ? svgString.substring(0, maxCheckLength) 
+        : svgString;
+      
+      // Use limited quantifiers [^>]{0,10000} to prevent ReDoS attacks
+      // Check for dangerous patterns - throw error if found
+      
+      // Check for script tags (opening, closing, or incomplete)
+      const scriptTagPattern = /<[\s]*script[^>]{0,10000}>/gi;
+      const scriptClosingPattern = /<\/[\s]*script[^>]{0,10000}>/gi;
+      if (scriptTagPattern.test(checkString) || scriptClosingPattern.test(checkString)) {
+        throw new BadRequestError(
+          'SVG file contains script tags which are not allowed for security reasons',
+        );
+      }
+
+      // Check for event handlers (onclick, onload, onerror, etc.)
+      const eventHandlerPattern = /\s+on\w+\s*=\s*["'][^"'>]{0,1000}["']?/gi;
+      if (eventHandlerPattern.test(checkString)) {
+        throw new BadRequestError(
+          'SVG file contains event handlers (onclick, onload, etc.) which are not allowed for security reasons',
+        );
+      }
+
+      // Check for javascript: protocols
+      const javascriptProtocolPattern = /javascript:/gi;
+      if (javascriptProtocolPattern.test(checkString)) {
+        throw new BadRequestError(
+          'SVG file contains javascript: protocols which are not allowed for security reasons',
+        );
+      }
+
+      // Check for data: protocols with HTML/text
+      const dataHtmlPattern = /data:\s*text\/html/gi;
+      if (dataHtmlPattern.test(checkString)) {
+        throw new BadRequestError(
+          'SVG file contains data:text/html protocols which are not allowed for security reasons',
+        );
+      }
+
+      // Check for iframe, object, embed tags
+      const iframePattern = /<[\s]*iframe[^>]{0,10000}>/gi;
+      const objectPattern = /<[\s]*object[^>]{0,10000}>/gi;
+      const embedPattern = /<[\s]*embed[^>]{0,10000}>/gi;
+      if (
+        iframePattern.test(checkString) ||
+        objectPattern.test(checkString) ||
+        embedPattern.test(checkString)
+      ) {
+        throw new BadRequestError(
+          'SVG file contains iframe, object, or embed tags which are not allowed for security reasons',
+        );
+      }
+
+      // Validation passed - buffer is safe and unmodified
+    } catch (error) {
+      this.logger.error('SVG validation failed', { error });
+      if (error instanceof BadRequestError) {
+        throw error;
+      }
+      throw new BadRequestError('Invalid SVG file format');
+    }
+  }
+
   async checkOrgExistence(res: Response): Promise<void> {
     const count = await Org.countDocuments();
 
@@ -385,30 +468,52 @@ export class OrgController {
         throw new BadRequestError('Organisation logo file is required');
       }
 
-      let quality = 100;
-      let compressedImageBuffer = await sharp(logoFile.buffer)
-        .jpeg({ quality })
-        .toBuffer();
+      const isSvg = logoFile.mimetype === 'image/svg+xml';
+      let processedBuffer: Buffer;
+      let mimeType: string;
 
-      while (compressedImageBuffer.length > 100 * 1024 && quality > 10) {
-        quality -= 10;
-        compressedImageBuffer = await sharp(logoFile.buffer)
-          .jpeg({ quality })
-          .toBuffer();
+      if (isSvg) {
+        // For SVG files, validate for dangerous content and reject if found
+        // This preserves the original buffer without corruption
+        this.validateSVG(logoFile.buffer);
+        // Use original buffer if validation passes - no modification
+        processedBuffer = logoFile.buffer;
+        // Always set mimeType to a safe, hardcoded value (not user-controlled)
+        mimeType = 'image/svg+xml';
+      } else {
+        // For raster images (PNG, JPEG, etc.), convert to JPEG for compression
+        const MAX_LOGO_SIZE_BYTES = 100 * 1024;
+        const INITIAL_JPEG_QUALITY = 100;
+        const MIN_JPEG_QUALITY = 10;
+        const JPEG_QUALITY_STEP = 10;
+
+        let quality = INITIAL_JPEG_QUALITY + JPEG_QUALITY_STEP;
+
+        do {
+          quality -= JPEG_QUALITY_STEP;
+          processedBuffer = await sharp(logoFile.buffer)
+            .jpeg({ quality })
+            .toBuffer();
+        } while (processedBuffer.length > MAX_LOGO_SIZE_BYTES && quality > MIN_JPEG_QUALITY);
+
+        mimeType = 'image/jpeg';
       }
 
-      const compressedPic = compressedImageBuffer.toString('base64');
-      const compressedPicMimeType = 'image/jpeg';
+      const base64Logo = processedBuffer.toString('base64');
       await OrgLogos.findOneAndUpdate(
         {
           orgId,
         },
-        { orgId, logo: compressedPic, mimeType: compressedPicMimeType },
+        { orgId, logo: base64Logo, mimeType },
         { new: true, upsert: true },
       );
 
-      res.setHeader('Content-Type', compressedPicMimeType);
-      res.status(201).send(compressedImageBuffer);
+      // Return JSON response instead of raw buffer - prevents XSS vulnerability
+      // The frontend doesn't use the response and fetches the logo separately via getOrgLogo()
+      res.status(201).json({
+        message: 'Logo updated successfully',
+        mimeType: mimeType,
+      });
       return;
     } catch (error) {
       next(error);

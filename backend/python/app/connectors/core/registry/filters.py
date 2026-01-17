@@ -233,6 +233,7 @@ class SyncFilterKey(str, Enum):
     FILE_EXTENSIONS = "file_extensions"
     MAX_FILE_SIZE = "max_file_size"
     PAGE_IDS = "page_ids"
+    DRIVE_IDS = "drive_ids"
     PAGE_NAMES = "page_names"
     BLOGPOST_IDS = "blogpost_ids"
 
@@ -281,6 +282,7 @@ class IndexingFilterKey(str, Enum):
     ISSUE_ATTACHMENTS = "issue_attachments"
 
     SHARED = "shared"
+    SHARED_WITH_ME = "shared_with_me"
 
 
 # Type to operators mapping (for validation and UI)

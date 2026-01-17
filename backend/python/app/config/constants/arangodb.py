@@ -30,6 +30,7 @@ class DepartmentNames(Enum):
 
 class Connectors(Enum):
     GOOGLE_DRIVE = "DRIVE"
+    GOOGLE_DRIVE_WORKSPACE = "DRIVE WORKSPACE"
     GOOGLE_MAIL = "GMAIL"
     GOOGLE_CALENDAR = "CALENDAR"
 
@@ -113,6 +114,7 @@ class CollectionNames(Enum):
     WEBPAGES = "webpages"
     COMMENTS = "comments"
     TICKETS = "tickets"
+    TICKET_RELATIONS = "ticketRelations"  # Standard ticket relationship edges
 
     # Users and groups
     PEOPLE = "people"
@@ -261,6 +263,35 @@ class RecordRelations(Enum):
     PARENT_CHILD = "PARENT_CHILD"
     SIBLING = "SIBLING"
     ATTACHMENT = "ATTACHMENT"
+    DUPLICATE = "DUPLICATE"
+    OTHERS = "OTHERS"
+    LINKED_TO = "LINKED_TO"  # For ticket linking relationships
+
+
+class LinkRelationshipTag(str, Enum):
+    """Standard relationship tags for LINKED_TO edges in ticket relationships"""
+    RELATES_TO = "RELATES_TO"
+    BLOCKS = "BLOCKS"
+    BLOCKED_BY = "BLOCKED_BY"
+    DUPLICATES = "DUPLICATES"
+    DUPLICATED_BY = "DUPLICATED_BY"
+    DEPENDS_ON = "DEPENDS_ON"
+    REQUIRED_BY = "REQUIRED_BY"
+    CLONES = "CLONES"
+    CLONED_FROM = "CLONED_FROM"
+    PARENT = "PARENT"
+    CHILD = "CHILD"
+    RELATED = "RELATED"
+    SPLIT_FROM = "SPLIT_FROM"
+    MERGED_INTO = "MERGED_INTO"
+    UNKNOWN = "UNKNOWN"
+
+
+class TicketEdgeTypes(Enum):
+    """Standard edge types for ticket relationships"""
+    ASSIGNED_TO = "ASSIGNED_TO"  # Ticket -> User (assignee)
+    REPORTED_BY = "REPORTED_BY"  # Ticket -> User (reporter)
+    CREATED_BY = "CREATED_BY"  # Ticket -> User (creator)
 
 class EventTypes(Enum):
     NEW_RECORD = "newRecord"

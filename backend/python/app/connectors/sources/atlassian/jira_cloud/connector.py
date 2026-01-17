@@ -1,4 +1,4 @@
-﻿"""Jira Cloud Connector Implementation"""
+"""Jira Cloud Connector Implementation"""
 import base64
 import re
 from datetime import datetime, timezone
@@ -652,8 +652,8 @@ async def adf_to_text_with_images(
             redirect_uri="connectors/oauth/callback/Jira",
             scopes=OAuthScopeConfig(
                 personal_sync=[],
-                team_sync=AtlassianScope.get_full_access(),
-                agent=AtlassianScope.get_full_access()
+                team_sync=AtlassianScope.get_jira_read_access(),
+                agent=AtlassianScope.get_jira_read_access()
             ),
             fields=[
                 AuthField(

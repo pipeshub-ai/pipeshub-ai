@@ -6,9 +6,6 @@ from app.connectors.services.event_service import EventService
 from app.connectors.sources.google.gmail.services.event_service.event_service import (
     GmailEventService,
 )
-from app.connectors.sources.google.google_drive.services.event_service.event_service import (
-    GoogleDriveEventService,
-)
 from app.containers.connector import ConnectorAppContainer
 from app.containers.indexing import IndexingAppContainer
 from app.containers.query import QueryAppContainer
@@ -221,23 +218,6 @@ class KafkaUtils:
 
                 connector_id = payload.get("connectorId")
                 sync_tasks_registry = getattr(app_container, 'sync_tasks_registry', {})
-
-                if event_type == "connectorPublicUrlChanged":
-                    logger.info(f"Processing connectorPublicUrlChanged event: {payload}")
-                    drive_sync_tasks = sync_tasks_registry.get(connector_id)
-                    if not drive_sync_tasks:
-                        logger.error("Drive sync tasks not found in registry")
-                        return False
-
-                    # Handle drive sync events
-                    google_drive_event_service = GoogleDriveEventService(
-                        logger=logger,
-                        sync_tasks=drive_sync_tasks,
-                        arango_service=arango_service,
-                    )
-                    logger.info(f"Processing sync event: {event_type} for GOOGLE DRIVE")
-                    return await google_drive_event_service.process_event(event_type, payload)
-
                 if not connector:
                     logger.error("Missing connector in event_type or payload")
                     return False
@@ -265,37 +245,6 @@ class KafkaUtils:
                     )
                     logger.info(f"Processing sync event: {event_type} for GMAIL")
                     return await gmail_event_service.process_event(event_type, payload)
-
-                # Google Drive connector events
-                elif connector_normalized == Connectors.GOOGLE_DRIVE.value.lower():
-                    if not connector_id:
-                        logger.error(
-                            f"Missing connectorId in sync event payload for connector {connector}. Payload: {payload}"
-                        )
-                        return False
-
-                    drive_sync_tasks = (
-                        sync_tasks_registry.get(connector_id)
-                    )
-                    if not drive_sync_tasks:
-                        logger.error(
-                            f"Drive sync tasks not found in registry for connector {connector_id}"
-                        )
-                        logger.error(f"Sync tasks registry: {sync_tasks_registry}")
-                        return False
-
-                    logger.info(
-                        f"Drive sync tasks found in registry: {drive_sync_tasks} for connector {connector_id}"
-                    )
-                    # Handle drive sync events
-                    google_drive_event_service = GoogleDriveEventService(
-                        logger=logger,
-                        sync_tasks=drive_sync_tasks,
-                        arango_service=arango_service,
-                    )
-                    logger.info(f"Processing sync event: {event_type} for GOOGLE DRIVE")
-                    return await google_drive_event_service.process_event(event_type, payload)
-
                 else:
                     event_service = EventService(
                         logger=logger,

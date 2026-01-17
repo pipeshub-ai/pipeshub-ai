@@ -5270,20 +5270,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN 1
                 ) > 0
                 FILTER has_permission
-                LET has_children = LENGTH(
+                // Check for children via recordRelations PARENT_CHILD edges or nested recordGroups
+                LET has_record_children = LENGTH(
                     FOR edge IN recordRelations
                         FILTER edge._from == kb._id
                         FILTER edge.relationshipType == "PARENT_CHILD"
                         LET child = DOCUMENT(edge._to)
                         FILTER child != null AND child.isDeleted != true
                         RETURN 1
-                ) > 0 OR LENGTH(
-                    FOR perm_edge IN inheritPermissions
-                        FILTER perm_edge._to == kb._id
-                        LET record = DOCUMENT(perm_edge._from)
-                        FILTER record != null AND record.isDeleted != true
+                ) > 0
+                LET has_nested_rgs = LENGTH(
+                    FOR child_rg IN recordGroups
+                        FILTER child_rg.parentId == kb._key AND child_rg.isDeleted != true
                         RETURN 1
                 ) > 0
+                LET has_children = has_record_children OR has_nested_rgs
                 RETURN {
                     id: kb._key,
                     name: kb.groupName,
@@ -5434,11 +5435,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR rg IN recordGroups
                 FILTER rg.connectorId == @app_id AND rg.orgId == @org_id AND rg.isDeleted != true AND rg.parentId == null
                 LET has_child_rgs = LENGTH(FOR child_rg IN recordGroups FILTER child_rg.parentId == rg._key AND child_rg.isDeleted != true RETURN 1) > 0
+                // Use recordRelations with PARENT_CHILD to check for direct child records
                 LET has_records = LENGTH(
-                    FOR perm_edge IN inheritPermissions FILTER perm_edge._to == rg._id
-                    LET record = DOCUMENT(perm_edge._from) FILTER record != null AND record.isDeleted != true
-                    LET has_parent = LENGTH(FOR pe IN recordRelations FILTER pe._to == record._id AND pe.relationshipType == "PARENT_CHILD" RETURN 1) > 0
-                    FILTER has_parent == false RETURN 1
+                    FOR edge IN recordRelations
+                        FILTER edge._from == rg._id AND edge.relationshipType == "PARENT_CHILD"
+                        LET record = DOCUMENT(edge._to)
+                        FILTER record != null AND record.isDeleted != true
+                        RETURN 1
                 ) > 0
                 RETURN {
                     id: rg._key, name: rg.groupName, nodeType: "recordGroup",
@@ -5465,38 +5468,50 @@ class ArangoHTTPProvider(IGraphDBProvider):
         LET nested_rgs = (
             FOR child_rg IN recordGroups
                 FILTER child_rg.parentId == rg._key AND child_rg.isDeleted != true AND child_rg.orgId == @org_id
-                LET has_children = LENGTH(FOR sub_rg IN recordGroups FILTER sub_rg.parentId == child_rg._key AND sub_rg.isDeleted != true RETURN 1) > 0 OR
-                    LENGTH(FOR pe IN inheritPermissions FILTER pe._to == child_rg._id LET r = DOCUMENT(pe._from) FILTER r != null AND r.isDeleted != true
-                        LET hp = LENGTH(FOR pre IN recordRelations FILTER pre._to == r._id AND pre.relationshipType == "PARENT_CHILD" RETURN 1) > 0 FILTER hp == false RETURN 1) > 0
+                LET has_child_rgs = LENGTH(FOR sub_rg IN recordGroups FILTER sub_rg.parentId == child_rg._key AND sub_rg.isDeleted != true RETURN 1) > 0
+                LET has_records = LENGTH(
+                    FOR edge IN recordRelations
+                        FILTER edge._from == child_rg._id AND edge.relationshipType == "PARENT_CHILD"
+                        LET r = DOCUMENT(edge._to)
+                        FILTER r != null AND r.isDeleted != true
+                        RETURN 1
+                ) > 0
                 RETURN {{
                     id: child_rg._key, name: child_rg.groupName, nodeType: "recordGroup",
                     parentId: @rg_doc_id, source: "{source}",
-                    connector: child_rg.connectorName, recordType: null, indexingStatus: null,
+                    connector: child_rg.connectorName,
+                    connectorId: "{source}" == "CONNECTOR" ? child_rg.connectorId : null,
+                    kbId: "{source}" == "KB" ? PARSE_IDENTIFIER(@rg_doc_id).key : null,
+                    recordType: null, indexingStatus: null,
                     createdAt: child_rg.createdAtTimestamp, updatedAt: child_rg.updatedAtTimestamp,
                     sizeInBytes: null, mimeType: null, extension: null,
-                    webUrl: child_rg.webUrl, hasChildren: has_children
+                    webUrl: child_rg.webUrl, hasChildren: has_child_rgs OR has_records
                 }}
         )
 
+        // Use recordRelations with PARENT_CHILD type to find direct children of the record group
         LET records = (
-            FOR perm_edge IN inheritPermissions FILTER perm_edge._to == @rg_doc_id
-            LET record = DOCUMENT(perm_edge._from)
-            FILTER record != null AND record.isDeleted != true AND record.orgId == @org_id
-            LET has_parent_rec = LENGTH(FOR pre IN recordRelations FILTER pre._to == record._id AND pre.relationshipType == "PARENT_CHILD" RETURN 1) > 0
-            FILTER has_parent_rec == false
-            LET file_info = FIRST(FOR fe IN isOfType FILTER fe._from == record._id LET f = DOCUMENT(fe._to) RETURN f)
-            LET is_folder = file_info != null AND file_info.isFile == false
-            LET has_children = LENGTH(FOR ce IN recordRelations FILTER ce._from == record._id AND ce.relationshipType == "PARENT_CHILD" LET c = DOCUMENT(ce._to) FILTER c != null AND c.isDeleted != true RETURN 1) > 0
-            RETURN {{
-                id: record._key, name: record.recordName, nodeType: is_folder ? "folder" : "record",
-                parentId: @rg_doc_id,
-                source: "{source}", connector: record.connectorName,
-                recordType: record.recordType, indexingStatus: record.indexingStatus,
-                createdAt: record.createdAtTimestamp, updatedAt: record.updatedAtTimestamp,
-                sizeInBytes: file_info.fileSizeInBytes, mimeType: file_info.mimeType,
-                extension: file_info.extension, webUrl: record.webUrl,
-                hasChildren: has_children
-            }}
+            FOR edge IN recordRelations
+                FILTER edge._from == @rg_doc_id AND edge.relationshipType == "PARENT_CHILD"
+                LET record = DOCUMENT(edge._to)
+                FILTER record != null AND record.isDeleted != true AND record.orgId == @org_id
+                LET file_info = FIRST(FOR fe IN isOfType FILTER fe._from == record._id LET f = DOCUMENT(fe._to) RETURN f)
+                LET is_folder = file_info != null AND file_info.isFile == false
+                LET has_children = LENGTH(FOR ce IN recordRelations FILTER ce._from == record._id AND ce.relationshipType == "PARENT_CHILD" LET c = DOCUMENT(ce._to) FILTER c != null AND c.isDeleted != true RETURN 1) > 0
+                LET record_connector_doc = DOCUMENT(CONCAT("recordGroups/", record.connectorId)) || DOCUMENT(CONCAT("apps/", record.connectorId))
+                RETURN {{
+                    id: record._key, name: record.recordName, nodeType: is_folder ? "folder" : "record",
+                    parentId: @rg_doc_id,
+                    source: "{source}",
+                    connector: record_connector_doc ? record_connector_doc.connectorName : null,
+                    connectorId: "{source}" == "CONNECTOR" ? record.connectorId : null,
+                    kbId: "{source}" == "KB" ? record.connectorId : null,
+                    recordType: record.recordType, indexingStatus: record.indexingStatus,
+                    createdAt: record.createdAtTimestamp, updatedAt: record.updatedAtTimestamp,
+                    sizeInBytes: file_info.fileSizeInBytes, mimeType: file_info.mimeType,
+                    extension: file_info.extension, webUrl: record.webUrl,
+                    hasChildren: has_children
+                }}
         )
 
         LET raw_children = UNION(nested_rgs, records)
@@ -5519,12 +5534,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 LET file_info = FIRST(FOR fe IN isOfType FILTER fe._from == record._id LET f = DOCUMENT(fe._to) RETURN f)
                 LET is_folder = file_info != null AND file_info.isFile == false
                 LET has_children = LENGTH(FOR ce IN recordRelations FILTER ce._from == record._id AND ce.relationshipType == "PARENT_CHILD" LET c = DOCUMENT(ce._to) FILTER c != null AND c.isDeleted != true RETURN 1) > 0
-                LET source = record.connectorName == "KB" ? "KB" : "CONNECTOR"
+                LET record_connector_doc = DOCUMENT(CONCAT("recordGroups/", record.connectorId)) || DOCUMENT(CONCAT("apps/", record.connectorId))
+                LET source = (record_connector_doc != null AND record_connector_doc.connectorName == "KB") ? "KB" : "CONNECTOR"
                 RETURN {
                     id: record._key, name: record.recordName,
                     nodeType: is_folder ? "folder" : "record",
                     parentId: @record_doc_id,
-                    source: source, connector: record.connectorName,
+                    source: source,
+                    connector: record_connector_doc ? record_connector_doc.connectorName : null,
+                    connectorId: source == "CONNECTOR" ? record.connectorId : null,
+                    kbId: source == "KB" ? record.connectorId : null,
                     recordType: record.recordType, indexingStatus: record.indexingStatus,
                     createdAt: record.createdAtTimestamp, updatedAt: record.updatedAtTimestamp,
                     sizeInBytes: file_info.fileSizeInBytes, mimeType: file_info.mimeType,
@@ -5534,6 +5553,197 @@ class ArangoHTTPProvider(IGraphDBProvider):
         )
         """
         return sub_query, {"record_doc_id": record_doc_id}
+
+    async def get_knowledge_hub_recursive_search(
+        self,
+        parent_id: str,
+        parent_type: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        sort_field: str,
+        sort_dir: str,
+        search_query: Optional[str],
+        filter_clause: str,
+        bind_vars: Dict[str, Any],
+        only_containers: bool,
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Search recursively within a parent node and all its descendants.
+        Uses graph traversal to find all nested children.
+        """
+        # Determine the starting node ID
+        if parent_type in ("kb", "recordGroup"):
+            parent_doc_id = f"recordGroups/{parent_id}"
+        elif parent_type in ("folder", "record"):
+            parent_doc_id = f"records/{parent_id}"
+        elif parent_type == "app":
+            parent_doc_id = f"apps/{parent_id}"
+        else:
+            return {"nodes": [], "total": 0}
+
+        # Build search filter for name
+        search_filter = ""
+        if search_query:
+            bind_vars["search_query"] = search_query.lower()
+            search_filter = "FILTER LOWER(node.name) LIKE CONCAT('%', @search_query, '%')"
+
+        # Build recordGroup query based on parent type
+        source_value = "KB" if parent_type == "kb" else "CONNECTOR"
+
+        if parent_type in ("kb", "recordGroup"):
+            bind_vars["parent_id_for_rg"] = parent_id
+            rg_parent_filter = "rg.parentId == @parent_id_for_rg"
+        elif parent_type == "app":
+            bind_vars["parent_id_for_rg"] = parent_id
+            rg_parent_filter = "rg.connectorId == @parent_id_for_rg"
+        else:
+            # For folder/record types, set dummy value (won't be used but required by AQL)
+            bind_vars["parent_id_for_rg"] = parent_id
+            rg_parent_filter = "false"
+
+        query = f"""
+        LET parent = DOCUMENT(@parent_doc_id)
+        FILTER parent != null
+
+        // Traverse recursively from parent to find all descendants (records)
+        LET all_descendants = (
+            FOR v, e, p IN 1..10 OUTBOUND @parent_doc_id recordRelations
+                OPTIONS {{bfs: true}}
+                FILTER e.relationshipType == "PARENT_CHILD"
+                FILTER v.isDeleted != true AND v.orgId == @org_id
+                LET file_info = FIRST(FOR fe IN isOfType FILTER fe._from == v._id LET f = DOCUMENT(fe._to) RETURN f)
+                LET is_folder = file_info != null AND file_info.isFile == false
+                LET has_children = LENGTH(
+                    FOR ce IN recordRelations
+                    FILTER ce._from == v._id AND ce.relationshipType == "PARENT_CHILD"
+                    LET c = DOCUMENT(ce._to)
+                    FILTER c != null AND c.isDeleted != true
+                    RETURN 1
+                ) > 0
+                LET record_connector = DOCUMENT(CONCAT("recordGroups/", v.connectorId)) || DOCUMENT(CONCAT("apps/", v.connectorId))
+                LET source = (record_connector != null AND record_connector.connectorName == "KB") ? "KB" : "CONNECTOR"
+                LET parent_edge = p.edges[-1]
+                RETURN {{
+                    id: v._key,
+                    name: v.recordName || v.groupName,
+                    nodeType: is_folder ? "folder" : "record",
+                    parentId: parent_edge ? PARSE_IDENTIFIER(parent_edge._from).key : null,
+                    source: source,
+                    connector: record_connector ? record_connector.connectorName : null,
+                    connectorId: source == "CONNECTOR" ? v.connectorId : null,
+                    kbId: source == "KB" ? v.connectorId : null,
+                    recordType: v.recordType,
+                    indexingStatus: v.indexingStatus,
+                    createdAt: v.createdAtTimestamp,
+                    updatedAt: v.updatedAtTimestamp,
+                    sizeInBytes: file_info ? file_info.fileSizeInBytes : null,
+                    mimeType: file_info ? file_info.mimeType : null,
+                    extension: file_info ? file_info.extension : null,
+                    webUrl: v.webUrl,
+                    hasChildren: has_children
+                }}
+        )
+
+        // Also include direct child recordGroups for KB/App parents (and recursively their descendants)
+        LET nested_record_groups = (
+            FOR rg IN recordGroups
+                FILTER rg.orgId == @org_id AND rg.isDeleted != true
+                FILTER {rg_parent_filter}
+                // Recursively get all descendants of this record group
+                LET rg_descendants = (
+                    FOR v2, e2, p2 IN 1..10 OUTBOUND rg._id recordRelations
+                        OPTIONS {{bfs: true}}
+                        FILTER e2.relationshipType == "PARENT_CHILD"
+                        FILTER v2.isDeleted != true AND v2.orgId == @org_id
+                        LET file_info2 = FIRST(FOR fe2 IN isOfType FILTER fe2._from == v2._id LET f2 = DOCUMENT(fe2._to) RETURN f2)
+                        LET is_folder2 = file_info2 != null AND file_info2.isFile == false
+                        LET has_children2 = LENGTH(
+                            FOR ce2 IN recordRelations
+                            FILTER ce2._from == v2._id AND ce2.relationshipType == "PARENT_CHILD"
+                            LET c2 = DOCUMENT(ce2._to)
+                            FILTER c2 != null AND c2.isDeleted != true
+                            RETURN 1
+                        ) > 0
+                        LET record_connector2 = DOCUMENT(CONCAT("recordGroups/", v2.connectorId)) || DOCUMENT(CONCAT("apps/", v2.connectorId))
+                        LET source2 = (record_connector2 != null AND record_connector2.connectorName == "KB") ? "KB" : "CONNECTOR"
+                        RETURN {{
+                            id: v2._key,
+                            name: v2.recordName || v2.groupName,
+                            nodeType: is_folder2 ? "folder" : "record",
+                            parentId: PARSE_IDENTIFIER(e2._from).key,
+                            source: source2,
+                            connector: record_connector2 ? record_connector2.connectorName : null,
+                            connectorId: source2 == "CONNECTOR" ? v2.connectorId : null,
+                            kbId: source2 == "KB" ? v2.connectorId : null,
+                            recordType: v2.recordType,
+                            indexingStatus: v2.indexingStatus,
+                            createdAt: v2.createdAtTimestamp,
+                            updatedAt: v2.updatedAtTimestamp,
+                            sizeInBytes: file_info2 ? file_info2.fileSizeInBytes : null,
+                            mimeType: file_info2 ? file_info2.mimeType : null,
+                            extension: file_info2 ? file_info2.extension : null,
+                            webUrl: v2.webUrl,
+                            hasChildren: has_children2
+                        }}
+                )
+                // Return the record group itself plus its descendants
+                LET has_child_rgs = LENGTH(FOR sub_rg IN recordGroups FILTER sub_rg.parentId == rg._key AND sub_rg.isDeleted != true RETURN 1) > 0
+                LET has_records = LENGTH(rg_descendants) > 0
+                LET rg_node = {{
+                    id: rg._key,
+                    name: rg.groupName,
+                    nodeType: "recordGroup",
+                    parentId: @parent_id_for_rg,
+                    source: "{source_value}",
+                    connector: rg.connectorName,
+                    connectorId: "{source_value}" == "CONNECTOR" ? rg.connectorId : null,
+                    kbId: "{source_value}" == "KB" ? @parent_id_for_rg : null,
+                    recordType: null,
+                    indexingStatus: null,
+                    createdAt: rg.createdAtTimestamp,
+                    updatedAt: rg.updatedAtTimestamp,
+                    sizeInBytes: null,
+                    mimeType: null,
+                    extension: null,
+                    webUrl: rg.webUrl,
+                    hasChildren: has_child_rgs OR has_records
+                }}
+                RETURN UNION([rg_node], rg_descendants)
+        )
+
+        LET all_nodes = UNION(all_descendants, FLATTEN(nested_record_groups, 1))
+
+        // Apply search and other filters
+        LET filtered_nodes = (
+            FOR node IN all_nodes
+                {search_filter}
+                FILTER {filter_clause if filter_clause else "true"}
+                FILTER @only_containers == false OR node.hasChildren == true
+                RETURN node
+        )
+
+        LET sorted_nodes = (FOR node IN filtered_nodes SORT node[@sort_field] @sort_dir RETURN node)
+        LET total_count = LENGTH(sorted_nodes)
+        LET paginated_nodes = SLICE(sorted_nodes, @skip, @limit)
+
+        RETURN {{ nodes: paginated_nodes, total: total_count }}
+        """
+
+        all_bind_vars = {
+            "parent_doc_id": parent_doc_id,
+            "org_id": org_id,
+            "skip": skip,
+            "limit": limit,
+            "sort_field": sort_field,
+            "sort_dir": sort_dir,
+            "only_containers": only_containers,
+            **bind_vars,
+        }
+
+        result = await self.http_client.execute_aql(query, bind_vars=all_bind_vars, txn_id=transaction)
+        return result[0] if result else {"nodes": [], "total": 0}
 
     async def get_knowledge_hub_search_nodes(
         self,
@@ -5631,19 +5841,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN 1
                 ) > 0
                 FILTER has_permission
-                LET has_children = LENGTH(
+                // Check for children via recordRelations PARENT_CHILD edges or nested recordGroups
+                LET has_record_children = LENGTH(
                     FOR edge IN recordRelations
                         FILTER edge._from == kb._id AND edge.relationshipType == "PARENT_CHILD"
                         LET child = DOCUMENT(edge._to)
                         FILTER child != null AND child.isDeleted != true
                         RETURN 1
-                ) > 0 OR LENGTH(
-                    FOR perm_edge IN inheritPermissions
-                        FILTER perm_edge._to == kb._id
-                        LET record = DOCUMENT(perm_edge._from)
-                        FILTER record != null AND record.isDeleted != true
+                ) > 0
+                LET has_nested_rgs = LENGTH(
+                    FOR child_rg IN recordGroups
+                        FILTER child_rg.parentId == kb._key AND child_rg.isDeleted != true
                         RETURN 1
                 ) > 0
+                LET has_children = has_record_children OR has_nested_rgs
                 RETURN {{
                     id: kb._key, name: kb.groupName, nodeType: "kb",
                     parentId: null, source: "KB", connector: "KB", recordType: null,
@@ -5671,15 +5882,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
         LET record_nodes = (
             FOR record IN records
                 FILTER record.orgId == @org_id AND record.isDeleted != true
-                LET has_access = record.connectorName == "KB" ? (
+                // Determine if record belongs to KB by checking its connectorId
+                LET connector = DOCUMENT(CONCAT("recordGroups/", record.connectorId)) || DOCUMENT(CONCAT("apps/", record.connectorId))
+                LET is_kb_record = connector != null AND connector.connectorName == "KB"
+                // For KB records, check permission via permission edge to the KB
+                // For connector records, check if connectorId is in user's apps
+                LET has_access = is_kb_record ? (
                     LENGTH(
-                        FOR perm IN inheritPermissions
-                            FILTER perm._from == record._id
-                            LET rg = DOCUMENT(perm._to)
-                            FILTER rg != null
-                            FOR user_perm IN permission
-                                FILTER user_perm._from == CONCAT("users/", @user_key) AND user_perm._to == rg._id
-                                RETURN 1
+                        FOR user_perm IN permission
+                            FILTER user_perm._from == CONCAT("users/", @user_key) AND user_perm._to == CONCAT("recordGroups/", record.connectorId)
+                            RETURN 1
                     ) > 0
                 ) : (record.connectorId IN @user_apps_ids)
                 FILTER has_access
@@ -5695,16 +5907,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER child != null AND child.isDeleted != true
                         RETURN 1
                 ) > 0
-                LET source = record.connectorName == "KB" ? "KB" : "CONNECTOR"
+                LET source = is_kb_record ? "KB" : "CONNECTOR"
                 RETURN {{
                     id: record._key, name: record.recordName, nodeType: is_folder ? "folder" : "record",
                     parentId: record.parentId, source: source,
-                    connector: record.connectorName, recordType: record.recordType,
+                    connector: connector.connectorName, recordType: record.recordType,
                     indexingStatus: record.indexingStatus, createdAt: record.createdAtTimestamp,
                     updatedAt: record.updatedAtTimestamp, sizeInBytes: file_info.fileSizeInBytes,
                     webUrl: record.webUrl, hasChildren: has_children,
-                    connectorId: record.connectorName == "KB" ? null : record.connectorId,
-                    kbId: record.connectorName == "KB" ? record.parentId : null // Approx for KB root records?
+                    connectorId: is_kb_record ? null : record.connectorId,
+                    kbId: is_kb_record ? record.connectorId : null
                 }}
         )
 
@@ -5712,16 +5924,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR rg IN recordGroups
                 FILTER rg.orgId == @org_id AND rg.connectorName != "KB" AND rg.isDeleted != true
                 FILTER rg.connectorId IN @user_apps_ids
-                LET has_children = LENGTH(
+                LET has_child_rgs = LENGTH(
                     FOR child_rg IN recordGroups FILTER child_rg.parentId == rg._key AND child_rg.isDeleted != true RETURN 1
-                ) > 0 OR LENGTH(
-                    FOR perm_edge IN inheritPermissions FILTER perm_edge._to == rg._id
-                    LET rec = DOCUMENT(perm_edge._from)
-                    FILTER rec != null AND rec.isDeleted != true
-                    LET has_parent = LENGTH(FOR pe IN recordRelations FILTER pe._to == rec._id AND pe.relationshipType == "PARENT_CHILD" RETURN 1) > 0
-                    FILTER has_parent == false
-                    RETURN 1
                 ) > 0
+                // Use recordRelations with PARENT_CHILD to check for direct child records
+                LET has_records = LENGTH(
+                    FOR edge IN recordRelations
+                        FILTER edge._from == rg._id AND edge.relationshipType == "PARENT_CHILD"
+                        LET rec = DOCUMENT(edge._to)
+                        FILTER rec != null AND rec.isDeleted != true
+                        RETURN 1
+                ) > 0
+                LET has_children = has_child_rgs OR has_records
                 RETURN {{
                     id: rg._key, name: rg.groupName, nodeType: "recordGroup",
                     parentId: rg.parentId != null ? CONCAT("recordGroups/", rg.parentId) : CONCAT("apps/", rg.connectorId),

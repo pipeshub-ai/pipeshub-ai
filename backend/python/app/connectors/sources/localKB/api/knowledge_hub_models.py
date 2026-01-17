@@ -183,6 +183,8 @@ class AvailableFilters(BaseModel):
     connectors: List[FilterOption] = Field(default_factory=list, description="Available connectors (instances)")
     kbs: List[FilterOption] = Field(default_factory=list, description="Available Knowledge Bases")
     indexingStatus: List[FilterOption] = Field(default_factory=list, description="Available indexing statuses")
+    sortBy: List[FilterOption] = Field(default_factory=list, description="Available sort fields")
+    sortOrder: List[FilterOption] = Field(default_factory=list, description="Available sort orders")
 
 
 class AppliedFilters(BaseModel):
