@@ -4,7 +4,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
+from typing import AsyncGenerator, AsyncIterator, Dict, List, NoReturn, Optional, Tuple
 from urllib.parse import unquote
 from xml.etree import ElementTree as ET
 
@@ -72,6 +72,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 NEXTCLOUD_PERM_MASK_ALL = 31
 HTTP_STATUS_OK = 200
 HTTP_STATUS_MULTIPLE_CHOICES = 300
+HTTP_NOT_MODIFIED = 304
 # Helper functions
 def get_parent_path_from_path(path: str) -> Optional[str]:
     """Extracts the parent path from a file/folder path."""
@@ -1340,7 +1341,7 @@ class NextcloudConnector(BaseConnector):
             else:
                 status_code = None
 
-            if status_code == 304:
+            if status_code == HTTP_NOT_MODIFIED:
                 self.logger.info("✅ [Incremental Sync] HTTP 304 - No new activities. Database is up to date.")
                 return
 
@@ -1748,7 +1749,7 @@ class NextcloudConnector(BaseConnector):
                 )
 
             # Create async generator for streaming
-            async def generate():
+            async def generate() -> AsyncIterator[bytes]:
                 yield file_content
 
             return StreamingResponse(

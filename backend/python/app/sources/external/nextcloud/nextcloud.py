@@ -30,7 +30,7 @@ class NextcloudDataSource:
         return self
 
     @property
-    def client(self):
+    def client(self) -> HTTPRequest:
         """Get the underlying HTTP client."""
         return self._client
 

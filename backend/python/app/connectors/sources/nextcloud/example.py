@@ -10,7 +10,7 @@ from app.connectors.sources.nextcloud.connector import NextcloudConnector
 # Load environment variables
 load_dotenv()
 
-async def test_nextcloud_connector():
+async def test_nextcloud_connector() -> None:
     """Simple test script for Nextcloud connector."""
 
     # Setup logging
