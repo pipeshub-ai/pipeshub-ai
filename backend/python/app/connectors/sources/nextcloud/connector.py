@@ -765,7 +765,11 @@ class NextcloudConnector(BaseConnector):
                 path=path,
                 mime_type=get_mimetype_enum_for_nextcloud(content_type, is_collection),
                 etag=etag,
-                sha256_hash=None,
+                ctag="",
+                quick_xor_hash="",
+                crc32_hash="",
+                sha1_hash="",
+                sha256_hash="",
             )
 
             if file_id:
@@ -1121,91 +1125,6 @@ class NextcloudConnector(BaseConnector):
             if not self.current_user_id or not self.current_user_email:
                 self.logger.error("Current user info not available")
                 return
-
-            # Create a single app user for the current user
-            app_user = AppUser(
-                app_name=self.connector_name,
-                connector_id=self.connector_id,
-                source_user_id=self.current_user_id,
-                full_name=self.current_user_id,
-                email=self.current_user_email,
-                is_active=True,
-                title=None,
-            )
-
-            await self.data_entities_processor.on_new_app_users([app_user])
-
-            # Create a record group for the personal drive
-            record_group = RecordGroup(
-                name=f"{self.current_user_id}'s Files",
-                org_id=self.data_entities_processor.org_id,
-                description="Personal Nextcloud Folder",
-                external_group_id=self.current_user_id,
-                connector_name=self.connector_name.value,
-                connector_id=self.connector_id,
-                group_type=RecordGroupType.DRIVE,
-            )
-
-            user_permission = Permission(
-                email=self.current_user_email,
-                type=PermissionType.OWNER,
-                entity_type=EntityType.USER
-            )
-
-            await self.data_entities_processor.on_new_record_groups([(record_group, [user_permission])])
-
-            # Sync files for the current user only
-            self.logger.info(f"Syncing files for user: {self.current_user_email}")
-            await self._sync_user_files(
-                self.current_user_id,
-                self.current_user_email,
-                self.current_user_id
-            )
-
-            # Initialize cursor for incremental sync
-            # Fetch the latest activity ID to use as baseline for next incremental sync
-            try:
-                self.logger.info("⚓ [Full Sync] Anchoring activity cursor...")
-                response = await self.data_source.get_activities(
-                    activity_filter="files",
-                    limit=1,
-                    sort="desc"  # Get the most recent activity
-                )
-
-                if is_response_successful(response):
-                    activities = self._parse_activity_response(response)
-                    if activities:
-                        latest_activity_id = activities[0].get('activity_id')
-                        if latest_activity_id:
-                            sync_point_key = "activity_cursor"
-                            await self.activity_sync_point.update_sync_point(
-                                sync_point_key,
-                                {"cursor": str(latest_activity_id)}
-                            )
-                            self.logger.info(f"⚓ [Full Sync] Anchored activity cursor to: {latest_activity_id}")
-                    else:
-                        self.logger.warning("⚠️ [Full Sync] No activities found to anchor cursor")
-                else:
-                    self.logger.warning(f"⚠️ [Full Sync] Failed to fetch activities for anchoring: {get_response_error(response)}")
-            except Exception as e:
-                self.logger.warning(f"❌ [Full Sync] Failed to anchor activity cursor: {e}")
-
-            self.logger.info("✅ [Full Sync] Nextcloud full sync completed successfully.")
-
-        except Exception as ex:
-            self.logger.error(f"❌ [Full Sync] Error in full sync: {ex}", exc_info=True)
-            raise
-
-    async def _run_incremental_sync_internal(self) -> None:
-        """
-        Internal method for full synchronization.
-        """
-        try:
-            if not self.current_user_id or not self.current_user_email:
-                self.logger.error("Current user info not available")
-                return
-
-            self.logger.info("📦 [Full Sync] Starting full synchronization...")
 
             # Create a single app user for the current user
             app_user = AppUser(
