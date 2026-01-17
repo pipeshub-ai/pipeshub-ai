@@ -257,7 +257,11 @@ export default function RecordDetails() {
   let fileIconColor = '#1976d2';
   let extension = '';
   if (isFileRecord && record.fileRecord) {
-    fileSize = formatFileSize(record.fileRecord.sizeInBytes);
+    // Check sizeInBytes in multiple possible locations: record object, or fileRecord
+    const sizeInBytes = record.sizeInBytes || record.fileRecord.sizeInBytes;
+    if (sizeInBytes !== undefined && !Number.isNaN(sizeInBytes) && sizeInBytes > 0) {
+      fileSize = formatFileSize(sizeInBytes);
+    }
     extension = record.fileRecord.extension
       ? record.fileRecord.extension.toUpperCase()
       : getExtensionFromMimeType(record.fileRecord.mimeType || record.mimeType || '');

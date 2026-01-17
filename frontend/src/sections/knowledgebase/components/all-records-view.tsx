@@ -87,9 +87,10 @@ interface Record {
   connectorName: string;
   webUrl: string;
   externalRecordId?: string;
+  sizeInBytes?: number; // Size can be at record level
   fileRecord?: {
     extension?: string;
-    sizeInBytes?: number;
+    sizeInBytes?: number; // Or in fileRecord
     mimeType?: string;
   };
   sourceCreatedAtTimestamp?: number;
@@ -911,10 +912,16 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
       align: 'left',
       headerAlign: 'left',
       renderCell: (params) => {
-        // Handle undefined, NaN, or invalid size values
-        const size = params.value?.sizeInBytes;
+        // Check for sizeInBytes in multiple locations for backward compatibility
+        // Priority: record level > fileRecord level
+        const recordSize = params.row.sizeInBytes;
+        const fileRecordSize = params.value?.sizeInBytes;
+        const size = recordSize !== undefined && recordSize !== null ? recordSize : fileRecordSize;
+        
         const formattedSize =
-          size !== undefined && !Number.isNaN(size) && size > 0 ? formatFileSize(size) : '—';
+          size !== undefined && size !== null && !Number.isNaN(size) && size > 0 
+            ? formatFileSize(size) 
+            : '—';
 
         return (
           <Typography
