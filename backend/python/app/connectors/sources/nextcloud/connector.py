@@ -64,6 +64,7 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.nextcloud.nextcloud import (
     NextcloudClient,
+    NextcloudRESTClientViaUsernamePassword,
 )
 from app.sources.external.nextcloud.nextcloud import NextcloudDataSource
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -410,7 +411,6 @@ def get_response_error(response) -> str:
         ))
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
-        # Filters
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.file_extension_filter())
@@ -462,7 +462,7 @@ class NextcloudConnector(BaseConnector):
 
         # Cache for path-to-external-id mapping during sync
         self._path_to_external_id_cache: Dict[str, str] = {}
-        
+
         # Cache for date filters (performance optimization)
         self._cached_date_filters: Tuple[Optional[datetime], Optional[datetime], Optional[datetime], Optional[datetime]] = (None, None, None, None)
 
@@ -513,9 +513,6 @@ class NextcloudConnector(BaseConnector):
                 return False
 
             # Build client directly
-            from app.sources.client.nextcloud.nextcloud import (
-                NextcloudRESTClientViaUsernamePassword,
-            )
             client = NextcloudRESTClientViaUsernamePassword(base_url, username, password)
             nextcloud_client = NextcloudClient(client)
 
@@ -675,11 +672,11 @@ class NextcloudConnector(BaseConnector):
             if parent_path and parent_path != '/':
                 clean_parent_path = parent_path.rstrip('/')
 
-                # A. Check if parent is the User Root (Stop looking!)
+                # A. Check if parent is the User Root
                 if user_root_path and clean_parent_path == user_root_path:
                     parent_external_record_id = None
 
-                # B. Check In-Memory Cache (Parent processed in this batch?)
+                # B. Check In-Memory Cache
                 elif clean_parent_path in path_to_external_id:
                     parent_external_record_id = path_to_external_id[clean_parent_path]
 
@@ -687,7 +684,6 @@ class NextcloudConnector(BaseConnector):
                 else:
                     try:
                         async with self.data_store_provider.transaction() as tx_store:
-                            # Use original parent_path for DB lookup to match stored format
                             parent_record = await tx_store.get_record_by_path(
                                 connector_id=self.connector_id,
                                 path=parent_path
@@ -718,7 +714,7 @@ class NextcloudConnector(BaseConnector):
                         f"📦 Parent changed for {display_name}: "
                         f"{old_parent_id or 'root'} -> {parent_external_record_id or 'root'}"
                     )
-                
+
                 # Check if path changed (covers renames within same parent or moves)
                 if old_path != path:
                     metadata_changed = True
@@ -726,7 +722,7 @@ class NextcloudConnector(BaseConnector):
                     is_updated = True
                     force_update = True
                     self.logger.info(f"📍 Path changed for {display_name}: {old_path} -> {path}")
-                
+
                 # Force etag change to ensure database update when parent/path changed
                 if force_update and existing_record.external_revision_id == etag:
                     etag = f"{etag}-moved-{timestamp_ms}"
@@ -774,7 +770,7 @@ class NextcloudConnector(BaseConnector):
             if file_id:
                 path_to_external_id[clean_path] = file_id
 
-            # Fetch permissions (like Dropbox Personal, we support sharing)
+            # Fetch permissions
             new_permissions = []
             try:
                 shares = await self._get_file_shares(path, user_id)
@@ -803,7 +799,7 @@ class NextcloudConnector(BaseConnector):
                             )
                         )
 
-                # Always ensure owner has permission (like Dropbox Personal uses WRITE for owner)
+                # Always ensure owner has permission
                 owner_has_permission = any(
                     perm.external_id == user_id for perm in new_permissions
                 )
@@ -812,7 +808,7 @@ class NextcloudConnector(BaseConnector):
                         Permission(
                             external_id=user_id,
                             email=user_email,
-                            type=PermissionType.WRITE,  # Like Dropbox Personal
+                            type=PermissionType.WRITE,
                             entity_type=EntityType.USER
                         )
                     )
@@ -829,7 +825,6 @@ class NextcloudConnector(BaseConnector):
                     )
                 ]
 
-            # Permission changes not tracked in personal/free tier (like Dropbox Personal)
             permissions_changed = False
 
             return RecordUpdate(
@@ -864,7 +859,6 @@ class NextcloudConnector(BaseConnector):
         """Process Nextcloud entries and yield records with their permissions."""
         for entry in entries:
             try:
-                # Updated call to use the correct argument names
                 record_update = await self._process_nextcloud_entry(
                     entry,
                     user_id,
@@ -1017,11 +1011,11 @@ class NextcloudConnector(BaseConnector):
 
             # Pass correct variable name to generator
             async for file_record, permissions, record_update in self._process_nextcloud_items_generator(
-                sorted_entries,           # Use sorted entries
+                sorted_entries,
                 user_id,
                 user_email,
                 record_group_id,
-                user_root_path,           # Pass user root path
+                user_root_path,
                 path_to_external_id
             ):
                 # Handle updates separately from new records
@@ -1107,7 +1101,7 @@ class NextcloudConnector(BaseConnector):
                 await self._run_incremental_sync_internal()
                 return
 
-            # NO CURSOR FOUND → FULL SYNC
+            # NO CURSOR FOUND
             self.logger.info("⚪ [Smart Sync] No cursor found. Starting FULL SYNC.")
             await self._run_full_sync_internal()
 
@@ -1338,7 +1332,7 @@ class NextcloudConnector(BaseConnector):
             )
 
             # Check response status
-            # HTTP 304 Not Modified means no new activities - this is SUCCESS
+            # HTTP 304 Not Modified means no new activities
             if hasattr(response, 'status_code'):
                 status_code = response.status_code
             elif hasattr(response, 'status'):
@@ -1574,7 +1568,7 @@ class NextcloudConnector(BaseConnector):
                                     if parent_entries:
                                         # Get the parent's file_id from the response
                                         parent_file_id = parent_entries[0].get('file_id')
-                                        
+
                                         if parent_file_id:
                                             # Check if parent exists in DB by external_id (file_id)
                                             async with self.data_store_provider.transaction() as tx_store:
@@ -1592,7 +1586,7 @@ class NextcloudConnector(BaseConnector):
                                             else:
                                                 # Parent doesn't exist, create it
                                                 self.logger.info(f"📁 [Incremental Sync] Creating new parent folder: {parent_path}")
-                                                
+
                                                 # Build path map for parent
                                                 parent_path_map = await self._build_path_to_external_id_map(parent_entries)
 
@@ -1864,7 +1858,7 @@ class NextcloudConnector(BaseConnector):
                 self.logger.debug(f"Could not parse last_modified for {entry.get('display_name')}: {e}")
 
         # Nextcloud doesn't provide creation date via WebDAV, so we only apply modified date filters
-        
+
         # Validate: If modified date filter is configured but file has no date, exclude it
         if modified_after or modified_before:
             if not modified_at:
