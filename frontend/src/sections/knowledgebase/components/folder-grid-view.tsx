@@ -437,7 +437,8 @@ export const GridView: React.FC<GridViewProps> = ({
       type: isFolder ? 'folder' : 'file',
       extension: item.extension || item.fileRecord?.extension,
       mimeType: item.fileRecord?.mimeType,
-      sizeInBytes: item.sizeInBytes || item.fileRecord?.sizeInBytes,
+      // Using ?? (nullish coalescing) to correctly handle 0 as a valid file size
+      sizeInBytes: item.sizeInBytes ?? item.fileRecord?.sizeInBytes,
       updatedAt: item.updatedAtTimestamp || item.updatedAt || item.sourceLastModifiedTimestamp,
       createdAt: item.createdAtTimestamp || item.createdAt || item.sourceCreatedAtTimestamp,
       indexingStatus: item.indexingStatus,

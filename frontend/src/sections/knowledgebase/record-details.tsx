@@ -258,8 +258,9 @@ export default function RecordDetails() {
   let extension = '';
   if (isFileRecord && record.fileRecord) {
     // Check sizeInBytes in multiple possible locations: record object, or fileRecord
-    const sizeInBytes = record.sizeInBytes || record.fileRecord.sizeInBytes;
-    if (sizeInBytes !== undefined && !Number.isNaN(sizeInBytes) && sizeInBytes > 0) {
+    // Using ?? (nullish coalescing) to correctly handle 0 as a valid file size
+    const sizeInBytes = record.sizeInBytes ?? record.fileRecord.sizeInBytes;
+    if (sizeInBytes !== undefined && sizeInBytes !== null && !Number.isNaN(sizeInBytes) && sizeInBytes >= 0) {
       fileSize = formatFileSize(sizeInBytes);
     }
     extension = record.fileRecord.extension

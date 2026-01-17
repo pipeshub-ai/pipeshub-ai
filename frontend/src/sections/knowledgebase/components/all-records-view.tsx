@@ -914,12 +914,11 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
       renderCell: (params) => {
         // Check for sizeInBytes in multiple locations for backward compatibility
         // Priority: record level > fileRecord level
-        const recordSize = params.row.sizeInBytes;
-        const fileRecordSize = params.value?.sizeInBytes;
-        const size = recordSize !== undefined && recordSize !== null ? recordSize : fileRecordSize;
+        // Using ?? (nullish coalescing) to correctly handle 0 as a valid file size
+        const size = params.row.sizeInBytes ?? params.value?.sizeInBytes;
         
         const formattedSize =
-          size !== undefined && size !== null && !Number.isNaN(size) && size > 0 
+          size !== undefined && size !== null && !Number.isNaN(size) && size >= 0 
             ? formatFileSize(size) 
             : '—';
 

@@ -1320,8 +1320,6 @@ class GoogleDriveTeamConnector(BaseConnector):
             if not file_id:
                 return None
 
-            print("metadata", metadata)
-
             # Apply Date Filters
             if not self._pass_date_filters(metadata):
                 self.logger.debug(f"Skipping item {metadata.get('name', 'unknown')} (ID: {file_id}) due to date filters.")
