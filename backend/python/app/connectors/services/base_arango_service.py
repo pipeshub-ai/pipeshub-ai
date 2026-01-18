@@ -1623,6 +1623,7 @@ class BaseArangoService:
                     deletedByUserId: record.deletedByUserId,
                     isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true,
                     webUrl: record.webUrl,
+                    sizeInBytes: record.sizeInBytes,
                     fileRecord: LENGTH(fileRecord) > 0 ? fileRecord[0] : null,
                     mailRecord: LENGTH(mailRecord) > 0 ? mailRecord[0] : null,
                     ticketRecord: LENGTH(ticketRecord) > 0 ? ticketRecord[0] : null,

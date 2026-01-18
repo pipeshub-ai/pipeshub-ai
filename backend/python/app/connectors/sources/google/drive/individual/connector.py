@@ -183,7 +183,6 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
         # Batch processing configuration
         self.batch_size = 100
-        self.max_concurrent_batches = 3
 
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()

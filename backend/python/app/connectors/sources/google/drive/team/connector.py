@@ -205,7 +205,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         # Batch processing configuration
         self.batch_size = 100
-        self.max_concurrent_batches = 3
+        self.max_concurrent_batches = 1 # set to 1 for now to avoid write write conflicts for small number of records
 
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
@@ -1812,7 +1812,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 )
                 self.logger.info(f"✅ Incremental sync completed for user {user.email}. Processed {total_changes} changes.")
             else:
-                self.logger.warning("⚠️ Sync point not updated (token unchanged or invalid)")
+                self.logger.info("Sync point not updated (token unchanged)")
 
     async def sync_shared_drives(
         self,

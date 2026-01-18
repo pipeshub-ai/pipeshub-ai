@@ -279,7 +279,7 @@ class SharePointConnector(BaseConnector):
         self.filters = {"exclude_onedrive_sites": True, "exclude_pages": True, "exclude_lists": True, "exclude_document_libraries": False}
         # Batch processing configuration
         self.batch_size = 50  # Reduced for better memory management
-        self.max_concurrent_batches = 1  # Reduced to avoid rate limiting
+        self.max_concurrent_batches = 1 # set to 1 for now to avoid write write conflicts for small number of records
         self.rate_limiter = AsyncLimiter(30, 1)  # 30 requests per second (conservative)
 
         # Cache for site metadata
