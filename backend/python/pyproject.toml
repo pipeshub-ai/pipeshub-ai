@@ -49,6 +49,7 @@ dependencies = [
     "python-gitlab==6.4.0",
     "google-api-python-client==2.161.0",
     "google-auth-oauthlib==1.2.1",
+    "google-cloud-storage==2.10.0",
     "Jinja2==3.1.6",
     "jsonschema==4.23.0",
     "langchain-anthropic==1.2.0",

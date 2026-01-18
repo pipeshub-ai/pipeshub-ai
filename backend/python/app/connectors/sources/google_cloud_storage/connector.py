@@ -1,17 +1,16 @@
 """
-Base connector for S3-compatible storage systems (AWS S3, MinIO, etc.)
+Google Cloud Storage Connector
 
-This module provides shared functionality for connectors that work with S3-compatible
-object storage systems. The base classes and utilities here are used by both
-S3Connector and MinIOConnector to avoid code duplication.
+Connector for synchronizing data from Google Cloud Storage buckets. This connector
+uses the native GCS API with service account authentication.
 """
 
 import mimetypes
 import uuid
-from abc import abstractmethod
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+from urllib.parse import unquote
 
 from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
@@ -20,6 +19,7 @@ from fastapi.responses import StreamingResponse
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     CollectionNames,
+    Connectors,
     MimeTypes,
     OriginTypes,
 )
@@ -38,16 +38,32 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncPoint,
     generate_record_sync_point_key,
 )
-from app.connectors.core.interfaces.connector.apps import App
-from app.connectors.core.registry.connector_builder import ConnectorScope
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+)
+from app.connectors.core.registry.connector_builder import (
+    AuthField,
+    CommonFields,
+    ConnectorBuilder,
+    ConnectorScope,
+    DocumentationLink,
+)
 from app.connectors.core.registry.filters import (
+    FilterCategory,
     FilterCollection,
+    FilterField,
     FilterOption,
     FilterOptionsResponse,
+    FilterType,
     IndexingFilterKey,
+    ListOperator,
+    MultiselectOperator,
+    OptionSourceType,
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.sources.google_cloud_storage.common.apps import GCSApp
 from app.models.entities import (
     AppUser,
     FileRecord,
@@ -59,15 +75,20 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.sources.client.gcs.gcs import GCSClient
+from app.sources.external.gcs.gcs import GCSDataSource
 from app.utils.streaming import stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Default connector endpoint for signed URL generation
 DEFAULT_CONNECTOR_ENDPOINT = "http://localhost:8000"
 
+# Base URL for Google Cloud Console
+GCS_CONSOLE_BASE_URL = "https://console.cloud.google.com/storage/browser"
+
 
 def get_file_extension(key: str) -> Optional[str]:
-    """Extracts the extension from an S3 key."""
+    """Extracts the extension from a GCS key."""
     if "." in key:
         parts = key.split(".")
         if len(parts) > 1:
@@ -76,7 +97,7 @@ def get_file_extension(key: str) -> Optional[str]:
 
 
 def get_parent_path_from_key(key: str) -> Optional[str]:
-    """Extracts the parent path from an S3 key (without leading slash).
+    """Extracts the parent path from a GCS key (without leading slash).
 
     For a key like 'a/b/c/file.txt', returns 'a/b/c'
     For a key like 'a/b/c/', returns 'a/b'
@@ -91,15 +112,29 @@ def get_parent_path_from_key(key: str) -> Optional[str]:
     return parent_path if parent_path else None
 
 
-def get_parent_weburl_for_s3(parent_external_id: str, base_console_url: str = "https://s3.console.aws.amazon.com") -> str:
-    """Generate webUrl for an S3/MinIO directory based on parent external_id.
+def get_mimetype_for_gcs(key: str, is_folder: bool = False) -> str:
+    """Determines the correct MimeTypes string value for a GCS object."""
+    if is_folder:
+        return MimeTypes.FOLDER.value
+
+    mime_type_str, _ = mimetypes.guess_type(key)
+    if mime_type_str:
+        try:
+            return MimeTypes(mime_type_str).value
+        except ValueError:
+            return MimeTypes.BIN.value
+    return MimeTypes.BIN.value
+
+
+def parse_parent_external_id(parent_external_id: str) -> Tuple[str, Optional[str]]:
+    """Parse parent_external_id to extract bucket_name and normalized path.
 
     Args:
         parent_external_id: External ID in format "bucket_name/path" or just "bucket_name"
-        base_console_url: Base URL for the console (different for S3 vs MinIO)
 
     Returns:
-        Console URL for the directory
+        A tuple of (bucket_name, normalized_path) where normalized_path is None
+        if parent_external_id contains only a bucket name.
     """
     if "/" in parent_external_id:
         parts = parent_external_id.split("/", 1)
@@ -108,14 +143,30 @@ def get_parent_weburl_for_s3(parent_external_id: str, base_console_url: str = "h
         path = path.lstrip("/")
         if path and not path.endswith("/"):
             path = path + "/"
-        return f"{base_console_url}/s3/object/{bucket_name}?prefix={path}"
+        return bucket_name, path
     else:
         bucket_name = parent_external_id
-        return f"{base_console_url}/s3/buckets/{bucket_name}"
+        return bucket_name, None
 
 
-def get_parent_path_for_s3(parent_external_id: str) -> Optional[str]:
-    """Extract directory path from S3 parent external_id.
+def get_parent_weburl_for_gcs(parent_external_id: str) -> str:
+    """Generate webUrl for a GCS directory based on parent external_id.
+
+    Args:
+        parent_external_id: External ID in format "bucket_name/path" or just "bucket_name"
+
+    Returns:
+        Console URL for the directory
+    """
+    bucket_name, path = parse_parent_external_id(parent_external_id)
+    if path:
+        return f"{GCS_CONSOLE_BASE_URL}/{bucket_name}/{path}"
+    else:
+        return f"{GCS_CONSOLE_BASE_URL}/{bucket_name}"
+
+
+def get_parent_path_for_gcs(parent_external_id: str) -> Optional[str]:
+    """Extract directory path from GCS parent external_id.
 
     Args:
         parent_external_id: External ID in format "bucket_name/path" or just "bucket_name"
@@ -133,64 +184,16 @@ def get_parent_path_for_s3(parent_external_id: str) -> Optional[str]:
         return None
 
 
-def parse_parent_external_id(parent_external_id: str) -> Tuple[str, Optional[str]]:
-    """Parse parent_external_id to extract bucket_name and normalized path.
-
-    This helper method extracts the common parsing logic for parent_external_id
-    used by both S3 and MinIO connectors to generate parent web URLs.
-
-    Args:
-        parent_external_id: External ID in format "bucket_name/path" or just "bucket_name"
-
-    Returns:
-        A tuple of (bucket_name, normalized_path) where normalized_path is None
-        if parent_external_id contains only a bucket name, otherwise it's the
-        path normalized (leading slashes removed, trailing slash added if not present).
-    """
-    if "/" in parent_external_id:
-        parts = parent_external_id.split("/", 1)
-        bucket_name = parts[0]
-        path = parts[1]
-        path = path.lstrip("/")
-        if path and not path.endswith("/"):
-            path = path + "/"
-        return bucket_name, path
-    else:
-        bucket_name = parent_external_id
-        return bucket_name, None
-
-
-def get_mimetype_for_s3(key: str, is_folder: bool = False) -> str:
-    """Determines the correct MimeTypes string value for an S3 object."""
-    if is_folder:
-        return MimeTypes.FOLDER.value
-
-    mime_type_str, _ = mimetypes.guess_type(key)
-    if mime_type_str:
-        try:
-            return MimeTypes(mime_type_str).value
-        except ValueError:
-            return MimeTypes.BIN.value
-    return MimeTypes.BIN.value
-
-
-class S3CompatibleDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
-    """S3-compatible processor that extends the base processor with S3-specific placeholder record logic."""
+class GCSDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
+    """GCS processor that extends the base processor with GCS-specific placeholder record logic."""
 
     def __init__(
         self,
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        base_console_url: str = "https://s3.console.aws.amazon.com",
-        parent_url_generator: Optional[Callable[[str], str]] = None,
     ) -> None:
         super().__init__(logger, data_store_provider, config_service)
-        self.base_console_url = base_console_url
-        # Default to S3 format if no generator provided (for backward compatibility)
-        self.parent_url_generator = parent_url_generator or (
-            lambda parent_external_id: get_parent_weburl_for_s3(parent_external_id, base_console_url)
-        )
 
     def _create_placeholder_parent_record(
         self,
@@ -199,18 +202,15 @@ class S3CompatibleDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         record: Record,
     ) -> Record:
         """
-        Create a placeholder parent record with S3-specific weburl and path.
-
-        Overrides the base implementation to use connector-specific URL generation
-        for parent folder URLs.
+        Create a placeholder parent record with GCS-specific weburl and path.
         """
         parent_record = super()._create_placeholder_parent_record(
             parent_external_id, parent_record_type, record
         )
 
         if parent_record_type == RecordType.FILE and isinstance(parent_record, FileRecord):
-            weburl = self.parent_url_generator(parent_external_id)
-            path = get_parent_path_for_s3(parent_external_id)
+            weburl = get_parent_weburl_for_gcs(parent_external_id)
+            path = get_parent_path_for_gcs(parent_external_id)
             parent_record.weburl = weburl
             parent_record.path = path
             parent_record.is_internal = True
@@ -219,40 +219,90 @@ class S3CompatibleDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         return parent_record
 
 
-class S3CompatibleBaseConnector(BaseConnector):
+@ConnectorBuilder("GCS")\
+    .in_group("GCS")\
+    .with_description("Sync files and folders from Google Cloud Storage")\
+    .with_categories(["Storage"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
+    .with_auth([
+        AuthBuilder.type(AuthType.ACCESS_KEY).fields([
+            AuthField(
+                name="serviceAccountJson",
+                display_name="Service Account JSON",
+                placeholder="Paste your service account JSON key here",
+                description="The Service Account JSON key from Google Cloud Console. Go to IAM & Admin > Service Accounts > Keys to create one.",
+                field_type="TEXTAREA",
+                max_length=10000,
+                is_secret=True
+            ),
+        ])
+    ])\
+    .configure(lambda builder: builder
+        .with_icon("/assets/icons/connectors/gcs.svg")
+        .add_documentation_link(DocumentationLink(
+            "GCS Service Account Setup",
+            "https://cloud.google.com/iam/docs/service-accounts-create",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            'Pipeshub Documentation',
+            'https://docs.pipeshub.com/connectors/gcs/gcs',
+            'pipeshub'
+        ))
+        .add_filter_field(FilterField(
+            name="buckets",
+            display_name="Bucket Names",
+            filter_type=FilterType.MULTISELECT,
+            category=FilterCategory.SYNC,
+            description="Select specific GCS buckets to sync",
+            option_source_type=OptionSourceType.DYNAMIC,
+            default_value=[],
+            default_operator=MultiselectOperator.IN.value
+        ))
+        .add_filter_field(FilterField(
+            name="file_extensions",
+            display_name="File Extensions",
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            description="Filter files by extension (e.g., pdf, docx, txt). Leave empty to sync all files.",
+            option_source_type=OptionSourceType.MANUAL,
+            default_value=[],
+            default_operator=ListOperator.IN.value
+        ))
+        .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
+        .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_scheduled_config(True, 60)
+        .with_sync_support(True)
+        .with_agent_support(True)
+    )\
+    .build_decorator()
+class GCSConnector(BaseConnector):
     """
-    Base connector for S3-compatible storage systems.
-
-    This abstract base class provides common functionality for syncing data from
-    S3-compatible object storage (AWS S3, MinIO, etc.). Subclasses must implement
-    the abstract methods to provide storage-specific behavior.
+    Connector for synchronizing data from Google Cloud Storage buckets.
     """
 
     def __init__(
         self,
-        app: App,
         logger: Logger,
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
-        connector_name: str,
-        filter_key: str,
-        base_console_url: str = "https://s3.console.aws.amazon.com",
     ) -> None:
         super().__init__(
-            app,
-            logger,
-            data_entities_processor,
-            data_store_provider,
-            config_service,
-            connector_id,
+            app=GCSApp(connector_id),
+            logger=logger,
+            data_entities_processor=data_entities_processor,
+            data_store_provider=data_store_provider,
+            config_service=config_service,
+            connector_id=connector_id,
         )
 
-        self.connector_name = connector_name
+        self.connector_name = Connectors.GCS
         self.connector_id = connector_id
-        self.filter_key = filter_key
-        self.base_console_url = base_console_url
+        self.filter_key = "gcs"
 
         # Initialize sync point for tracking record changes
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
@@ -265,21 +315,20 @@ class S3CompatibleBaseConnector(BaseConnector):
 
         self.record_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
 
-        self.data_source: Optional[Any] = None  # Will be S3DataSource or MinIODataSource
+        self.data_source: Optional[GCSDataSource] = None
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
         self.bucket_name: Optional[str] = None
-        self.region: Optional[str] = None
         self.connector_scope: Optional[str] = None
         self.created_by: Optional[str] = None
-        self.bucket_regions: Dict[str, str] = {}  # Cache for bucket-to-region mapping
+        self.project_id: Optional[str] = None
 
         # Initialize filter collections
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
 
     def get_app_users(self, users: List[User]) -> List[AppUser]:
-        """Convert User objects to AppUser objects for S3-compatible connectors."""
+        """Convert User objects to AppUser objects for GCS connector."""
         return [
             AppUser(
                 app_name=self.connector_name,
@@ -295,33 +344,67 @@ class S3CompatibleBaseConnector(BaseConnector):
             if user.email
         ]
 
-    @abstractmethod
     async def init(self) -> bool:
-        """Initialize the connector. Must be implemented by subclasses."""
-        pass
+        """Initializes the GCS client using credentials from the config service."""
+        config = await self.config_service.get_config(
+            f"/services/connectors/{self.connector_id}/config"
+        )
+        if not config:
+            self.logger.error("GCS configuration not found.")
+            return False
 
-    @abstractmethod
-    async def _build_data_source(self) -> object:
-        """Build the data source (S3DataSource or MinIODataSource). Must be implemented by subclasses."""
-        pass
+        auth_config = config.get("auth", {})
+        service_account_json = auth_config.get("serviceAccountJson")
+        self.bucket_name = auth_config.get("bucket")
 
-    @abstractmethod
+        if not service_account_json:
+            self.logger.error("GCS service account JSON not found in configuration.")
+            return False
+
+        # Get connector scope
+        self.connector_scope = ConnectorScope.PERSONAL.value
+        self.created_by = config.get("created_by")
+
+        scope_from_config = config.get("scope")
+        if scope_from_config:
+            self.connector_scope = scope_from_config
+
+        try:
+            client = await GCSClient.build_from_services(
+                logger=self.logger,
+                config_service=self.config_service,
+                connector_instance_id=self.connector_id,
+            )
+            self.data_source = GCSDataSource(client)
+            self.project_id = client.get_project_id()
+
+            # Load connector filters
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "gcs", self.connector_id, self.logger
+            )
+
+            self.logger.info("GCS client initialized successfully.")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to initialize GCS client: {e}", exc_info=True)
+            return False
+
     def _generate_web_url(self, bucket_name: str, normalized_key: str) -> str:
-        """Generate the web URL for an object. Must be implemented by subclasses."""
-        pass
+        """Generate the web URL for a GCS object."""
+        # URL encode the key for the console URL
+        return f"{GCS_CONSOLE_BASE_URL}/{bucket_name}/{normalized_key}"
 
-    @abstractmethod
     def _generate_parent_web_url(self, parent_external_id: str) -> str:
-        """Generate the web URL for a parent folder/directory. Must be implemented by subclasses."""
-        pass
+        """Generate the web URL for a GCS parent folder/directory."""
+        return get_parent_weburl_for_gcs(parent_external_id)
 
     async def run_sync(self) -> None:
         """Runs a full synchronization from buckets."""
         try:
-            self.logger.info(f"Starting {self.connector_name} full sync.")
+            self.logger.info("Starting GCS full sync.")
 
             if not self.data_source:
-                raise ConnectionError(f"{self.connector_name} connector is not initialized.")
+                raise ConnectionError("GCS connector is not initialized.")
 
             # Reload sync and indexing filters to pick up configuration changes
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -357,18 +440,12 @@ class S3CompatibleBaseConnector(BaseConnector):
                 buckets_data = buckets_response.data
                 if buckets_data and "Buckets" in buckets_data:
                     buckets_to_sync = [
-                        bucket.get("Name") for bucket in buckets_data["Buckets"]
+                        bucket.get("name") for bucket in buckets_data["Buckets"]
                     ]
                     self.logger.info(f"Found {len(buckets_to_sync)} bucket(s) to sync")
                 else:
                     self.logger.warning("No buckets found")
                     return
-
-            # Fetch and cache regions for all buckets
-            self.logger.info(f"Fetching regions for {len(buckets_to_sync)} bucket(s)...")
-            for bucket_name in buckets_to_sync:
-                if bucket_name:
-                    await self._get_bucket_region(bucket_name)
 
             # Create record groups for buckets first
             await self._create_record_groups_for_buckets(buckets_to_sync)
@@ -386,9 +463,9 @@ class S3CompatibleBaseConnector(BaseConnector):
                     )
                     continue
 
-            self.logger.info(f"{self.connector_name} full sync completed.")
+            self.logger.info("GCS full sync completed.")
         except Exception as ex:
-            self.logger.error(f"❌ Error in {self.connector_name} connector run: {ex}", exc_info=True)
+            self.logger.error(f"❌ Error in GCS connector run: {ex}", exc_info=True)
             raise
 
     async def _create_record_groups_for_buckets(self, bucket_names: List[str]) -> None:
@@ -442,7 +519,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 group_type=RecordGroupType.BUCKET,
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
-                description=f"{self.connector_name} Bucket: {bucket_name}",
+                description=f"GCS Bucket: {bucket_name}",
             )
             record_groups.append((record_group, permissions))
 
@@ -491,7 +568,7 @@ class S3CompatibleBaseConnector(BaseConnector):
         created_after_ms: Optional[int] = None,
         created_before_ms: Optional[int] = None
     ) -> bool:
-        """Returns True if S3 object PASSES date filters (should be kept)."""
+        """Returns True if GCS object PASSES date filters (should be kept)."""
         key = obj.get("Key", "")
         is_folder = key.endswith("/")
         if is_folder:
@@ -504,8 +581,13 @@ class S3CompatibleBaseConnector(BaseConnector):
         if not last_modified:
             return True
 
-        if isinstance(last_modified, datetime):
-            obj_timestamp_ms = int(last_modified.timestamp() * 1000)
+        # Parse ISO format timestamp
+        if isinstance(last_modified, str):
+            try:
+                obj_dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
+                obj_timestamp_ms = int(obj_dt.timestamp() * 1000)
+            except ValueError:
+                return True
         else:
             return True
 
@@ -516,68 +598,36 @@ class S3CompatibleBaseConnector(BaseConnector):
             self.logger.debug(f"Skipping {key}: modified {obj_timestamp_ms} after cutoff {modified_before_ms}")
             return False
 
-        if created_after_ms and obj_timestamp_ms < created_after_ms:
-            self.logger.debug(f"Skipping {key}: created {obj_timestamp_ms} before cutoff {created_after_ms}")
-            return False
-        if created_before_ms and obj_timestamp_ms > created_before_ms:
-            self.logger.debug(f"Skipping {key}: created {obj_timestamp_ms} after cutoff {created_before_ms}")
-            return False
+        # For GCS, we can also check TimeCreated
+        time_created = obj.get("TimeCreated")
+        if time_created and isinstance(time_created, str):
+            try:
+                created_dt = datetime.fromisoformat(time_created.replace('Z', '+00:00'))
+                created_timestamp_ms = int(created_dt.timestamp() * 1000)
+
+                if created_after_ms and created_timestamp_ms < created_after_ms:
+                    self.logger.debug(f"Skipping {key}: created {created_timestamp_ms} before cutoff {created_after_ms}")
+                    return False
+                if created_before_ms and created_timestamp_ms > created_before_ms:
+                    self.logger.debug(f"Skipping {key}: created {created_timestamp_ms} after cutoff {created_before_ms}")
+                    return False
+            except ValueError:
+                pass
 
         return True
 
     async def _get_signed_url_route(self, record_id: str) -> str:
-        """Generate the signed URL route for a record.
-
-        Args:
-            record_id: The record ID
-
-        Returns:
-            The signed URL route string
-        """
+        """Generate the signed URL route for a record."""
         endpoints = await self.config_service.get_config(
             config_node_constants.ENDPOINTS.value
         )
         connector_endpoint = endpoints.get("connectors", {}).get("endpoint", DEFAULT_CONNECTOR_ENDPOINT)
         return f"{connector_endpoint}/api/v1/internal/stream/record/{record_id}"
 
-    async def _get_bucket_region(self, bucket_name: str) -> str:
-        """Get the region for a bucket, using cache if available."""
-        if bucket_name in self.bucket_regions:
-            return self.bucket_regions[bucket_name]
-
-        if not self.data_source:
-            self.logger.warning(f"Cannot fetch region for bucket {bucket_name}: data_source not initialized")
-            return self.region or "us-east-1"
-
-        try:
-            response = await self.data_source.get_bucket_location(Bucket=bucket_name)
-            if response.success and response.data:
-                location = response.data.get("LocationConstraint")
-                if location is None or location == "":
-                    region = "us-east-1"
-                else:
-                    region = location
-                self.bucket_regions[bucket_name] = region
-                self.logger.debug(f"Cached region for bucket {bucket_name}: {region}")
-                return region
-            else:
-                self.logger.warning(
-                    f"Failed to get region for bucket {bucket_name}: {response.error}. "
-                    f"Using configured region {self.region or 'us-east-1'}"
-                )
-        except Exception as e:
-            self.logger.warning(
-                f"Error fetching region for bucket {bucket_name}: {e}. "
-                f"Using configured region {self.region or 'us-east-1'}"
-            )
-
-        fallback_region = self.region or "us-east-1"
-        return fallback_region
-
     async def _sync_bucket(self, bucket_name: str) -> None:
         """Sync objects from a specific bucket with pagination support and incremental sync."""
         if not self.data_source:
-            raise ConnectionError(f"{self.connector_name} connector is not initialized.")
+            raise ConnectionError("GCS connector is not initialized.")
 
         sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
 
@@ -589,11 +639,6 @@ class S3CompatibleBaseConnector(BaseConnector):
                 allowed_extensions = [ext.lower().lstrip('.') for ext in filter_value if ext]
             elif isinstance(filter_value, str):
                 allowed_extensions = [filter_value.lower().lstrip('.')]
-            else:
-                self.logger.warning(
-                    f"Unexpected file_extensions filter value type: {type(filter_value)}. "
-                    f"Expected list or string, got {filter_value}"
-                )
 
         if allowed_extensions:
             self.logger.info(
@@ -606,19 +651,15 @@ class S3CompatibleBaseConnector(BaseConnector):
             RecordType.FILE.value, "bucket", bucket_name
         )
         sync_point = await self.record_sync_point.read_sync_point(sync_point_key)
-        continuation_token = sync_point.get("continuation_token") if sync_point else None
+        page_token = sync_point.get("page_token") if sync_point else None
         last_sync_time = sync_point.get("last_sync_time") if sync_point else None
 
         if last_sync_time:
             user_modified_after_ms = modified_after_ms
             if user_modified_after_ms:
                 modified_after_ms = max(user_modified_after_ms, last_sync_time)
-                self.logger.debug(
-                    f"Merging modified_after filter for incremental sync: {modified_after_ms}"
-                )
             else:
                 modified_after_ms = last_sync_time
-                self.logger.debug(f"Using last_sync_time for incremental sync: {modified_after_ms}")
 
         batch_records = []
         has_more = True
@@ -627,29 +668,17 @@ class S3CompatibleBaseConnector(BaseConnector):
         while has_more:
             try:
                 async with self.rate_limiter:
-                    response = await self.data_source.list_objects_v2(
-                        Bucket=bucket_name,
-                        MaxKeys=self.batch_size,
-                        ContinuationToken=continuation_token,
+                    response = await self.data_source.list_blobs(
+                        bucket_name=bucket_name,
+                        max_results=self.batch_size,
+                        page_token=page_token,
                     )
 
                     if not response.success:
                         error_msg = response.error or "Unknown error"
-                        if "AccessDenied" in error_msg or "not authorized" in error_msg:
-                            self.logger.error(
-                                f"Access denied when listing objects in bucket {bucket_name}: {error_msg}."
-                            )
-                            self.logger.error(
-                                f"Please verify your IAM policy includes the following permissions for bucket '{bucket_name}':\n"
-                                f"  - s3:ListBucket on arn:aws:s3:::{bucket_name}\n"
-                                f"  - s3:GetBucketLocation on arn:aws:s3:::{bucket_name}\n"
-                                f"  - s3:ListBucketVersions on arn:aws:s3:::{bucket_name} (if versioning is enabled)\n"
-                                f"Also check if there's a bucket policy that might be blocking access."
-                            )
-                        else:
-                            self.logger.error(
-                                f"Failed to list objects in bucket {bucket_name}: {error_msg}"
-                            )
+                        self.logger.error(
+                            f"Failed to list objects in bucket {bucket_name}: {error_msg}"
+                        )
                         has_more = False
                         continue
 
@@ -688,23 +717,18 @@ class S3CompatibleBaseConnector(BaseConnector):
                             ):
                                 continue
 
+                            # Track max timestamp for incremental sync
                             if not is_folder:
                                 last_modified = obj.get("LastModified")
-                                if last_modified:
-                                    if isinstance(last_modified, datetime):
-                                        obj_timestamp_ms = int(last_modified.timestamp() * 1000)
+                                if last_modified and isinstance(last_modified, str):
+                                    try:
+                                        obj_dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
+                                        obj_timestamp_ms = int(obj_dt.timestamp() * 1000)
                                         max_timestamp = max(max_timestamp, obj_timestamp_ms)
-                                    else:
-                                        obj_timestamp_ms = get_epoch_timestamp_in_ms()
-                                        max_timestamp = max(max_timestamp, obj_timestamp_ms)
-                            else:
-                                last_modified = obj.get("LastModified")
-                                if last_modified:
-                                    if isinstance(last_modified, datetime):
-                                        obj_timestamp_ms = int(last_modified.timestamp() * 1000)
-                                        max_timestamp = max(max_timestamp, obj_timestamp_ms)
+                                    except ValueError:
+                                        pass
 
-                            record, permissions = await self._process_s3_object(
+                            record, permissions = await self._process_gcs_object(
                                 obj, bucket_name
                             )
                             if record:
@@ -723,11 +747,11 @@ class S3CompatibleBaseConnector(BaseConnector):
                             continue
 
                     has_more = objects_data.get("IsTruncated", False)
-                    continuation_token = objects_data.get("NextContinuationToken")
+                    page_token = objects_data.get("NextContinuationToken")
 
-                    if continuation_token:
+                    if page_token:
                         await self.record_sync_point.update_sync_point(
-                            sync_point_key, {"continuation_token": continuation_token}
+                            sync_point_key, {"page_token": page_token}
                         )
 
             except Exception as e:
@@ -743,7 +767,7 @@ class S3CompatibleBaseConnector(BaseConnector):
             await self.record_sync_point.update_sync_point(
                 sync_point_key, {
                     "last_sync_time": max_timestamp,
-                    "continuation_token": None
+                    "page_token": None
                 }
             )
 
@@ -759,27 +783,11 @@ class S3CompatibleBaseConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"Error in _remove_old_parent_relationship: {e}")
 
-    async def _process_s3_object(
+    async def _process_gcs_object(
         self, obj: Dict, bucket_name: str
     ) -> Tuple[Optional[FileRecord], List[Permission]]:
-        """Process a single S3 object and convert it to a FileRecord.
-
-        Logic:
-        1. Extract path and etag from S3 object
-        2. Try lookup by path (externalRecordId) - PRIMARY
-           ├─ Found → Compare etags
-           │   ├─ Different → Content change → Update record
-           │   └─ Same → Skip (no changes)
-           └─ Not Found → Try lookup by etag (externalRevisionId) - FALLBACK
-               ├─ Found → Move/rename detected
-               │   ├─ Extract old path from existing record
-               │   ├─ Remove old parent relationship
-               │   ├─ Update externalRecordId, path, recordName
-               │   └─ Update record via data_entities_processor
-               └─ Not Found → New file → Create new record
-        """
+        """Process a single GCS object and convert it to a FileRecord."""
         try:
-            # 1. Extract path and etag from S3 object
             key = obj.get("Key", "")
             if not key:
                 return None, []
@@ -791,19 +799,35 @@ class S3CompatibleBaseConnector(BaseConnector):
             if not normalized_key:
                 return None, []
 
+            # Parse timestamps
             last_modified = obj.get("LastModified")
-            if last_modified:
-                if isinstance(last_modified, datetime):
-                    timestamp_ms = int(last_modified.timestamp() * 1000)
-                else:
+            if last_modified and isinstance(last_modified, str):
+                try:
+                    obj_dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
+                    timestamp_ms = int(obj_dt.timestamp() * 1000)
+                except ValueError:
                     timestamp_ms = get_epoch_timestamp_in_ms()
             else:
                 timestamp_ms = get_epoch_timestamp_in_ms()
 
-            external_record_id = f"{bucket_name}/{normalized_key}"
-            current_etag = obj.get("ETag", "").strip('"')
+            # Parse created time
+            time_created = obj.get("TimeCreated")
+            if time_created and isinstance(time_created, str):
+                try:
+                    created_dt = datetime.fromisoformat(time_created.replace('Z', '+00:00'))
+                    created_timestamp_ms = int(created_dt.timestamp() * 1000)
+                except ValueError:
+                    created_timestamp_ms = timestamp_ms
+            else:
+                created_timestamp_ms = timestamp_ms
 
-            # 2. PRIMARY: Try lookup by path (externalRecordId)
+            external_record_id = f"{bucket_name}/{normalized_key}"
+            # Use generation + metageneration as revision ID (similar to etag for S3)
+            generation = obj.get("Generation")
+            metageneration = obj.get("Metageneration")
+            current_revision_id = f"{generation}:{metageneration}" if generation else obj.get("Md5Hash", "")
+
+            # Check for existing record
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
                     connector_id=self.connector_id, external_id=external_record_id
@@ -812,55 +836,38 @@ class S3CompatibleBaseConnector(BaseConnector):
             is_move = False
 
             if existing_record:
-                # Found by path - check if etag changed (content change)
-                stored_etag = existing_record.external_revision_id or ""
-
-                # If both externalRecordId and externalRevisionId are the same, skip
-                if current_etag and stored_etag and current_etag == stored_etag:
+                stored_revision = existing_record.external_revision_id or ""
+                if current_revision_id and stored_revision and current_revision_id == stored_revision:
                     self.logger.debug(
-                        f"Skipping {normalized_key}: externalRecordId and externalRevisionId unchanged"
+                        f"Skipping {normalized_key}: revision unchanged"
                     )
                     return None, []
 
-                # Content changed or missing etag - sync properly from S3
-                if current_etag and stored_etag and current_etag != stored_etag:
+                if current_revision_id != stored_revision:
                     self.logger.info(
-                        f"Content change detected: {normalized_key} - externalRevisionId changed from {stored_etag} to {current_etag}"
+                        f"Content change detected: {normalized_key}"
                     )
-                elif not current_etag or not stored_etag:
-                    if not current_etag:
-                        self.logger.warning(
-                            f"Current ETag missing for {normalized_key}, processing record"
-                        )
-                    if not stored_etag:
-                        self.logger.debug(
-                            f"Stored ETag missing for {normalized_key}, processing record"
-                        )
-            elif current_etag:
-                # Not found by path - FALLBACK: try etag-based lookup (for move/rename detection)
+            elif current_revision_id:
+                # Try lookup by revision ID for move detection
                 async with self.data_store_provider.transaction() as tx_store:
                     existing_record = await tx_store.get_record_by_external_revision_id(
-                        connector_id=self.connector_id, external_revision_id=current_etag
+                        connector_id=self.connector_id, external_revision_id=current_revision_id
                     )
 
                 if existing_record:
-                    # Found by etag but not by path - this is a move/rename
                     is_move = True
                     self.logger.info(
-                        f"Move/rename detected: {normalized_key} - file moved from {existing_record.external_record_id} to {external_record_id}"
+                        f"Move/rename detected: {normalized_key}"
                     )
                 else:
-                    # Not found by path or etag - new file
                     self.logger.debug(f"New document: {normalized_key}")
             else:
-                # No etag available - treat as new file
-                self.logger.debug(f"New document: {normalized_key} (no etag available)")
+                self.logger.debug(f"New document: {normalized_key}")
 
             # Prepare record data
             record_type = RecordType.FOLDER if is_folder else RecordType.FILE
-
             extension = get_file_extension(normalized_key) if is_file else None
-            mime_type = get_mimetype_for_s3(normalized_key, is_folder)
+            mime_type = obj.get("ContentType") or get_mimetype_for_gcs(normalized_key, is_folder)
 
             parent_path = get_parent_path_from_key(normalized_key)
             parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else bucket_name
@@ -868,12 +875,10 @@ class S3CompatibleBaseConnector(BaseConnector):
             web_url = self._generate_web_url(bucket_name, normalized_key)
 
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
-
             signed_url_route = await self._get_signed_url_route(record_id)
-
             record_name = normalized_key.rstrip("/").split("/")[-1] or normalized_key.rstrip("/")
 
-            # For moves/renames, remove old parent relationship before processing
+            # For moves/renames, remove old parent relationship
             if is_move and existing_record:
                 async with self.data_store_provider.transaction() as tx_store:
                     await self._remove_old_parent_relationship(record_id, tx_store)
@@ -890,12 +895,12 @@ class S3CompatibleBaseConnector(BaseConnector):
                 record_group_type=RecordGroupType.BUCKET.value,
                 external_record_group_id=bucket_name,
                 external_record_id=external_record_id,
-                external_revision_id=current_etag,
+                external_revision_id=current_revision_id,
                 version=version,
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
-                source_created_at=existing_record.source_created_at if existing_record else timestamp_ms,
+                source_created_at=existing_record.source_created_at if existing_record else created_timestamp_ms,
                 source_updated_at=timestamp_ms,
                 weburl=web_url,
                 signed_url=None,
@@ -909,25 +914,26 @@ class S3CompatibleBaseConnector(BaseConnector):
                 extension=extension,
                 path=normalized_key,
                 mime_type=mime_type,
-                etag=current_etag,
+                md5_hash=obj.get("Md5Hash"),
+                crc32_hash=obj.get("Crc32c"),
             )
 
             if hasattr(self, 'indexing_filters') and self.indexing_filters:
                 if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
                     file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
-            permissions = await self._create_s3_permissions(bucket_name, key)
+            permissions = await self._create_gcs_permissions(bucket_name, key)
 
             return file_record, permissions
 
         except Exception as e:
-            self.logger.error(f"Error processing S3 object: {e}", exc_info=True)
+            self.logger.error(f"Error processing GCS object: {e}", exc_info=True)
             return None, []
 
-    async def _create_s3_permissions(
+    async def _create_gcs_permissions(
         self, bucket_name: str, key: str
     ) -> List[Permission]:
-        """Create permissions for an S3 object based on connector scope."""
+        """Create permissions for a GCS object based on connector scope."""
         try:
             permissions = []
 
@@ -983,17 +989,17 @@ class S3CompatibleBaseConnector(BaseConnector):
         try:
             response = await self.data_source.list_buckets()
             if response.success:
-                self.logger.info(f"{self.connector_name} connection test successful.")
+                self.logger.info("GCS connection test successful.")
                 return True
             else:
-                self.logger.error(f"{self.connector_name} connection test failed: {response.error}")
+                self.logger.error(f"GCS connection test failed: {response.error}")
                 return False
         except Exception as e:
-            self.logger.error(f"{self.connector_name} connection test failed: {e}", exc_info=True)
+            self.logger.error(f"GCS connection test failed: {e}", exc_info=True)
             return False
 
     async def get_signed_url(self, record: Record) -> Optional[str]:
-        """Generate a presigned URL for an S3 object."""
+        """Generate a signed URL for a GCS object."""
         if not self.data_source:
             return None
         try:
@@ -1012,42 +1018,26 @@ class S3CompatibleBaseConnector(BaseConnector):
             else:
                 key = external_record_id.lstrip("/")
 
-            from urllib.parse import unquote
             key = unquote(key)
 
-            bucket_region = await self._get_bucket_region(bucket_name)
-
             self.logger.debug(
-                f"Generating presigned URL - Bucket: {bucket_name}, "
-                f"Region: {bucket_region}, Key: {key}, Record ID: {record.id}"
+                f"Generating signed URL - Bucket: {bucket_name}, "
+                f"Key: {key}, Record ID: {record.id}"
             )
 
-            response = await self.data_source.generate_presigned_url(
-                ClientMethod="get_object",
-                Params={"Bucket": bucket_name, "Key": key},
-                ExpiresIn=86400,
-                region_name=bucket_region
+            response = await self.data_source.generate_signed_url(
+                bucket_name=bucket_name,
+                blob_name=key,
+                expiration=86400,  # 24 hours
             )
 
             if response.success:
                 return response.data
             else:
-                error_msg = response.error or "Unknown error"
-                if "AccessDenied" in error_msg or "not authorized" in error_msg or "Forbidden" in error_msg:
-                    self.logger.error(
-                        f"❌ ACCESS DENIED: Failed to generate presigned URL. "
-                        f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
-                    )
-                elif "NoSuchKey" in error_msg or "NotFound" in error_msg:
-                    self.logger.error(
-                        f"❌ KEY NOT FOUND: The key may be incorrect. "
-                        f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
-                    )
-                else:
-                    self.logger.error(
-                        f"❌ FAILED: Failed to generate presigned URL. "
-                        f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
-                    )
+                self.logger.error(
+                    f"Failed to generate signed URL: {response.error} | "
+                    f"Bucket: {bucket_name} | Key: {key}"
+                )
                 return None
         except Exception as e:
             self.logger.error(
@@ -1056,7 +1046,7 @@ class S3CompatibleBaseConnector(BaseConnector):
             return None
 
     async def stream_record(self, record: Record) -> StreamingResponse:
-        """Stream S3 object content."""
+        """Stream GCS object content."""
         if isinstance(record, FileRecord) and not record.is_file:
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
@@ -1078,7 +1068,7 @@ class S3CompatibleBaseConnector(BaseConnector):
 
     async def cleanup(self) -> None:
         """Clean up resources used by the connector."""
-        self.logger.info(f"Cleaning up {self.connector_name} connector resources.")
+        self.logger.info("Cleaning up GCS connector resources.")
         self.data_source = None
 
     async def get_filter_options(
@@ -1110,7 +1100,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                     page=page,
                     limit=limit,
                     has_more=False,
-                    message=f"{self.connector_name} connector is not initialized"
+                    message="GCS connector is not initialized"
                 )
 
             response = await self.data_source.list_buckets()
@@ -1135,13 +1125,9 @@ class S3CompatibleBaseConnector(BaseConnector):
                 )
 
             all_buckets = [
-                bucket.get("Name") for bucket in buckets_data["Buckets"]
-                if bucket.get("Name")
+                bucket.get("name") for bucket in buckets_data["Buckets"]
+                if bucket.get("name")
             ]
-
-            for bucket_name in all_buckets:
-                if bucket_name:
-                    await self._get_bucket_region(bucket_name)
 
             if search:
                 search_lower = search.lower()
@@ -1190,11 +1176,11 @@ class S3CompatibleBaseConnector(BaseConnector):
                 self.logger.info("No records to reindex")
                 return
 
-            self.logger.info(f"Starting reindex for {len(record_results)} {self.connector_name} records")
+            self.logger.info(f"Starting reindex for {len(record_results)} GCS records")
 
             if not self.data_source:
-                self.logger.error(f"{self.connector_name} connector is not initialized.")
-                raise Exception(f"{self.connector_name} connector is not initialized.")
+                self.logger.error("GCS connector is not initialized.")
+                raise Exception("GCS connector is not initialized.")
 
             org_id = self.data_entities_processor.org_id
             updated_records = []
@@ -1220,10 +1206,10 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             if non_updated_records:
                 await self.data_entities_processor.reindex_existing_records(non_updated_records)
-                self.logger.info(f"Published reindex events for {len(non_updated_records)} records with unchanged external_revision_id")
+                self.logger.info(f"Published reindex events for {len(non_updated_records)} records")
 
         except Exception as e:
-            self.logger.error(f"Error during {self.connector_name} reindex: {e}", exc_info=True)
+            self.logger.error(f"Error during GCS reindex: {e}", exc_info=True)
             raise
 
     async def _check_and_fetch_updated_record(
@@ -1247,9 +1233,9 @@ class S3CompatibleBaseConnector(BaseConnector):
                 self.logger.warning(f"Invalid key for record {record.id}")
                 return None
 
-            response = await self.data_source.head_object(
-                Bucket=bucket_name,
-                Key=normalized_key
+            response = await self.data_source.head_blob(
+                bucket_name=bucket_name,
+                blob_name=normalized_key
             )
 
             if not response.success:
@@ -1260,20 +1246,25 @@ class S3CompatibleBaseConnector(BaseConnector):
             if not obj_metadata:
                 return None
 
-            current_etag = obj_metadata.get("ETag", "").strip('"')
-            stored_etag = record.external_revision_id
+            # Check revision ID
+            generation = obj_metadata.get("Generation")
+            metageneration = obj_metadata.get("Metageneration")
+            current_revision_id = f"{generation}:{metageneration}" if generation else obj_metadata.get("Md5Hash", "")
+            stored_revision = record.external_revision_id
 
-            if current_etag == stored_etag:
-                self.logger.debug(f"Record {record.id}: external_revision_id unchanged ({current_etag})")
+            if current_revision_id == stored_revision:
+                self.logger.debug(f"Record {record.id}: revision unchanged")
                 return None
 
-            self.logger.debug(f"Record {record.id}: external_revision_id changed from {stored_etag} to {current_etag}")
+            self.logger.debug(f"Record {record.id}: revision changed")
 
+            # Parse timestamps
             last_modified = obj_metadata.get("LastModified")
-            if last_modified:
-                if isinstance(last_modified, datetime):
-                    timestamp_ms = int(last_modified.timestamp() * 1000)
-                else:
+            if last_modified and isinstance(last_modified, str):
+                try:
+                    obj_dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
+                    timestamp_ms = int(obj_dt.timestamp() * 1000)
+                except ValueError:
                     timestamp_ms = get_epoch_timestamp_in_ms()
             else:
                 timestamp_ms = get_epoch_timestamp_in_ms()
@@ -1282,7 +1273,7 @@ class S3CompatibleBaseConnector(BaseConnector):
             is_file = not is_folder
 
             extension = get_file_extension(normalized_key) if is_file else None
-            mime_type = get_mimetype_for_s3(normalized_key, is_folder)
+            mime_type = obj_metadata.get("ContentType") or get_mimetype_for_gcs(normalized_key, is_folder)
 
             parent_path = get_parent_path_from_key(normalized_key)
             parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else bucket_name
@@ -1302,7 +1293,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 record_group_type=RecordGroupType.BUCKET.value,
                 external_record_group_id=bucket_name,
                 external_record_id=updated_external_record_id,
-                external_revision_id=current_etag,
+                external_revision_id=current_revision_id,
                 version=record.version + 1,
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
@@ -1321,14 +1312,15 @@ class S3CompatibleBaseConnector(BaseConnector):
                 extension=extension,
                 path=normalized_key,
                 mime_type=mime_type,
-                etag=current_etag,
+                md5_hash=obj_metadata.get("Md5Hash"),
+                crc32_hash=obj_metadata.get("Crc32c"),
             )
 
             if hasattr(self, 'indexing_filters') and self.indexing_filters:
                 if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
                     updated_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
-            permissions = await self._create_s3_permissions(bucket_name, normalized_key)
+            permissions = await self._create_gcs_permissions(bucket_name, normalized_key)
 
             return updated_record, permissions
 
@@ -1339,10 +1331,10 @@ class S3CompatibleBaseConnector(BaseConnector):
     async def run_incremental_sync(self) -> None:
         """Run an incremental synchronization from buckets."""
         try:
-            self.logger.info(f"Starting {self.connector_name} incremental sync.")
+            self.logger.info("Starting GCS incremental sync.")
 
             if not self.data_source:
-                raise ConnectionError(f"{self.connector_name} connector is not initialized.")
+                raise ConnectionError("GCS connector is not initialized.")
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, self.filter_key, self.connector_id, self.logger
@@ -1366,17 +1358,12 @@ class S3CompatibleBaseConnector(BaseConnector):
                     buckets_data = buckets_response.data
                     if "Buckets" in buckets_data:
                         buckets_to_sync = [
-                            bucket.get("Name") for bucket in buckets_data["Buckets"]
+                            bucket.get("name") for bucket in buckets_data["Buckets"]
                         ]
 
             if not buckets_to_sync:
                 self.logger.warning("No buckets to sync")
                 return
-
-            self.logger.info(f"Fetching regions for {len(buckets_to_sync)} bucket(s)...")
-            for bucket_name in buckets_to_sync:
-                if bucket_name:
-                    await self._get_bucket_region(bucket_name)
 
             for bucket_name in buckets_to_sync:
                 if not bucket_name:
@@ -1390,7 +1377,32 @@ class S3CompatibleBaseConnector(BaseConnector):
                     )
                     continue
 
-            self.logger.info(f"{self.connector_name} incremental sync completed.")
+            self.logger.info("GCS incremental sync completed.")
         except Exception as ex:
-            self.logger.error(f"❌ Error in {self.connector_name} incremental sync: {ex}", exc_info=True)
+            self.logger.error(f"❌ Error in GCS incremental sync: {ex}", exc_info=True)
             raise
+
+    @classmethod
+    async def create_connector(
+        cls,
+        logger: Logger,
+        data_store_provider: DataStoreProvider,
+        config_service: ConfigurationService,
+        connector_id: str,
+        **kwargs,
+    ) -> "GCSConnector":
+        """Factory method to create and initialize connector."""
+        data_entities_processor = GCSDataSourceEntitiesProcessor(
+            logger, data_store_provider, config_service
+        )
+        await data_entities_processor.initialize()
+
+        connector = cls(
+            logger,
+            data_entities_processor,
+            data_store_provider,
+            config_service,
+            connector_id,
+        )
+
+        return connector
