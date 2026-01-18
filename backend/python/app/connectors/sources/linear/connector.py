@@ -53,7 +53,7 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.linear.common.apps import LinearApp
-from app.connectors.utils.ticket_mapper import TicketValueMapper
+from app.connectors.utils.value_mapper import ValueMapper
 from app.models.blocks import (
     Block,
     BlockComment,
@@ -84,9 +84,9 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    Status,
+    ItemType,
     TicketRecord,
-    TicketStatus,
-    TicketType,
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
@@ -236,8 +236,8 @@ class LinearConnector(BaseConnector):
         self.connector_id = connector_id
         self.connector_name = Connectors.LINEAR
 
-        # Initialize ticket value mapper (all mappings are now in defaults)
-        self.ticket_mapper = TicketValueMapper()
+        # Initialize value mapper (all mappings are now in defaults)
+        self.value_mapper = ValueMapper()
 
         # Initialize sync points
         org_id = self.data_entities_processor.org_id
@@ -2453,20 +2453,20 @@ class LinearConnector(BaseConnector):
             priority_map = {1: "Urgent", 2: "High", 3: "Medium", 4: "Low"}
             priority_str = priority_map.get(priority_num)
 
-        # Map to standard TicketPriority enum
-        priority = self.ticket_mapper.map_priority(priority_str)
+        # Map to standard Priority enum
+        priority = self.value_mapper.map_priority(priority_str)
 
-        # State information - map to standard TicketStatus enum
+        # State information - map to standard Status enum
         state = issue_data.get("state", {})
         state_name = state.get("name") if state else None
         state_type = state.get("type") if state else None
 
         # Try custom state name first (e.g., "new", "In Review")
-        status = self.ticket_mapper.map_status(state_name)
+        status = self.value_mapper.map_status(state_name)
 
         # If state_name didn't map to enum, try state_type (backlog, started, etc.)
-        if status and not isinstance(status, TicketStatus):
-            status = self.ticket_mapper.map_status(state_type)
+        if status and not isinstance(status, Status):
+            status = self.value_mapper.map_status(state_type)
 
         # Type extraction from labels with fallback logic
         labels = issue_data.get("labels", {})
@@ -2477,8 +2477,8 @@ class LinearConnector(BaseConnector):
         for label in label_nodes:
             label_name = label.get("name", "") if label else ""
             if label_name:
-                mapped_type = self.ticket_mapper.map_type(label_name)
-                if mapped_type and isinstance(mapped_type, TicketType):
+                mapped_type = self.value_mapper.map_type(label_name)
+                if mapped_type and isinstance(mapped_type, ItemType):
                     type_value = mapped_type
                     break  # Use first matching type
 
@@ -2486,9 +2486,9 @@ class LinearConnector(BaseConnector):
         if not type_value:
             parent = issue_data.get("parent")
             if parent and parent.get("id"):
-                type_value = TicketType.SUB_ISSUE
+                type_value = ItemType.SUB_ISSUE
             else:
-                type_value = TicketType.ISSUE
+                type_value = ItemType.ISSUE
 
         # Assignee information
         assignee = issue_data.get("assignee", {})

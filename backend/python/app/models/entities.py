@@ -84,8 +84,8 @@ class IndexingStatus(str, Enum):
     CONNECTOR_DISABLED = "CONNECTOR_DISABLED"
 
 
-class TicketPriority(str, Enum):
-    """Standard ticket priority values for all ticketing connectors"""
+class Priority(str, Enum):
+    """Standard priority values for all connectors"""
     LOWEST = "LOWEST"
     LOW = "LOW"
     MEDIUM = "MEDIUM"
@@ -96,8 +96,8 @@ class TicketPriority(str, Enum):
     UNKNOWN = "UNKNOWN"  # For unmapped or missing priority values
 
 
-class TicketStatus(str, Enum):
-    """Standard ticket status values for all ticketing connectors"""
+class Status(str, Enum):
+    """Standard status values for all connectors"""
     NEW = "NEW"
     OPEN = "OPEN"
     IN_PROGRESS = "IN_PROGRESS"
@@ -109,33 +109,36 @@ class TicketStatus(str, Enum):
     WAITING = "WAITING"
     BLOCKED = "BLOCKED"
     DONE = "DONE"
+    QA = "QA"
     UNKNOWN = "UNKNOWN"  # For unmapped or missing status values
 
 
-class TicketType(str, Enum):
-    """Standard ticket type values for all ticketing connectors"""
-    TASK = "TASK"  # General task
-    BUG = "BUG"  # Bug/defect
-    STORY = "STORY"  # User story
-    EPIC = "EPIC"  # Epic/large feature
-    FEATURE = "FEATURE"  # Feature request
-    SUBTASK = "SUBTASK"  # Subtask
-    INCIDENT = "INCIDENT"  # Incident/outage
-    IMPROVEMENT = "IMPROVEMENT"  # Improvement/enhancement
-    QUESTION = "QUESTION"  # Question/inquiry
-    DOCUMENTATION = "DOCUMENTATION"  # Documentation task
-    TEST = "TEST"  # Test case
-    UNKNOWN = "UNKNOWN"  # Unknown or unmapped ticket type
+class ItemType(str, Enum):
+    """Standard item type values for all connectors"""
+    TASK = "TASK"
+    BUG = "BUG"
+    STORY = "STORY"
+    EPIC = "EPIC"
+    FEATURE = "FEATURE"
+    SUBTASK = "SUBTASK"
+    INCIDENT = "INCIDENT"
+    IMPROVEMENT = "IMPROVEMENT"
+    QUESTION = "QUESTION"
+    DOCUMENTATION = "DOCUMENTATION"
+    TEST = "TEST"
+    ISSUE = "ISSUE"
+    SUB_ISSUE = "SUB_ISSUE"
+    UNKNOWN = "UNKNOWN"
 
 
-class TicketDeliveryStatus(str, Enum):
-    """Standard ticket delivery status values for all ticketing connectors"""
-    ON_TRACK = "ON_TRACK"  # On track - progressing as expected
-    AT_RISK = "AT_RISK"  # At risk - some concerns but manageable
-    OFF_TRACK = "OFF_TRACK"  # Off track - significant issues or delays
-    HIGH_RISK = "HIGH_RISK"  # High risk - major concerns (Jira Align)
-    SOME_RISK = "SOME_RISK"  # Some risk - minor concerns (Jira Align)
-    UNKNOWN = "UNKNOWN"  # Unknown or unmapped delivery status
+class DeliveryStatus(str, Enum):
+    """Standard delivery status values for all connectors"""
+    ON_TRACK = "ON_TRACK"
+    AT_RISK = "AT_RISK"
+    OFF_TRACK = "OFF_TRACK"
+    HIGH_RISK = "HIGH_RISK"
+    SOME_RISK = "SOME_RISK"
+    UNKNOWN = "UNKNOWN"
 
 
 class RelatedExternalRecord(BaseModel):
@@ -157,61 +160,6 @@ class RelatedExternalRecord(BaseModel):
         description="Custom relationship tag from source system (e.g., 'is blocked by', 'blocks' for Jira)"
     )
 
-
-class TicketPriority(str, Enum):
-    """Standard ticket priority values for all ticketing connectors"""
-    LOWEST = "LOWEST"
-    LOW = "LOW"
-    MEDIUM = "MEDIUM"
-    HIGH = "HIGH"
-    HIGHEST = "HIGHEST"
-    CRITICAL = "CRITICAL"
-    BLOCKER = "BLOCKER"
-    UNKNOWN = "UNKNOWN"  # For unmapped or missing priority values
-
-
-class TicketStatus(str, Enum):
-    """Standard ticket status values for all ticketing connectors"""
-    NEW = "NEW"
-    OPEN = "OPEN"
-    IN_PROGRESS = "IN_PROGRESS"
-    RESOLVED = "RESOLVED"
-    CLOSED = "CLOSED"
-    CANCELLED = "CANCELLED"
-    REOPENED = "REOPENED"
-    PENDING = "PENDING"
-    WAITING = "WAITING"
-    BLOCKED = "BLOCKED"
-    DONE = "DONE"
-    UNKNOWN = "UNKNOWN"  # For unmapped or missing status values
-
-
-class TicketType(str, Enum):
-    """Standard ticket type values for all ticketing connectors"""
-    TASK = "TASK"
-    BUG = "BUG"
-    STORY = "STORY"
-    EPIC = "EPIC"
-    FEATURE = "FEATURE"
-    SUBTASK = "SUBTASK"
-    INCIDENT = "INCIDENT"
-    IMPROVEMENT = "IMPROVEMENT"
-    QUESTION = "QUESTION"
-    DOCUMENTATION = "DOCUMENTATION"
-    TEST = "TEST"
-    ISSUE = "ISSUE"
-    SUB_ISSUE = "SUB_ISSUE"
-    UNKNOWN = "UNKNOWN"
-
-
-class TicketDeliveryStatus(str, Enum):
-    """Standard ticket delivery status values for all ticketing connectors"""
-    ON_TRACK = "ON_TRACK"  # On track - progressing as expected
-    AT_RISK = "AT_RISK"  # At risk - some concerns but manageable
-    OFF_TRACK = "OFF_TRACK"  # Off track - significant issues or delays
-    HIGH_RISK = "HIGH_RISK"  # High risk - major concerns (Jira Align)
-    SOME_RISK = "SOME_RISK"  # Some risk - minor concerns (Jira Align)
-    UNKNOWN = "UNKNOWN"  # Unknown or unmapped delivery status
 
 class Record(BaseModel):
     # Core record properties
@@ -758,10 +706,10 @@ class CommentRecord(Record):
         )
 
 class TicketRecord(Record):
-    status: Optional[Union[TicketStatus, str]] = None
-    priority: Optional[Union[TicketPriority, str]] = None
-    type: Optional[Union[TicketType, str]] = None
-    delivery_status: Optional[Union[TicketDeliveryStatus, str]] = None
+    status: Optional[Union[Status, str]] = None
+    priority: Optional[Union[Priority, str]] = None
+    type: Optional[Union[ItemType, str]] = None
+    delivery_status: Optional[Union[DeliveryStatus, str]] = None
     assignee: Optional[str] = None
     reporter_email: Optional[str] = None
     assignee_email: Optional[str] = None
@@ -842,10 +790,10 @@ class TicketRecord(Record):
             preview_renderable=record_doc.get("previewRenderable", True),
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId", None),
-            status=TicketRecord._safe_enum_parse(ticket_doc.get("status"), TicketStatus),
-            priority=TicketRecord._safe_enum_parse(ticket_doc.get("priority"), TicketPriority),
-            type=TicketRecord._safe_enum_parse(ticket_doc.get("type"), TicketType),
-            delivery_status=TicketRecord._safe_enum_parse(ticket_doc.get("deliveryStatus"), TicketDeliveryStatus),
+            status=TicketRecord._safe_enum_parse(ticket_doc.get("status"), Status),
+            priority=TicketRecord._safe_enum_parse(ticket_doc.get("priority"), Priority),
+            type=TicketRecord._safe_enum_parse(ticket_doc.get("type"), ItemType),
+            delivery_status=TicketRecord._safe_enum_parse(ticket_doc.get("deliveryStatus"), DeliveryStatus),
             assignee=ticket_doc.get("assignee"),
             reporter_email=ticket_doc.get("reporterEmail"),
             assignee_email=ticket_doc.get("assigneeEmail"),
