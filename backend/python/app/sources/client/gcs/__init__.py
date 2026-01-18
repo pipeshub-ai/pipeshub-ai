@@ -2,8 +2,8 @@
 
 from app.sources.client.gcs.gcs import (
     GCSClient,
-    GCSRESTClientViaServiceAccount,
     GCSResponse,
+    GCSRESTClientViaServiceAccount,
     GCSServiceAccountConfig,
 )
 

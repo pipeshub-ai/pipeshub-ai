@@ -37,12 +37,12 @@ from app.connectors.sources.google.drive.individual.connector import (
 from app.connectors.sources.google.drive.team.connector import (
     GoogleDriveTeamConnector,
 )
+from app.connectors.sources.google_cloud_storage.connector import GCSConnector
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
-from app.connectors.sources.google_cloud_storage.connector import GCSConnector
 from app.connectors.sources.minio.connector import MinIOConnector
 from app.connectors.sources.nextcloud.connector import NextcloudConnector
 from app.connectors.sources.s3.connector import S3Connector

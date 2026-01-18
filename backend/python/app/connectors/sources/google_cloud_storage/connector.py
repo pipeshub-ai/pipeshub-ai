@@ -9,7 +9,8 @@ import mimetypes
 import uuid
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+from urllib.parse import unquote
 
 from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
@@ -891,7 +892,7 @@ class GCSConnector(BaseConnector):
                 id=record_id,
                 record_name=record_name,
                 record_type=record_type,
-                record_group_type=RecordGroupType.DRIVE.value,
+                record_group_type=RecordGroupType.BUCKET.value,
                 external_record_group_id=bucket_name,
                 external_record_id=external_record_id,
                 external_revision_id=current_revision_id,
@@ -1017,7 +1018,6 @@ class GCSConnector(BaseConnector):
             else:
                 key = external_record_id.lstrip("/")
 
-            from urllib.parse import unquote
             key = unquote(key)
 
             self.logger.debug(
@@ -1290,7 +1290,7 @@ class GCSConnector(BaseConnector):
                 id=record.id,
                 record_name=record_name,
                 record_type=RecordType.FOLDER if is_folder else RecordType.FILE,
-                record_group_type=RecordGroupType.DRIVE.value,
+                record_group_type=RecordGroupType.BUCKET.value,
                 external_record_group_id=bucket_name,
                 external_record_id=updated_external_record_id,
                 external_revision_id=current_revision_id,

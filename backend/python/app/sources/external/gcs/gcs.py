@@ -4,13 +4,13 @@ Google Cloud Storage Data Source
 Provides a data source class for interacting with Google Cloud Storage API.
 """
 
-from datetime import datetime, timedelta
-from typing import Any, AsyncIterator, Dict, Iterator, List, Optional
+from datetime import timedelta
+from typing import Any, AsyncIterator, Dict, Optional
 
 try:
-    from google.cloud import storage  # type: ignore
-    from google.cloud.storage import Blob, Bucket  # type: ignore
     from google.api_core.exceptions import GoogleAPIError, NotFound  # type: ignore
+    from google.cloud import storage  # type: ignore
+    from google.cloud.storage import Blob  # type: ignore
 except ImportError:
     raise ImportError(
         "google-cloud-storage is not installed. Please install it with "
@@ -41,7 +41,7 @@ class GCSDataSource:
 
     def _handle_response(
         self,
-        data: Optional[Any] = None,
+        data: Optional[Dict[str, Any]] = None,
         error: Optional[str] = None
     ) -> GCSResponse:
         """Create a standardized response."""
@@ -104,7 +104,7 @@ class GCSDataSource:
         """
         try:
             client = self._get_storage_client()
-            bucket = client.bucket(bucket_name)
+            client.bucket(bucket_name)
 
             # Build list parameters
             kwargs: Dict[str, Any] = {}
@@ -122,8 +122,8 @@ class GCSDataSource:
             # Get blob iterator
             blob_iterator = client.list_blobs(bucket_name, **kwargs)
 
-            # Get the current page
-            page = blob_iterator._next_page()
+            # Get the current page using public API
+            page = next(blob_iterator.pages, None)
 
             blobs_list = []
             prefixes = []
@@ -356,7 +356,7 @@ class GCSDataSource:
 
             url = blob.generate_signed_url(**kwargs)
 
-            return self._handle_response(data=url)
+            return self._handle_response(data={"url": url})
 
         except NotFound:
             return self._handle_response(
