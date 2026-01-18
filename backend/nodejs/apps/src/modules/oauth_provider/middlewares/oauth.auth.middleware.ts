@@ -25,8 +25,8 @@ function buildWwwAuthenticateHeader(
     parts.push(`error="${error}"`)
   }
   if (errorDescription) {
-    // Escape quotes in description
-    const safeDescription = errorDescription.replace(/"/g, '\\"')
+    // Escape backslashes first, then quotes to prevent escape sequence injection
+    const safeDescription = errorDescription.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
     parts.push(`error_description="${safeDescription}"`)
   }
   if (scope) {
