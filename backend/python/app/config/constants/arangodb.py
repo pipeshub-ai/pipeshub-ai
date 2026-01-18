@@ -58,6 +58,8 @@ class Connectors(Enum):
     S3 = "S3"
     MINIO = "MINIO"
     GCS = "GCS"
+    AZURE_BLOB = "AZURE BLOB"
+    AZURE_FILES = "AZURE FILES"
 
     UNKNOWN = "UNKNOWN"
 
@@ -75,6 +77,7 @@ class AppGroups(Enum):
     S3 = "S3"
     MINIO = "MinIO"
     GCS = "GCS"
+    AZURE = "Azure"
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"

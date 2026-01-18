@@ -1,6 +1,5 @@
-from ctypes import Union
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 try:
     from azure.storage.blob import (  # type: ignore

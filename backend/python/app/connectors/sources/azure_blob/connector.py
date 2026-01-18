@@ -1,17 +1,16 @@
 """
-Google Cloud Storage Connector
+Azure Blob Storage Connector
 
-Connector for synchronizing data from Google Cloud Storage buckets. This connector
-uses the native GCS API with service account authentication.
+Connector for synchronizing data from Azure Blob Storage containers. This connector
+uses the native Azure Blob Storage API with account key authentication.
 """
 
-import asyncio
 import mimetypes
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from logging import Logger
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import unquote
+from urllib.parse import quote
 
 from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
@@ -64,7 +63,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
-from app.connectors.sources.google_cloud_storage.common.apps import GCSApp
+from app.connectors.sources.azure_blob.common.apps import AzureBlobApp
 from app.models.entities import (
     AppUser,
     FileRecord,
@@ -76,49 +75,49 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.sources.client.gcs.gcs import GCSClient
-from app.sources.external.gcs.gcs import GCSDataSource
+from app.sources.client.azure.azure_blob import AzureBlobClient
+from app.sources.external.azure.azure_blob import AzureBlobDataSource
 from app.utils.streaming import stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Default connector endpoint for signed URL generation
 DEFAULT_CONNECTOR_ENDPOINT = "http://localhost:8000"
 
-# Base URL for Google Cloud Console
-GCS_CONSOLE_BASE_URL = "https://console.cloud.google.com/storage/browser"
+# Base URL for Azure Portal
+AZURE_PORTAL_BASE_URL = "https://portal.azure.com"
 
 
-def get_file_extension(key: str) -> Optional[str]:
-    """Extracts the extension from a GCS key."""
-    if "." in key:
-        parts = key.split(".")
+def get_file_extension(blob_name: str) -> Optional[str]:
+    """Extracts the extension from a blob name."""
+    if "." in blob_name:
+        parts = blob_name.split(".")
         if len(parts) > 1:
             return parts[-1].lower()
     return None
 
 
-def get_parent_path_from_key(key: str) -> Optional[str]:
-    """Extracts the parent path from a GCS key (without leading slash).
+def get_parent_path_from_blob_name(blob_name: str) -> Optional[str]:
+    """Extracts the parent path from a blob name (without leading slash).
 
-    For a key like 'a/b/c/file.txt', returns 'a/b/c'
-    For a key like 'a/b/c/', returns 'a/b'
+    For a blob like 'a/b/c/file.txt', returns 'a/b/c'
+    For a blob like 'a/b/c/', returns 'a/b'
     """
-    if not key:
+    if not blob_name:
         return None
     # Remove leading slash and trailing slash (if present)
-    normalized_key = key.lstrip("/").rstrip("/")
-    if not normalized_key or "/" not in normalized_key:
+    normalized_name = blob_name.lstrip("/").rstrip("/")
+    if not normalized_name or "/" not in normalized_name:
         return None
-    parent_path = "/".join(normalized_key.split("/")[:-1])
+    parent_path = "/".join(normalized_name.split("/")[:-1])
     return parent_path if parent_path else None
 
 
-def get_mimetype_for_gcs(key: str, is_folder: bool = False) -> str:
-    """Determines the correct MimeTypes string value for a GCS object."""
+def get_mimetype_for_azure_blob(blob_name: str, is_folder: bool = False) -> str:
+    """Determines the correct MimeTypes string value for an Azure blob."""
     if is_folder:
         return MimeTypes.FOLDER.value
 
-    mime_type_str, _ = mimetypes.guess_type(key)
+    mime_type_str, _ = mimetypes.guess_type(blob_name)
     if mime_type_str:
         try:
             return MimeTypes(mime_type_str).value
@@ -128,52 +127,54 @@ def get_mimetype_for_gcs(key: str, is_folder: bool = False) -> str:
 
 
 def parse_parent_external_id(parent_external_id: str) -> Tuple[str, Optional[str]]:
-    """Parse parent_external_id to extract bucket_name and normalized path.
+    """Parse parent_external_id to extract container_name and normalized path.
 
     Args:
-        parent_external_id: External ID in format "bucket_name/path" or just "bucket_name"
+        parent_external_id: External ID in format "container_name/path" or just "container_name"
 
     Returns:
-        A tuple of (bucket_name, normalized_path) where normalized_path is None
-        if parent_external_id contains only a bucket name.
+        A tuple of (container_name, normalized_path) where normalized_path is None
+        if parent_external_id contains only a container name.
     """
     if "/" in parent_external_id:
         parts = parent_external_id.split("/", 1)
-        bucket_name = parts[0]
+        container_name = parts[0]
         path = parts[1]
         path = path.lstrip("/")
         if path and not path.endswith("/"):
             path = path + "/"
-        return bucket_name, path
+        return container_name, path
     else:
-        bucket_name = parent_external_id
-        return bucket_name, None
+        container_name = parent_external_id
+        return container_name, None
 
 
-def get_parent_weburl_for_gcs(parent_external_id: str) -> str:
-    """Generate webUrl for a GCS directory based on parent external_id.
+def get_parent_weburl_for_azure_blob(parent_external_id: str, account_name: str) -> str:
+    """Generate webUrl for an Azure Blob directory based on parent external_id.
 
     Args:
-        parent_external_id: External ID in format "bucket_name/path" or just "bucket_name"
+        parent_external_id: External ID in format "container_name/path" or just "container_name"
+        account_name: Azure storage account name
 
     Returns:
-        Console URL for the directory
+        Azure Portal URL for the directory
     """
-    bucket_name, path = parse_parent_external_id(parent_external_id)
+    container_name, path = parse_parent_external_id(parent_external_id)
+    # Azure Portal URL format for blob containers
+    base_url = f"https://{account_name}.blob.core.windows.net/{container_name}"
     if path:
-        return f"{GCS_CONSOLE_BASE_URL}/{bucket_name}/{path}"
-    else:
-        return f"{GCS_CONSOLE_BASE_URL}/{bucket_name}"
+        return f"{base_url}/{path}"
+    return base_url
 
 
-def get_parent_path_for_gcs(parent_external_id: str) -> Optional[str]:
-    """Extract directory path from GCS parent external_id.
+def get_parent_path_for_azure_blob(parent_external_id: str) -> Optional[str]:
+    """Extract directory path from Azure Blob parent external_id.
 
     Args:
-        parent_external_id: External ID in format "bucket_name/path" or just "bucket_name"
+        parent_external_id: External ID in format "container_name/path" or just "container_name"
 
     Returns:
-        Directory path without bucket name prefix, or None for root directories
+        Directory path without container name prefix, or None for root directories
     """
     if "/" in parent_external_id:
         parts = parent_external_id.split("/", 1)
@@ -185,16 +186,18 @@ def get_parent_path_for_gcs(parent_external_id: str) -> Optional[str]:
         return None
 
 
-class GCSDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
-    """GCS processor that extends the base processor with GCS-specific placeholder record logic."""
+class AzureBlobDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
+    """Azure Blob processor that extends the base processor with Azure-specific placeholder record logic."""
 
     def __init__(
         self,
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
+        account_name: str = "",
     ) -> None:
         super().__init__(logger, data_store_provider, config_service)
+        self.account_name = account_name
 
     def _create_placeholder_parent_record(
         self,
@@ -203,15 +206,15 @@ class GCSDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         record: Record,
     ) -> Record:
         """
-        Create a placeholder parent record with GCS-specific weburl and path.
+        Create a placeholder parent record with Azure-specific weburl and path.
         """
         parent_record = super()._create_placeholder_parent_record(
             parent_external_id, parent_record_type, record
         )
 
         if parent_record_type == RecordType.FILE and isinstance(parent_record, FileRecord):
-            weburl = get_parent_weburl_for_gcs(parent_external_id)
-            path = get_parent_path_for_gcs(parent_external_id)
+            weburl = get_parent_weburl_for_azure_blob(parent_external_id, self.account_name)
+            path = get_parent_path_for_azure_blob(parent_external_id)
             parent_record.weburl = weburl
             parent_record.path = path
             parent_record.is_internal = True
@@ -220,42 +223,78 @@ class GCSDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         return parent_record
 
 
-@ConnectorBuilder("GCS")\
-    .in_group("GCS")\
-    .with_description("Sync files and folders from Google Cloud Storage")\
+@ConnectorBuilder("Azure Blob")\
+    .in_group("Azure")\
+    .with_description("Sync files and folders from Azure Blob Storage")\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .with_auth([
-        AuthBuilder.type(AuthType.ACCESS_KEY).fields([
+        AuthBuilder.type(AuthType.ACCOUNT_KEY).fields([
             AuthField(
-                name="serviceAccountJson",
-                display_name="Service Account JSON",
-                placeholder="Paste your service account JSON key here",
-                description="The Service Account JSON key from Google Cloud Console. Go to IAM & Admin > Service Accounts > Keys to create one.",
-                field_type="TEXTAREA",
-                max_length=10000,
+                name="accountName",
+                display_name="Account Name",
+                placeholder="mystorageaccount",
+                description="The Account Name from Azure Blob Storage App settings",
+                field_type="TEXT",
+                max_length=2000,
+                is_secret=False
+            ),
+            AuthField(
+                name="accountKey",
+                display_name="Account Key",
+                placeholder="Your account key",
+                description="The Account Key from Azure Blob Storage App settings",
+                field_type="PASSWORD",
+                max_length=2000,
                 is_secret=True
+            ),
+            AuthField(
+                name="containerName",
+                display_name="Container Name",
+                placeholder="my-container",
+                description="Optional: specific container to sync. Leave empty to sync all containers.",
+                field_type="TEXT",
+                max_length=2000,
+                is_secret=False
+            ),
+            AuthField(
+                name="endpointProtocol",
+                display_name="Endpoint Protocol",
+                placeholder="https",
+                description="The Endpoint Protocol (default: https)",
+                field_type="TEXT",
+                max_length=2000,
+                is_secret=False
+            ),
+            AuthField(
+                name="endpointSuffix",
+                display_name="Endpoint Suffix",
+                placeholder="core.windows.net",
+                description="The Endpoint Suffix (default: core.windows.net)",
+                field_type="TEXT",
+                max_length=2000,
+                is_secret=False
             ),
         ])
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/gcs.svg")
+        .with_icon("/assets/icons/connectors/azureblob.svg")
         .add_documentation_link(DocumentationLink(
-            "GCS Service Account Setup",
-            "https://cloud.google.com/iam/docs/service-accounts-create",
+            "Azure Blob Storage Setup",
+            "https://learn.microsoft.com/en-us/azure/storage/blobs/storage-quickstart-blobs-portal",
             "setup"
         ))
         .add_documentation_link(DocumentationLink(
             'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/gcs/gcs',
+            'https://docs.pipeshub.com/connectors/azure/azureblob',
             'pipeshub'
         ))
         .add_filter_field(FilterField(
-            name="buckets",
-            display_name="Bucket Names",
+            name="containers",
+            display_name="Container Names",
             filter_type=FilterType.MULTISELECT,
             category=FilterCategory.SYNC,
-            description="Select specific GCS buckets to sync",
+            description="Select specific Azure Blob containers to sync",
             option_source_type=OptionSourceType.DYNAMIC,
             default_value=[],
             default_operator=MultiselectOperator.IN.value
@@ -279,9 +318,9 @@ class GCSDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         .with_agent_support(True)
     )\
     .build_decorator()
-class GCSConnector(BaseConnector):
+class AzureBlobConnector(BaseConnector):
     """
-    Connector for synchronizing data from Google Cloud Storage buckets.
+    Connector for synchronizing data from Azure Blob Storage containers.
     """
 
     def __init__(
@@ -293,7 +332,7 @@ class GCSConnector(BaseConnector):
         connector_id: str,
     ) -> None:
         super().__init__(
-            app=GCSApp(connector_id),
+            app=AzureBlobApp(connector_id),
             logger=logger,
             data_entities_processor=data_entities_processor,
             data_store_provider=data_store_provider,
@@ -301,9 +340,9 @@ class GCSConnector(BaseConnector):
             connector_id=connector_id,
         )
 
-        self.connector_name = Connectors.GCS
+        self.connector_name = Connectors.AZURE_BLOB
         self.connector_id = connector_id
-        self.filter_key = "gcs"
+        self.filter_key = "azureblob"
 
         # Initialize sync point for tracking record changes
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
@@ -316,20 +355,20 @@ class GCSConnector(BaseConnector):
 
         self.record_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
 
-        self.data_source: Optional[GCSDataSource] = None
+        self.data_source: Optional[AzureBlobDataSource] = None
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
-        self.bucket_name: Optional[str] = None
+        self.container_name: Optional[str] = None
         self.connector_scope: Optional[str] = None
         self.created_by: Optional[str] = None
-        self.project_id: Optional[str] = None
+        self.account_name: Optional[str] = None
 
         # Initialize filter collections
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
 
     def get_app_users(self, users: List[User]) -> List[AppUser]:
-        """Convert User objects to AppUser objects for GCS connector."""
+        """Convert User objects to AppUser objects for Azure Blob connector."""
         return [
             AppUser(
                 app_name=self.connector_name,
@@ -346,21 +385,24 @@ class GCSConnector(BaseConnector):
         ]
 
     async def init(self) -> bool:
-        """Initializes the GCS client using credentials from the config service."""
+        """Initializes the Azure Blob client using credentials from the config service."""
         config = await self.config_service.get_config(
             f"/services/connectors/{self.connector_id}/config"
         )
         if not config:
-            self.logger.error("GCS configuration not found.")
+            self.logger.error("Azure Blob configuration not found.")
             return False
 
         auth_config = config.get("auth", {})
-        service_account_json = auth_config.get("serviceAccountJson")
-        self.bucket_name = auth_config.get("bucket")
+        account_name = auth_config.get("accountName")
+        account_key = auth_config.get("accountKey")
+        self.container_name = auth_config.get("containerName")
 
-        if not service_account_json:
-            self.logger.error("GCS service account JSON not found in configuration.")
+        if not account_name or not account_key:
+            self.logger.error("Azure Blob account name or account key not found in configuration.")
             return False
+
+        self.account_name = account_name
 
         # Get connector scope
         self.connector_scope = ConnectorScope.PERSONAL.value
@@ -371,41 +413,44 @@ class GCSConnector(BaseConnector):
             self.connector_scope = scope_from_config
 
         try:
-            client = await GCSClient.build_from_services(
+            client = await AzureBlobClient.build_from_services(
                 logger=self.logger,
                 config_service=self.config_service,
                 connector_instance_id=self.connector_id,
             )
-            self.data_source = GCSDataSource(client)
-            self.project_id = client.get_project_id()
+            self.data_source = AzureBlobDataSource(client)
+
+            # Update the entities processor with the account name
+            if isinstance(self.data_entities_processor, AzureBlobDataSourceEntitiesProcessor):
+                self.data_entities_processor.account_name = self.account_name
 
             # Load connector filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
-                self.config_service, "gcs", self.connector_id, self.logger
+                self.config_service, self.filter_key, self.connector_id, self.logger
             )
 
-            self.logger.info("GCS client initialized successfully.")
+            self.logger.info("Azure Blob client initialized successfully.")
             return True
         except Exception as e:
-            self.logger.error(f"Failed to initialize GCS client: {e}", exc_info=True)
+            self.logger.error(f"Failed to initialize Azure Blob client: {e}", exc_info=True)
             return False
 
-    def _generate_web_url(self, bucket_name: str, normalized_key: str) -> str:
-        """Generate the web URL for a GCS object."""
-        # URL encode the key for the console URL
-        return f"{GCS_CONSOLE_BASE_URL}/{bucket_name}/{normalized_key}"
+    def _generate_web_url(self, container_name: str, blob_name: str) -> str:
+        """Generate the web URL for an Azure blob."""
+        # Azure Blob Storage URL format
+        return f"https://{self.account_name}.blob.core.windows.net/{container_name}/{quote(blob_name)}"
 
     def _generate_parent_web_url(self, parent_external_id: str) -> str:
-        """Generate the web URL for a GCS parent folder/directory."""
-        return get_parent_weburl_for_gcs(parent_external_id)
+        """Generate the web URL for an Azure Blob parent folder/directory."""
+        return get_parent_weburl_for_azure_blob(parent_external_id, self.account_name or "")
 
     async def run_sync(self) -> None:
-        """Runs a full synchronization from buckets."""
+        """Runs a full synchronization from containers."""
         try:
-            self.logger.info("Starting GCS full sync.")
+            self.logger.info("Starting Azure Blob full sync.")
 
             if not self.data_source:
-                raise ConnectionError("GCS connector is not initialized.")
+                raise ConnectionError("Azure Blob connector is not initialized.")
 
             # Reload sync and indexing filters to pick up configuration changes
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -419,82 +464,65 @@ class GCSConnector(BaseConnector):
             # Get sync filters
             sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
 
-            # Get bucket filter if specified
-            bucket_filter = sync_filters.get("buckets")
-            selected_buckets = bucket_filter.value if bucket_filter and bucket_filter.value else []
+            # Get container filter if specified
+            container_filter = sync_filters.get("containers")
+            selected_containers = container_filter.value if container_filter and container_filter.value else []
 
-            # List all buckets or use configured bucket
-            buckets_to_sync = []
-            if self.bucket_name:
-                buckets_to_sync = [self.bucket_name]
-                self.logger.info(f"Using configured bucket: {self.bucket_name}")
-            elif selected_buckets:
-                buckets_to_sync = selected_buckets
-                self.logger.info(f"Using filtered buckets: {buckets_to_sync}")
+            # List all containers or use configured container
+            containers_to_sync = []
+            if self.container_name:
+                containers_to_sync = [self.container_name]
+                self.logger.info(f"Using configured container: {self.container_name}")
+            elif selected_containers:
+                containers_to_sync = selected_containers
+                self.logger.info(f"Using filtered containers: {containers_to_sync}")
             else:
-                self.logger.info("Listing all buckets...")
-                buckets_response = await self.data_source.list_buckets()
-                if not buckets_response.success:
-                    self.logger.error(f"Failed to list buckets: {buckets_response.error}")
+                self.logger.info("Listing all containers...")
+                containers_response = await self.data_source.list_containers()
+                if not containers_response.success:
+                    self.logger.error(f"Failed to list containers: {containers_response.error}")
                     return
 
-                buckets_data = buckets_response.data
-                if buckets_data and "Buckets" in buckets_data:
-                    buckets_to_sync = [
-                        bucket.get("name") for bucket in buckets_data["Buckets"]
+                containers_data = containers_response.data
+                if containers_data:
+                    containers_to_sync = [
+                        container.get("name") for container in containers_data
+                        if container.get("name")
                     ]
-                    self.logger.info(f"Found {len(buckets_to_sync)} bucket(s) to sync")
+                    self.logger.info(f"Found {len(containers_to_sync)} container(s) to sync")
                 else:
-                    self.logger.warning("No buckets found")
+                    self.logger.warning("No containers found")
                     return
 
-            # Create record groups for buckets first
-            await self._create_record_groups_for_buckets(buckets_to_sync)
+            # Create record groups for containers first
+            await self._create_record_groups_for_containers(containers_to_sync)
 
-            # Sync each bucket
-            for bucket_name in buckets_to_sync:
-                if not bucket_name:
+            # Sync each container
+            for container_name in containers_to_sync:
+                if not container_name:
                     continue
                 try:
-                    self.logger.info(f"Syncing bucket: {bucket_name}")
-                    await self._sync_bucket(bucket_name)
+                    self.logger.info(f"Syncing container: {container_name}")
+                    await self._sync_container(container_name)
                 except Exception as e:
                     self.logger.error(
-                        f"Error syncing bucket {bucket_name}: {e}", exc_info=True
+                        f"Error syncing container {container_name}: {e}", exc_info=True
                     )
                     continue
 
-            self.logger.info("GCS full sync completed.")
+            self.logger.info("Azure Blob full sync completed.")
         except Exception as ex:
-            self.logger.error(f"❌ Error in GCS connector run: {ex}", exc_info=True)
+            self.logger.error(f"Error in Azure Blob connector run: {ex}", exc_info=True)
             raise
 
-    async def _create_record_groups_for_buckets(self, bucket_names: List[str]) -> None:
-        """Create record groups for buckets with appropriate permissions.
-
-        Processes buckets one at a time to avoid database lock contention issues.
-        Includes retry logic with exponential backoff for transient errors.
-        """
-        if not bucket_names:
+    async def _create_record_groups_for_containers(self, container_names: List[str]) -> None:
+        """Create record groups for containers with appropriate permissions."""
+        if not container_names:
             return
 
-        # Get user info once upfront to avoid repeated transactions
-        creator_email = None
-        if self.created_by and self.connector_scope != ConnectorScope.TEAM.value:
-            try:
-                async with self.data_store_provider.transaction() as tx_store:
-                    user = await tx_store.get_user_by_id(self.created_by)
-                    if user and user.get("email"):
-                        creator_email = user.get("email")
-            except Exception as e:
-                self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
-
-        successful_count = 0
-        failed_buckets = []
-
-        # Process each bucket individually to avoid lock contention
-        for bucket_name in bucket_names:
-            if not bucket_name:
+        record_groups = []
+        for container_name in container_names:
+            if not container_name:
                 continue
 
             permissions = []
@@ -507,15 +535,21 @@ class GCSConnector(BaseConnector):
                     )
                 )
             else:
-                if creator_email:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.OWNER,
-                            entity_type=EntityType.USER,
-                            email=creator_email,
-                            external_id=self.created_by
-                        )
-                    )
+                if self.created_by:
+                    try:
+                        async with self.data_store_provider.transaction() as tx_store:
+                            user = await tx_store.get_user_by_id(self.created_by)
+                            if user and user.get("email"):
+                                permissions.append(
+                                    Permission(
+                                        type=PermissionType.OWNER,
+                                        entity_type=EntityType.USER,
+                                        email=user.get("email"),
+                                        external_id=self.created_by
+                                    )
+                                )
+                    except Exception as e:
+                        self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
 
                 if not permissions:
                     permissions.append(
@@ -527,47 +561,18 @@ class GCSConnector(BaseConnector):
                     )
 
             record_group = RecordGroup(
-                name=bucket_name,
-                external_group_id=bucket_name,
+                name=container_name,
+                external_group_id=container_name,
                 group_type=RecordGroupType.BUCKET,
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
-                description=f"GCS Bucket: {bucket_name}",
+                description=f"Azure Blob Container: {container_name}",
             )
+            record_groups.append((record_group, permissions))
 
-            # Process each record group with retry logic
-            max_retries = 3
-            base_delay = 1.0  # seconds
-
-            for attempt in range(max_retries):
-                try:
-                    await self.data_entities_processor.on_new_record_groups([(record_group, permissions)])
-                    successful_count += 1
-                    break
-                except Exception as e:
-                    error_str = str(e)
-                    is_lock_timeout = "timeout waiting to lock" in error_str.lower() or "status=409" in error_str
-
-                    if is_lock_timeout and attempt < max_retries - 1:
-                        delay = base_delay * (2 ** attempt)  # Exponential backoff
-                        self.logger.warning(
-                            f"Lock timeout for bucket {bucket_name}, retrying in {delay}s "
-                            f"(attempt {attempt + 1}/{max_retries})"
-                        )
-                        await asyncio.sleep(delay)
-                    else:
-                        self.logger.error(
-                            f"Failed to create record group for bucket {bucket_name} "
-                            f"after {attempt + 1} attempts: {e}"
-                        )
-                        failed_buckets.append(bucket_name)
-                        break
-
-        if successful_count > 0:
-            self.logger.info(f"Created {successful_count} record group(s) for buckets")
-
-        if failed_buckets:
-            self.logger.warning(f"Failed to create record groups for {len(failed_buckets)} bucket(s): {failed_buckets}")
+        if record_groups:
+            await self.data_entities_processor.on_new_record_groups(record_groups)
+            self.logger.info(f"Created {len(record_groups)} record group(s) for containers")
 
     def _get_date_filters(self) -> Tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
         """Extract date filter values from sync_filters."""
@@ -602,64 +607,31 @@ class GCSConnector(BaseConnector):
 
         return modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
 
-    async def _process_records_with_retry(
-        self,
-        records_with_permissions: List[Tuple[FileRecord, List[Permission]]],
-        max_retries: int = 3,
-        base_delay: float = 1.0
-    ) -> None:
-        """Process records with retry logic for transient database errors.
-
-        Args:
-            records_with_permissions: List of (record, permissions) tuples to process
-            max_retries: Maximum number of retry attempts
-            base_delay: Base delay in seconds for exponential backoff
-        """
-        for attempt in range(max_retries):
-            try:
-                await self.data_entities_processor.on_new_records(records_with_permissions)
-                return
-            except Exception as e:
-                error_str = str(e)
-                is_lock_timeout = "timeout waiting to lock" in error_str.lower() or "status=409" in error_str
-
-                if is_lock_timeout and attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt)  # Exponential backoff
-                    self.logger.warning(
-                        f"Lock timeout processing {len(records_with_permissions)} records, "
-                        f"retrying in {delay}s (attempt {attempt + 1}/{max_retries})"
-                    )
-                    await asyncio.sleep(delay)
-                else:
-                    self.logger.error(
-                        f"Failed to process {len(records_with_permissions)} records "
-                        f"after {attempt + 1} attempts: {e}"
-                    )
-                    raise
-
     def _pass_date_filters(
         self,
-        obj: Dict,
+        blob: Dict,
         modified_after_ms: Optional[int] = None,
         modified_before_ms: Optional[int] = None,
         created_after_ms: Optional[int] = None,
         created_before_ms: Optional[int] = None
     ) -> bool:
-        """Returns True if GCS object PASSES date filters (should be kept)."""
-        key = obj.get("Key", "")
-        is_folder = key.endswith("/")
+        """Returns True if Azure blob PASSES date filters (should be kept)."""
+        blob_name = blob.get("name", "")
+        is_folder = blob_name.endswith("/")
         if is_folder:
             return True
 
         if not any([modified_after_ms, modified_before_ms, created_after_ms, created_before_ms]):
             return True
 
-        last_modified = obj.get("LastModified")
+        last_modified = blob.get("last_modified")
         if not last_modified:
             return True
 
-        # Parse ISO format timestamp
-        if isinstance(last_modified, str):
+        # Parse datetime
+        if isinstance(last_modified, datetime):
+            obj_timestamp_ms = int(last_modified.timestamp() * 1000)
+        elif isinstance(last_modified, str):
             try:
                 obj_dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
                 obj_timestamp_ms = int(obj_dt.timestamp() * 1000)
@@ -669,27 +641,33 @@ class GCSConnector(BaseConnector):
             return True
 
         if modified_after_ms and obj_timestamp_ms < modified_after_ms:
-            self.logger.debug(f"Skipping {key}: modified {obj_timestamp_ms} before cutoff {modified_after_ms}")
+            self.logger.debug(f"Skipping {blob_name}: modified {obj_timestamp_ms} before cutoff {modified_after_ms}")
             return False
         if modified_before_ms and obj_timestamp_ms > modified_before_ms:
-            self.logger.debug(f"Skipping {key}: modified {obj_timestamp_ms} after cutoff {modified_before_ms}")
+            self.logger.debug(f"Skipping {blob_name}: modified {obj_timestamp_ms} after cutoff {modified_before_ms}")
             return False
 
-        # For GCS, we can also check TimeCreated
-        time_created = obj.get("TimeCreated")
-        if time_created and isinstance(time_created, str):
-            try:
-                created_dt = datetime.fromisoformat(time_created.replace('Z', '+00:00'))
-                created_timestamp_ms = int(created_dt.timestamp() * 1000)
+        # Check creation time
+        creation_time = blob.get("creation_time")
+        if creation_time:
+            if isinstance(creation_time, datetime):
+                created_timestamp_ms = int(creation_time.timestamp() * 1000)
+            elif isinstance(creation_time, str):
+                try:
+                    created_dt = datetime.fromisoformat(creation_time.replace('Z', '+00:00'))
+                    created_timestamp_ms = int(created_dt.timestamp() * 1000)
+                except ValueError:
+                    created_timestamp_ms = None
+            else:
+                created_timestamp_ms = None
 
+            if created_timestamp_ms:
                 if created_after_ms and created_timestamp_ms < created_after_ms:
-                    self.logger.debug(f"Skipping {key}: created {created_timestamp_ms} before cutoff {created_after_ms}")
+                    self.logger.debug(f"Skipping {blob_name}: created {created_timestamp_ms} before cutoff {created_after_ms}")
                     return False
                 if created_before_ms and created_timestamp_ms > created_before_ms:
-                    self.logger.debug(f"Skipping {key}: created {created_timestamp_ms} after cutoff {created_before_ms}")
+                    self.logger.debug(f"Skipping {blob_name}: created {created_timestamp_ms} after cutoff {created_before_ms}")
                     return False
-            except ValueError:
-                pass
 
         return True
 
@@ -701,10 +679,10 @@ class GCSConnector(BaseConnector):
         connector_endpoint = endpoints.get("connectors", {}).get("endpoint", DEFAULT_CONNECTOR_ENDPOINT)
         return f"{connector_endpoint}/api/v1/internal/stream/record/{record_id}"
 
-    async def _sync_bucket(self, bucket_name: str) -> None:
-        """Sync objects from a specific bucket with pagination support and incremental sync."""
+    async def _sync_container(self, container_name: str) -> None:
+        """Sync blobs from a specific container with pagination support and incremental sync."""
         if not self.data_source:
-            raise ConnectionError("GCS connector is not initialized.")
+            raise ConnectionError("Azure Blob connector is not initialized.")
 
         sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
 
@@ -719,16 +697,16 @@ class GCSConnector(BaseConnector):
 
         if allowed_extensions:
             self.logger.info(
-                f"File extensions filter active for bucket {bucket_name}: {allowed_extensions}"
+                f"File extensions filter active for container {container_name}: {allowed_extensions}"
             )
 
         modified_after_ms, modified_before_ms, created_after_ms, created_before_ms = self._get_date_filters()
 
         sync_point_key = generate_record_sync_point_key(
-            RecordType.FILE.value, "bucket", bucket_name
+            RecordType.FILE.value, "container", container_name
         )
         sync_point = await self.record_sync_point.read_sync_point(sync_point_key)
-        page_token = sync_point.get("page_token") if sync_point else None
+        marker = sync_point.get("marker") if sync_point else None
         last_sync_time = sync_point.get("last_sync_time") if sync_point else None
 
         if last_sync_time:
@@ -746,103 +724,108 @@ class GCSConnector(BaseConnector):
             try:
                 async with self.rate_limiter:
                     response = await self.data_source.list_blobs(
-                        bucket_name=bucket_name,
-                        max_results=self.batch_size,
-                        page_token=page_token,
+                        container_name=container_name,
+                        maxresults=self.batch_size,
+                        marker=marker,
                     )
 
                     if not response.success:
                         error_msg = response.error or "Unknown error"
                         self.logger.error(
-                            f"Failed to list objects in bucket {bucket_name}: {error_msg}"
+                            f"Failed to list blobs in container {container_name}: {error_msg}"
                         )
                         has_more = False
                         continue
 
-                    objects_data = response.data
-                    if not objects_data or "Contents" not in objects_data:
-                        self.logger.info(f"No objects found in bucket {bucket_name}")
+                    blobs_data = response.data
+                    if not blobs_data:
+                        self.logger.info(f"No blobs found in container {container_name}")
                         has_more = False
                         continue
 
-                    objects = objects_data["Contents"]
+                    # Azure SDK returns blobs directly as a list
+                    blobs = blobs_data if isinstance(blobs_data, list) else []
                     self.logger.info(
-                        f"Processing {len(objects)} objects from bucket {bucket_name}"
+                        f"Processing {len(blobs)} blobs from container {container_name}"
                     )
 
-                    for obj in objects:
+                    for blob in blobs:
                         try:
-                            key = obj.get("Key", "")
+                            blob_name = blob.get("name", "")
+                            if not blob_name:
+                                continue
 
-                            is_folder = key.endswith("/")
+                            is_folder = blob_name.endswith("/")
 
                             if not is_folder and allowed_extensions:
-                                ext = get_file_extension(key)
+                                ext = get_file_extension(blob_name)
                                 if not ext:
                                     self.logger.debug(
-                                        f"Skipping {key}: no file extension found"
+                                        f"Skipping {blob_name}: no file extension found"
                                     )
                                     continue
                                 if ext not in allowed_extensions:
                                     self.logger.debug(
-                                        f"Skipping {key}: extension '{ext}' not in allowed extensions"
+                                        f"Skipping {blob_name}: extension '{ext}' not in allowed extensions"
                                     )
                                     continue
 
                             if not self._pass_date_filters(
-                                obj, modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
+                                blob, modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
                             ):
                                 continue
 
                             # Track max timestamp for incremental sync
                             if not is_folder:
-                                last_modified = obj.get("LastModified")
-                                if last_modified and isinstance(last_modified, str):
-                                    try:
-                                        obj_dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
-                                        obj_timestamp_ms = int(obj_dt.timestamp() * 1000)
+                                last_modified = blob.get("last_modified")
+                                if last_modified:
+                                    if isinstance(last_modified, datetime):
+                                        obj_timestamp_ms = int(last_modified.timestamp() * 1000)
                                         max_timestamp = max(max_timestamp, obj_timestamp_ms)
-                                    except ValueError:
-                                        pass
+                                    elif isinstance(last_modified, str):
+                                        try:
+                                            obj_dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
+                                            obj_timestamp_ms = int(obj_dt.timestamp() * 1000)
+                                            max_timestamp = max(max_timestamp, obj_timestamp_ms)
+                                        except ValueError:
+                                            pass
 
-                            record, permissions = await self._process_gcs_object(
-                                obj, bucket_name
+                            record, permissions = await self._process_azure_blob(
+                                blob, container_name
                             )
                             if record:
                                 batch_records.append((record, permissions))
 
                                 if len(batch_records) >= self.batch_size:
-                                    await self._process_records_with_retry(batch_records)
+                                    await self.data_entities_processor.on_new_records(
+                                        batch_records
+                                    )
                                     batch_records = []
                         except Exception as e:
                             self.logger.error(
-                                f"Error processing object {obj.get('Key', 'unknown')}: {e}",
+                                f"Error processing blob {blob.get('name', 'unknown')}: {e}",
                                 exc_info=True,
                             )
                             continue
 
-                    has_more = objects_data.get("IsTruncated", False)
-                    page_token = objects_data.get("NextContinuationToken")
-
-                    if page_token:
-                        await self.record_sync_point.update_sync_point(
-                            sync_point_key, {"page_token": page_token}
-                        )
+                    # Check for more pages - Azure SDK uses marker for pagination
+                    # When there are no more results, marker will be None
+                    has_more = False  # Azure SDK handles pagination internally in list_blobs
 
             except Exception as e:
                 self.logger.error(
-                    f"Error during bucket sync for {bucket_name}: {e}", exc_info=True
+                    f"Error during container sync for {container_name}: {e}", exc_info=True
                 )
                 has_more = False
 
         if batch_records:
-            await self._process_records_with_retry(batch_records)
+            await self.data_entities_processor.on_new_records(batch_records)
 
         if max_timestamp > 0:
             await self.record_sync_point.update_sync_point(
                 sync_point_key, {
                     "last_sync_time": max_timestamp,
-                    "page_token": None
+                    "marker": None
                 }
             )
 
@@ -858,49 +841,57 @@ class GCSConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"Error in _remove_old_parent_relationship: {e}")
 
-    async def _process_gcs_object(
-        self, obj: Dict, bucket_name: str
+    async def _process_azure_blob(
+        self, blob: Dict, container_name: str
     ) -> Tuple[Optional[FileRecord], List[Permission]]:
-        """Process a single GCS object and convert it to a FileRecord."""
+        """Process a single Azure blob and convert it to a FileRecord."""
         try:
-            key = obj.get("Key", "")
-            if not key:
+            blob_name = blob.get("name", "")
+            if not blob_name:
                 return None, []
 
-            is_folder = key.endswith("/")
+            is_folder = blob_name.endswith("/")
             is_file = not is_folder
 
-            normalized_key = key.lstrip("/")
-            if not normalized_key:
+            normalized_name = blob_name.lstrip("/")
+            if not normalized_name:
                 return None, []
 
             # Parse timestamps
-            last_modified = obj.get("LastModified")
-            if last_modified and isinstance(last_modified, str):
-                try:
-                    obj_dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
-                    timestamp_ms = int(obj_dt.timestamp() * 1000)
-                except ValueError:
+            last_modified = blob.get("last_modified")
+            if last_modified:
+                if isinstance(last_modified, datetime):
+                    timestamp_ms = int(last_modified.timestamp() * 1000)
+                elif isinstance(last_modified, str):
+                    try:
+                        obj_dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
+                        timestamp_ms = int(obj_dt.timestamp() * 1000)
+                    except ValueError:
+                        timestamp_ms = get_epoch_timestamp_in_ms()
+                else:
                     timestamp_ms = get_epoch_timestamp_in_ms()
             else:
                 timestamp_ms = get_epoch_timestamp_in_ms()
 
             # Parse created time
-            time_created = obj.get("TimeCreated")
-            if time_created and isinstance(time_created, str):
-                try:
-                    created_dt = datetime.fromisoformat(time_created.replace('Z', '+00:00'))
-                    created_timestamp_ms = int(created_dt.timestamp() * 1000)
-                except ValueError:
+            creation_time = blob.get("creation_time")
+            if creation_time:
+                if isinstance(creation_time, datetime):
+                    created_timestamp_ms = int(creation_time.timestamp() * 1000)
+                elif isinstance(creation_time, str):
+                    try:
+                        created_dt = datetime.fromisoformat(creation_time.replace('Z', '+00:00'))
+                        created_timestamp_ms = int(created_dt.timestamp() * 1000)
+                    except ValueError:
+                        created_timestamp_ms = timestamp_ms
+                else:
                     created_timestamp_ms = timestamp_ms
             else:
                 created_timestamp_ms = timestamp_ms
 
-            external_record_id = f"{bucket_name}/{normalized_key}"
-            # Use generation + metageneration as revision ID (similar to etag for S3)
-            generation = obj.get("Generation")
-            metageneration = obj.get("Metageneration")
-            current_revision_id = f"{generation}:{metageneration}" if generation else obj.get("Md5Hash", "")
+            external_record_id = f"{container_name}/{normalized_name}"
+            # Use etag as revision ID
+            current_etag = blob.get("etag", "").strip('"') if blob.get("etag") else ""
 
             # Check for existing record
             async with self.data_store_provider.transaction() as tx_store:
@@ -911,47 +902,47 @@ class GCSConnector(BaseConnector):
             is_move = False
 
             if existing_record:
-                stored_revision = existing_record.external_revision_id or ""
-                if current_revision_id and stored_revision and current_revision_id == stored_revision:
+                stored_etag = existing_record.external_revision_id or ""
+                if current_etag and stored_etag and current_etag == stored_etag:
                     self.logger.debug(
-                        f"Skipping {normalized_key}: revision unchanged"
+                        f"Skipping {normalized_name}: revision unchanged"
                     )
                     return None, []
 
-                if current_revision_id != stored_revision:
+                if current_etag != stored_etag:
                     self.logger.info(
-                        f"Content change detected: {normalized_key}"
+                        f"Content change detected: {normalized_name}"
                     )
-            elif current_revision_id:
+            elif current_etag:
                 # Try lookup by revision ID for move detection
                 async with self.data_store_provider.transaction() as tx_store:
                     existing_record = await tx_store.get_record_by_external_revision_id(
-                        connector_id=self.connector_id, external_revision_id=current_revision_id
+                        connector_id=self.connector_id, external_revision_id=current_etag
                     )
 
                 if existing_record:
                     is_move = True
                     self.logger.info(
-                        f"Move/rename detected: {normalized_key}"
+                        f"Move/rename detected: {normalized_name}"
                     )
                 else:
-                    self.logger.debug(f"New document: {normalized_key}")
+                    self.logger.debug(f"New document: {normalized_name}")
             else:
-                self.logger.debug(f"New document: {normalized_key}")
+                self.logger.debug(f"New document: {normalized_name}")
 
             # Prepare record data
             record_type = RecordType.FOLDER if is_folder else RecordType.FILE
-            extension = get_file_extension(normalized_key) if is_file else None
-            mime_type = obj.get("ContentType") or get_mimetype_for_gcs(normalized_key, is_folder)
+            extension = get_file_extension(normalized_name) if is_file else None
+            mime_type = blob.get("content_type") or get_mimetype_for_azure_blob(normalized_name, is_folder)
 
-            parent_path = get_parent_path_from_key(normalized_key)
-            parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else bucket_name
+            parent_path = get_parent_path_from_blob_name(normalized_name)
+            parent_external_id = f"{container_name}/{parent_path}" if parent_path else container_name
 
-            web_url = self._generate_web_url(bucket_name, normalized_key)
+            web_url = self._generate_web_url(container_name, normalized_name)
 
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
             signed_url_route = await self._get_signed_url_route(record_id)
-            record_name = normalized_key.rstrip("/").split("/")[-1] or normalized_key.rstrip("/")
+            record_name = normalized_name.rstrip("/").split("/")[-1] or normalized_name.rstrip("/")
 
             # For moves/renames, remove old parent relationship
             if is_move and existing_record:
@@ -963,14 +954,20 @@ class GCSConnector(BaseConnector):
             else:
                 version = existing_record.version + 1
 
+            # Get content MD5 hash
+            content_md5 = blob.get("content_md5")
+            if content_md5 and isinstance(content_md5, bytes):
+                import base64
+                content_md5 = base64.b64encode(content_md5).decode('utf-8')
+
             file_record = FileRecord(
                 id=record_id,
                 record_name=record_name,
                 record_type=record_type,
                 record_group_type=RecordGroupType.BUCKET.value,
-                external_record_group_id=bucket_name,
+                external_record_group_id=container_name,
                 external_record_id=external_record_id,
-                external_revision_id=current_revision_id,
+                external_revision_id=current_etag,
                 version=version,
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
@@ -984,31 +981,31 @@ class GCSConnector(BaseConnector):
                 is_internal=True if is_folder else False,
                 parent_external_record_id=parent_external_id,
                 parent_record_type=RecordType.FILE,
-                size_in_bytes=obj.get("Size", 0) if is_file else 0,
+                size_in_bytes=blob.get("size", 0) if is_file else 0,
                 is_file=is_file,
                 extension=extension,
-                path=normalized_key,
+                path=normalized_name,
                 mime_type=mime_type,
-                md5_hash=obj.get("Md5Hash"),
-                crc32_hash=obj.get("Crc32c"),
+                md5_hash=content_md5,
+                etag=current_etag,
             )
 
             if hasattr(self, 'indexing_filters') and self.indexing_filters:
                 if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
                     file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
-            permissions = await self._create_gcs_permissions(bucket_name, key)
+            permissions = await self._create_azure_blob_permissions(container_name, blob_name)
 
             return file_record, permissions
 
         except Exception as e:
-            self.logger.error(f"Error processing GCS object: {e}", exc_info=True)
+            self.logger.error(f"Error processing Azure blob: {e}", exc_info=True)
             return None, []
 
-    async def _create_gcs_permissions(
-        self, bucket_name: str, key: str
+    async def _create_azure_blob_permissions(
+        self, container_name: str, blob_name: str
     ) -> List[Permission]:
-        """Create permissions for a GCS object based on connector scope."""
+        """Create permissions for an Azure blob based on connector scope."""
         try:
             permissions = []
 
@@ -1048,7 +1045,7 @@ class GCSConnector(BaseConnector):
 
             return permissions
         except Exception as e:
-            self.logger.warning(f"Error creating permissions for {key}: {e}")
+            self.logger.warning(f"Error creating permissions for {blob_name}: {e}")
             return [
                 Permission(
                     type=PermissionType.READ,
@@ -1062,25 +1059,25 @@ class GCSConnector(BaseConnector):
         if not self.data_source:
             return False
         try:
-            response = await self.data_source.list_buckets()
+            response = await self.data_source.list_containers()
             if response.success:
-                self.logger.info("GCS connection test successful.")
+                self.logger.info("Azure Blob connection test successful.")
                 return True
             else:
-                self.logger.error(f"GCS connection test failed: {response.error}")
+                self.logger.error(f"Azure Blob connection test failed: {response.error}")
                 return False
         except Exception as e:
-            self.logger.error(f"GCS connection test failed: {e}", exc_info=True)
+            self.logger.error(f"Azure Blob connection test failed: {e}", exc_info=True)
             return False
 
     async def get_signed_url(self, record: Record) -> Optional[str]:
-        """Generate a signed URL for a GCS object."""
+        """Generate a SAS URL for an Azure blob."""
         if not self.data_source:
             return None
         try:
-            bucket_name = record.external_record_group_id
-            if not bucket_name:
-                self.logger.warning(f"No bucket name found for record: {record.id}")
+            container_name = record.external_record_group_id
+            if not container_name:
+                self.logger.warning(f"No container name found for record: {record.id}")
                 return None
 
             external_record_id = record.external_record_id
@@ -1088,40 +1085,44 @@ class GCSConnector(BaseConnector):
                 self.logger.warning(f"No external_record_id found for record: {record.id}")
                 return None
 
-            if external_record_id.startswith(f"{bucket_name}/"):
-                key = external_record_id[len(f"{bucket_name}/"):]
+            if external_record_id.startswith(f"{container_name}/"):
+                blob_name = external_record_id[len(f"{container_name}/"):]
             else:
-                key = external_record_id.lstrip("/")
+                blob_name = external_record_id.lstrip("/")
 
-            key = unquote(key)
+            from urllib.parse import unquote
+            blob_name = unquote(blob_name)
 
             self.logger.debug(
-                f"Generating signed URL - Bucket: {bucket_name}, "
-                f"Key: {key}, Record ID: {record.id}"
+                f"Generating SAS URL - Container: {container_name}, "
+                f"Blob: {blob_name}, Record ID: {record.id}"
             )
 
-            response = await self.data_source.generate_signed_url(
-                bucket_name=bucket_name,
-                blob_name=key,
-                expiration=86400,  # 24 hours
+            # Generate SAS URL with 24 hour expiry
+            expiry = datetime.now(timezone.utc) + timedelta(hours=24)
+            response = await self.data_source.generate_blob_sas_url(
+                container_name=container_name,
+                blob_name=blob_name,
+                permission="r",  # Read permission
+                expiry=expiry,
             )
 
             if response.success and response.data:
-                return response.data.get("url")
+                return response.data.get("sas_url")
             else:
                 self.logger.error(
-                    f"Failed to generate signed URL: {response.error} | "
-                    f"Bucket: {bucket_name} | Key: {key}"
+                    f"Failed to generate SAS URL: {response.error} | "
+                    f"Container: {container_name} | Blob: {blob_name}"
                 )
                 return None
         except Exception as e:
             self.logger.error(
-                f"Error generating signed URL for record {record.id}: {e}"
+                f"Error generating SAS URL for record {record.id}: {e}"
             )
             return None
 
     async def stream_record(self, record: Record) -> StreamingResponse:
-        """Stream GCS object content."""
+        """Stream Azure blob content."""
         if isinstance(record, FileRecord) and not record.is_file:
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
@@ -1143,7 +1144,9 @@ class GCSConnector(BaseConnector):
 
     async def cleanup(self) -> None:
         """Clean up resources used by the connector."""
-        self.logger.info("Cleaning up GCS connector resources.")
+        self.logger.info("Cleaning up Azure Blob connector resources.")
+        if self.data_source:
+            await self.data_source.close_async_client()
         self.data_source = None
 
     async def get_filter_options(
@@ -1155,18 +1158,18 @@ class GCSConnector(BaseConnector):
         cursor: Optional[str] = None
     ) -> FilterOptionsResponse:
         """Get dynamic filter options for filters."""
-        if filter_key == "buckets":
-            return await self._get_bucket_options(page, limit, search)
+        if filter_key == "containers":
+            return await self._get_container_options(page, limit, search)
         else:
             raise ValueError(f"Unsupported filter key: {filter_key}")
 
-    async def _get_bucket_options(
+    async def _get_container_options(
         self,
         page: int,
         limit: int,
         search: Optional[str]
     ) -> FilterOptionsResponse:
-        """Get list of available buckets."""
+        """Get list of available containers."""
         try:
             if not self.data_source:
                 return FilterOptionsResponse(
@@ -1175,10 +1178,10 @@ class GCSConnector(BaseConnector):
                     page=page,
                     limit=limit,
                     has_more=False,
-                    message="GCS connector is not initialized"
+                    message="Azure Blob connector is not initialized"
                 )
 
-            response = await self.data_source.list_buckets()
+            response = await self.data_source.list_containers()
             if not response.success:
                 return FilterOptionsResponse(
                     success=False,
@@ -1186,11 +1189,11 @@ class GCSConnector(BaseConnector):
                     page=page,
                     limit=limit,
                     has_more=False,
-                    message=f"Failed to list buckets: {response.error}"
+                    message=f"Failed to list containers: {response.error}"
                 )
 
-            buckets_data = response.data
-            if not buckets_data or "Buckets" not in buckets_data:
+            containers_data = response.data
+            if not containers_data:
                 return FilterOptionsResponse(
                     success=True,
                     options=[],
@@ -1199,26 +1202,26 @@ class GCSConnector(BaseConnector):
                     has_more=False
                 )
 
-            all_buckets = [
-                bucket.get("name") for bucket in buckets_data["Buckets"]
-                if bucket.get("name")
+            all_containers = [
+                container.get("name") for container in containers_data
+                if container.get("name")
             ]
 
             if search:
                 search_lower = search.lower()
-                all_buckets = [
-                    bucket for bucket in all_buckets
-                    if search_lower in bucket.lower()
+                all_containers = [
+                    container for container in all_containers
+                    if search_lower in container.lower()
                 ]
 
             start_idx = (page - 1) * limit
             end_idx = start_idx + limit
-            paginated_buckets = all_buckets[start_idx:end_idx]
-            has_more = end_idx < len(all_buckets)
+            paginated_containers = all_containers[start_idx:end_idx]
+            has_more = end_idx < len(all_containers)
 
             options = [
-                FilterOption(id=bucket, label=bucket)
-                for bucket in paginated_buckets
+                FilterOption(id=container, label=container)
+                for container in paginated_containers
             ]
 
             return FilterOptionsResponse(
@@ -1230,7 +1233,7 @@ class GCSConnector(BaseConnector):
             )
 
         except Exception as e:
-            self.logger.error(f"Error getting bucket options: {e}", exc_info=True)
+            self.logger.error(f"Error getting container options: {e}", exc_info=True)
             return FilterOptionsResponse(
                 success=False,
                 options=[],
@@ -1251,11 +1254,11 @@ class GCSConnector(BaseConnector):
                 self.logger.info("No records to reindex")
                 return
 
-            self.logger.info(f"Starting reindex for {len(record_results)} GCS records")
+            self.logger.info(f"Starting reindex for {len(record_results)} Azure Blob records")
 
             if not self.data_source:
-                self.logger.error("GCS connector is not initialized.")
-                raise Exception("GCS connector is not initialized.")
+                self.logger.error("Azure Blob connector is not initialized.")
+                raise Exception("Azure Blob connector is not initialized.")
 
             org_id = self.data_entities_processor.org_id
             updated_records = []
@@ -1284,7 +1287,7 @@ class GCSConnector(BaseConnector):
                 self.logger.info(f"Published reindex events for {len(non_updated_records)} records")
 
         except Exception as e:
-            self.logger.error(f"Error during GCS reindex: {e}", exc_info=True)
+            self.logger.error(f"Error during Azure Blob reindex: {e}", exc_info=True)
             raise
 
     async def _check_and_fetch_updated_record(
@@ -1292,83 +1295,92 @@ class GCSConnector(BaseConnector):
     ) -> Optional[Tuple[Record, List[Permission]]]:
         """Check if record has been updated at source and fetch updated data."""
         try:
-            bucket_name = record.external_record_group_id
+            container_name = record.external_record_group_id
             external_record_id = record.external_record_id
 
-            if not bucket_name or not external_record_id:
-                self.logger.warning(f"Missing bucket or external_record_id for record {record.id}")
+            if not container_name or not external_record_id:
+                self.logger.warning(f"Missing container or external_record_id for record {record.id}")
                 return None
 
-            if external_record_id.startswith(f"{bucket_name}/"):
-                normalized_key = external_record_id[len(f"{bucket_name}/"):]
+            if external_record_id.startswith(f"{container_name}/"):
+                blob_name = external_record_id[len(f"{container_name}/"):]
             else:
-                normalized_key = external_record_id.lstrip("/")
+                blob_name = external_record_id.lstrip("/")
 
-            if not normalized_key:
-                self.logger.warning(f"Invalid key for record {record.id}")
+            if not blob_name:
+                self.logger.warning(f"Invalid blob name for record {record.id}")
                 return None
 
-            response = await self.data_source.head_blob(
-                bucket_name=bucket_name,
-                blob_name=normalized_key
+            response = await self.data_source.get_blob_properties(
+                container_name=container_name,
+                blob_name=blob_name
             )
 
             if not response.success:
-                self.logger.warning(f"Object {normalized_key} not found in bucket {bucket_name}")
+                self.logger.warning(f"Blob {blob_name} not found in container {container_name}")
                 return None
 
-            obj_metadata = response.data
-            if not obj_metadata:
+            blob_metadata = response.data
+            if not blob_metadata:
                 return None
 
-            # Check revision ID
-            generation = obj_metadata.get("Generation")
-            metageneration = obj_metadata.get("Metageneration")
-            current_revision_id = f"{generation}:{metageneration}" if generation else obj_metadata.get("Md5Hash", "")
-            stored_revision = record.external_revision_id
+            # Check etag
+            current_etag = blob_metadata.get("etag", "").strip('"') if blob_metadata.get("etag") else ""
+            stored_etag = record.external_revision_id
 
-            if current_revision_id == stored_revision:
-                self.logger.debug(f"Record {record.id}: revision unchanged")
+            if current_etag == stored_etag:
+                self.logger.debug(f"Record {record.id}: etag unchanged")
                 return None
 
-            self.logger.debug(f"Record {record.id}: revision changed")
+            self.logger.debug(f"Record {record.id}: etag changed")
 
             # Parse timestamps
-            last_modified = obj_metadata.get("LastModified")
-            if last_modified and isinstance(last_modified, str):
-                try:
-                    obj_dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
-                    timestamp_ms = int(obj_dt.timestamp() * 1000)
-                except ValueError:
+            last_modified = blob_metadata.get("last_modified")
+            if last_modified:
+                if isinstance(last_modified, datetime):
+                    timestamp_ms = int(last_modified.timestamp() * 1000)
+                elif isinstance(last_modified, str):
+                    try:
+                        obj_dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
+                        timestamp_ms = int(obj_dt.timestamp() * 1000)
+                    except ValueError:
+                        timestamp_ms = get_epoch_timestamp_in_ms()
+                else:
                     timestamp_ms = get_epoch_timestamp_in_ms()
             else:
                 timestamp_ms = get_epoch_timestamp_in_ms()
 
-            is_folder = normalized_key.endswith("/")
+            is_folder = blob_name.endswith("/")
             is_file = not is_folder
 
-            extension = get_file_extension(normalized_key) if is_file else None
-            mime_type = obj_metadata.get("ContentType") or get_mimetype_for_gcs(normalized_key, is_folder)
+            extension = get_file_extension(blob_name) if is_file else None
+            mime_type = blob_metadata.get("content_type") or get_mimetype_for_azure_blob(blob_name, is_folder)
 
-            parent_path = get_parent_path_from_key(normalized_key)
-            parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else bucket_name
+            parent_path = get_parent_path_from_blob_name(blob_name)
+            parent_external_id = f"{container_name}/{parent_path}" if parent_path else container_name
 
-            web_url = self._generate_web_url(bucket_name, normalized_key)
+            web_url = self._generate_web_url(container_name, blob_name)
 
             signed_url_route = await self._get_signed_url_route(record.id)
 
-            record_name = normalized_key.rstrip("/").split("/")[-1] or normalized_key.rstrip("/")
+            record_name = blob_name.rstrip("/").split("/")[-1] or blob_name.rstrip("/")
 
-            updated_external_record_id = f"{bucket_name}/{normalized_key}"
+            updated_external_record_id = f"{container_name}/{blob_name}"
+
+            # Get content MD5 hash
+            content_md5 = blob_metadata.get("content_md5")
+            if content_md5 and isinstance(content_md5, bytes):
+                import base64
+                content_md5 = base64.b64encode(content_md5).decode('utf-8')
 
             updated_record = FileRecord(
                 id=record.id,
                 record_name=record_name,
                 record_type=RecordType.FOLDER if is_folder else RecordType.FILE,
                 record_group_type=RecordGroupType.BUCKET.value,
-                external_record_group_id=bucket_name,
+                external_record_group_id=container_name,
                 external_record_id=updated_external_record_id,
-                external_revision_id=current_revision_id,
+                external_revision_id=current_etag,
                 version=record.version + 1,
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
@@ -1382,20 +1394,20 @@ class GCSConnector(BaseConnector):
                 is_internal=True if is_folder else False,
                 parent_external_record_id=parent_external_id,
                 parent_record_type=RecordType.FILE,
-                size_in_bytes=obj_metadata.get("ContentLength", 0) if is_file else 0,
+                size_in_bytes=blob_metadata.get("size", 0) if is_file else 0,
                 is_file=is_file,
                 extension=extension,
-                path=normalized_key,
+                path=blob_name,
                 mime_type=mime_type,
-                md5_hash=obj_metadata.get("Md5Hash"),
-                crc32_hash=obj_metadata.get("Crc32c"),
+                md5_hash=content_md5,
+                etag=current_etag,
             )
 
             if hasattr(self, 'indexing_filters') and self.indexing_filters:
                 if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
                     updated_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
-            permissions = await self._create_gcs_permissions(bucket_name, normalized_key)
+            permissions = await self._create_azure_blob_permissions(container_name, blob_name)
 
             return updated_record, permissions
 
@@ -1404,12 +1416,12 @@ class GCSConnector(BaseConnector):
             return None
 
     async def run_incremental_sync(self) -> None:
-        """Run an incremental synchronization from buckets."""
+        """Run an incremental synchronization from containers."""
         try:
-            self.logger.info("Starting GCS incremental sync.")
+            self.logger.info("Starting Azure Blob incremental sync.")
 
             if not self.data_source:
-                raise ConnectionError("GCS connector is not initialized.")
+                raise ConnectionError("Azure Blob connector is not initialized.")
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, self.filter_key, self.connector_id, self.logger
@@ -1417,44 +1429,43 @@ class GCSConnector(BaseConnector):
 
             sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
 
-            bucket_filter = sync_filters.get("buckets")
-            selected_buckets = bucket_filter.value if bucket_filter and bucket_filter.value else []
+            container_filter = sync_filters.get("containers")
+            selected_containers = container_filter.value if container_filter and container_filter.value else []
 
-            buckets_to_sync = []
-            if self.bucket_name:
-                buckets_to_sync = [self.bucket_name]
-                self.logger.info(f"Using configured bucket: {self.bucket_name}")
-            elif selected_buckets:
-                buckets_to_sync = selected_buckets
-                self.logger.info(f"Using filtered buckets: {buckets_to_sync}")
+            containers_to_sync = []
+            if self.container_name:
+                containers_to_sync = [self.container_name]
+                self.logger.info(f"Using configured container: {self.container_name}")
+            elif selected_containers:
+                containers_to_sync = selected_containers
+                self.logger.info(f"Using filtered containers: {containers_to_sync}")
             else:
-                buckets_response = await self.data_source.list_buckets()
-                if buckets_response.success and buckets_response.data:
-                    buckets_data = buckets_response.data
-                    if "Buckets" in buckets_data:
-                        buckets_to_sync = [
-                            bucket.get("name") for bucket in buckets_data["Buckets"]
-                        ]
+                containers_response = await self.data_source.list_containers()
+                if containers_response.success and containers_response.data:
+                    containers_to_sync = [
+                        container.get("name") for container in containers_response.data
+                        if container.get("name")
+                    ]
 
-            if not buckets_to_sync:
-                self.logger.warning("No buckets to sync")
+            if not containers_to_sync:
+                self.logger.warning("No containers to sync")
                 return
 
-            for bucket_name in buckets_to_sync:
-                if not bucket_name:
+            for container_name in containers_to_sync:
+                if not container_name:
                     continue
                 try:
-                    self.logger.info(f"Incremental sync for bucket: {bucket_name}")
-                    await self._sync_bucket(bucket_name)
+                    self.logger.info(f"Incremental sync for container: {container_name}")
+                    await self._sync_container(container_name)
                 except Exception as e:
                     self.logger.error(
-                        f"Error in incremental sync for bucket {bucket_name}: {e}", exc_info=True
+                        f"Error in incremental sync for container {container_name}: {e}", exc_info=True
                     )
                     continue
 
-            self.logger.info("GCS incremental sync completed.")
+            self.logger.info("Azure Blob incremental sync completed.")
         except Exception as ex:
-            self.logger.error(f"❌ Error in GCS incremental sync: {ex}", exc_info=True)
+            self.logger.error(f"Error in Azure Blob incremental sync: {ex}", exc_info=True)
             raise
 
     @classmethod
@@ -1465,10 +1476,19 @@ class GCSConnector(BaseConnector):
         config_service: ConfigurationService,
         connector_id: str,
         **kwargs,
-    ) -> "GCSConnector":
+    ) -> "AzureBlobConnector":
         """Factory method to create and initialize connector."""
-        data_entities_processor = GCSDataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
+        # Get account name from config for entities processor
+        config = await config_service.get_config(
+            f"/services/connectors/{connector_id}/config"
+        )
+        account_name = ""
+        if config:
+            auth_config = config.get("auth", {})
+            account_name = auth_config.get("accountName", "")
+
+        data_entities_processor = AzureBlobDataSourceEntitiesProcessor(
+            logger, data_store_provider, config_service, account_name=account_name
         )
         await data_entities_processor.initialize()
 

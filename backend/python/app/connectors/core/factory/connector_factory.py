@@ -10,7 +10,6 @@ from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.registry.connector import (
     AirtableConnector,
-    AzureBlobConnector,
     CalendarConnector,
     DocsConnector,
     FormsConnector,
@@ -25,6 +24,8 @@ from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
+from app.connectors.sources.azure_blob.connector import AzureBlobConnector
+from app.connectors.sources.azure_files.connector import AzureFilesConnector
 from app.connectors.sources.bookstack.connector import BookStackConnector
 from app.connectors.sources.box.connector import BoxConnector
 from app.connectors.sources.dropbox.connector import DropboxConnector
@@ -74,6 +75,8 @@ class ConnectorFactory:
         "s3": S3Connector,
         "minio": MinIOConnector,
         "gcs": GCSConnector,
+        # "azureblob": AzureBlobConnector,
+        # "azurefiles": AzureFilesConnector,
     }
 
     # Beta connector definitions - single source of truth
@@ -89,7 +92,6 @@ class ConnectorFactory:
         'linear': LinearConnector,
         'notion': NotionConnector,
         'airtable': AirtableConnector,
-        'azureblob': AzureBlobConnector,
     }
 
 
