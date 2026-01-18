@@ -114,6 +114,84 @@ function getDocumentationHtml(): string {
     [data-theme="dark"] .response-status.success { background: rgba(0, 172, 58, 0.15); color: #00d147; }
     [data-theme="dark"] .response-status.error { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
 
+    [data-theme="dark"] .response-headers-section { background: rgba(0,0,0,0.3); border-color: rgba(255,255,255,0.1); }
+    [data-theme="dark"] .response-headers-toggle { background: rgba(0,0,0,0.4); }
+    [data-theme="dark"] .response-headers-toggle:hover { background: rgba(0,0,0,0.5); }
+    [data-theme="dark"] .response-headers-toggle-left { color: var(--code-text); }
+    [data-theme="dark"] .response-headers-count { background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.7); }
+    [data-theme="dark"] .response-headers-content { background: rgba(0,0,0,0.2); }
+    [data-theme="dark"] .header-row { border-color: rgba(255,255,255,0.1); }
+    [data-theme="dark"] .header-value { color: var(--code-text); }
+
+    [data-theme="dark"] .body-field-group {
+      background: rgba(0,0,0,0.2);
+      border-color: rgba(255,255,255,0.05);
+    }
+
+    [data-theme="dark"] .body-field-input input,
+    [data-theme="dark"] .body-field-input select,
+    [data-theme="dark"] .body-field-input textarea {
+      background: rgba(0,0,0,0.3);
+      border-color: rgba(255,255,255,0.1);
+      color: var(--code-text);
+    }
+
+    [data-theme="dark"] .body-field-input input::placeholder,
+    [data-theme="dark"] .body-field-input textarea::placeholder {
+      color: rgba(255,255,255,0.3);
+    }
+
+    [data-theme="dark"] .body-field-input select {
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+    }
+
+    [data-theme="dark"] .body-field-label {
+      color: var(--code-text);
+    }
+
+    [data-theme="dark"] .body-field-label .field-type {
+      color: rgba(255,255,255,0.4);
+    }
+
+    [data-theme="dark"] .body-field-desc {
+      color: rgba(255,255,255,0.4);
+    }
+
+    [data-theme="dark"] .nested-object {
+      background: rgba(0,0,0,0.15);
+    }
+
+    [data-theme="dark"] .param-input-label {
+      color: var(--code-text);
+    }
+
+    [data-theme="dark"] .array-add-btn,
+    [data-theme="dark"] .array-remove-btn {
+      background: rgba(255,255,255,0.1);
+      border-color: rgba(255,255,255,0.1);
+      color: var(--code-text);
+    }
+
+    [data-theme="dark"] .array-add-btn:hover {
+      background: rgba(255,255,255,0.15);
+    }
+
+    [data-theme="dark"] .array-remove-btn {
+      background: rgba(239, 68, 68, 0.2);
+      border-color: rgba(239, 68, 68, 0.3);
+      color: #fca5a5;
+    }
+
+    [data-theme="dark"] .array-remove-btn:hover {
+      background: rgba(239, 68, 68, 0.3);
+    }
+
+    [data-theme="dark"] .response-pre {
+      background: rgba(0,0,0,0.3);
+      border-color: rgba(255,255,255,0.1);
+      color: var(--code-text);
+    }
+
     [data-theme="dark"] .module-card {
       background: var(--bg-secondary);
       border-color: var(--border-color);
@@ -1121,7 +1199,7 @@ function getDocumentationHtml(): string {
     .param-input-label {
       min-width: 120px;
       font-size: 13px;
-      color: var(--code-text);
+      color: var(--text-primary);
       font-family: 'JetBrains Mono', monospace;
     }
 
@@ -1133,9 +1211,9 @@ function getDocumentationHtml(): string {
     .body-field-group {
       margin-bottom: 12px;
       padding: 12px;
-      background: rgba(0,0,0,0.2);
+      background: var(--bg-secondary);
       border-radius: 8px;
-      border: 1px solid rgba(255,255,255,0.05);
+      border: 1px solid var(--border-color);
     }
 
     .body-field-row {
@@ -1153,7 +1231,7 @@ function getDocumentationHtml(): string {
       min-width: 140px;
       padding-top: 10px;
       font-size: 13px;
-      color: var(--code-text);
+      color: var(--text-primary);
       font-family: 'JetBrains Mono', monospace;
     }
 
@@ -1165,7 +1243,7 @@ function getDocumentationHtml(): string {
     .body-field-label .field-type {
       display: block;
       font-size: 11px;
-      color: rgba(255,255,255,0.4);
+      color: var(--text-muted);
       margin-top: 2px;
       font-weight: normal;
     }
@@ -1179,10 +1257,10 @@ function getDocumentationHtml(): string {
     .body-field-input textarea {
       width: 100%;
       padding: 10px 12px;
-      background: rgba(0,0,0,0.3);
-      border: 1px solid rgba(255,255,255,0.1);
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
       border-radius: 6px;
-      color: var(--code-text);
+      color: var(--text-primary);
       font-family: 'JetBrains Mono', monospace;
       font-size: 13px;
       outline: none;
@@ -1197,7 +1275,7 @@ function getDocumentationHtml(): string {
 
     .body-field-input input::placeholder,
     .body-field-input textarea::placeholder {
-      color: rgba(255,255,255,0.3);
+      color: var(--text-muted);
     }
 
     .body-field-input textarea {
@@ -1208,7 +1286,7 @@ function getDocumentationHtml(): string {
     .body-field-input select {
       cursor: pointer;
       appearance: none;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23475569' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
       background-repeat: no-repeat;
       background-position: right 12px center;
       padding-right: 36px;
@@ -1216,7 +1294,7 @@ function getDocumentationHtml(): string {
 
     .body-field-desc {
       font-size: 11px;
-      color: rgba(255,255,255,0.4);
+      color: var(--text-secondary);
       margin-top: 4px;
     }
 
@@ -1224,7 +1302,7 @@ function getDocumentationHtml(): string {
       margin-left: 0;
       margin-top: 8px;
       padding: 12px;
-      background: rgba(0,0,0,0.15);
+      background: var(--bg-tertiary);
       border-radius: 6px;
       border-left: 2px solid var(--accent-blue);
     }
@@ -1255,27 +1333,28 @@ function getDocumentationHtml(): string {
     .array-add-btn,
     .array-remove-btn {
       padding: 8px 12px;
-      background: rgba(255,255,255,0.1);
-      border: 1px solid rgba(255,255,255,0.1);
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-color);
       border-radius: 6px;
-      color: var(--code-text);
+      color: var(--text-primary);
       font-size: 12px;
       cursor: pointer;
       transition: all 0.2s;
     }
 
     .array-add-btn:hover {
-      background: rgba(255,255,255,0.15);
+      background: var(--border-color);
     }
 
     .array-remove-btn {
       padding: 8px 10px;
-      background: rgba(239, 68, 68, 0.2);
+      background: rgba(239, 68, 68, 0.1);
       border-color: rgba(239, 68, 68, 0.3);
+      color: #991b1b;
     }
 
     .array-remove-btn:hover {
-      background: rgba(239, 68, 68, 0.3);
+      background: rgba(239, 68, 68, 0.2);
     }
 
     .execute-btn {
@@ -1309,7 +1388,7 @@ function getDocumentationHtml(): string {
     }
 
     .response-pre {
-      background: rgba(0,0,0,0.3);
+      background: var(--bg-secondary);
       border-radius: 6px;
       padding: 16px;
       max-height: 400px;
@@ -1317,6 +1396,8 @@ function getDocumentationHtml(): string {
       font-size: 12px;
       white-space: pre-wrap;
       word-break: break-word;
+      color: var(--text-primary);
+      border: 1px solid var(--border-color);
     }
 
     .response-status {
@@ -1334,6 +1415,91 @@ function getDocumentationHtml(): string {
     .response-status.error {
       background: rgba(239, 68, 68, 0.12);
       color: #991b1b;
+    }
+
+    /* Response headers section */
+    .response-headers-section {
+      margin-top: 12px;
+      background: var(--bg-secondary);
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid var(--border-color);
+    }
+
+    .response-headers-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      background: var(--bg-tertiary);
+      cursor: pointer;
+      transition: background 0.15s;
+      user-select: none;
+    }
+
+    .response-headers-toggle:hover {
+      background: var(--border-color);
+    }
+
+    .response-headers-toggle-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-primary);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .response-headers-toggle-icon {
+      transition: transform 0.2s;
+    }
+
+    .response-headers-section.expanded .response-headers-toggle-icon {
+      transform: rotate(90deg);
+    }
+
+    .response-headers-count {
+      font-size: 11px;
+      padding: 2px 8px;
+      background: var(--bg-tertiary);
+      border-radius: 10px;
+      color: var(--text-secondary);
+    }
+
+    .response-headers-content {
+      display: none;
+      padding: 12px 14px;
+      background: var(--bg-primary);
+    }
+
+    .response-headers-section.expanded .response-headers-content {
+      display: block;
+    }
+
+    .header-row {
+      display: flex;
+      padding: 6px 0;
+      border-bottom: 1px solid var(--border-color);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+    }
+
+    .header-row:last-child {
+      border-bottom: none;
+    }
+
+    .header-name {
+      min-width: 180px;
+      color: var(--accent-blue);
+      font-weight: 500;
+    }
+
+    .header-value {
+      flex: 1;
+      color: var(--text-primary);
+      word-break: break-all;
     }
 
     /* Schema display */
@@ -2167,6 +2333,18 @@ function getDocumentationHtml(): string {
               <div id="responseSection" class="try-it-section" style="display: none;">
                 <label class="try-it-label">Response <span id="responseStatus"></span></label>
                 <pre id="responseBody" class="response-pre"></pre>
+                <div id="responseHeadersSection" class="response-headers-section">
+                  <div class="response-headers-toggle">
+                    <div class="response-headers-toggle-left">
+                      <svg class="response-headers-toggle-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="9 18 15 12 9 6"></polyline>
+                      </svg>
+                      <span>Response Headers</span>
+                    </div>
+                    <span id="responseHeadersCount" class="response-headers-count">0</span>
+                  </div>
+                  <div id="responseHeadersContent" class="response-headers-content"></div>
+                </div>
               </div>
             </div>
             <!-- Code Examples Panel -->
@@ -2952,6 +3130,13 @@ function getDocumentationHtml(): string {
       // Execute button
       document.getElementById('executeBtn')?.addEventListener('click', executeRequest);
 
+      // Response headers toggle - use event delegation on the section
+      document.getElementById('responseHeadersSection')?.addEventListener('click', (e) => {
+        if (e.target.closest('.response-headers-toggle')) {
+          toggleResponseHeaders();
+        }
+      });
+
       // Theme toggle
       document.getElementById('themeToggle')?.addEventListener('click', toggleTheme);
     }
@@ -3093,15 +3278,81 @@ function getDocumentationHtml(): string {
         responseStatus.textContent = response.status + ' ' + response.statusText;
         responseStatus.className = 'response-status ' + (response.ok ? 'success' : 'error');
         responseBody.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+
+        // Display response headers
+        displayResponseHeaders(response.headers);
       } catch (error) {
         responseSection.style.display = 'block';
         responseStatus.textContent = 'Error';
         responseStatus.className = 'response-status error';
         responseBody.textContent = error.message;
+        // Hide headers section on error
+        const headersSection = document.getElementById('responseHeadersSection');
+        if (headersSection) headersSection.style.display = 'none';
       } finally {
         executeBtn.innerHTML = originalText;
         executeBtn.disabled = false;
       }
+    }
+
+    // Display response headers in collapsible section
+    function displayResponseHeaders(headers) {
+      const headersSection = document.getElementById('responseHeadersSection');
+      const headersCount = document.getElementById('responseHeadersCount');
+      const headersContent = document.getElementById('responseHeadersContent');
+
+      if (!headersSection || !headersCount || !headersContent) return;
+
+      // Convert headers to array using entries() iterator
+      const headerEntries = [];
+      try {
+        // Use entries() which is more widely supported
+        for (const [name, value] of headers.entries()) {
+          headerEntries.push({ name, value });
+        }
+      } catch (e) {
+        // Fallback: try forEach if entries() fails
+        try {
+          headers.forEach((value, name) => {
+            headerEntries.push({ name, value });
+          });
+        } catch (e2) {
+          console.warn('Could not read response headers:', e2);
+        }
+      }
+
+      // Update count
+      headersCount.textContent = headerEntries.length;
+
+      // Build headers HTML
+      if (headerEntries.length > 0) {
+        headersSection.style.display = 'block';
+        headersContent.innerHTML = headerEntries.map(h =>
+          '<div class="header-row">' +
+            '<span class="header-name">' + escapeHtml(h.name) + '</span>' +
+            '<span class="header-value">' + escapeHtml(h.value) + '</span>' +
+          '</div>'
+        ).join('');
+        // Ensure collapsed by default
+        headersSection.classList.remove('expanded');
+      } else {
+        headersSection.style.display = 'none';
+      }
+    }
+
+    // Toggle response headers section
+    function toggleResponseHeaders() {
+      const headersSection = document.getElementById('responseHeadersSection');
+      if (headersSection) {
+        headersSection.classList.toggle('expanded');
+      }
+    }
+
+    // Escape HTML helper
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
     }
 
     // Collect body fields into object

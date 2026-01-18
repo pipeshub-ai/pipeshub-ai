@@ -14,4 +14,4 @@ const counterSchema = new Schema<CounterUser>({
   seq: { type: Number, default: 1000 },
 });
 
-export const Counter: Model<CounterUser> = mongoose.model<CounterUser>("Counter", counterSchema);
+export const Counter: Model<CounterUser> = mongoose.models.Counter || mongoose.model<CounterUser>("Counter", counterSchema);
