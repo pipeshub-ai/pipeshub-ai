@@ -37,6 +37,8 @@ export const getIndexingStatusColor = (
       return 'info';
     case 'ENABLE_MULTIMODAL_MODELS':
       return 'info';
+    case 'CONNECTOR_DISABLED':
+      return 'warning';
     default:
       return 'warning';
   }

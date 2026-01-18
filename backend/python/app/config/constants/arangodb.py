@@ -48,6 +48,7 @@ class Connectors(Enum):
     CONFLUENCE = "CONFLUENCE"
     JIRA = "JIRA"
     BOX = "BOX"
+    NEXTCLOUD = "NEXTCLOUD"
     DROPBOX = "DROPBOX"
     DROPBOX_PERSONAL = "DROPBOX PERSONAL"
     WEB = "WEB"
@@ -56,6 +57,9 @@ class Connectors(Enum):
     SERVICENOW = "SERVICENOW"
     S3 = "S3"
     MINIO = "MINIO"
+    GCS = "GCS"
+    AZURE_BLOB = "AZURE BLOB"
+    AZURE_FILES = "AZURE FILES"
 
     UNKNOWN = "UNKNOWN"
 
@@ -67,10 +71,13 @@ class AppGroups(Enum):
     DROPBOX = "Dropbox"
     BOX = "Box"
     SERVICENOW = "Servicenow"
+    NEXTCLOUD = "Nextcloud"
     WEB = "Web"
     BOOKSTACK = "BookStack"
     S3 = "S3"
     MINIO = "MinIO"
+    GCS = "GCS"
+    AZURE = "Azure"
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
@@ -241,6 +248,7 @@ class ProgressStatus(Enum):
     EMPTY = "EMPTY"
     ENABLE_MULTIMODAL_MODELS = "ENABLE_MULTIMODAL_MODELS"
     QUEUED = "QUEUED"
+    CONNECTOR_DISABLED = "CONNECTOR_DISABLED"
 
 
 class RecordTypes(Enum):
@@ -248,6 +256,7 @@ class RecordTypes(Enum):
     ATTACHMENT = "ATTACHMENT"
     LINK = "LINK"
     MAIL = "MAIL"
+    GROUP_MAIL = "GROUP_MAIL"
     DRIVE = "DRIVE"
     WEBPAGE = "WEBPAGE"
     COMMENT = "COMMENT"
@@ -313,6 +322,7 @@ class ConnectorScopes(Enum):
 RECORD_TYPE_COLLECTION_MAPPING = {
     "FILE": CollectionNames.FILES.value,
     "MAIL": CollectionNames.MAILS.value,
+    "GROUP_MAIL": CollectionNames.MAILS.value,
     "WEBPAGE": CollectionNames.WEBPAGES.value,
     "SHAREPOINT_PAGE": CollectionNames.WEBPAGES.value,
     "CONFLUENCE_PAGE": CollectionNames.WEBPAGES.value,

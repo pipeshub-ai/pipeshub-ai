@@ -7,8 +7,6 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import { StorageController } from '../controllers/storage.controller';
-import { SwaggerService } from '../../docs/swagger.container';
-import { registerStorageSwagger } from '../docs/swagger';
 
 const loggerConfig = {
   service: 'Storage service',
@@ -29,12 +27,6 @@ export class StorageContainer {
 
     // Initialize and bind services
     await this.initializeServices(container, appConfig);
-
-    // Register Swagger documentation if SwaggerService is available
-    if (container.isBound(SwaggerService)) {
-      const swaggerService = container.get<SwaggerService>(SwaggerService);
-      registerStorageSwagger(swaggerService);
-    }
 
     this.instance = container;
     return container;

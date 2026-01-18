@@ -254,7 +254,6 @@ class DropboxIndividualConnector(BaseConnector):
 
         self.data_source: Optional[DropboxDataSource] = None
         self.batch_size = 100
-        self.max_concurrent_batches = 5
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
 
         self.sync_filters: FilterCollection = FilterCollection()

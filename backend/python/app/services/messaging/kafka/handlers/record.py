@@ -164,6 +164,12 @@ class RecordEventHandler(BaseEventService):
                             f"⏭️ Skipping indexing for record {record_id}: "
                             f"connector instance {connector_id} is inactive."
                         )
+                        # Update status to CONNECTOR_DISABLED
+                        await self.__update_document_status(
+                            record_id=record_id,
+                            indexing_status=ProgressStatus.CONNECTOR_DISABLED.value,
+                            extraction_status=record.get("extractionStatus", ProgressStatus.NOT_STARTED.value)
+                        )
                         yield {"event": "parsing_complete", "data": {"record_id": record_id}}
                         yield {"event": "indexing_complete", "data": {"record_id": record_id}}
                         return

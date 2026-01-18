@@ -150,11 +150,18 @@ export default function RecordDetails() {
       );
       setSnackbar({
         open: true,
-        message: response.data.success ? 'File indexing started' : 'Failed to start reindexing',
+        message: response.data.success 
+          ? 'File indexing started' 
+          : response.data.reason || 'Failed to start reindexing',
         severity: response.data.success ? 'success' : 'error',
       });
-    } catch (error) {
+    } catch (error: any) {
       console.log('error in re indexing', error);
+      setSnackbar({
+        open: true,
+        message: error.response?.data?.reason || error.message || 'Failed to start reindexing',
+        severity: 'error',
+      });
     }
   };
 
@@ -257,7 +264,12 @@ export default function RecordDetails() {
   let fileIconColor = '#1976d2';
   let extension = '';
   if (isFileRecord && record.fileRecord) {
-    fileSize = formatFileSize(record.fileRecord.sizeInBytes);
+    // Check sizeInBytes in multiple possible locations: record object, or fileRecord
+    // Using ?? (nullish coalescing) to correctly handle 0 as a valid file size
+    const sizeInBytes = record.sizeInBytes ?? record.fileRecord.sizeInBytes;
+    if (sizeInBytes !== undefined && sizeInBytes !== null && !Number.isNaN(sizeInBytes) && sizeInBytes >= 0) {
+      fileSize = formatFileSize(sizeInBytes);
+    }
     extension = record.fileRecord.extension
       ? record.fileRecord.extension.toUpperCase()
       : getExtensionFromMimeType(record.fileRecord.mimeType || record.mimeType || '');

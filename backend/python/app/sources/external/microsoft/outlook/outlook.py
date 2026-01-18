@@ -50358,6 +50358,200 @@ class OutlookCalendarContactsDataSource:
                 error=f"Outlook API call failed: {str(e)}",
             )
 
+    # ========== GROUP CONVERSATIONS OPERATIONS (Phase 2) ==========
+
+    async def groups_list_conversations(
+        self,
+        group_id: str,
+        select: Optional[List[str]] = None,
+        filter: Optional[str] = None,
+        top: Optional[int] = None,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> OutlookCalendarContactsResponse:
+        """List all conversations in a group.
+        Outlook operation: GET /groups/{group-id}/conversations
+        Args:
+            group_id (str, required): Group identifier
+            select (optional): Select specific properties to return
+            filter (optional): Filter the results using OData syntax
+            top (optional): Limit number of results returned
+            headers (optional): Additional headers for the request
+            **kwargs: Additional query parameters
+        Returns:
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
+        """
+        try:
+            # Build query parameters
+            query_params = RequestConfiguration()
+
+            if select:
+                query_params.select = select if isinstance(select, list) else [select]
+            if filter:
+                query_params.filter = filter
+            if top is not None:
+                query_params.top = top
+
+            config = RequestConfiguration()
+            config.query_parameters = query_params
+
+            if headers:
+                config.headers = headers
+
+            response = await self.client.groups.by_group_id(group_id).conversations.get(request_configuration=config)
+            return self._handle_outlook_response(response)
+        except Exception as e:
+            return OutlookCalendarContactsResponse(
+                success=False,
+                error=f"Outlook API call failed: {str(e)}",
+            )
+
+    async def groups_list_threads(
+        self,
+        group_id: str,
+        select: Optional[List[str]] = None,
+        filter: Optional[str] = None,
+        top: Optional[int] = None,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> OutlookCalendarContactsResponse:
+        """List all threads in a group (across all conversations).
+        Outlook operation: GET /groups/{group-id}/threads
+        Args:
+            group_id (str, required): Group identifier
+            select (optional): Select specific properties to return
+            filter (optional): Filter threads by OData query
+            top (optional): Limit number of results returned
+            headers (optional): Additional headers for the request
+            **kwargs: Additional query parameters
+        Returns:
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
+        """
+        try:
+            # Build query parameters
+            query_params = RequestConfiguration()
+
+            if select:
+                query_params.select = select if isinstance(select, list) else [select]
+            if filter:
+                query_params.filter = filter
+            if top is not None:
+                query_params.top = top
+
+            config = RequestConfiguration()
+            config.query_parameters = query_params
+
+            if headers:
+                config.headers = headers
+
+            response = await self.client.groups.by_group_id(group_id).threads.get(request_configuration=config)
+            return self._handle_outlook_response(response)
+        except Exception as e:
+            return OutlookCalendarContactsResponse(
+                success=False,
+                error=f"Outlook API call failed: {str(e)}",
+            )
+
+    async def groups_threads_list_posts(
+        self,
+        group_id: str,
+        thread_id: str,
+        select: Optional[List[str]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> OutlookCalendarContactsResponse:
+        """List all posts in a thread.
+        Outlook operation: GET /groups/{group-id}/threads/{thread-id}/posts
+        Args:
+            group_id (str, required): Group identifier
+            thread_id (str, required): Thread identifier
+            select (optional): Select specific properties to return
+            headers (optional): Additional headers for the request
+            **kwargs: Additional query parameters
+        Returns:
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
+        """
+        try:
+            config = RequestConfiguration()
+
+            if headers:
+                config.headers = headers
+
+            response = await self.client.groups.by_group_id(group_id).threads.by_conversation_thread_id(thread_id).posts.get(request_configuration=config)
+            return self._handle_outlook_response(response)
+        except Exception as e:
+            return OutlookCalendarContactsResponse(
+                success=False,
+                error=f"Outlook API call failed: {str(e)}",
+            )
+
+    async def groups_threads_get_post(
+        self,
+        group_id: str,
+        thread_id: str,
+        post_id: str,
+        select: Optional[List[str]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> OutlookCalendarContactsResponse:
+        """Get a single post from a thread.
+        Outlook operation: GET /groups/{group-id}/threads/{thread-id}/posts/{post-id}
+        Args:
+            group_id (str, required): Group identifier
+            thread_id (str, required): Thread identifier
+            post_id (str, required): Post identifier
+            select (optional): Select specific properties to return
+            headers (optional): Additional headers for the request
+            **kwargs: Additional query parameters
+        Returns:
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
+        """
+        try:
+            config = RequestConfiguration()
+
+
+            if headers:
+                config.headers = headers
+
+            response = await self.client.groups.by_group_id(group_id).threads.by_conversation_thread_id(thread_id).posts.by_post_id(post_id).get(request_configuration=config)
+            return self._handle_outlook_response(response)
+        except Exception as e:
+            return OutlookCalendarContactsResponse(
+                success=False,
+                error=f"Outlook API call failed: {str(e)}",
+            )
+
+    async def groups_conversations_list_threads(
+        self,
+        group_id: str,
+        conversation_id: str,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> OutlookCalendarContactsResponse:
+        """List threads in a specific conversation.
+        Outlook operation: GET /groups/{group-id}/conversations/{conversation-id}/threads
+        Args:
+            group_id (str, required): Group identifier
+            conversation_id (str, required): Conversation identifier
+            headers (optional): Additional headers for the request
+            **kwargs: Additional query parameters
+        Returns:
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
+        """
+        try:
+            config = RequestConfiguration()
+
+            if headers:
+                config.headers = headers
+
+            response = await self.client.groups.by_group_id(group_id).conversations.by_conversation_id(conversation_id).threads.get(request_configuration=config)
+            return self._handle_outlook_response(response)
+        except Exception as e:
+            return OutlookCalendarContactsResponse(
+                success=False,
+                error=f"Outlook API call failed: {str(e)}",
+            )
+
     # ========== EXTENSIONS OPERATIONS (1 methods) ==========
 
     async def applications_update_extension_properties(

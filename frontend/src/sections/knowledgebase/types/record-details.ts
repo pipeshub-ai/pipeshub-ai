@@ -80,6 +80,7 @@ export interface Record {
   isVLMOcrProcessed?: boolean;
   indexingStatus: string;
   version: number;
+  sizeInBytes?: number;
   fileRecord: FileRecord | null;
   mailRecord: MailRecord | null;
   ticketRecord: TicketRecord | null;

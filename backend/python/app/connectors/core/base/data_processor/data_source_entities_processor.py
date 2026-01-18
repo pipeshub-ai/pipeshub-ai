@@ -23,6 +23,7 @@ from app.models.entities import (
     FileRecord,
     IndexingStatus,
     MailRecord,
+    Person,
     Record,
     RecordGroup,
     RecordType,
@@ -64,6 +65,7 @@ class UserGroupWithMembers:
 class DataSourceEntitiesProcessor:
     ATTACHMENT_CONTAINER_TYPES = [
         RecordType.MAIL,
+        RecordType.GROUP_MAIL,
         RecordType.WEBPAGE,
         RecordType.CONFLUENCE_PAGE,
         RecordType.CONFLUENCE_BLOGPOST,
@@ -151,7 +153,7 @@ class DataSourceEntitiesProcessor:
                                      RecordType.CONFLUENCE_BLOGPOST, RecordType.SHAREPOINT_PAGE]:
             # All webpage-like types use WebpageRecord
             return WebpageRecord(**base_params)
-        elif parent_record_type == RecordType.MAIL:
+        elif parent_record_type in [RecordType.MAIL, RecordType.GROUP_MAIL]:
             return MailRecord(**base_params)
         elif parent_record_type == RecordType.TICKET:
             return TicketRecord(**base_params)
@@ -210,6 +212,8 @@ class DataSourceEntitiesProcessor:
             # Todo: Create a edge between the record group and the App
 
         if record_group:
+            # Set the record_group_id on the record
+            record.record_group_id = record_group.id
             # Create a edge between the record and the record group if it doesn't exist
             await tx_store.create_record_group_relation(record.id, record_group.id)
 
@@ -245,9 +249,14 @@ class DataSourceEntitiesProcessor:
                     if permission.email:
                         user = await tx_store.get_user_by_email(permission.email)
 
-                        # If user doesn't exist (external user), create them as inactive
+                        # If user doesn't exist (external user), use PEOPLE collection
                         if not user and permission.email:
-                            user = await self._create_external_user(permission.email, record.connector_id, record.connector_name, tx_store)
+                            self.logger.warning(f"Skipping user/person creation for external user {permission.email}")
+                            # TODO : Handle extenal user/person creation
+                            # person_id = await self._upsert_external_person(permission.email, tx_store)
+                            # if person_id:
+                            #     from_id = person_id
+                            #     from_collection = CollectionNames.PEOPLE.value
 
                     if user:
                         from_id = user.id
@@ -306,28 +315,29 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self.logger.error("Failed to create permission edge: %s", e)
 
-    async def _create_external_user(self, email: str, connector_id: str, connector_name: str, tx_store) -> AppUser:
-        """Create an external user record."""
-        external_source_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, email))
+    async def _upsert_external_person(self, email: str, tx_store) -> Optional[str]:
+        """
+        Upsert person record for external email address.
+        Uses deterministic UUID based on email to ensure only one Person record per email.
+        Returns person_id for creating permission edge.
+        """
+        try:
+            # Use deterministic UUID based on email to ensure consistent ID for same email
+            # This ensures upsert works correctly and only one Person record exists per email
+            person_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, email.lower()))
+            person = Person(email=email.lower(), id=person_id)
 
-        # Create external user record
-        external_user = AppUser(
-            app_name=connector_name,
-            connector_id=connector_id,
-            source_user_id=external_source_id,
-            email=email,
-            full_name=email.split('@')[0],
-            is_active=False
-        )
+            # Upsert to PEOPLE collection (handles both create and update)
+            await tx_store.batch_upsert_people([person])
 
-        # Save the external user
-        await tx_store.batch_upsert_app_users([external_user])
+            self.logger.debug(f"Upserted person record for external email: {email}")
 
-        # Fetch the created user to get the ID
-        user = await tx_store.get_user_by_email(email)
+            # Return the person ID for permission edge
+            return person.id
 
-        self.logger.info(f"Created external user record for: {email}")
-        return user
+        except Exception as e:
+            self.logger.error(f"Error upserting person for {email}: {e}")
+            return None
 
     async def on_updated_record_permissions(self, record: Record, permissions: List[Permission]) -> None:
         self.logger.info(f"Starting permission update for record: {record.record_name} ({record.id})")
@@ -381,6 +391,9 @@ class DataSourceEntitiesProcessor:
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
 
+        # Handle record group FIRST to set record_group_id before saving the record
+        await self._handle_record_group(record, tx_store)
+
         if existing_record is None:
             self.logger.info("New record: %s", record)
             await self._handle_new_record(record, tx_store)
@@ -393,9 +406,6 @@ class DataSourceEntitiesProcessor:
 
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
         await self._handle_parent_record(record, tx_store)
-
-        # Create a edge between the record and the record group if it doesn't exist and if record_group_id is provided
-        await self._handle_record_group(record, tx_store)
 
         # Create a edge between the base record and the specific record if it doesn't exist - isOfType - File, Mail, Message
 
@@ -411,6 +421,37 @@ class DataSourceEntitiesProcessor:
             return record
 
         return record
+
+    async def _reset_indexing_status_to_queued(self, record_id: str, tx_store: TransactionStore) -> None:
+        """
+        Reset indexing status to QUEUED before sending update/reindex events.
+        Only resets if status is not already QUEUED or EMPTY.
+        """
+        try:
+            # Get the record
+            record = await tx_store.get_record_by_key(record_id)
+            if not record:
+                self.logger.warning(f"Record {record_id} not found for status reset")
+                return
+
+            current_status = record.indexing_status
+
+            # Only reset if not already QUEUED or EMPTY
+            if current_status in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
+                self.logger.debug(f"Record {record_id} already has status {current_status}, skipping reset")
+                return
+
+            # Update indexing status to QUEUED
+            status_doc = {
+                "_key": record_id,
+                "indexingStatus": IndexingStatus.QUEUED.value,
+            }
+
+            await tx_store.batch_upsert_nodes([status_doc], CollectionNames.RECORDS.value)
+            self.logger.debug(f"✅ Reset record {record_id} status from {current_status} to QUEUED")
+        except Exception as e:
+            # Log but don't fail the main operation if status update fails
+            self.logger.error(f"❌ Failed to reset record {record_id} to QUEUED: {str(e)}")
 
     async def on_new_records(self, records_with_permissions: List[Tuple[Record, List[Permission]]]) -> None:
         try:
@@ -458,6 +499,11 @@ class DataSourceEntitiesProcessor:
                 )
                 return
 
+            # Reset indexing status to QUEUED before sending update event
+            current_status = processed_record.indexing_status if hasattr(processed_record, 'indexing_status') else None
+            if current_status not in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
+                await self._reset_indexing_status_to_queued(record.id, tx_store)
+
             await self.messaging_producer.send_message(
                 "record-events",
                 {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
@@ -488,6 +534,15 @@ class DataSourceEntitiesProcessor:
                 self.logger.info("No records to reindex")
                 return
 
+            # Reset status to QUEUED for all records before reindexing
+            async with self.data_store_provider.transaction() as tx_store:
+                for record in records:
+                    current_status = record.indexing_status if hasattr(record, 'indexing_status') else None
+                    # Only reset if not already QUEUED or EMPTY
+                    if current_status not in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
+                        await self._reset_indexing_status_to_queued(record.id, tx_store)
+
+            # Now send the reindex events
             for record in records:
                 payload = record.to_kafka_record()
 

@@ -10,6 +10,8 @@ All methods support optional transaction parameter for atomic operations.
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+from app.models.entities import Person
+
 if TYPE_CHECKING:
     from app.models.entities import (
         AppRole,
@@ -659,6 +661,26 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_record_by_external_revision_id(
+        self,
+        connector_id: str,
+        external_revision_id: str,
+        transaction: Optional[str] = None
+    ) -> Optional['Record']:
+        """
+        Get a record by its external revision ID (e.g., etag for S3).
+
+        Args:
+            connector_id (str): Connector ID
+            external_revision_id (str): External revision ID (e.g., etag)
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[Record]: Record data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
     async def get_record_key_by_external_id(
         self,
         external_id: str,
@@ -982,6 +1004,24 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of user groups
+        """
+        pass
+
+    @abstractmethod
+    async def batch_upsert_people(
+        self,
+        people: List[Person],
+        transaction: Optional[str] = None
+    ) -> None:
+        """
+        Upsert people to PEOPLE collection.
+
+        Args:
+            people (List[Person]): List of Person entities
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            None
         """
         pass
 

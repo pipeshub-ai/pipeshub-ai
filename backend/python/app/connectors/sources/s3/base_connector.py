@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    CollectionNames,
     MimeTypes,
     OriginTypes,
 )
@@ -28,7 +29,10 @@ from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
-from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.data_store.data_store import (
+    DataStoreProvider,
+    TransactionStore,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -435,7 +439,7 @@ class S3CompatibleBaseConnector(BaseConnector):
             record_group = RecordGroup(
                 name=bucket_name,
                 external_group_id=bucket_name,
-                group_type=RecordGroupType.DRIVE,
+                group_type=RecordGroupType.BUCKET,
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 description=f"{self.connector_name} Bucket: {bucket_name}",
@@ -635,6 +639,13 @@ class S3CompatibleBaseConnector(BaseConnector):
                             self.logger.error(
                                 f"Access denied when listing objects in bucket {bucket_name}: {error_msg}."
                             )
+                            self.logger.error(
+                                f"Please verify your IAM policy includes the following permissions for bucket '{bucket_name}':\n"
+                                f"  - s3:ListBucket on arn:aws:s3:::{bucket_name}\n"
+                                f"  - s3:GetBucketLocation on arn:aws:s3:::{bucket_name}\n"
+                                f"  - s3:ListBucketVersions on arn:aws:s3:::{bucket_name} (if versioning is enabled)\n"
+                                f"Also check if there's a bucket policy that might be blocking access."
+                            )
                         else:
                             self.logger.error(
                                 f"Failed to list objects in bucket {bucket_name}: {error_msg}"
@@ -736,11 +747,39 @@ class S3CompatibleBaseConnector(BaseConnector):
                 }
             )
 
+    async def _remove_old_parent_relationship(
+        self, record_id: str, tx_store: "TransactionStore"
+    ) -> None:
+        """Remove old PARENT_CHILD relationships for a record."""
+        try:
+            record_key = f"{CollectionNames.RECORDS.value}/{record_id}"
+            deleted_count = await tx_store.delete_parent_child_edges_to(to_key=record_key)
+            if deleted_count > 0:
+                self.logger.info(f"Removed {deleted_count} old parent relationship(s) for record {record_id}")
+        except Exception as e:
+            self.logger.warning(f"Error in _remove_old_parent_relationship: {e}")
+
     async def _process_s3_object(
         self, obj: Dict, bucket_name: str
     ) -> Tuple[Optional[FileRecord], List[Permission]]:
-        """Process a single S3 object and convert it to a FileRecord."""
+        """Process a single S3 object and convert it to a FileRecord.
+
+        Logic:
+        1. Extract path and etag from S3 object
+        2. Try lookup by path (externalRecordId) - PRIMARY
+           ├─ Found → Compare etags
+           │   ├─ Different → Content change → Update record
+           │   └─ Same → Skip (no changes)
+           └─ Not Found → Try lookup by etag (externalRevisionId) - FALLBACK
+               ├─ Found → Move/rename detected
+               │   ├─ Extract old path from existing record
+               │   ├─ Remove old parent relationship
+               │   ├─ Update externalRecordId, path, recordName
+               │   └─ Update record via data_entities_processor
+               └─ Not Found → New file → Create new record
+        """
         try:
+            # 1. Extract path and etag from S3 object
             key = obj.get("Key", "")
             if not key:
                 return None, []
@@ -762,26 +801,32 @@ class S3CompatibleBaseConnector(BaseConnector):
                 timestamp_ms = get_epoch_timestamp_in_ms()
 
             external_record_id = f"{bucket_name}/{normalized_key}"
+            current_etag = obj.get("ETag", "").strip('"')
+
+            # 2. PRIMARY: Try lookup by path (externalRecordId)
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
                     connector_id=self.connector_id, external_id=external_record_id
                 )
 
-            current_etag = obj.get("ETag", "").strip('"')
+            is_move = False
 
             if existing_record:
+                # Found by path - check if etag changed (content change)
                 stored_etag = existing_record.external_revision_id or ""
 
-                if current_etag and stored_etag:
-                    if current_etag == stored_etag:
-                        self.logger.debug(
-                            f"Skipping {normalized_key}: external_revision_id unchanged ({current_etag})"
-                        )
-                        return None, []
-                    else:
-                        self.logger.info(
-                            f"Document updated: {normalized_key} - external_revision_id changed from {stored_etag} to {current_etag}"
-                        )
+                # If both externalRecordId and externalRevisionId are the same, skip
+                if current_etag and stored_etag and current_etag == stored_etag:
+                    self.logger.debug(
+                        f"Skipping {normalized_key}: externalRecordId and externalRevisionId unchanged"
+                    )
+                    return None, []
+
+                # Content changed or missing etag - sync properly from S3
+                if current_etag and stored_etag and current_etag != stored_etag:
+                    self.logger.info(
+                        f"Content change detected: {normalized_key} - externalRevisionId changed from {stored_etag} to {current_etag}"
+                    )
                 elif not current_etag or not stored_etag:
                     if not current_etag:
                         self.logger.warning(
@@ -791,9 +836,27 @@ class S3CompatibleBaseConnector(BaseConnector):
                         self.logger.debug(
                             f"Stored ETag missing for {normalized_key}, processing record"
                         )
-            else:
-                self.logger.debug(f"New document: {normalized_key}")
+            elif current_etag:
+                # Not found by path - FALLBACK: try etag-based lookup (for move/rename detection)
+                async with self.data_store_provider.transaction() as tx_store:
+                    existing_record = await tx_store.get_record_by_external_revision_id(
+                        connector_id=self.connector_id, external_revision_id=current_etag
+                    )
 
+                if existing_record:
+                    # Found by etag but not by path - this is a move/rename
+                    is_move = True
+                    self.logger.info(
+                        f"Move/rename detected: {normalized_key} - file moved from {existing_record.external_record_id} to {external_record_id}"
+                    )
+                else:
+                    # Not found by path or etag - new file
+                    self.logger.debug(f"New document: {normalized_key}")
+            else:
+                # No etag available - treat as new file
+                self.logger.debug(f"New document: {normalized_key} (no etag available)")
+
+            # Prepare record data
             record_type = RecordType.FOLDER if is_folder else RecordType.FILE
 
             extension = get_file_extension(normalized_key) if is_file else None
@@ -810,6 +873,11 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             record_name = normalized_key.rstrip("/").split("/")[-1] or normalized_key.rstrip("/")
 
+            # For moves/renames, remove old parent relationship before processing
+            if is_move and existing_record:
+                async with self.data_store_provider.transaction() as tx_store:
+                    await self._remove_old_parent_relationship(record_id, tx_store)
+
             if not existing_record:
                 version = 0
             else:
@@ -819,7 +887,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 id=record_id,
                 record_name=record_name,
                 record_type=record_type,
-                record_group_type=RecordGroupType.DRIVE.value,
+                record_group_type=RecordGroupType.BUCKET.value,
                 external_record_group_id=bucket_name,
                 external_record_id=external_record_id,
                 external_revision_id=current_etag,
@@ -827,7 +895,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
-                source_created_at=timestamp_ms,
+                source_created_at=existing_record.source_created_at if existing_record else timestamp_ms,
                 source_updated_at=timestamp_ms,
                 weburl=web_url,
                 signed_url=None,
@@ -1231,7 +1299,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 id=record.id,
                 record_name=record_name,
                 record_type=RecordType.FOLDER if is_folder else RecordType.FILE,
-                record_group_type=RecordGroupType.DRIVE.value,
+                record_group_type=RecordGroupType.BUCKET.value,
                 external_record_group_id=bucket_name,
                 external_record_id=updated_external_record_id,
                 external_revision_id=current_etag,

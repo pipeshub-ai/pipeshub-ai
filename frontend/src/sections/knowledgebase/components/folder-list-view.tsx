@@ -399,6 +399,10 @@ export const ListView: React.FC<ListViewProps> = ({
         displayLabel = 'ENABLE MULTIMODAL MODELS';
         color = theme.palette.text.secondary;
         break;
+      case 'CONNECTOR_DISABLED':
+        displayLabel = 'CONNECTOR DISABLED';
+        color = theme.palette.warning.main;
+        break;
       default:
         displayLabel = status.replace(/_/g, ' ').toLowerCase();
         color = theme.palette.text.secondary;
@@ -508,9 +512,10 @@ export const ListView: React.FC<ListViewProps> = ({
       headerAlign: 'left',
       renderCell: (params) => {
         const item = params.row;
-        const size = item.sizeInBytes || item.fileRecord?.sizeInBytes;
+        // Using ?? (nullish coalescing) to correctly handle 0 as a valid file size
+        const size = item.sizeInBytes ?? item.fileRecord?.sizeInBytes;
         const formattedSize =
-          size !== undefined && !Number.isNaN(size) && size > 0 ? formatFileSize(size) : '—';
+          size !== undefined && size !== null && !Number.isNaN(size) && size >= 0 ? formatFileSize(size) : '—';
 
         return (
           <Typography

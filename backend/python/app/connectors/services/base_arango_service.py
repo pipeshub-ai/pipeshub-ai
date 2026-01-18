@@ -25,6 +25,7 @@ from app.config.constants.arangodb import (
     LegacyGraphNames,
     OriginTypes,
     ProgressStatus,
+    RecordRelations,
     RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
@@ -36,6 +37,7 @@ from app.models.entities import (
     AppUserGroup,
     CommentRecord,
     FileRecord,
+    IndexingStatus,
     MailRecord,
     Record,
     RecordGroup,
@@ -54,6 +56,7 @@ from app.schema.arango.documents import (
     file_record_schema,
     mail_record_schema,
     orgs_schema,
+    people_schema,
     record_group_schema,
     record_schema,
     team_schema,
@@ -87,7 +90,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.MAILS.value, mail_record_schema),
     (CollectionNames.WEBPAGES.value, webpage_record_schema),
     (CollectionNames.COMMENTS.value, comment_record_schema),
-    (CollectionNames.PEOPLE.value, None),
+    (CollectionNames.PEOPLE.value, people_schema),
     (CollectionNames.USERS.value, user_schema),
     (CollectionNames.GROUPS.value, None),
     (CollectionNames.ROLES.value, app_role_schema),
@@ -592,6 +595,7 @@ class BaseArangoService:
                     EMPTY: LENGTH(records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
                     QUEUED: LENGTH(records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
                     PAUSED: LENGTH(records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
+                    CONNECTOR_DISABLED: LENGTH(records[* FILTER CURRENT.indexingStatus == "CONNECTOR_DISABLED"]),
                 }
             }
 
@@ -614,6 +618,7 @@ class BaseArangoService:
                             EMPTY: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
                             QUEUED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
                             PAUSED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
+                            CONNECTOR_DISABLED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "CONNECTOR_DISABLED"]),
                         }
                     }
             )
@@ -1621,6 +1626,7 @@ class BaseArangoService:
                     deletedByUserId: record.deletedByUserId,
                     isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true,
                     webUrl: record.webUrl,
+                    sizeInBytes: record.sizeInBytes,
                     fileRecord: LENGTH(fileRecord) > 0 ? fileRecord[0] : null,
                     mailRecord: LENGTH(mailRecord) > 0 ? mailRecord[0] : null,
                     ticketRecord: LENGTH(ticketRecord) > 0 ? ticketRecord[0] : null,
@@ -2406,6 +2412,22 @@ class BaseArangoService:
                         "reason": f"Insufficient permissions. User role: {user_role}. Required: OWNER, WRITER, READER"
                     }
 
+                # Check if connector is enabled before allowing reindex
+                if connector_id:
+                    connector_instance = await self.get_document(connector_id, CollectionNames.APPS.value)
+                    if not connector_instance:
+                        return {
+                            "success": False,
+                            "code": 404,
+                            "reason": f"Connector not found: {connector_id}"
+                        }
+                    if not connector_instance.get("isActive", False):
+                        return {
+                            "success": False,
+                            "code": 400,
+                            "reason": f"Cannot reindex: connector '{connector_instance.get('name', connector_name)}' is currently disabled. Please enable the connector first."
+                        }
+
                 connector_type = connector_name
             else:
                 return {
@@ -2421,6 +2443,10 @@ class BaseArangoService:
 
             # Determine if we should use batch reindex (depth > 0)
             use_batch_reindex = depth != 0
+
+            # Reset indexing status to QUEUED before reindexing
+            # This ensures the record will be properly queued and re-indexed
+            await self._reset_indexing_status_to_queued(record_id)
 
             # Create and publish reindex event
             try:
@@ -5103,6 +5129,55 @@ class BaseArangoService:
             )
             return None
 
+    async def get_record_by_external_revision_id(
+        self, connector_id: str, external_revision_id: str, transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[Record]:
+        """
+        Get record using the external revision ID (e.g., etag for S3).
+
+        Args:
+            connector_id: Connector ID
+            external_revision_id (str): External revision ID to look up (e.g., etag)
+            transaction (Optional[TransactionDatabase]): Optional database transaction
+
+        Returns:
+            Optional[Record]: Record object if found, None otherwise
+        """
+        try:
+            self.logger.debug(
+                "🚀 Retrieving record by external revision ID %s for connector %s", external_revision_id, connector_id
+            )
+
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.externalRevisionId == @external_revision_id AND record.connectorId == @connector_id
+                LIMIT 1
+                RETURN record
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query, bind_vars={"external_revision_id": external_revision_id, "connector_id": connector_id}
+            )
+            result = next(cursor, None)
+
+            if result:
+                self.logger.debug(
+                    "✅ Successfully retrieved record by external revision ID %s for connector %s", external_revision_id, connector_id
+                )
+                return Record.from_arango_base_record(result)
+            else:
+                self.logger.debug(
+                    "⚠️ No record found for external revision ID %s for connector %s", external_revision_id, connector_id
+                )
+                return None
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve record by external revision ID %s for connector %s: %s", external_revision_id, connector_id, str(e)
+            )
+            return None
+
     async def get_record_by_issue_key(
         self, connector_id: str, issue_key: str, transaction: Optional[TransactionDatabase] = None
     ) -> Optional[Record]:
@@ -5362,16 +5437,12 @@ class BaseArangoService:
         """
         record_type = record_dict.get("recordType")
 
-        # Check if this record type has a type collection
         if not type_doc or record_type not in RECORD_TYPE_COLLECTION_MAPPING:
-            # No type collection or no type doc - use base Record
             return Record.from_arango_base_record(record_dict)
 
         try:
-            # Determine which collection this type uses
             collection = RECORD_TYPE_COLLECTION_MAPPING[record_type]
 
-            # Map collections to their corresponding Record classes
             if collection == CollectionNames.FILES.value:
                 return FileRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.MAILS.value:
@@ -5410,7 +5481,19 @@ class BaseArangoService:
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
                 FILTER record._key == @id
-                RETURN record
+
+                LET typeDoc = (
+                    FOR edge IN {CollectionNames.IS_OF_TYPE.value}
+                        FILTER edge._from == record._id
+                        LET doc = DOCUMENT(edge._to)
+                        FILTER doc != null
+                        RETURN doc
+                )[0]
+
+                RETURN {{
+                    record: record,
+                    typeDoc: typeDoc
+                }}
             """
 
             db = transaction if transaction else self.db
@@ -5423,7 +5506,10 @@ class BaseArangoService:
                 self.logger.info(
                     "✅ Successfully retrieved internal key for id %s", id
                 )
-                return Record.from_arango_base_record(result)
+                return self._create_typed_record_from_arango(
+                    result["record"],
+                    result.get("typeDoc")
+                )
             else:
                 self.logger.warning(
                     "⚠️ No internal key found for id %s", id
@@ -6274,6 +6360,45 @@ class BaseArangoService:
             return count
         except Exception as e:
             self.logger.error("❌ Failed to delete edges from source: %s in collection: %s: %s", from_key, collection, str(e))
+            return 0
+
+    async def delete_parent_child_edges_to(self, to_key: str, transaction: Optional[TransactionDatabase] = None) -> int:
+        """
+        Delete PARENT_CHILD edges pointing to a specific target record.
+
+        Args:
+            to_key: The target node key (e.g., "records/12345")
+            transaction: Optional transaction database
+
+        Returns:
+            int: Number of edges deleted
+        """
+        try:
+            self.logger.debug("🚀 Deleting PARENT_CHILD edges to target: %s", to_key)
+            query = f"""
+            FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+                FILTER edge._to == @to_key
+                FILTER edge.relationshipType == @relationship_type
+                REMOVE edge IN {CollectionNames.RECORD_RELATIONS.value}
+                RETURN OLD
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query,
+                bind_vars={
+                    "to_key": to_key,
+                    "relationship_type": RecordRelations.PARENT_CHILD.value,
+                },
+            )
+            deleted_edges = list(cursor)
+            deleted_count = len(deleted_edges)
+            if deleted_count > 0:
+                self.logger.debug("✅ Deleted %d PARENT_CHILD edge(s) to target: %s", deleted_count, to_key)
+            return deleted_count
+        except Exception as e:
+            self.logger.error("❌ Failed to delete PARENT_CHILD edges to target %s: %s", to_key, str(e))
+            if transaction:
+                raise
             return 0
 
     async def delete_edges_to(self, to_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> int:
@@ -7751,11 +7876,22 @@ class BaseArangoService:
                 self.logger.info(
                     "➕ Entity does not exist, saving to people collection"
                 )
+                timestamp = get_epoch_timestamp_in_ms()
                 self.db.collection(CollectionNames.PEOPLE.value).insert(
-                    {"_key": entity_id, "email": email}
+                    {
+                        "_key": entity_id,
+                        "email": email,
+                        "createdAtTimestamp": timestamp,
+                        "updatedAtTimestamp": timestamp,
+                    }
                 )
                 self.logger.info("✅ Entity %s saved to people collection", entity_id)
-                return {"_key": entity_id, "email": email}
+                return {
+                    "_key": entity_id,
+                    "email": email,
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                }
             else:
                 self.logger.info(
                     "⏩ Entity %s already exists in people collection", entity_id
@@ -8420,6 +8556,37 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error(f"❌ Failed to publish {event_type} event: {str(e)}")
 
+    async def _reset_indexing_status_to_queued(self, record_id: str) -> None:
+        """
+        Reset indexing status to QUEUED before sending update/reindex events.
+        Only resets if status is not already QUEUED or EMPTY.
+        """
+        try:
+            # Get the record
+            record = await self.get_document(record_id, CollectionNames.RECORDS.value)
+            if not record:
+                self.logger.warning(f"Record {record_id} not found for status reset")
+                return
+
+            current_status = record.get("indexingStatus")
+
+            # Only reset if not already QUEUED or EMPTY
+            if current_status in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
+                self.logger.debug(f"Record {record_id} already has status {current_status}, skipping reset")
+                return
+
+            # Update indexing status to QUEUED
+            doc = {
+                "_key": record_id,
+                "indexingStatus": IndexingStatus.QUEUED.value,
+            }
+
+            await self.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+            self.logger.debug(f"✅ Reset record {record_id} status from {current_status} to QUEUED")
+        except Exception as e:
+            # Log but don't fail the main operation if status update fails
+            self.logger.error(f"❌ Failed to reset record {record_id} to QUEUED: {str(e)}")
+
     def _validation_error(self, code: int, reason: str) -> Dict:
         """Helper to create validation error response"""
         return {"valid": False, "success": False, "code": code, "reason": reason}
@@ -8581,13 +8748,9 @@ class BaseArangoService:
         folder_data = {
             "_key": folder_id,
             "orgId": org_id,
-            "recordGroupId": kb_id,
             "name": folder_name,
             "isFile": False,
             "extension": None,
-            "mimeType": "application/vnd.folder",
-            "sizeInBytes": 0,
-            "webUrl": f"/kb/{kb_id}/folder/{folder_id}"
         }
 
         # Create folder
@@ -10035,13 +10198,9 @@ class BaseArangoService:
                 folder_data = {
                     "_key": folder_id,
                     "orgId": org_id,
-                    "recordGroupId": kb_id,
                     "name": folder_name,
                     "isFile": False,
                     "extension": None,
-                    "mimeType": "application/vnd.folder",
-                    "sizeInBytes": 0,
-                    "webUrl": f"/kb/{kb_id}/folder/{folder_id}"
                 }
 
                 # Step 5: Insert both documents
