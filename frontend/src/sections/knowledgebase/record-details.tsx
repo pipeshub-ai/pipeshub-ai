@@ -150,11 +150,18 @@ export default function RecordDetails() {
       );
       setSnackbar({
         open: true,
-        message: response.data.success ? 'File indexing started' : 'Failed to start reindexing',
+        message: response.data.success 
+          ? 'File indexing started' 
+          : response.data.reason || 'Failed to start reindexing',
         severity: response.data.success ? 'success' : 'error',
       });
-    } catch (error) {
+    } catch (error: any) {
       console.log('error in re indexing', error);
+      setSnackbar({
+        open: true,
+        message: error.response?.data?.reason || error.message || 'Failed to start reindexing',
+        severity: 'error',
+      });
     }
   };
 

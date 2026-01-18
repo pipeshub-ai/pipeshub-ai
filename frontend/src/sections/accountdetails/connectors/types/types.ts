@@ -335,6 +335,7 @@ interface IndexingStatusStats {
   EMPTY: number;
   ENABLE_MULTIMODAL_MODELS: number;
   QUEUED: number;
+  CONNECTOR_DISABLED: number;
 }
 
 interface BasicStats {

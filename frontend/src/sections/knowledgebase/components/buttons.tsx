@@ -33,6 +33,8 @@ const getReindexButtonText = (status: string): string => {
       return 'Retry Indexing';
     case 'ENABLE_MULTIMODAL_MODELS':
       return 'Retry Indexing';
+    case 'CONNECTOR_DISABLED':
+      return 'Reindex';
     default:
       return 'Reindex';
   }
@@ -60,6 +62,8 @@ const getReindexTooltip = (status: string): string => {
       return 'Document has no content.';
     case 'ENABLE_MULTIMODAL_MODELS':
       return 'Enable Multimodal LLM or Embedding Model to index document.';
+    case 'CONNECTOR_DISABLED':
+      return 'Connector was disabled. Click to reindex (will check if connector is now enabled).';
     default:
       return 'Reindex document to update search indexes';
   }
@@ -82,7 +86,8 @@ export const ReindexButton: React.FC<ReindexButtonProps> = ({
   onMenuClose,
 }) => {
   const isDisabled =
-    indexingStatus === 'FILE_TYPE_NOT_SUPPORTED' || indexingStatus === 'IN_PROGRESS';
+    indexingStatus === 'FILE_TYPE_NOT_SUPPORTED' || 
+    indexingStatus === 'IN_PROGRESS';
   const isFailed = indexingStatus === 'FAILED';
 
   // Get base button styles based on variant

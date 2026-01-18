@@ -399,6 +399,10 @@ export const ListView: React.FC<ListViewProps> = ({
         displayLabel = 'ENABLE MULTIMODAL MODELS';
         color = theme.palette.text.secondary;
         break;
+      case 'CONNECTOR_DISABLED':
+        displayLabel = 'CONNECTOR DISABLED';
+        color = theme.palette.warning.main;
+        break;
       default:
         displayLabel = status.replace(/_/g, ' ').toLowerCase();
         color = theme.palette.text.secondary;

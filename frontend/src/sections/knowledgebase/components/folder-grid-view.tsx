@@ -391,6 +391,8 @@ export const GridView: React.FC<GridViewProps> = ({
         return 'info';
       case 'ENABLE_MULTIMODAL_MODELS':
         return 'info';
+      case 'CONNECTOR_DISABLED':
+        return 'warning';
       default:
         return 'default';
     }
@@ -416,6 +418,8 @@ export const GridView: React.FC<GridViewProps> = ({
         return 'Paused';
       case 'QUEUED':
         return 'Queued';
+      case 'CONNECTOR_DISABLED':
+        return 'Connector Disabled';
       default:
         return status
           .replace(/_/g, ' ')

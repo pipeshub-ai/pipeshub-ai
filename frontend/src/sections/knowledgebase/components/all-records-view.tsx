@@ -662,13 +662,20 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
         open: true,
         message: response.success
           ? 'File indexing started successfully'
-          : 'Failed to start reindexing',
+          : response.reason || 'Failed to start reindexing',
         severity: response.success ? 'success' : 'error',
       });
       // Refresh the records to show updated status
-      loadAllRecords();
+      if (response.success) {
+        loadAllRecords();
+      }
     } catch (err: any) {
       console.error('Failed to reindexing document', err);
+      setSnackbar({
+        open: true,
+        message: err.response?.data?.reason || err.message || 'Failed to start reindexing',
+        severity: 'error',
+      });
     }
   };
 
@@ -842,6 +849,10 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
           case 'ENABLE_MULTIMODAL_MODELS':
             displayLabel = 'ENABLE MULTIMODAL MODELS';
             color = theme.palette.text.secondary;
+            break;
+          case 'CONNECTOR_DISABLED':
+            displayLabel = 'CONNECTOR DISABLED';
+            color = theme.palette.warning.main;
             break;
           default:
             displayLabel = status.replace(/_/g, ' ').toLowerCase();
@@ -1121,7 +1132,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
                 ]
               : []),
             // Show reindex options to everyone (no permission check)
-            ...((params.row.indexingStatus === 'FAILED' || params.row.indexingStatus === 'NOT_STARTED')
+            ...((params.row.indexingStatus === 'FAILED' || params.row.indexingStatus === 'NOT_STARTED' || params.row.indexingStatus === 'CONNECTOR_DISABLED')
               ? [
                   {
                     label: 'Retry Indexing',
