@@ -5,6 +5,7 @@ Connector for synchronizing data from Google Cloud Storage buckets. This connect
 uses the native GCS API with service account authentication.
 """
 
+import asyncio
 import mimetypes
 import uuid
 from datetime import datetime, timezone
@@ -469,11 +470,29 @@ class GCSConnector(BaseConnector):
             raise
 
     async def _create_record_groups_for_buckets(self, bucket_names: List[str]) -> None:
-        """Create record groups for buckets with appropriate permissions."""
+        """Create record groups for buckets with appropriate permissions.
+
+        Processes buckets one at a time to avoid database lock contention issues.
+        Includes retry logic with exponential backoff for transient errors.
+        """
         if not bucket_names:
             return
 
-        record_groups = []
+        # Get user info once upfront to avoid repeated transactions
+        creator_email = None
+        if self.created_by and self.connector_scope != ConnectorScope.TEAM.value:
+            try:
+                async with self.data_store_provider.transaction() as tx_store:
+                    user = await tx_store.get_user_by_id(self.created_by)
+                    if user and user.get("email"):
+                        creator_email = user.get("email")
+            except Exception as e:
+                self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
+
+        successful_count = 0
+        failed_buckets = []
+
+        # Process each bucket individually to avoid lock contention
         for bucket_name in bucket_names:
             if not bucket_name:
                 continue
@@ -488,21 +507,15 @@ class GCSConnector(BaseConnector):
                     )
                 )
             else:
-                if self.created_by:
-                    try:
-                        async with self.data_store_provider.transaction() as tx_store:
-                            user = await tx_store.get_user_by_id(self.created_by)
-                            if user and user.get("email"):
-                                permissions.append(
-                                    Permission(
-                                        type=PermissionType.OWNER,
-                                        entity_type=EntityType.USER,
-                                        email=user.get("email"),
-                                        external_id=self.created_by
-                                    )
-                                )
-                    except Exception as e:
-                        self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
+                if creator_email:
+                    permissions.append(
+                        Permission(
+                            type=PermissionType.OWNER,
+                            entity_type=EntityType.USER,
+                            email=creator_email,
+                            external_id=self.created_by
+                        )
+                    )
 
                 if not permissions:
                     permissions.append(
@@ -521,11 +534,40 @@ class GCSConnector(BaseConnector):
                 connector_id=self.connector_id,
                 description=f"GCS Bucket: {bucket_name}",
             )
-            record_groups.append((record_group, permissions))
 
-        if record_groups:
-            await self.data_entities_processor.on_new_record_groups(record_groups)
-            self.logger.info(f"Created {len(record_groups)} record group(s) for buckets")
+            # Process each record group with retry logic
+            max_retries = 3
+            base_delay = 1.0  # seconds
+
+            for attempt in range(max_retries):
+                try:
+                    await self.data_entities_processor.on_new_record_groups([(record_group, permissions)])
+                    successful_count += 1
+                    break
+                except Exception as e:
+                    error_str = str(e)
+                    is_lock_timeout = "timeout waiting to lock" in error_str.lower() or "status=409" in error_str
+
+                    if is_lock_timeout and attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)  # Exponential backoff
+                        self.logger.warning(
+                            f"Lock timeout for bucket {bucket_name}, retrying in {delay}s "
+                            f"(attempt {attempt + 1}/{max_retries})"
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        self.logger.error(
+                            f"Failed to create record group for bucket {bucket_name} "
+                            f"after {attempt + 1} attempts: {e}"
+                        )
+                        failed_buckets.append(bucket_name)
+                        break
+
+        if successful_count > 0:
+            self.logger.info(f"Created {successful_count} record group(s) for buckets")
+
+        if failed_buckets:
+            self.logger.warning(f"Failed to create record groups for {len(failed_buckets)} bucket(s): {failed_buckets}")
 
     def _get_date_filters(self) -> Tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
         """Extract date filter values from sync_filters."""
@@ -559,6 +601,41 @@ class GCSConnector(BaseConnector):
                 self.logger.info(f"Applying created date filter: before {before_dt}")
 
         return modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
+
+    async def _process_records_with_retry(
+        self,
+        records_with_permissions: List[Tuple[FileRecord, List[Permission]]],
+        max_retries: int = 3,
+        base_delay: float = 1.0
+    ) -> None:
+        """Process records with retry logic for transient database errors.
+
+        Args:
+            records_with_permissions: List of (record, permissions) tuples to process
+            max_retries: Maximum number of retry attempts
+            base_delay: Base delay in seconds for exponential backoff
+        """
+        for attempt in range(max_retries):
+            try:
+                await self.data_entities_processor.on_new_records(records_with_permissions)
+                return
+            except Exception as e:
+                error_str = str(e)
+                is_lock_timeout = "timeout waiting to lock" in error_str.lower() or "status=409" in error_str
+
+                if is_lock_timeout and attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)  # Exponential backoff
+                    self.logger.warning(
+                        f"Lock timeout processing {len(records_with_permissions)} records, "
+                        f"retrying in {delay}s (attempt {attempt + 1}/{max_retries})"
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    self.logger.error(
+                        f"Failed to process {len(records_with_permissions)} records "
+                        f"after {attempt + 1} attempts: {e}"
+                    )
+                    raise
 
     def _pass_date_filters(
         self,
@@ -735,9 +812,7 @@ class GCSConnector(BaseConnector):
                                 batch_records.append((record, permissions))
 
                                 if len(batch_records) >= self.batch_size:
-                                    await self.data_entities_processor.on_new_records(
-                                        batch_records
-                                    )
+                                    await self._process_records_with_retry(batch_records)
                                     batch_records = []
                         except Exception as e:
                             self.logger.error(
@@ -761,7 +836,7 @@ class GCSConnector(BaseConnector):
                 has_more = False
 
         if batch_records:
-            await self.data_entities_processor.on_new_records(batch_records)
+            await self._process_records_with_retry(batch_records)
 
         if max_timestamp > 0:
             await self.record_sync_point.update_sync_point(
@@ -1031,8 +1106,8 @@ class GCSConnector(BaseConnector):
                 expiration=86400,  # 24 hours
             )
 
-            if response.success:
-                return response.data
+            if response.success and response.data:
+                return response.data.get("url")
             else:
                 self.logger.error(
                     f"Failed to generate signed URL: {response.error} | "
