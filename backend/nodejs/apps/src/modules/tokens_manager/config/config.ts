@@ -68,6 +68,10 @@ export interface AppConfig {
     storageType: string;
     endpoint: string;
   };
+
+  // OAuth Provider config
+  oauthIssuer: string;
+  oauthBackendUrl: string;
 }
 
 export const loadAppConfig = async (): Promise<AppConfig> => {
@@ -105,5 +109,9 @@ export const loadAppConfig = async (): Promise<AppConfig> => {
       dialTimeout: parseInt(process.env.ETCD_DIAL_TIMEOUT!, 10),
     },
     storage: await configService.getStorageConfig(),
+
+    // OAuth Provider config
+    oauthIssuer: await configService.getOAuthIssuer(),
+    oauthBackendUrl: await configService.getOAuthBackendUrl(),
   };
 };

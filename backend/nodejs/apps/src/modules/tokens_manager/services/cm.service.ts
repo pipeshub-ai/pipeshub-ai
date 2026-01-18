@@ -626,6 +626,38 @@ export class ConfigService {
     return parsedKeys.cookieSecret;
   }
 
+  public async getOAuthBackendUrl(): Promise<string> {
+    // Assuming the OAuth backend is the same as the auth backend
+    // When oauth is served from different backend, this method should be overridden
+    return this.getAuthBackendUrl();
+  }
+
+  // OAuth Provider Configuration
+  public async getOAuthIssuer(): Promise<string> {
+    const url =
+      (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
+      '{}';
+
+    let parsedUrl = JSON.parse(url);
+
+    // Preserve existing oauthProvider object if it exists, otherwise create a new one
+    parsedUrl.oauthProvider = {
+      ...parsedUrl.oauthProvider,
+      issuer:
+        normalizeUrl(process.env.OAUTH_ISSUER!) ||
+        normalizeUrl(parsedUrl.oauthProvider?.issuer) ||
+        `http://localhost:${process.env.PORT ?? 3000}`,
+    };
+
+    // Save the updated object back to configPaths.endpoint
+    await this.keyValueStoreService.set<string>(
+      configPaths.endpoint,
+      JSON.stringify(parsedUrl),
+    );
+
+    return parsedUrl.oauthProvider.issuer;
+  }
+
   public async getRsAvailable(): Promise<string> {
     if (!process.env.REPLICA_SET_AVAILABLE) {
       const mongoUri = (

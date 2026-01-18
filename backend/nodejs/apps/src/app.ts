@@ -51,6 +51,12 @@ import { CrawlingManagerContainer } from './modules/crawling_manager/container/c
 import createCrawlingManagerRouter from './modules/crawling_manager/routes/cm_routes';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
 import { createTeamsRouter } from './modules/user_management/routes/teams.routes';
+import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth.provider.container';
+import {
+  createOAuthProviderRouter,
+  createOAuthClientsRouter,
+  createOIDCDiscoveryRouter,
+} from './modules/oauth_provider/routes';
 
 const loggerConfig = {
   service: 'Application',
@@ -71,6 +77,7 @@ export class Application {
   private notificationContainer!: Container;
   private crawlingManagerContainer!: Container;
   private apiDocsContainer!: Container;
+  private oauthProviderContainer!: Container;
   private port: number;
 
   constructor() {
@@ -132,6 +139,11 @@ export class Application {
           appConfig,
         );
 
+      this.oauthProviderContainer = await OAuthProviderContainer.initialize(
+        configurationManagerConfig,
+        appConfig,
+      );
+
       // binding prometheus to all services routes
       this.logger.debug('Binding Prometheus Service with other services');
       this.tokenManagerContainer
@@ -174,6 +186,11 @@ export class Application {
         .inSingletonScope();
 
       this.crawlingManagerContainer
+        .bind<PrometheusService>(PrometheusService)
+        .toSelf()
+        .inSingletonScope();
+
+      this.oauthProviderContainer
         .bind<PrometheusService>(PrometheusService)
         .toSelf()
         .inSingletonScope();
@@ -379,6 +396,26 @@ export class Application {
       '/api/v1/crawlingManager',
       createCrawlingManagerRouter(this.crawlingManagerContainer),
     );
+
+    // pipeshub OAuth Provider routes
+    this.app.use(
+      '/api/v1/oauth2',
+      createOAuthProviderRouter(this.oauthProviderContainer),
+    );
+
+    // OAuth Clients routes (OAuth app management)
+    this.app.use(
+      '/api/v1/oauth-clients',
+      createOAuthClientsRouter(this.oauthProviderContainer),
+    );
+
+    // OIDC Discovery routes - mounted at root level per RFC 8414
+    // Exposes: GET /.well-known/openid-configuration
+    //          GET /.well-known/jwks.json
+    this.app.use(
+      '/.well-known',
+      createOIDCDiscoveryRouter(this.oauthProviderContainer),
+    );
   }
 
   private configureErrorHandling(): void {
@@ -418,6 +455,7 @@ export class Application {
       await MailServiceContainer.dispose();
       await CrawlingManagerContainer.dispose();
       await ApiDocsContainer.dispose();
+      await OAuthProviderContainer.dispose();
 
       this.logger.info('Application stopped successfully');
     } catch (error) {
