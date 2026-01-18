@@ -588,25 +588,27 @@ Do not include any additional explanation or text."""
 
                     # Add processed rows to results
                     for row, row_text in zip(batch, row_texts):
-                        processed_rows.append(
-                            {
-                                "raw_data": {cell["header"]: cell["value"] for cell in row},
-                                "natural_language_text": row_text,
-                                "row_num": row[0]["row"],  # Include row number
-                            }
-                        )
+                        if row:
+                            processed_rows.append(
+                                {
+                                    "raw_data": {cell["header"]: cell["value"] for cell in row},
+                                    "natural_language_text": row_text,
+                                    "row_num": row[0]["row"],  # Include row number
+                                }
+                            )
             else:
                 # Use simple format for rows (skip LLM)
                 for row in table["data"]:
-                    row_data = {cell["header"]: cell["value"] for cell in row}
-                    row_text = generate_simple_row_text(row_data)
-                    processed_rows.append(
-                        {
-                            "raw_data": row_data,
-                            "natural_language_text": row_text,
-                            "row_num": row[0]["row"] if row else 0,  # Include row number
-                        }
-                    )
+                    if row:
+                        row_data = {cell["header"]: cell["value"] for cell in row}
+                        row_text = generate_simple_row_text(row_data)
+                        processed_rows.append(
+                            {
+                                "raw_data": row_data,
+                                "natural_language_text": row_text,
+                                "row_num": row[0]["row"]  # Include row number
+                            }
+                        )
 
             processed_tables.append(
                 {
