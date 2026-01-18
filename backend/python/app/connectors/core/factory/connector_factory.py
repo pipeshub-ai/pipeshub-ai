@@ -43,6 +43,7 @@ from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
 from app.connectors.sources.minio.connector import MinIOConnector
+from app.connectors.sources.nextcloud.connector import NextcloudConnector
 from app.connectors.sources.s3.connector import S3Connector
 from app.connectors.sources.servicenow.servicenow.connector import (
     ServiceNowConnector,
@@ -65,6 +66,7 @@ class ConnectorFactory:
         "driveworkspace": GoogleDriveTeamConnector,
         "dropbox": DropboxConnector,
         "dropboxpersonal": DropboxIndividualConnector,
+        "nextcloud": NextcloudConnector,
         "servicenow": ServiceNowConnector,
         "web": WebConnector,
         "bookstack": BookStackConnector,
