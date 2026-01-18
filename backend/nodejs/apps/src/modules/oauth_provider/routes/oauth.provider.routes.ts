@@ -4,6 +4,10 @@ import { ValidationMiddleware } from '../../../libs/middlewares/validation.middl
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware'
 import { OAuthProviderController } from '../controller/oauth.provider.controller'
 import { OIDCProviderController } from '../controller/oid.provider.controller'
+import { Logger } from '../../../libs/services/logger.service'
+import { AuthTokenService } from '../../../libs/services/authtoken.service'
+import { createOAuthRedirectMiddleware } from '../middlewares/oauth.redirect.middleware'
+import { AppConfig } from '../../tokens_manager/config/config'
 import {
   authorizeQuerySchema,
   authorizeConsentSchema,
@@ -21,15 +25,29 @@ export function createOAuthProviderRouter(container: Container): Router {
     'OIDCProviderController',
   )
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware')
+  const logger = container.get<Logger>('Logger')
+  const authTokenService = container.get<AuthTokenService>('AuthTokenService')
+  const appConfig = container.get<AppConfig>('AppConfig')
+
+  // Frontend URL for OAuth redirects (defaults to localhost:3001)
+  const frontendUrl = appConfig.frontendUrl
+
+  // Create OAuth redirect middleware for browser-based OAuth flow
+  const oauthRedirectMiddleware = createOAuthRedirectMiddleware(
+    authTokenService,
+    logger,
+    frontendUrl,
+  )
 
   /**
    * GET /authorize
    * Authorization endpoint - initiates OAuth flow
-   * Requires user to be logged in
+   * Uses redirect middleware: if user not logged in, redirects to frontend
+   * instead of returning 401 (since browser requests don't have JWT in header)
    */
   router.get(
     '/authorize',
-    authMiddleware.authenticate.bind(authMiddleware),
+    oauthRedirectMiddleware,
     ValidationMiddleware.validate(authorizeQuerySchema),
     (req: Request, res: Response, next: NextFunction) =>
       controller.authorize(req as Parameters<typeof controller.authorize>[0], res, next),

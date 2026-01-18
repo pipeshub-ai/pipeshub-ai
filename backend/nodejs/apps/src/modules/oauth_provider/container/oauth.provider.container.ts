@@ -5,6 +5,7 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware'
 import { EncryptionService } from '../../../libs/encryptor/encryptor'
 import { ConfigurationManagerConfig } from '../../configuration_manager/config/config'
 import { AppConfig } from '../../tokens_manager/config/config'
+import { ConfigService } from '../../tokens_manager/services/cm.service'
 import { OAuthAppService } from '../services/oauth.app.service'
 import { OAuthTokenService } from '../services/oauth_token.service'
 import { AuthorizationCodeService } from '../services/authorization_code.service'
@@ -32,6 +33,10 @@ export class OAuthProviderContainer {
     container
       .bind<ConfigurationManagerConfig>('ConfigurationManagerConfig')
       .toConstantValue(configurationManagerConfig)
+    // Bind configuration manager
+    container
+      .bind<ConfigService>('ConfigService')
+      .toConstantValue(ConfigService.getInstance())
     container
       .bind<AppConfig>('AppConfig')
       .toDynamicValue(() => appConfig)
