@@ -67,23 +67,32 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
             CollectionNames.RECORDS.value,
             ProgressStatus.IN_PROGRESS.value
         )
+        queued_records = await arango_service.get_documents_by_status(
+                CollectionNames.RECORDS.value,
+                ProgressStatus.QUEUED.value
+            )
+        # Create combined list and store length for clarity and efficiency
+        all_records_to_recover = in_progress_records + queued_records
+        total_records = len(all_records_to_recover)
 
-        if not in_progress_records:
-            logger.info("✅ No in-progress records found. Starting fresh.")
+        if not total_records:
+            logger.info("✅ No in-progress or queued records found. Starting fresh.")
             return
 
-        logger.info(f"📋 Found {len(in_progress_records)} in-progress records to recover")
+        logger.info(f"📋 Found {total_records} in-progress or queued records to recover")
         # Create the message handler that will process these records
         record_message_handler: RecordEventHandler = await KafkaUtils.create_record_message_handler(app_container)
 
-        # Process each in-progress record
-        for idx, record in enumerate(in_progress_records, 1):
+        # Process each record
+        for idx, record in enumerate(all_records_to_recover, 1):
             try:
                 record_id = record.get("_key")
                 record_name = record.get("recordName", "Unknown")
                 logger.info(
-                    f"🔄 [{idx}/{len(in_progress_records)}] Recovering record: {record_name} (ID: {record_id})"
+                    f"🔄 [{idx}/{total_records}] Recovering record: {record_name} (ID: {record_id})"
                 )
+
+                # Todo: Ignore record if Connector is disabled or deleted
 
                 # Reconstruct the payload from the record data
                 payload = {
@@ -133,16 +142,16 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
                 # Only report success if indexing actually completed
                 if indexing_complete:
                     logger.info(
-                        f"✅ [{idx}/{len(in_progress_records)}] Successfully recovered record: {record_name}"
+                        f"✅ [{idx}/{total_records}] Successfully recovered record: {record_name}"
                     )
                 elif parsing_complete:
                     logger.warning(
-                        f"⚠️ [{idx}/{len(in_progress_records)}] Partial recovery for record: {record_name} "
+                        f"⚠️ [{idx}/{total_records}] Partial recovery for record: {record_name} "
                         f"(parsing completed but indexing did not complete)"
                     )
                 else:
                     logger.warning(
-                        f"⚠️ [{idx}/{len(in_progress_records)}] Recovery incomplete for record: {record_name} "
+                        f"⚠️ [{idx}/{total_records}] Recovery incomplete for record: {record_name} "
                         f"(no completion events received)"
                     )
 
@@ -154,7 +163,7 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
                 continue
 
         logger.info(
-            f"✅ Recovery complete. Processed {len(in_progress_records)} in-progress records"
+            f"✅ Recovery complete. Processed {total_records} records"
         )
 
     except Exception as e:

@@ -76,7 +76,7 @@ class ConnectorFactory:
         "s3": S3Connector,
         "minio": MinIOConnector,
         "gcs": GCSConnector,
-        # "azureblob": AzureBlobConnector,
+        #"azureblob": AzureBlobConnector,
         # "azurefiles": AzureFilesConnector,
     }
 
