@@ -1,8 +1,0 @@
-# Environment variables with credentials
-.env
-
-# Node modules
-node_modules/
-
-# Logs
-*.log
