@@ -67,23 +67,28 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
             CollectionNames.RECORDS.value,
             ProgressStatus.IN_PROGRESS.value
         )
-
-        if not in_progress_records:
-            logger.info("✅ No in-progress records found. Starting fresh.")
+        queued_records = await arango_service.get_documents_by_status(
+                CollectionNames.RECORDS.value,
+                ProgressStatus.QUEUED.value
+            )
+        if not in_progress_records and not queued_records:
+            logger.info("✅ No in-progress or queued records found. Starting fresh.")
             return
 
-        logger.info(f"📋 Found {len(in_progress_records)} in-progress records to recover")
+        logger.info(f"📋 Found {len(in_progress_records) + len(queued_records)} in-progress or queued records to recover")
         # Create the message handler that will process these records
         record_message_handler: RecordEventHandler = await KafkaUtils.create_record_message_handler(app_container)
 
         # Process each in-progress record
-        for idx, record in enumerate(in_progress_records, 1):
+        for idx, record in enumerate(in_progress_records + queued_records, 1):
             try:
                 record_id = record.get("_key")
                 record_name = record.get("recordName", "Unknown")
                 logger.info(
                     f"🔄 [{idx}/{len(in_progress_records)}] Recovering record: {record_name} (ID: {record_id})"
                 )
+
+                # Todo: Ignore record if Connector is disabled or deleted
 
                 # Reconstruct the payload from the record data
                 payload = {
