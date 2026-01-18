@@ -263,7 +263,7 @@ async def process_chat_query_with_status(
     decomposed_queries = []
     if not query_info.quickMode and query_info.chatMode != "quick":
         if yield_status:
-            await yield_status("status", {"status": "analyzing", "message": "Analyzing your question..."})
+            await yield_status("status", {"status": "analyzing", "message": "Analyzing your query..."})
         decomposition_service = QueryDecompositionExpansionService(llm, logger=logger)
         decomposition_result = await decomposition_service.transform_query(query_info.query)
         decomposed_queries = decomposition_result["queries"]
@@ -538,7 +538,7 @@ async def askAIStream(
                 # Query decomposition based on mode
                 decomposed_queries = []
                 if not query_info.quickMode and query_info.chatMode != "quick":
-                    yield create_sse_event("status", {"status": "analyzing", "message": "Analyzing your question..."})
+                    yield create_sse_event("status", {"status": "analyzing", "message": "Analyzing your query..."})
                     decomposition_service = QueryDecompositionExpansionService(llm, logger=logger)
                     decomposition_result = await decomposition_service.transform_query(query_info.query)
                     decomposed_queries = decomposition_result["queries"]

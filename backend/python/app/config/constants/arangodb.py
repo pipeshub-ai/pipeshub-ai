@@ -57,6 +57,7 @@ class Connectors(Enum):
     SERVICENOW = "SERVICENOW"
     S3 = "S3"
     MINIO = "MINIO"
+    GCS = "GCS"
 
     UNKNOWN = "UNKNOWN"
 
@@ -73,6 +74,7 @@ class AppGroups(Enum):
     BOOKSTACK = "BookStack"
     S3 = "S3"
     MINIO = "MinIO"
+    GCS = "GCS"
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"

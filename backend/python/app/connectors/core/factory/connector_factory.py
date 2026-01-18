@@ -42,6 +42,7 @@ from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
+from app.connectors.sources.google_cloud_storage.connector import GCSConnector
 from app.connectors.sources.minio.connector import MinIOConnector
 from app.connectors.sources.nextcloud.connector import NextcloudConnector
 from app.connectors.sources.s3.connector import S3Connector
@@ -72,6 +73,7 @@ class ConnectorFactory:
         "bookstack": BookStackConnector,
         "s3": S3Connector,
         "minio": MinIOConnector,
+        "gcs": GCSConnector,
     }
 
     # Beta connector definitions - single source of truth
