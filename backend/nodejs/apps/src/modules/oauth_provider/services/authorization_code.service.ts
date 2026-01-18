@@ -64,8 +64,8 @@ export class AuthorizationCodeService {
   ): Promise<AuthCodeExchangeResult> {
     // First, look for the code regardless of isUsed status
     const authCode = await AuthorizationCode.findOne({
-      code,
-      clientId,
+      code: { $eq: code },
+      clientId: { $eq: clientId },
     })
 
     if (!authCode) {
@@ -149,11 +149,11 @@ export class AuthorizationCodeService {
 
     await Promise.all([
       OAuthAccessToken.updateMany(
-        { clientId, userId: userObjId, isRevoked: false },
+        { clientId: { $eq: clientId }, userId: userObjId, isRevoked: false },
         { isRevoked: true, revokedAt: new Date(), revokedReason: 'code_reuse_detected' },
       ),
       OAuthRefreshToken.updateMany(
-        { clientId, userId: userObjId, isRevoked: false },
+        { clientId: { $eq: clientId }, userId: userObjId, isRevoked: false },
         { isRevoked: true, revokedAt: new Date(), revokedReason: 'code_reuse_detected' },
       ),
     ])
@@ -195,7 +195,7 @@ export class AuthorizationCodeService {
    */
   async revokeCodesForApp(clientId: string): Promise<void> {
     await AuthorizationCode.deleteMany({
-      clientId,
+      clientId: { $eq: clientId },
       isUsed: false,
     })
 

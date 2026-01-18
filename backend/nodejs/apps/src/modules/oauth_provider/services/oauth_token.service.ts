@@ -17,12 +17,13 @@ import {
   IntrospectResponse,
   TokenListItem,
 } from '../types/oauth.types'
+import { RSAKeyService } from './rsa_key.service'
 
 @injectable()
 export class OAuthTokenService {
   constructor(
     @inject('Logger') private logger: Logger,
-    @inject('JWT_SECRET') private jwtSecret: string,
+    @inject('RSAKeyService') private rsaKeyService: RSAKeyService,
     @inject('OAUTH_ISSUER') private issuer: string,
   ) {}
 
@@ -53,8 +54,9 @@ export class OAuthTokenService {
       token_type: 'access',
     }
 
-    const accessToken = jwt.sign(accessTokenPayload, this.jwtSecret, {
-      algorithm: 'HS256',
+    const accessToken = jwt.sign(accessTokenPayload, this.rsaKeyService.getPrivateKey(), {
+      algorithm: 'RS256',
+      keyid: this.rsaKeyService.getKeyId(),
     })
 
     // Store access token hash for revocation lookup
@@ -91,8 +93,9 @@ export class OAuthTokenService {
         token_type: 'refresh',
       }
 
-      const refreshToken = jwt.sign(refreshTokenPayload, this.jwtSecret, {
-        algorithm: 'HS256',
+      const refreshToken = jwt.sign(refreshTokenPayload, this.rsaKeyService.getPrivateKey(), {
+        algorithm: 'RS256',
+        keyid: this.rsaKeyService.getKeyId(),
       })
 
       // Store refresh token
@@ -124,7 +127,9 @@ export class OAuthTokenService {
    */
   async verifyAccessToken(token: string): Promise<OAuthTokenPayload> {
     try {
-      const payload = jwt.verify(token, this.jwtSecret) as OAuthTokenPayload
+      const payload = jwt.verify(token, this.rsaKeyService.getPublicKey(), {
+        algorithms: ['RS256'],
+      }) as OAuthTokenPayload
 
       if (payload.token_type !== 'access') {
         throw new InvalidTokenError('Invalid token type')
@@ -133,8 +138,8 @@ export class OAuthTokenService {
       // Check if token is revoked
       const tokenHash = this.hashToken(token)
       const storedToken = await OAuthAccessToken.findOne({
-        tokenHash,
-        isRevoked: false,
+        tokenHash: { $eq: tokenHash },
+        isRevoked: { $eq: false },
       })
 
       if (!storedToken) {
@@ -158,7 +163,9 @@ export class OAuthTokenService {
    */
   async verifyRefreshToken(token: string): Promise<OAuthTokenPayload> {
     try {
-      const payload = jwt.verify(token, this.jwtSecret) as OAuthTokenPayload
+      const payload = jwt.verify(token, this.rsaKeyService.getPublicKey(), {
+        algorithms: ['RS256'],
+      }) as OAuthTokenPayload
 
       if (payload.token_type !== 'refresh') {
         throw new InvalidTokenError('Invalid token type')
@@ -166,8 +173,8 @@ export class OAuthTokenService {
 
       const tokenHash = this.hashToken(token)
       const storedToken = await OAuthRefreshToken.findOne({
-        tokenHash,
-        isRevoked: false,
+        tokenHash: { $eq: tokenHash },
+        isRevoked: { $eq: false },
       })
 
       if (!storedToken) {
@@ -198,7 +205,7 @@ export class OAuthTokenService {
 
     // Get stored refresh token
     const tokenHash = this.hashToken(refreshToken)
-    const storedToken = await OAuthRefreshToken.findOne({ tokenHash })
+    const storedToken = await OAuthRefreshToken.findOne({ tokenHash: { $eq: tokenHash } })
 
     if (!storedToken) {
       throw new InvalidTokenError('Refresh token not found')
@@ -253,7 +260,11 @@ export class OAuthTokenService {
 
     if (!tokenType || tokenType === 'access_token') {
       const result = await OAuthAccessToken.updateOne(
-        { tokenHash, clientId, isRevoked: false },
+        {
+          tokenHash: { $eq: tokenHash },
+          clientId: { $eq: clientId },
+          isRevoked: { $eq: false },
+        },
         { isRevoked: true, revokedAt: new Date() },
       )
       if (result.modifiedCount > 0) {
@@ -264,7 +275,11 @@ export class OAuthTokenService {
 
     if (!tokenType || tokenType === 'refresh_token') {
       const result = await OAuthRefreshToken.updateOne(
-        { tokenHash, clientId, isRevoked: false },
+        {
+          tokenHash: { $eq: tokenHash },
+          clientId: { $eq: clientId },
+          isRevoked: { $eq: false },
+        },
         { isRevoked: true, revokedAt: new Date() },
       )
       if (result.modifiedCount > 0) {
@@ -282,11 +297,11 @@ export class OAuthTokenService {
   async revokeAllTokensForApp(clientId: string): Promise<void> {
     await Promise.all([
       OAuthAccessToken.updateMany(
-        { clientId, isRevoked: false },
+        { clientId: { $eq: clientId }, isRevoked: { $eq: false } },
         { isRevoked: true, revokedAt: new Date() },
       ),
       OAuthRefreshToken.updateMany(
-        { clientId, isRevoked: false },
+        { clientId: { $eq: clientId }, isRevoked: { $eq: false } },
         { isRevoked: true, revokedAt: new Date() },
       ),
     ])
@@ -304,11 +319,19 @@ export class OAuthTokenService {
     const userObjId = new Types.ObjectId(userId)
     await Promise.all([
       OAuthAccessToken.updateMany(
-        { clientId, userId: userObjId, isRevoked: false },
+        {
+          clientId: { $eq: clientId },
+          userId: { $eq: userObjId },
+          isRevoked: { $eq: false },
+        },
         { isRevoked: true, revokedAt: new Date() },
       ),
       OAuthRefreshToken.updateMany(
-        { clientId, userId: userObjId, isRevoked: false },
+        {
+          clientId: { $eq: clientId },
+          userId: { $eq: userObjId },
+          isRevoked: { $eq: false },
+        },
         { isRevoked: true, revokedAt: new Date() },
       ),
     ])
@@ -324,7 +347,9 @@ export class OAuthTokenService {
    */
   async introspectToken(token: string, clientId: string): Promise<IntrospectResponse> {
     try {
-      const payload = jwt.verify(token, this.jwtSecret) as OAuthTokenPayload
+      const payload = jwt.verify(token, this.rsaKeyService.getPublicKey(), {
+        algorithms: ['RS256'],
+      }) as OAuthTokenPayload
       const tokenHash = this.hashToken(token)
 
       // RFC 7662: Validate that the token was issued to the requesting client
@@ -338,8 +363,14 @@ export class OAuthTokenService {
       // Check revocation
       const storedToken =
         payload.token_type === 'access'
-          ? await OAuthAccessToken.findOne({ tokenHash, isRevoked: false })
-          : await OAuthRefreshToken.findOne({ tokenHash, isRevoked: false })
+          ? await OAuthAccessToken.findOne({
+              tokenHash: { $eq: tokenHash },
+              isRevoked: { $eq: false },
+            })
+          : await OAuthRefreshToken.findOne({
+              tokenHash: { $eq: tokenHash },
+              isRevoked: { $eq: false },
+            })
 
       if (!storedToken) {
         return { active: false }
@@ -376,16 +407,16 @@ export class OAuthTokenService {
   async listTokensForApp(clientId: string): Promise<TokenListItem[]> {
     const [accessTokens, refreshTokens] = await Promise.all([
       OAuthAccessToken.find({
-        clientId,
-        isRevoked: false,
+        clientId: { $eq: clientId },
+        isRevoked: { $eq: false },
         expiresAt: { $gt: new Date() },
       })
         .sort({ createdAt: -1 })
         .limit(100)
         .exec(),
       OAuthRefreshToken.find({
-        clientId,
-        isRevoked: false,
+        clientId: { $eq: clientId },
+        isRevoked: { $eq: false },
         expiresAt: { $gt: new Date() },
       })
         .sort({ createdAt: -1 })

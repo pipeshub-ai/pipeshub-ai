@@ -633,29 +633,53 @@ export class ConfigService {
   }
 
   // OAuth Provider Configuration
+
+  /**
+   * Initialize OAuth issuer configuration in the config store.
+   * This should be called once during application startup/setup.
+   * Separating this from the getter prevents race conditions when
+   * multiple service instances start concurrently.
+   */
+  public async initializeOAuthIssuer(): Promise<void> {
+    const url =
+      (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
+      '{}';
+
+    const parsedUrl = JSON.parse(url);
+
+    // Only initialize if not already set
+    if (!parsedUrl.oauthProvider?.issuer) {
+      parsedUrl.oauthProvider = {
+        ...parsedUrl.oauthProvider,
+        issuer:
+          normalizeUrl(process.env.OAUTH_ISSUER!) ||
+          `http://localhost:${process.env.PORT ?? 3000}`,
+      };
+
+      await this.keyValueStoreService.set<string>(
+        configPaths.endpoint,
+        JSON.stringify(parsedUrl),
+      );
+    }
+  }
+
+  /**
+   * Get the OAuth issuer URL. This is a pure getter with no side effects.
+   * Call initializeOAuthIssuer() during application startup to seed the config.
+   */
   public async getOAuthIssuer(): Promise<string> {
     const url =
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    const parsedUrl = JSON.parse(url);
 
-    // Preserve existing oauthProvider object if it exists, otherwise create a new one
-    parsedUrl.oauthProvider = {
-      ...parsedUrl.oauthProvider,
-      issuer:
-        normalizeUrl(process.env.OAUTH_ISSUER!) ||
-        normalizeUrl(parsedUrl.oauthProvider?.issuer) ||
-        `http://localhost:${process.env.PORT ?? 3000}`,
-    };
-
-    // Save the updated object back to configPaths.endpoint
-    await this.keyValueStoreService.set<string>(
-      configPaths.endpoint,
-      JSON.stringify(parsedUrl),
+    // Return stored value, or fall back to env var, or default
+    return (
+      normalizeUrl(process.env.OAUTH_ISSUER!) ||
+      normalizeUrl(parsedUrl.oauthProvider?.issuer) ||
+      `http://localhost:${process.env.PORT ?? 3000}`
     );
-
-    return parsedUrl.oauthProvider.issuer;
   }
 
   public async getRsAvailable(): Promise<string> {

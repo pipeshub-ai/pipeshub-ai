@@ -176,12 +176,20 @@ async function main() {
     return
   }
 
+  /**
+   * Mask sensitive data for display
+   */
+  function maskSecret(secret) {
+    if (!secret || secret.length <= 8) return '***'
+    return secret.substring(0, 8) + '...'
+  }
+
   try {
-    console.log(`\nDeleting OAuth app (clientId: ${CLIENT_ID})...`)
+    console.log(`\nDeleting OAuth app (clientId: ${maskSecret(CLIENT_ID)})...`)
 
     // Get app ID from client ID
     const appId = await getAppIdByClientId(CLIENT_ID, ADMIN_JWT_TOKEN)
-    console.log(`  Found app ID: ${appId}`)
+    console.log(`  Found app ID: ${maskSecret(appId)}`)
 
     // Delete the app
     await deleteOAuthApp(appId, ADMIN_JWT_TOKEN)

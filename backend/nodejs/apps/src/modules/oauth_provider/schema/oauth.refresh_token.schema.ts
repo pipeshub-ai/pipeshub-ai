@@ -10,6 +10,7 @@ export interface IOAuthRefreshToken extends Document {
   isRevoked: boolean
   revokedAt?: Date
   revokedBy?: Types.ObjectId
+  revokedReason?: string
   rotationCount: number
   previousTokenHash?: string
   createdAt: Date
@@ -47,6 +48,7 @@ const OAuthRefreshTokenSchema = new Schema<IOAuthRefreshToken>(
     isRevoked: { type: Boolean, default: false },
     revokedAt: { type: Date },
     revokedBy: { type: Schema.Types.ObjectId, ref: 'users' },
+    revokedReason: { type: String },
     rotationCount: { type: Number, default: 0 },
     previousTokenHash: { type: String },
   },

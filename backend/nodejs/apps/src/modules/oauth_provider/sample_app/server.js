@@ -26,6 +26,24 @@ const express = require('express')
 const crypto = require('crypto')
 const http = require('http')
 const https = require('https')
+const fs = require('fs')
+const path = require('path')
+
+// Load .env file if it exists
+const envPath = path.join(__dirname, '.env')
+if (fs.existsSync(envPath)) {
+  const envContent = fs.readFileSync(envPath, 'utf-8')
+  envContent.split('\n').forEach((line) => {
+    const trimmed = line.trim()
+    if (trimmed && !trimmed.startsWith('#')) {
+      const [key, ...valueParts] = trimmed.split('=')
+      const value = valueParts.join('=')
+      if (key && value && !process.env[key]) {
+        process.env[key] = value
+      }
+    }
+  })
+}
 
 const app = express()
 app.use(express.urlencoded({ extended: true }))
@@ -64,9 +82,30 @@ if (!CLIENT_ID || !CLIENT_SECRET) {
   process.exit(1)
 }
 
+/**
+ * Mask sensitive data for display (shows first 8 chars + ...)
+ */
+function maskSecret(secret) {
+  if (!secret || secret.length <= 8) return '***'
+  return secret.substring(0, 8) + '...'
+}
+
+/**
+ * Escape HTML to prevent XSS attacks
+ */
+function escapeHtml(str) {
+  if (!str) return ''
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 console.log('Configuration:')
 console.log('  Backend URL:', BACKEND_URL)
-console.log('  Client ID:', CLIENT_ID)
+console.log('  Client ID:', maskSecret(CLIENT_ID))
 console.log('  Callback URL:', CALLBACK_URL)
 console.log('')
 
@@ -269,8 +308,8 @@ app.get('/callback', async (req, res) => {
       <head><title>OAuth Error</title></head>
       <body>
         <h1>Authorization Failed</h1>
-        <p>Error: ${error}</p>
-        <p>Description: ${error_description || 'No description provided'}</p>
+        <p>Error: ${escapeHtml(error)}</p>
+        <p>Description: ${escapeHtml(error_description) || 'No description provided'}</p>
         <a href="/">Go Back</a>
       </body>
       </html>
@@ -287,8 +326,6 @@ app.get('/callback', async (req, res) => {
   // Exchange code for tokens
   try {
     console.log('Exchanging authorization code for tokens...')
-    console.log('Code:', code)
-    console.log('Code Verifier:', pending.codeVerifier)
 
     const tokenUrl = new URL('/api/v1/oauth2/token', BACKEND_URL)
 
@@ -309,8 +346,6 @@ app.get('/callback', async (req, res) => {
       body: tokenBody,
     })
 
-    console.log('Token response:', response.status, response.data)
-
     if (response.status !== 200) {
       throw new Error(response.data.error_description || response.data.error || 'Token exchange failed')
     }
@@ -320,15 +355,15 @@ app.get('/callback', async (req, res) => {
 
     console.log('Successfully obtained tokens!')
     res.redirect('/')
-  } catch (error) {
-    console.error('Token exchange error:', error.message)
+  } catch (err) {
+    console.error('Token exchange error:', err.message)
     res.send(`
       <!DOCTYPE html>
       <html>
       <head><title>Token Exchange Error</title></head>
       <body>
         <h1>Token Exchange Failed</h1>
-        <p>${error.message}</p>
+        <p>${escapeHtml(err.message)}</p>
         <a href="/">Go Back</a>
       </body>
       </html>
@@ -369,8 +404,8 @@ app.get('/api/org', async (req, res) => {
       </body>
       </html>
     `)
-  } catch (error) {
-    res.send(`Error: ${error.message}`)
+  } catch (err) {
+    res.send(`Error: ${escapeHtml(err.message)}`)
   }
 })
 
@@ -407,8 +442,8 @@ app.get('/api/userinfo', async (req, res) => {
       </body>
       </html>
     `)
-  } catch (error) {
-    res.send(`Error: ${error.message}`)
+  } catch (err) {
+    res.send(`Error: ${escapeHtml(err.message)}`)
   }
 })
 
@@ -584,15 +619,15 @@ app.post('/admin/delete-app', async (req, res) => {
       </body>
       </html>
     `)
-  } catch (error) {
-    console.error('Failed to delete OAuth app:', error.message)
+  } catch (err) {
+    console.error('Failed to delete OAuth app:', err.message)
     res.status(500).send(`
       <!DOCTYPE html>
       <html>
       <head><title>Error</title></head>
       <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
         <h1 style="color: #dc3545;">Failed to Delete OAuth App</h1>
-        <p>${error.message}</p>
+        <p>${escapeHtml(err.message)}</p>
         <a href="/admin">← Back to Admin</a>
       </body>
       </html>
@@ -678,15 +713,15 @@ app.post('/admin/full-cleanup', async (req, res) => {
         process.exit(0)
       }
     }, 500)
-  } catch (error) {
-    console.error('Cleanup failed:', error.message)
+  } catch (err) {
+    console.error('Cleanup failed:', err.message)
     res.status(500).send(`
       <!DOCTYPE html>
       <html>
       <head><title>Error</title></head>
       <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
         <h1 style="color: #dc3545;">Cleanup Failed</h1>
-        <p>${error.message}</p>
+        <p>${escapeHtml(err.message)}</p>
         <a href="/admin">← Back to Admin</a>
       </body>
       </html>

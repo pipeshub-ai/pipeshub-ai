@@ -115,7 +115,7 @@ export class OAuthAppService {
    */
   async getAppByClientId(clientId: string): Promise<IOAuthApp> {
     const app = await OAuthApp.findOne({
-      clientId,
+      clientId: { $eq: clientId },
       isDeleted: false,
     })
 
@@ -150,13 +150,15 @@ export class OAuthAppService {
     }
 
     if (query.status) {
-      filter.status = query.status
+      filter.status = { $eq: query.status }
     }
 
     if (query.search) {
+      // Escape special regex characters to prevent ReDoS attacks
+      const escapedSearch = query.search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
       filter.$or = [
-        { name: { $regex: query.search, $options: 'i' } },
-        { description: { $regex: query.search, $options: 'i' } },
+        { name: { $regex: escapedSearch, $options: 'i' } },
+        { description: { $regex: escapedSearch, $options: 'i' } },
       ]
     }
 
@@ -382,22 +384,14 @@ export class OAuthAppService {
     )
 
     // Use timing-safe comparison to prevent timing attacks
-    // Both buffers must be the same length for timingSafeEqual
-    const storedBuffer = Buffer.from(storedSecret, 'utf-8')
-    const providedBuffer = Buffer.from(clientSecret, 'utf-8')
+    // Hash both secrets with SHA-256 to get fixed-length buffers for comparison
+    const hash = (secret: string) =>
+      crypto.createHash('sha256').update(secret).digest()
 
-    // If lengths differ, perform comparison anyway to maintain constant time
-    // but always fail. Use the longer length to pad the shorter one.
-    const maxLength = Math.max(storedBuffer.length, providedBuffer.length)
-    const paddedStored = Buffer.alloc(maxLength, 0)
-    const paddedProvided = Buffer.alloc(maxLength, 0)
-    storedBuffer.copy(paddedStored)
-    providedBuffer.copy(paddedProvided)
+    const storedHash = hash(storedSecret)
+    const providedHash = hash(clientSecret)
 
-    const isEqual = crypto.timingSafeEqual(paddedStored, paddedProvided) &&
-      storedBuffer.length === providedBuffer.length
-
-    if (!isEqual) {
+    if (!crypto.timingSafeEqual(storedHash, providedHash)) {
       throw new InvalidClientError('Invalid client credentials')
     }
 
