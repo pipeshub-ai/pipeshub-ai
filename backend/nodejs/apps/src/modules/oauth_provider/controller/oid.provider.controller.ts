@@ -3,6 +3,7 @@ import { Request, Response, NextFunction } from 'express'
 import { Types } from 'mongoose'
 import { OAuthTokenService } from '../services/oauth_token.service'
 import { ScopeValidatorService } from '../services/scope.validator.service'
+import { RSAKeyService } from '../services/rsa_key.service'
 import { OpenIDConfiguration } from '../types/oauth.types'
 import { AppConfig } from '../../tokens_manager/config/config'
 import { Users } from '../../user_management/schema/users.schema'
@@ -25,6 +26,7 @@ export class OIDCProviderController {
     @inject('OAuthTokenService') private oauthTokenService: OAuthTokenService,
     @inject('ScopeValidatorService')
     private scopeValidatorService: ScopeValidatorService,
+    @inject('RSAKeyService') private rsaKeyService: RSAKeyService,
     @inject('AppConfig') private appConfig: AppConfig,
   ) {}
 
@@ -163,7 +165,7 @@ export class OIDCProviderController {
         'client_secret_post',
       ],
       subject_types_supported: ['public'],
-      id_token_signing_alg_values_supported: ['HS256'],
+      id_token_signing_alg_values_supported: ['RS256'],
       claims_supported: [
         'sub',
         'iss',
@@ -188,14 +190,13 @@ export class OIDCProviderController {
    * JSON Web Key Set endpoint
    *
    * Returns the public keys used to verify JWT signatures.
-   * For HS256 (symmetric) signing, there are no public keys to expose.
-   * For production OIDC, consider using RS256 (asymmetric) signing.
+   * Uses RS256 (RSA Signature with SHA-256) for asymmetric signing,
+   * allowing third-party clients to validate JWTs using the public key.
    *
    * @see https://datatracker.ietf.org/doc/html/rfc7517
    */
   async jwks(_req: Request, res: Response, _next: NextFunction): Promise<void> {
-    // For HS256, there are no public keys to expose
-    // This would need RSA keys for proper OIDC implementation
-    res.json({ keys: [] })
+    // Return the JWKS containing the RS256 public key
+    res.json(this.rsaKeyService.getJWKS())
   }
 }

@@ -38,7 +38,6 @@ const oauthAppConfig = {
 async function createOAuthApp() {
   console.log('Creating OAuth application...')
   console.log('Backend URL:', BACKEND_URL)
-  console.log('App config:', JSON.stringify(oauthAppConfig, null, 2))
 
   const url = new URL('/api/v1/oauth-clients', BACKEND_URL)
 
@@ -92,6 +91,14 @@ async function createOAuthApp() {
   })
 }
 
+/**
+ * Mask sensitive data for logging (shows first 8 chars + ...)
+ */
+function maskSecret(secret) {
+  if (!secret || secret.length <= 8) return '***'
+  return secret.substring(0, 8) + '...'
+}
+
 async function main() {
   try {
     const result = await createOAuthApp()
@@ -103,22 +110,24 @@ async function main() {
     console.log('OAuth Application Created Successfully!')
     console.log('========================================\n')
     console.log('Client ID:', app.clientId)
-    console.log('Client Secret:', app.clientSecret)
-    console.log('\n--- Save these credentials! ---\n')
-    console.log('To run the sample client:')
-    console.log(`  CLIENT_ID=${app.clientId} CLIENT_SECRET=${app.clientSecret} npm start\n`)
+    console.log('Client Secret:', maskSecret(app.clientSecret), '(full secret saved to .env)')
+    console.log('')
 
-    // Create .env content
-    const envContent = `# OAuth Client Credentials
+    // Save credentials to .env file instead of logging them in clear text
+    const fs = require('fs')
+    const path = require('path')
+    const envContent = `# OAuth Client Credentials - Generated ${new Date().toISOString()}
 CLIENT_ID=${app.clientId}
 CLIENT_SECRET=${app.clientSecret}
 BACKEND_URL=http://localhost:3000
 FRONTEND_URL=http://localhost:3001
 `
-    console.log('You can also save this to .env file:')
-    console.log('---')
-    console.log(envContent)
-    console.log('---')
+    const envPath = path.join(__dirname, '.env')
+    fs.writeFileSync(envPath, envContent)
+    console.log('Credentials saved to:', envPath)
+    console.log('\nTo run the sample client:')
+    console.log('  npm start')
+    console.log('\n(Credentials will be loaded from .env file)')
   } catch (error) {
     console.error('Failed to create OAuth app:', error.message)
     process.exit(1)

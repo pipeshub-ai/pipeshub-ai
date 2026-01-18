@@ -110,8 +110,8 @@ export const loadAppConfig = async (): Promise<AppConfig> => {
     },
     storage: await configService.getStorageConfig(),
 
-    // OAuth Provider config
-    oauthIssuer: await configService.getOAuthIssuer(),
+    // OAuth Provider config - initialize first, then get
+    oauthIssuer: (await configService.initializeOAuthIssuer(), await configService.getOAuthIssuer()),
     oauthBackendUrl: await configService.getOAuthBackendUrl(),
   };
 };

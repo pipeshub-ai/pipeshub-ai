@@ -10,6 +10,7 @@ export interface IOAuthAccessToken extends Document {
   isRevoked: boolean
   revokedAt?: Date
   revokedBy?: Types.ObjectId
+  revokedReason?: string
   parentRefreshTokenId?: Types.ObjectId
   createdAt: Date
 }
@@ -45,6 +46,7 @@ const OAuthAccessTokenSchema = new Schema<IOAuthAccessToken>(
     isRevoked: { type: Boolean, default: false },
     revokedAt: { type: Date },
     revokedBy: { type: Schema.Types.ObjectId, ref: 'users' },
+    revokedReason: { type: String },
     parentRefreshTokenId: {
       type: Schema.Types.ObjectId,
       ref: 'oauthRefreshToken',

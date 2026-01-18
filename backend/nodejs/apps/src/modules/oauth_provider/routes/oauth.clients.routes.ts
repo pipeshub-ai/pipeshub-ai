@@ -2,6 +2,8 @@ import { Router } from 'express'
 import { Container } from 'inversify'
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware'
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware'
+import { createOAuthClientRateLimiter } from '../../../libs/middlewares/rate-limit.middleware'
+import { Logger } from '../../../libs/services/logger.service'
 import { OAuthAppController } from '../controller/oauth.app.controller'
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck'
 import {
@@ -15,6 +17,10 @@ export function createOAuthClientsRouter(container: Container): Router {
   const router = Router()
   const controller = container.get<OAuthAppController>('OAuthAppController')
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware')
+  const logger = container.get<Logger>('Logger')
+
+  // Rate limiter for OAuth client management (10 requests per minute)
+  const oauthClientRateLimiter = createOAuthClientRateLimiter(logger)
 
   // All routes require authentication
   router.use(authMiddleware.authenticate.bind(authMiddleware))
@@ -32,10 +38,11 @@ export function createOAuthClientsRouter(container: Container): Router {
   /**
    * POST /oauth-clients
    * Create a new OAuth app
-   * Admin only
+   * Admin only, rate limited
    */
   router.post(
     '/',
+    oauthClientRateLimiter,
     userAdminCheck,
     ValidationMiddleware.validate(createAppSchema),
     (req, res, next) => controller.createApp(req, res, next),
@@ -63,10 +70,11 @@ export function createOAuthClientsRouter(container: Container): Router {
   /**
    * PUT /oauth-clients/:appId
    * Update OAuth app
-   * Admin only
+   * Admin only, rate limited
    */
   router.put(
     '/:appId',
+    oauthClientRateLimiter,
     userAdminCheck,
     ValidationMiddleware.validate(updateAppSchema),
     (req, res, next) => controller.updateApp(req, res, next),
@@ -75,10 +83,11 @@ export function createOAuthClientsRouter(container: Container): Router {
   /**
    * DELETE /oauth-clients/:appId
    * Delete OAuth app (soft delete)
-   * Admin only
+   * Admin only, rate limited
    */
   router.delete(
     '/:appId',
+    oauthClientRateLimiter,
     userAdminCheck,
     ValidationMiddleware.validate(appIdParamsSchema),
     (req, res, next) => controller.deleteApp(req, res, next),
@@ -87,10 +96,11 @@ export function createOAuthClientsRouter(container: Container): Router {
   /**
    * POST /oauth-clients/:appId/regenerate-secret
    * Regenerate client secret
-   * Admin only
+   * Admin only, rate limited
    */
   router.post(
     '/:appId/regenerate-secret',
+    oauthClientRateLimiter,
     userAdminCheck,
     ValidationMiddleware.validate(appIdParamsSchema),
     (req, res, next) => controller.regenerateSecret(req, res, next),
@@ -99,10 +109,11 @@ export function createOAuthClientsRouter(container: Container): Router {
   /**
    * POST /oauth-clients/:appId/suspend
    * Suspend an OAuth app
-   * Admin only
+   * Admin only, rate limited
    */
   router.post(
     '/:appId/suspend',
+    oauthClientRateLimiter,
     userAdminCheck,
     ValidationMiddleware.validate(appIdParamsSchema),
     (req, res, next) => controller.suspendApp(req, res, next),
@@ -111,10 +122,11 @@ export function createOAuthClientsRouter(container: Container): Router {
   /**
    * POST /oauth-clients/:appId/activate
    * Reactivate a suspended OAuth app
-   * Admin only
+   * Admin only, rate limited
    */
   router.post(
     '/:appId/activate',
+    oauthClientRateLimiter,
     userAdminCheck,
     ValidationMiddleware.validate(appIdParamsSchema),
     (req, res, next) => controller.activateApp(req, res, next),
@@ -135,10 +147,11 @@ export function createOAuthClientsRouter(container: Container): Router {
   /**
    * POST /oauth-clients/:appId/revoke-all-tokens
    * Revoke all tokens for an app
-   * Admin only
+   * Admin only, rate limited
    */
   router.post(
     '/:appId/revoke-all-tokens',
+    oauthClientRateLimiter,
     userAdminCheck,
     ValidationMiddleware.validate(appIdParamsSchema),
     (req, res, next) => controller.revokeAllTokens(req, res, next),
