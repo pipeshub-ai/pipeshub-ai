@@ -318,7 +318,7 @@ class FileRecord(Record):
             is_dependent_node=arango_base_record.get("isDependentNode", False),
             parent_node_id=arango_base_record.get("parentNodeId", None),
             is_file=arango_base_file_record["isFile"],
-            size_in_bytes=arango_base_record.get("sizeInBytes", arango_base_file_record.get("sizeInBytes", None)),
+            size_in_bytes=(size := arango_base_record.get("sizeInBytes")) if size is not None else arango_base_file_record.get("sizeInBytes", None),
             extension=arango_base_file_record["extension"],
             path=arango_base_file_record["path"],
             etag=arango_base_file_record["etag"],
