@@ -1,6 +1,5 @@
 import base64
 import json
-import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from jinja2 import Template
@@ -131,10 +130,8 @@ async def get_rows_text(
 def generate_simple_row_text(row_data: Dict[str, Any]) -> str:
     """
     Generate simple row text in "column: value" format without using LLM.
-    
     Args:
         row_data: Dictionary with column names as keys and cell values as values
-        
     Returns:
         String in format "Column1: value1, Column2: value2, ..."
     """

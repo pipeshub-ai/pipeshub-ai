@@ -3,7 +3,7 @@ import io
 import json
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Union
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
@@ -523,7 +523,6 @@ Do not include any additional explanation or text."""
         self, llm, sheet_name: str, cumulative_row_count: List[int]
     ) -> Dict[str, Any]:
         """Process a sheet and generate all summaries and row texts
-        
         Args:
             llm: Language model instance
             sheet_name: Name of the sheet to process
@@ -546,7 +545,7 @@ Do not include any additional explanation or text."""
         for table in tables:
             # Get table summary (always use LLM)
             table_summary = await self.get_table_summary(table)
-        
+
             # Add current table rows to cumulative count
             table_row_count = len(table["data"])
             cumulative_row_count[0] += table_row_count
@@ -555,7 +554,7 @@ Do not include any additional explanation or text."""
             use_llm_for_rows = cumulative_row_count[0] <= threshold
 
             processed_rows = []
-            
+
             if use_llm_for_rows:
                 # Process rows in batches of 50 in parallel using LLM
                 batch_size = 50
