@@ -27,6 +27,9 @@ except ImportError:
 
 from app.sources.client.azure.azure_files import AzureFilesClient, AzureFilesResponse
 
+# Constants
+PATH_PARTS_WITH_DIRECTORY = 2  # Number of parts when path contains directory and filename
+
 
 class AzureFilesDataSource:
     """
@@ -54,7 +57,7 @@ class AzureFilesDataSource:
 
     def _handle_response(
         self,
-        data: Optional[Any] = None,
+        data: object = None,
         error: Optional[str] = None,
         message: Optional[str] = None,
     ) -> AzureFilesResponse:
@@ -322,7 +325,7 @@ class AzureFilesDataSource:
 
             # Parse file path to get directory and filename
             path_parts = file_path.rsplit("/", 1)
-            if len(path_parts) == 2:
+            if len(path_parts) == PATH_PARTS_WITH_DIRECTORY:
                 directory_path = path_parts[0]
                 file_name = path_parts[1]
             else:

@@ -531,6 +531,19 @@ class AzureFilesConnector(BaseConnector):
         if not share_names:
             return
 
+        # Get user info once upfront to avoid repeated transactions
+        creator_email = None
+        if self.created_by and self.connector_scope != ConnectorScope.TEAM.value:
+            try:
+                async with self.data_store_provider.transaction() as tx_store:
+                    user = await tx_store.get_user_by_id(self.created_by)
+                    if user and user.get("email"):
+                        creator_email = user.get("email")
+            except Exception as e:
+                self.logger.warning(
+                    f"Could not get user for created_by {self.created_by}: {e}"
+                )
+
         record_groups = []
         for share_name in share_names:
             if not share_name:
@@ -546,23 +559,15 @@ class AzureFilesConnector(BaseConnector):
                     )
                 )
             else:
-                if self.created_by:
-                    try:
-                        async with self.data_store_provider.transaction() as tx_store:
-                            user = await tx_store.get_user_by_id(self.created_by)
-                            if user and user.get("email"):
-                                permissions.append(
-                                    Permission(
-                                        type=PermissionType.OWNER,
-                                        entity_type=EntityType.USER,
-                                        email=user.get("email"),
-                                        external_id=self.created_by,
-                                    )
-                                )
-                    except Exception as e:
-                        self.logger.warning(
-                            f"Could not get user for created_by {self.created_by}: {e}"
+                if creator_email:
+                    permissions.append(
+                        Permission(
+                            type=PermissionType.OWNER,
+                            entity_type=EntityType.USER,
+                            email=creator_email,
+                            external_id=self.created_by,
                         )
+                    )
 
                 if not permissions:
                     permissions.append(

@@ -5,6 +5,7 @@ Connector for synchronizing data from Azure Blob Storage containers. This connec
 uses the native Azure Blob Storage API with account key authentication.
 """
 
+import base64
 import mimetypes
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -361,6 +362,7 @@ class AzureBlobConnector(BaseConnector):
         self.container_name: Optional[str] = None
         self.connector_scope: Optional[str] = None
         self.created_by: Optional[str] = None
+        self.creator_email: Optional[str] = None  # Cached to avoid repeated DB queries
         self.account_name: Optional[str] = None
 
         # Initialize filter collections
@@ -411,6 +413,16 @@ class AzureBlobConnector(BaseConnector):
         scope_from_config = config.get("scope")
         if scope_from_config:
             self.connector_scope = scope_from_config
+
+        # Fetch creator email once to avoid repeated DB queries during sync
+        if self.created_by and self.connector_scope != ConnectorScope.TEAM.value:
+            try:
+                async with self.data_store_provider.transaction() as tx_store:
+                    user = await tx_store.get_user_by_id(self.created_by)
+                    if user and user.get("email"):
+                        self.creator_email = user.get("email")
+            except Exception as e:
+                self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
 
         try:
             client = await AzureBlobClient.build_from_services(
@@ -516,7 +528,10 @@ class AzureBlobConnector(BaseConnector):
             raise
 
     async def _create_record_groups_for_containers(self, container_names: List[str]) -> None:
-        """Create record groups for containers with appropriate permissions."""
+        """Create record groups for containers with appropriate permissions.
+
+        Uses cached creator_email from init() to avoid repeated database queries.
+        """
         if not container_names:
             return
 
@@ -535,21 +550,16 @@ class AzureBlobConnector(BaseConnector):
                     )
                 )
             else:
-                if self.created_by:
-                    try:
-                        async with self.data_store_provider.transaction() as tx_store:
-                            user = await tx_store.get_user_by_id(self.created_by)
-                            if user and user.get("email"):
-                                permissions.append(
-                                    Permission(
-                                        type=PermissionType.OWNER,
-                                        entity_type=EntityType.USER,
-                                        email=user.get("email"),
-                                        external_id=self.created_by
-                                    )
-                                )
-                    except Exception as e:
-                        self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
+                # Use cached creator_email from init() instead of querying DB
+                if self.creator_email:
+                    permissions.append(
+                        Permission(
+                            type=PermissionType.OWNER,
+                            entity_type=EntityType.USER,
+                            email=self.creator_email,
+                            external_id=self.created_by
+                        )
+                    )
 
                 if not permissions:
                     permissions.append(
@@ -680,7 +690,12 @@ class AzureBlobConnector(BaseConnector):
         return f"{connector_endpoint}/api/v1/internal/stream/record/{record_id}"
 
     async def _sync_container(self, container_name: str) -> None:
-        """Sync blobs from a specific container with pagination support and incremental sync."""
+        """Sync blobs from a specific container with incremental sync support.
+
+        The Azure SDK's list_blobs method returns an AsyncItemPaged object which is an
+        async iterator that handles pagination internally. We iterate directly over it
+        rather than using manual pagination.
+        """
         if not self.data_source:
             raise ConnectionError("Azure Blob connector is not initialized.")
 
@@ -706,7 +721,6 @@ class AzureBlobConnector(BaseConnector):
             RecordType.FILE.value, "container", container_name
         )
         sync_point = await self.record_sync_point.read_sync_point(sync_point_key)
-        marker = sync_point.get("marker") if sync_point else None
         last_sync_time = sync_point.get("last_sync_time") if sync_point else None
 
         if last_sync_time:
@@ -717,106 +731,98 @@ class AzureBlobConnector(BaseConnector):
                 modified_after_ms = last_sync_time
 
         batch_records = []
-        has_more = True
         max_timestamp = last_sync_time if last_sync_time else 0
+        blob_count = 0
 
-        while has_more:
-            try:
-                async with self.rate_limiter:
-                    response = await self.data_source.list_blobs(
-                        container_name=container_name,
-                        maxresults=self.batch_size,
-                        marker=marker,
+        try:
+            async with self.rate_limiter:
+                response = await self.data_source.list_blobs(
+                    container_name=container_name,
+                )
+
+                if not response.success:
+                    error_msg = response.error or "Unknown error"
+                    self.logger.error(
+                        f"Failed to list blobs in container {container_name}: {error_msg}"
                     )
+                    return
 
-                    if not response.success:
-                        error_msg = response.error or "Unknown error"
-                        self.logger.error(
-                            f"Failed to list blobs in container {container_name}: {error_msg}"
-                        )
-                        has_more = False
-                        continue
+                blobs_iterator = response.data
+                if blobs_iterator is None:
+                    self.logger.info(f"No blobs found in container {container_name}")
+                    return
 
-                    blobs_data = response.data
-                    if not blobs_data:
-                        self.logger.info(f"No blobs found in container {container_name}")
-                        has_more = False
-                        continue
-
-                    # Azure SDK returns blobs directly as a list
-                    blobs = blobs_data if isinstance(blobs_data, list) else []
-                    self.logger.info(
-                        f"Processing {len(blobs)} blobs from container {container_name}"
-                    )
-
-                    for blob in blobs:
-                        try:
-                            blob_name = blob.get("name", "")
-                            if not blob_name:
-                                continue
-
-                            is_folder = blob_name.endswith("/")
-
-                            if not is_folder and allowed_extensions:
-                                ext = get_file_extension(blob_name)
-                                if not ext:
-                                    self.logger.debug(
-                                        f"Skipping {blob_name}: no file extension found"
-                                    )
-                                    continue
-                                if ext not in allowed_extensions:
-                                    self.logger.debug(
-                                        f"Skipping {blob_name}: extension '{ext}' not in allowed extensions"
-                                    )
-                                    continue
-
-                            if not self._pass_date_filters(
-                                blob, modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
-                            ):
-                                continue
-
-                            # Track max timestamp for incremental sync
-                            if not is_folder:
-                                last_modified = blob.get("last_modified")
-                                if last_modified:
-                                    if isinstance(last_modified, datetime):
-                                        obj_timestamp_ms = int(last_modified.timestamp() * 1000)
-                                        max_timestamp = max(max_timestamp, obj_timestamp_ms)
-                                    elif isinstance(last_modified, str):
-                                        try:
-                                            obj_dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
-                                            obj_timestamp_ms = int(obj_dt.timestamp() * 1000)
-                                            max_timestamp = max(max_timestamp, obj_timestamp_ms)
-                                        except ValueError:
-                                            pass
-
-                            record, permissions = await self._process_azure_blob(
-                                blob, container_name
-                            )
-                            if record:
-                                batch_records.append((record, permissions))
-
-                                if len(batch_records) >= self.batch_size:
-                                    await self.data_entities_processor.on_new_records(
-                                        batch_records
-                                    )
-                                    batch_records = []
-                        except Exception as e:
-                            self.logger.error(
-                                f"Error processing blob {blob.get('name', 'unknown')}: {e}",
-                                exc_info=True,
-                            )
+                # Azure SDK returns an AsyncItemPaged object which handles pagination internally.
+                # We iterate directly over it using async for.
+                async for blob in blobs_iterator:
+                    try:
+                        blob_count += 1
+                        # Convert BlobProperties to dict for consistent handling
+                        blob_dict = self._blob_properties_to_dict(blob)
+                        blob_name = blob_dict.get("name", "")
+                        if not blob_name:
                             continue
 
-                    # Check for more pages - Azure SDK uses marker for pagination
-                    # When there are no more results, marker will be None
-                    has_more = False  # Azure SDK handles pagination internally in list_blobs
+                        is_folder = blob_name.endswith("/")
 
-            except Exception as e:
-                self.logger.error(
-                    f"Error during container sync for {container_name}: {e}", exc_info=True
-                )
-                has_more = False
+                        if not is_folder and allowed_extensions:
+                            ext = get_file_extension(blob_name)
+                            if not ext:
+                                self.logger.debug(
+                                    f"Skipping {blob_name}: no file extension found"
+                                )
+                                continue
+                            if ext not in allowed_extensions:
+                                self.logger.debug(
+                                    f"Skipping {blob_name}: extension '{ext}' not in allowed extensions"
+                                )
+                                continue
+
+                        if not self._pass_date_filters(
+                            blob_dict, modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
+                        ):
+                            continue
+
+                        # Track max timestamp for incremental sync
+                        if not is_folder:
+                            last_modified = blob_dict.get("last_modified")
+                            if last_modified:
+                                if isinstance(last_modified, datetime):
+                                    obj_timestamp_ms = int(last_modified.timestamp() * 1000)
+                                    max_timestamp = max(max_timestamp, obj_timestamp_ms)
+                                elif isinstance(last_modified, str):
+                                    try:
+                                        obj_dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
+                                        obj_timestamp_ms = int(obj_dt.timestamp() * 1000)
+                                        max_timestamp = max(max_timestamp, obj_timestamp_ms)
+                                    except ValueError:
+                                        pass
+
+                        record, permissions = await self._process_azure_blob(
+                            blob_dict, container_name
+                        )
+                        if record:
+                            batch_records.append((record, permissions))
+
+                            if len(batch_records) >= self.batch_size:
+                                await self.data_entities_processor.on_new_records(
+                                    batch_records
+                                )
+                                batch_records = []
+                    except Exception as e:
+                        error_blob_name = blob_dict.get("name", "unknown") if "blob_dict" in locals() else "unknown"
+                        self.logger.error(
+                            f"Error processing blob {error_blob_name}: {e}",
+                            exc_info=True,
+                        )
+                        continue
+
+            self.logger.info(f"Processed {blob_count} blobs from container {container_name}")
+
+        except Exception as e:
+            self.logger.error(
+                f"Error during container sync for {container_name}: {e}", exc_info=True
+            )
 
         if batch_records:
             await self.data_entities_processor.on_new_records(batch_records)
@@ -825,9 +831,37 @@ class AzureBlobConnector(BaseConnector):
             await self.record_sync_point.update_sync_point(
                 sync_point_key, {
                     "last_sync_time": max_timestamp,
-                    "marker": None
                 }
             )
+
+    def _blob_properties_to_dict(self, blob) -> Dict:
+        """Convert Azure BlobProperties object to a dictionary.
+
+        The Azure SDK returns BlobProperties objects from the async iterator.
+        This method converts them to dictionaries for consistent handling.
+        """
+        # If it's already a dict, return as-is
+        if isinstance(blob, dict):
+            return blob
+
+        # Extract content_settings properties safely
+        content_settings = getattr(blob, "content_settings", None)
+        content_type = None
+        content_md5 = None
+        if content_settings:
+            content_type = getattr(content_settings, "content_type", None)
+            content_md5 = getattr(content_settings, "content_md5", None)
+
+        # Convert BlobProperties to dict
+        return {
+            "name": getattr(blob, "name", ""),
+            "last_modified": getattr(blob, "last_modified", None),
+            "creation_time": getattr(blob, "creation_time", None),
+            "etag": getattr(blob, "etag", ""),
+            "size": getattr(blob, "size", 0),
+            "content_type": content_type,
+            "content_md5": content_md5,
+        }
 
     async def _remove_old_parent_relationship(
         self, record_id: str, tx_store: "TransactionStore"
@@ -957,7 +991,6 @@ class AzureBlobConnector(BaseConnector):
             # Get content MD5 hash
             content_md5 = blob.get("content_md5")
             if content_md5 and isinstance(content_md5, bytes):
-                import base64
                 content_md5 = base64.b64encode(content_md5).decode('utf-8')
 
             file_record = FileRecord(
@@ -1005,7 +1038,10 @@ class AzureBlobConnector(BaseConnector):
     async def _create_azure_blob_permissions(
         self, container_name: str, blob_name: str
     ) -> List[Permission]:
-        """Create permissions for an Azure blob based on connector scope."""
+        """Create permissions for an Azure blob based on connector scope.
+
+        Uses cached creator_email from init() to avoid repeated database queries.
+        """
         try:
             permissions = []
 
@@ -1018,21 +1054,16 @@ class AzureBlobConnector(BaseConnector):
                     )
                 )
             else:
-                if self.created_by:
-                    try:
-                        async with self.data_store_provider.transaction() as tx_store:
-                            user = await tx_store.get_user_by_id(self.created_by)
-                            if user and user.get("email"):
-                                permissions.append(
-                                    Permission(
-                                        type=PermissionType.OWNER,
-                                        entity_type=EntityType.USER,
-                                        email=user.get("email"),
-                                        external_id=self.created_by
-                                    )
-                                )
-                    except Exception as e:
-                        self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
+                # Use cached creator_email instead of querying DB for each blob
+                if self.creator_email:
+                    permissions.append(
+                        Permission(
+                            type=PermissionType.OWNER,
+                            entity_type=EntityType.USER,
+                            email=self.creator_email,
+                            external_id=self.created_by
+                        )
+                    )
 
                 if not permissions:
                     permissions.append(
@@ -1370,7 +1401,6 @@ class AzureBlobConnector(BaseConnector):
             # Get content MD5 hash
             content_md5 = blob_metadata.get("content_md5")
             if content_md5 and isinstance(content_md5, bytes):
-                import base64
                 content_md5 = base64.b64encode(content_md5).decode('utf-8')
 
             updated_record = FileRecord(
