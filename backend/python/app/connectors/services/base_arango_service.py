@@ -9237,12 +9237,12 @@ class BaseArangoService:
 
             if parent_folder_id:
                 # Validate folder exists and belongs to KB
-                folder_valid = await self.validate_folder_exists_in_kb(kb_id, parent_folder_id)
+                folder_valid = await self.validate_folder_in_kb(kb_id, parent_folder_id)
                 if not folder_valid:
                     return self._validation_error(404, f"Folder {parent_folder_id} not found in KB {kb_id}")
 
                 # Get parent folder details
-                parent_folder = await self.get_document(parent_folder_id, CollectionNames.FILES.value)
+                parent_folder = await self.get_folder_record_by_id(parent_folder_id)
                 if not parent_folder:
                     return self._validation_error(404, f"Parent folder {parent_folder_id} not found")
 
@@ -9958,16 +9958,43 @@ class BaseArangoService:
             raise
 
     async def get_folder_record_by_id(self, folder_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
+        """
+        Get folder by ID. Folders are represented by RECORDS documents with associated FILES documents.
+        Returns combined folder data from both collections.
+        """
         try:
             db = transaction if transaction else self.db
             query = """
-            FOR file IN @@files
-                FILTER file._key == @folder_id
-                RETURN file
+            // Get folder RECORDS document
+            LET folder_record = DOCUMENT(@@records_collection, @folder_id)
+            FILTER folder_record != null
+            
+            // Get associated FILES document via IS_OF_TYPE edge
+            LET folder_file = FIRST(
+                FOR isEdge IN @@is_of_type
+                    FILTER isEdge._from == folder_record._id
+                    LET f = DOCUMENT(isEdge._to)
+                    FILTER f != null AND f.isFile == false
+                    RETURN f
+            )
+            
+            FILTER folder_file != null
+            
+            // Return combined folder data
+            RETURN MERGE(
+                folder_record,
+                {
+                    name: folder_file.name,
+                    isFile: folder_file.isFile,
+                    extension: folder_file.extension,
+                    recordGroupId: folder_record.connectorId
+                }
+            )
             """
             cursor = db.aql.execute(query, bind_vars={
                 "folder_id": folder_id,
-                "@files": CollectionNames.FILES.value,
+                "@records_collection": CollectionNames.RECORDS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
             })
             return next(cursor, None)
         except Exception as e:
@@ -10263,7 +10290,7 @@ class BaseArangoService:
                 return {
                     "id": folder_id,
                     "name": folder_name,
-                    "webUrl": folder_data["webUrl"],
+                    "webUrl": record_data["webUrl"],
                     "exists": False,
                     "success": True
                 }
