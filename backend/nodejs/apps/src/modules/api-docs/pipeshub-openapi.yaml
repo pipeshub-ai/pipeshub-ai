@@ -38,6 +38,56 @@ tags:
     description: SAML 2.0 Single Sign-On integration with enterprise Identity Providers
   - name: OAuth
     description: OAuth 2.0 token exchange for third-party authentication providers
+  - name: OAuth Provider
+    description: |
+      PipesHub OAuth 2.0 Authorization Server implementing RFC 6749, RFC 7636 (PKCE), and OpenID Connect.
+
+      **Supported Grant Types:**
+      - `authorization_code` - Standard OAuth flow with PKCE support
+      - `client_credentials` - Machine-to-machine authentication
+      - `refresh_token` - Token refresh for long-lived access
+
+      **Security Features:**
+      - PKCE (Proof Key for Code Exchange) for public clients
+      - State parameter for CSRF protection
+      - Configurable token lifetimes
+      - Token revocation and introspection
+
+      **OpenID Connect:**
+      - ID tokens with standard claims
+      - UserInfo endpoint for profile data
+      - Discovery endpoint for automatic configuration
+  - name: OAuth Apps
+    description: |
+      Manage OAuth 2.0 client applications registered with PipesHub.
+
+      OAuth apps allow third-party applications to access PipesHub APIs on behalf of users
+      or organizations. Each app receives a client ID and secret for authentication.
+
+      **App Types:**
+      - **Confidential clients**: Server-side apps that can securely store secrets
+      - **Public clients**: Browser/mobile apps that cannot securely store secrets (use PKCE)
+
+      **App Lifecycle:**
+      - Create apps with name, redirect URIs, and allowed scopes
+      - Regenerate secrets if compromised
+      - Suspend/activate apps to control access
+      - Revoke all tokens for emergency access removal
+  - name: OpenID Connect
+    description: |
+      OpenID Connect 1.0 endpoints for identity federation and discovery.
+
+      **Discovery:**
+      - `/.well-known/openid-configuration` - Authorization server metadata
+      - `/.well-known/jwks.json` - Public keys for token verification
+
+      **UserInfo:**
+      - `/oauth/userinfo` - Get authenticated user's profile information
+
+      **Supported Claims:**
+      - `sub` - User identifier
+      - `email`, `email_verified` - Email information
+      - `name`, `given_name`, `family_name` - Name information
 
   # User Management
   - name: Users
@@ -836,6 +886,791 @@ components:
         - OAUTH
         - SSO
       example: "PASSWORD"
+
+    # ==================== OAUTH PROVIDER SCHEMAS ====================
+    OAuthAuthorizeRequest:
+      type: object
+      description: |
+        OAuth 2.0 Authorization Request parameters (RFC 6749 Section 4.1.1).
+        Passed as query parameters to the authorization endpoint.
+      properties:
+        response_type:
+          type: string
+          enum: [code]
+          description: Must be "code" for authorization code grant
+        client_id:
+          type: string
+          description: The OAuth app's client ID
+        redirect_uri:
+          type: string
+          format: uri
+          description: URI to redirect after authorization (must match registered URI)
+        scope:
+          type: string
+          description: Space-separated list of requested scopes
+          example: "openid profile email read:records"
+        state:
+          type: string
+          description: Random string for CSRF protection (returned in callback)
+          minLength: 1
+        code_challenge:
+          type: string
+          description: |
+            PKCE code challenge (RFC 7636). Base64url-encoded SHA256 hash of code_verifier.
+            Required for public clients, recommended for all clients.
+          pattern: '^[A-Za-z0-9\-_]{43,128}$'
+        code_challenge_method:
+          type: string
+          enum: [S256, plain]
+          description: PKCE challenge method. S256 (SHA256) is recommended.
+        nonce:
+          type: string
+          description: Random string to associate client session with ID token (for OIDC)
+      required:
+        - response_type
+        - client_id
+        - redirect_uri
+        - scope
+        - state
+
+    OAuthConsentRequest:
+      type: object
+      description: Request to submit user consent for OAuth authorization
+      properties:
+        client_id:
+          type: string
+          description: The OAuth app's client ID
+        redirect_uri:
+          type: string
+          format: uri
+          description: Redirect URI (must match authorization request)
+        scope:
+          type: string
+          description: Requested scopes
+        state:
+          type: string
+          description: State parameter from authorization request
+        consent:
+          type: string
+          enum: [granted, denied]
+          description: User's consent decision
+        code_challenge:
+          type: string
+          description: PKCE code challenge (if used in authorization request)
+        code_challenge_method:
+          type: string
+          enum: [S256, plain]
+          description: PKCE challenge method
+      required:
+        - client_id
+        - redirect_uri
+        - scope
+        - state
+        - consent
+
+    OAuthTokenRequest:
+      type: object
+      description: |
+        OAuth 2.0 Token Request (RFC 6749 Section 4.1.3).
+        Request body for exchanging authorization code or credentials for tokens.
+      properties:
+        grant_type:
+          type: string
+          enum: [authorization_code, client_credentials, refresh_token]
+          description: |
+            OAuth grant type:
+            - `authorization_code`: Exchange auth code for tokens
+            - `client_credentials`: Machine-to-machine auth
+            - `refresh_token`: Get new access token using refresh token
+        code:
+          type: string
+          description: Authorization code (required for authorization_code grant)
+        redirect_uri:
+          type: string
+          format: uri
+          description: Redirect URI (required for authorization_code grant)
+        client_id:
+          type: string
+          description: Client ID (can also be sent via Basic auth header)
+        client_secret:
+          type: string
+          description: Client secret (can also be sent via Basic auth header)
+        refresh_token:
+          type: string
+          description: Refresh token (required for refresh_token grant)
+        scope:
+          type: string
+          description: Requested scopes (optional, defaults to original grant scopes)
+        code_verifier:
+          type: string
+          description: |
+            PKCE code verifier (RFC 7636). Required if code_challenge was used.
+            Must be 43-128 characters from [A-Za-z0-9-._~]
+          pattern: '^[A-Za-z0-9\-._~]{43,128}$'
+      required:
+        - grant_type
+
+    OAuthTokenResponse:
+      type: object
+      description: |
+        OAuth 2.0 Token Response (RFC 6749 Section 5.1).
+        Contains the access token and optional refresh/ID tokens.
+      properties:
+        access_token:
+          type: string
+          description: The access token for API requests
+        token_type:
+          type: string
+          example: "Bearer"
+          description: Token type (always "Bearer")
+        expires_in:
+          type: integer
+          description: Access token lifetime in seconds
+          example: 3600
+        refresh_token:
+          type: string
+          description: Refresh token for obtaining new access tokens
+        scope:
+          type: string
+          description: Granted scopes (may differ from requested)
+        id_token:
+          type: string
+          description: OpenID Connect ID token (JWT) if openid scope was requested
+
+    OAuthRevokeRequest:
+      type: object
+      description: |
+        OAuth 2.0 Token Revocation Request (RFC 7009).
+        Revokes an access or refresh token.
+      properties:
+        token:
+          type: string
+          description: The token to revoke
+        token_type_hint:
+          type: string
+          enum: [access_token, refresh_token]
+          description: Hint about token type (optional, improves performance)
+        client_id:
+          type: string
+          description: Client ID
+        client_secret:
+          type: string
+          description: Client secret
+      required:
+        - token
+        - client_id
+
+    OAuthIntrospectRequest:
+      type: object
+      description: |
+        OAuth 2.0 Token Introspection Request (RFC 7662).
+        Check if a token is active and get its metadata.
+      properties:
+        token:
+          type: string
+          description: The token to introspect
+        token_type_hint:
+          type: string
+          enum: [access_token, refresh_token]
+          description: Hint about token type
+        client_id:
+          type: string
+          description: Client ID
+        client_secret:
+          type: string
+          description: Client secret
+      required:
+        - token
+        - client_id
+
+    OAuthIntrospectResponse:
+      type: object
+      description: |
+        OAuth 2.0 Token Introspection Response (RFC 7662).
+        Contains token metadata if active, or just `active: false` if not.
+      properties:
+        active:
+          type: boolean
+          description: Whether the token is currently active
+        scope:
+          type: string
+          description: Scopes granted to the token
+        client_id:
+          type: string
+          description: Client ID the token was issued to
+        username:
+          type: string
+          description: User identifier (if user-based token)
+        token_type:
+          type: string
+          description: Token type
+        exp:
+          type: integer
+          description: Token expiration timestamp (Unix epoch)
+        iat:
+          type: integer
+          description: Token issuance timestamp (Unix epoch)
+        nbf:
+          type: integer
+          description: Token not-before timestamp (Unix epoch)
+        sub:
+          type: string
+          description: Subject (user ID)
+        aud:
+          type: string
+          description: Audience (client ID)
+        iss:
+          type: string
+          description: Issuer URL
+        jti:
+          type: string
+          description: Unique token identifier
+      required:
+        - active
+
+    OAuthErrorResponse:
+      type: object
+      description: |
+        OAuth 2.0 Error Response (RFC 6749 Section 5.2).
+        Standard error format for OAuth endpoints.
+      properties:
+        error:
+          type: string
+          description: |
+            Error code. Common values:
+            - `invalid_request` - Missing or invalid parameter
+            - `invalid_client` - Client authentication failed
+            - `invalid_grant` - Invalid authorization code or refresh token
+            - `unauthorized_client` - Client not authorized for this grant type
+            - `unsupported_grant_type` - Grant type not supported
+            - `invalid_scope` - Requested scope is invalid or exceeds allowed
+            - `access_denied` - User denied authorization
+          enum:
+            - invalid_request
+            - invalid_client
+            - invalid_grant
+            - unauthorized_client
+            - unsupported_grant_type
+            - invalid_scope
+            - access_denied
+            - server_error
+        error_description:
+          type: string
+          description: Human-readable error description
+        error_uri:
+          type: string
+          format: uri
+          description: URI with more information about the error
+        state:
+          type: string
+          description: State parameter from the authorization request
+      required:
+        - error
+
+    OAuthUserInfoResponse:
+      type: object
+      description: |
+        OpenID Connect UserInfo Response.
+        Contains claims about the authenticated user.
+      properties:
+        sub:
+          type: string
+          description: Subject identifier (user ID)
+        name:
+          type: string
+          description: Full name
+        given_name:
+          type: string
+          description: First name
+        family_name:
+          type: string
+          description: Last name
+        email:
+          type: string
+          format: email
+          description: Email address
+        email_verified:
+          type: boolean
+          description: Whether email has been verified
+        picture:
+          type: string
+          format: uri
+          description: Profile picture URL
+        updated_at:
+          type: integer
+          description: Last profile update timestamp (Unix epoch)
+      required:
+        - sub
+
+    OpenIDConfiguration:
+      type: object
+      description: |
+        OpenID Connect Discovery Response (RFC 8414).
+        Contains authorization server metadata.
+      properties:
+        issuer:
+          type: string
+          format: uri
+          description: Authorization server issuer URL
+        authorization_endpoint:
+          type: string
+          format: uri
+          description: OAuth authorization endpoint
+        token_endpoint:
+          type: string
+          format: uri
+          description: OAuth token endpoint
+        userinfo_endpoint:
+          type: string
+          format: uri
+          description: OpenID Connect UserInfo endpoint
+        revocation_endpoint:
+          type: string
+          format: uri
+          description: Token revocation endpoint
+        introspection_endpoint:
+          type: string
+          format: uri
+          description: Token introspection endpoint
+        jwks_uri:
+          type: string
+          format: uri
+          description: JSON Web Key Set endpoint
+        scopes_supported:
+          type: array
+          items:
+            type: string
+          description: Supported OAuth scopes
+          example: ["openid", "profile", "email", "read:records", "write:records"]
+        response_types_supported:
+          type: array
+          items:
+            type: string
+          description: Supported OAuth response types
+          example: ["code"]
+        grant_types_supported:
+          type: array
+          items:
+            type: string
+          description: Supported grant types
+          example: ["authorization_code", "client_credentials", "refresh_token"]
+        token_endpoint_auth_methods_supported:
+          type: array
+          items:
+            type: string
+          description: Supported client authentication methods
+          example: ["client_secret_basic", "client_secret_post"]
+        subject_types_supported:
+          type: array
+          items:
+            type: string
+          description: Supported subject identifier types
+          example: ["public"]
+        id_token_signing_alg_values_supported:
+          type: array
+          items:
+            type: string
+          description: Supported ID token signing algorithms
+          example: ["HS256", "RS256"]
+        claims_supported:
+          type: array
+          items:
+            type: string
+          description: Supported claims in ID tokens/UserInfo
+          example: ["sub", "iss", "aud", "exp", "iat", "email", "name"]
+        code_challenge_methods_supported:
+          type: array
+          items:
+            type: string
+          description: Supported PKCE code challenge methods
+          example: ["S256", "plain"]
+
+    JWKS:
+      type: object
+      description: |
+        JSON Web Key Set (RFC 7517).
+        Contains public keys for verifying token signatures.
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: '#/components/schemas/JWK'
+          description: Array of JSON Web Keys
+
+    JWK:
+      type: object
+      description: |
+        JSON Web Key (RFC 7517).
+        Public key for verifying JWT signatures.
+      properties:
+        kty:
+          type: string
+          description: Key type
+          example: "RSA"
+        use:
+          type: string
+          description: Key use (sig = signature)
+          example: "sig"
+        alg:
+          type: string
+          description: Algorithm
+          example: "RS256"
+        kid:
+          type: string
+          description: Key ID
+        n:
+          type: string
+          description: RSA modulus (base64url encoded)
+        e:
+          type: string
+          description: RSA exponent (base64url encoded)
+          example: "AQAB"
+
+    OAuthConsentData:
+      type: object
+      description: Data returned for rendering the authorization consent page
+      properties:
+        app:
+          type: object
+          description: OAuth app information
+          properties:
+            name:
+              type: string
+              description: App name
+            description:
+              type: string
+              description: App description
+            logoUrl:
+              type: string
+              format: uri
+              description: App logo URL
+            homepageUrl:
+              type: string
+              format: uri
+              description: App homepage
+            privacyPolicyUrl:
+              type: string
+              format: uri
+              description: Privacy policy URL
+        scopes:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                description: Scope name
+              description:
+                type: string
+                description: Human-readable scope description
+              category:
+                type: string
+                description: Scope category
+          description: Requested scopes with descriptions
+        user:
+          type: object
+          description: Current user information
+          properties:
+            email:
+              type: string
+              format: email
+            name:
+              type: string
+        redirectUri:
+          type: string
+          format: uri
+          description: Redirect URI
+        state:
+          type: string
+          description: State parameter
+
+    # ==================== OAUTH APP MANAGEMENT SCHEMAS ====================
+    CreateOAuthAppRequest:
+      type: object
+      description: Request to create a new OAuth app
+      properties:
+        name:
+          type: string
+          description: App name (displayed to users during authorization)
+          minLength: 1
+          maxLength: 100
+          example: "My Integration App"
+        description:
+          type: string
+          description: App description
+          maxLength: 500
+          example: "Integrates PipesHub with our internal tools"
+        redirectUris:
+          type: array
+          items:
+            type: string
+            format: uri
+          description: Allowed redirect URIs (1-10 URIs)
+          minItems: 1
+          maxItems: 10
+          example: ["https://myapp.com/callback", "http://localhost:3000/callback"]
+        allowedGrantTypes:
+          type: array
+          items:
+            type: string
+            enum: [authorization_code, client_credentials, refresh_token]
+          description: |
+            Allowed grant types. Defaults to all if not specified.
+          example: ["authorization_code", "refresh_token"]
+        allowedScopes:
+          type: array
+          items:
+            type: string
+          description: Scopes the app can request
+          minItems: 1
+          example: ["openid", "profile", "read:records"]
+        homepageUrl:
+          type: string
+          format: uri
+          description: App homepage URL (shown during authorization)
+        privacyPolicyUrl:
+          type: string
+          format: uri
+          description: Privacy policy URL
+        termsOfServiceUrl:
+          type: string
+          format: uri
+          description: Terms of service URL
+        isConfidential:
+          type: boolean
+          description: |
+            Whether the app can securely store secrets.
+            - `true`: Server-side app (secret required for token requests)
+            - `false`: Browser/mobile app (must use PKCE)
+          default: true
+        accessTokenLifetime:
+          type: integer
+          description: Access token lifetime in seconds (300-86400)
+          minimum: 300
+          maximum: 86400
+          default: 3600
+          example: 3600
+        refreshTokenLifetime:
+          type: integer
+          description: Refresh token lifetime in seconds (3600-31536000)
+          minimum: 3600
+          maximum: 31536000
+          default: 604800
+          example: 604800
+      required:
+        - name
+        - redirectUris
+        - allowedScopes
+
+    UpdateOAuthAppRequest:
+      type: object
+      description: Request to update an OAuth app
+      properties:
+        name:
+          type: string
+          description: App name
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          description: App description
+          maxLength: 500
+        redirectUris:
+          type: array
+          items:
+            type: string
+            format: uri
+          description: Allowed redirect URIs
+          minItems: 1
+          maxItems: 10
+        allowedGrantTypes:
+          type: array
+          items:
+            type: string
+            enum: [authorization_code, client_credentials, refresh_token]
+        allowedScopes:
+          type: array
+          items:
+            type: string
+          minItems: 1
+        homepageUrl:
+          type: string
+          format: uri
+          nullable: true
+        privacyPolicyUrl:
+          type: string
+          format: uri
+          nullable: true
+        termsOfServiceUrl:
+          type: string
+          format: uri
+          nullable: true
+        accessTokenLifetime:
+          type: integer
+          minimum: 300
+          maximum: 86400
+        refreshTokenLifetime:
+          type: integer
+          minimum: 3600
+          maximum: 31536000
+
+    OAuthAppResponse:
+      type: object
+      description: OAuth app details (without secret)
+      properties:
+        id:
+          type: string
+          description: App ID
+        slug:
+          type: string
+          description: URL-friendly app slug
+        clientId:
+          type: string
+          description: OAuth client ID
+        name:
+          type: string
+          description: App name
+        description:
+          type: string
+          description: App description
+        redirectUris:
+          type: array
+          items:
+            type: string
+          description: Allowed redirect URIs
+        allowedGrantTypes:
+          type: array
+          items:
+            type: string
+          description: Allowed grant types
+        allowedScopes:
+          type: array
+          items:
+            type: string
+          description: Allowed scopes
+        status:
+          type: string
+          enum: [active, suspended, revoked]
+          description: App status
+        logoUrl:
+          type: string
+          format: uri
+          description: App logo URL
+        homepageUrl:
+          type: string
+          format: uri
+          description: App homepage
+        privacyPolicyUrl:
+          type: string
+          format: uri
+          description: Privacy policy URL
+        termsOfServiceUrl:
+          type: string
+          format: uri
+          description: Terms of service URL
+        isConfidential:
+          type: boolean
+          description: Whether app is a confidential client
+        accessTokenLifetime:
+          type: integer
+          description: Access token lifetime in seconds
+        refreshTokenLifetime:
+          type: integer
+          description: Refresh token lifetime in seconds
+        createdAt:
+          type: string
+          format: date-time
+          description: Creation timestamp
+        updatedAt:
+          type: string
+          format: date-time
+          description: Last update timestamp
+
+    OAuthAppWithSecret:
+      allOf:
+        - $ref: '#/components/schemas/OAuthAppResponse'
+        - type: object
+          properties:
+            clientSecret:
+              type: string
+              description: |
+                Client secret (only shown on creation and secret regeneration).
+                Store this securely - it cannot be retrieved later.
+          required:
+            - clientSecret
+
+    OAuthAppListResponse:
+      type: object
+      description: Paginated list of OAuth apps
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/OAuthAppResponse'
+          description: List of OAuth apps
+        pagination:
+          type: object
+          properties:
+            page:
+              type: integer
+              description: Current page number
+            limit:
+              type: integer
+              description: Items per page
+            total:
+              type: integer
+              description: Total number of items
+            totalPages:
+              type: integer
+              description: Total number of pages
+
+    OAuthScopeInfo:
+      type: object
+      description: Information about an OAuth scope
+      properties:
+        name:
+          type: string
+          description: Scope identifier
+          example: "read:records"
+        description:
+          type: string
+          description: Human-readable scope description
+          example: "Read access to records"
+        category:
+          type: string
+          description: Scope category for grouping
+          example: "Records"
+
+    OAuthTokenListItem:
+      type: object
+      description: Information about an issued token
+      properties:
+        id:
+          type: string
+          description: Token ID
+        tokenType:
+          type: string
+          enum: [access, refresh]
+          description: Type of token
+        userId:
+          type: string
+          description: User ID (if user-based token)
+        scopes:
+          type: array
+          items:
+            type: string
+          description: Granted scopes
+        createdAt:
+          type: string
+          format: date-time
+          description: Token creation time
+        expiresAt:
+          type: string
+          format: date-time
+          description: Token expiration time
+        isRevoked:
+          type: boolean
+          description: Whether token has been revoked
 
     # ==================== USER MANAGEMENT SCHEMAS ====================
     User:
@@ -4603,6 +5438,902 @@ paths:
           description: OAuth token exchange failed
         '404':
           description: OAuth provider configuration not found
+
+  # ==================== OAUTH PROVIDER ENDPOINTS ====================
+  /oauth/authorize:
+    get:
+      tags:
+        - OAuth Provider
+      summary: Initiate OAuth authorization flow
+      description: |
+        OAuth 2.0 Authorization Endpoint (RFC 6749 Section 4.1.1).
+        <br><br>
+        Initiates the authorization code flow. Users are redirected here by OAuth clients
+        to authorize access to their account.
+        <br><br>
+        <b>Flow:</b><br>
+        1. Client redirects user to this endpoint with required parameters<br>
+        2. If not logged in, user is redirected to PipesHub login<br>
+        3. User sees consent page with requested scopes<br>
+        4. User grants or denies consent<br>
+        5. User is redirected back to client with authorization code
+        <br><br>
+        <b>PKCE Support (RFC 7636):</b><br>
+        - Required for public clients (SPA, mobile apps)<br>
+        - Recommended for confidential clients<br>
+        - Use S256 method (SHA256 hash of code_verifier)
+        <br><br>
+        <b>Security:</b><br>
+        - Always use HTTPS in production<br>
+        - State parameter provides CSRF protection<br>
+        - Redirect URI must match registered URIs exactly
+      operationId: oauthAuthorize
+      security: []
+      parameters:
+        - name: response_type
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [code]
+          description: Must be "code" for authorization code grant
+        - name: client_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: OAuth app client ID
+        - name: redirect_uri
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uri
+          description: Callback URI (must match registered URI)
+        - name: scope
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Space-separated list of requested scopes
+          example: "openid profile email read:records"
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Random string for CSRF protection
+        - name: code_challenge
+          in: query
+          required: false
+          schema:
+            type: string
+          description: PKCE code challenge (base64url-encoded)
+        - name: code_challenge_method
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [S256, plain]
+          description: PKCE method (S256 recommended)
+        - name: nonce
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Nonce for ID token binding
+      responses:
+        '302':
+          description: |
+            Redirects to either:
+            - Login page (if user not authenticated)
+            - Consent page (if user authenticated)
+            - Redirect URI with code (if consent already granted)
+            - Redirect URI with error (if request invalid)
+          headers:
+            Location:
+              schema:
+                type: string
+              description: Redirect URL
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+    post:
+      tags:
+        - OAuth Provider
+      summary: Submit authorization consent
+      description: |
+        Submit user's consent decision for OAuth authorization.
+        <br><br>
+        Called after user reviews the consent page and makes a decision.
+        This endpoint generates an authorization code if consent is granted.
+        <br><br>
+        <b>Responses:</b><br>
+        - Consent granted: Redirects to client with authorization code<br>
+        - Consent denied: Redirects to client with `access_denied` error
+      operationId: oauthAuthorizeConsent
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OAuthConsentRequest'
+        required: true
+      responses:
+        '200':
+          description: Consent processed, returns redirect URL with authorization code
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  redirect_uri:
+                    type: string
+                    format: uri
+                    description: URL to redirect user (includes code and state)
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+        '401':
+          description: User not authenticated
+        '403':
+          description: Client not authorized or invalid redirect URI
+
+  /oauth/token:
+    post:
+      tags:
+        - OAuth Provider
+      summary: Exchange authorization code for tokens
+      description: |
+        OAuth 2.0 Token Endpoint (RFC 6749 Section 4.1.3).
+        <br><br>
+        Exchanges an authorization code, client credentials, or refresh token for access tokens.
+        <br><br>
+        <b>Grant Types:</b><br>
+        - `authorization_code`: Exchange auth code for tokens (user-based)<br>
+        - `client_credentials`: Get tokens for machine-to-machine auth<br>
+        - `refresh_token`: Get new access token using refresh token
+        <br><br>
+        <b>Client Authentication:</b><br>
+        Can be provided via:<br>
+        - HTTP Basic auth: `Authorization: Basic base64(client_id:client_secret)`<br>
+        - Request body: `client_id` and `client_secret` parameters
+        <br><br>
+        <b>PKCE Verification:</b><br>
+        If authorization used PKCE, the `code_verifier` must be provided and will be
+        verified against the stored code challenge.
+      operationId: oauthToken
+      security: []
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OAuthTokenRequest'
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OAuthTokenRequest'
+        required: true
+      responses:
+        '200':
+          description: Tokens issued successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthTokenResponse'
+              example:
+                access_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                token_type: "Bearer"
+                expires_in: 3600
+                refresh_token: "dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4..."
+                scope: "openid profile email"
+                id_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        '400':
+          description: Invalid request (missing parameters, invalid code, etc.)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+        '401':
+          description: Client authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+
+  /oauth/revoke:
+    post:
+      tags:
+        - OAuth Provider
+      summary: Revoke an access or refresh token
+      description: |
+        OAuth 2.0 Token Revocation Endpoint (RFC 7009).
+        <br><br>
+        Revokes an access token or refresh token, preventing further use.
+        Revoking a refresh token also invalidates associated access tokens.
+        <br><br>
+        <b>Use Cases:</b><br>
+        - User logs out of third-party app<br>
+        - User revokes app access from account settings<br>
+        - Security incident response
+        <br><br>
+        <b>Note:</b> Returns 200 OK even if token was already revoked or invalid
+        (per RFC 7009, to prevent token enumeration).
+      operationId: oauthRevoke
+      security: []
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OAuthRevokeRequest'
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OAuthRevokeRequest'
+        required: true
+      responses:
+        '200':
+          description: Token revoked (or was already invalid)
+        '401':
+          description: Client authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+
+  /oauth/introspect:
+    post:
+      tags:
+        - OAuth Provider
+      summary: Introspect a token
+      description: |
+        OAuth 2.0 Token Introspection Endpoint (RFC 7662).
+        <br><br>
+        Check if a token is active and retrieve its metadata.
+        <br><br>
+        <b>Use Cases:</b><br>
+        - Resource servers validating tokens<br>
+        - Debugging token issues<br>
+        - Checking token scopes before processing requests
+        <br><br>
+        <b>Response:</b><br>
+        - Active token: Returns `active: true` with token metadata<br>
+        - Invalid/expired/revoked token: Returns only `active: false`
+      operationId: oauthIntrospect
+      security: []
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OAuthIntrospectRequest'
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OAuthIntrospectRequest'
+        required: true
+      responses:
+        '200':
+          description: Token introspection result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthIntrospectResponse'
+              examples:
+                active:
+                  summary: Active token
+                  value:
+                    active: true
+                    scope: "openid profile email"
+                    client_id: "abc123"
+                    username: "user@example.com"
+                    token_type: "Bearer"
+                    exp: 1735686000
+                    iat: 1735682400
+                    sub: "user-id-123"
+                    iss: "https://api.pipeshub.com"
+                inactive:
+                  summary: Inactive/invalid token
+                  value:
+                    active: false
+        '401':
+          description: Client authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+
+  /oauth/userinfo:
+    get:
+      tags:
+        - OpenID Connect
+      summary: Get authenticated user information
+      description: |
+        OpenID Connect UserInfo Endpoint.
+        <br><br>
+        Returns claims about the authenticated user. Requires a valid access token
+        with the `openid` scope.
+        <br><br>
+        <b>Available Claims:</b><br>
+        - `sub` - Subject identifier (user ID)<br>
+        - `name`, `given_name`, `family_name` - Name claims (with `profile` scope)<br>
+        - `email`, `email_verified` - Email claims (with `email` scope)
+        <br><br>
+        <b>Authentication:</b><br>
+        Pass the access token as a Bearer token: `Authorization: Bearer {access_token}`
+      operationId: oauthUserInfo
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: User information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthUserInfoResponse'
+              example:
+                sub: "user-id-123"
+                name: "John Doe"
+                given_name: "John"
+                family_name: "Doe"
+                email: "john.doe@example.com"
+                email_verified: true
+        '401':
+          description: Invalid or missing access token
+        '403':
+          description: Token does not have openid scope
+
+  # ==================== OPENID CONNECT DISCOVERY ENDPOINTS ====================
+  /.well-known/openid-configuration:
+    get:
+      tags:
+        - OpenID Connect
+      summary: OpenID Connect Discovery
+      description: |
+        OpenID Connect Discovery Endpoint (RFC 8414).
+        <br><br>
+        Returns metadata about the OAuth/OIDC authorization server including
+        endpoint URLs, supported features, and capabilities.
+        <br><br>
+        <b>Use Cases:</b><br>
+        - Automatic client configuration<br>
+        - Discovering supported features<br>
+        - Getting endpoint URLs without hardcoding
+        <br><br>
+        <b>Note:</b> This endpoint does not require authentication.
+      operationId: openidConfiguration
+      security: []
+      servers:
+        - url: /
+          description: Root URL (not /api/v1)
+      responses:
+        '200':
+          description: Authorization server metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenIDConfiguration'
+              example:
+                issuer: "https://api.pipeshub.com"
+                authorization_endpoint: "https://api.pipeshub.com/oauth/authorize"
+                token_endpoint: "https://api.pipeshub.com/oauth/token"
+                userinfo_endpoint: "https://api.pipeshub.com/oauth/userinfo"
+                revocation_endpoint: "https://api.pipeshub.com/oauth/revoke"
+                introspection_endpoint: "https://api.pipeshub.com/oauth/introspect"
+                jwks_uri: "https://api.pipeshub.com/.well-known/jwks.json"
+                scopes_supported: ["openid", "profile", "email", "read:records", "write:records"]
+                response_types_supported: ["code"]
+                grant_types_supported: ["authorization_code", "client_credentials", "refresh_token"]
+                token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"]
+                code_challenge_methods_supported: ["S256", "plain"]
+
+  /.well-known/jwks.json:
+    get:
+      tags:
+        - OpenID Connect
+      summary: JSON Web Key Set
+      description: |
+        JSON Web Key Set Endpoint (RFC 7517).
+        <br><br>
+        Returns the public keys used to verify JWT signatures for ID tokens
+        and access tokens.
+        <br><br>
+        <b>Use Cases:</b><br>
+        - Verifying ID token signatures<br>
+        - Verifying access token signatures (if JWT-based)
+        <br><br>
+        <b>Note:</b><br>
+        - For HS256 (symmetric) signing, this returns empty keys<br>
+        - For RS256 (asymmetric) signing, returns public RSA keys<br>
+        - Keys should be cached with appropriate TTL
+      operationId: jwks
+      security: []
+      servers:
+        - url: /
+          description: Root URL (not /api/v1)
+      responses:
+        '200':
+          description: JSON Web Key Set
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JWKS'
+              example:
+                keys:
+                  - kty: "RSA"
+                    use: "sig"
+                    alg: "RS256"
+                    kid: "key-1"
+                    n: "0vx7agoebG..."
+                    e: "AQAB"
+
+  # ==================== OAUTH APP MANAGEMENT ENDPOINTS ====================
+  /oauth-clients:
+    get:
+      tags:
+        - OAuth Apps
+      summary: List OAuth apps
+      description: |
+        List all OAuth apps registered for the organization.
+        <br><br>
+        Returns a paginated list of apps with their configuration (excluding secrets).
+        <br><br>
+        <b>Filters:</b><br>
+        - `status` - Filter by app status (active, suspended, revoked)<br>
+        - `search` - Search by app name
+      operationId: listOAuthApps
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: Page number
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Items per page
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, suspended, revoked]
+          description: Filter by status
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Search by app name
+      responses:
+        '200':
+          description: List of OAuth apps
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthAppListResponse'
+        '401':
+          description: Unauthorized
+
+    post:
+      tags:
+        - OAuth Apps
+      summary: Create OAuth app
+      description: |
+        Create a new OAuth app for the organization.
+        <br><br>
+        <b>Important:</b> The client secret is only returned once during creation.
+        Store it securely - it cannot be retrieved later. If lost, you'll need to
+        regenerate it.
+        <br><br>
+        <b>Admin Only:</b> Requires admin privileges.
+        <br><br>
+        <b>Rate Limited:</b> 10 requests per minute.
+      operationId: createOAuthApp
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOAuthAppRequest'
+        required: true
+      responses:
+        '201':
+          description: OAuth app created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthAppWithSecret'
+        '400':
+          description: Invalid request (validation error)
+        '401':
+          description: Unauthorized
+        '403':
+          description: Admin privileges required
+        '429':
+          description: Rate limit exceeded
+
+  /oauth-clients/scopes:
+    get:
+      tags:
+        - OAuth Apps
+      summary: List available scopes
+      description: |
+        List all available OAuth scopes that can be requested by apps.
+        <br><br>
+        Returns scope names, descriptions, and categories for display
+        in app configuration UI.
+      operationId: listOAuthScopes
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of available scopes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OAuthScopeInfo'
+              example:
+                - name: "openid"
+                  description: "OpenID Connect authentication"
+                  category: "Identity"
+                - name: "profile"
+                  description: "Access to user profile information"
+                  category: "Identity"
+                - name: "email"
+                  description: "Access to user email address"
+                  category: "Identity"
+                - name: "read:records"
+                  description: "Read access to records"
+                  category: "Records"
+                - name: "write:records"
+                  description: "Write access to records"
+                  category: "Records"
+        '401':
+          description: Unauthorized
+
+  /oauth-clients/{appId}:
+    get:
+      tags:
+        - OAuth Apps
+      summary: Get OAuth app details
+      description: |
+        Get details of a specific OAuth app.
+        <br><br>
+        Returns app configuration without the client secret.
+      operationId: getOAuthApp
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: appId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: OAuth app ID (MongoDB ObjectId)
+      responses:
+        '200':
+          description: OAuth app details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthAppResponse'
+        '401':
+          description: Unauthorized
+        '404':
+          description: OAuth app not found
+
+    put:
+      tags:
+        - OAuth Apps
+      summary: Update OAuth app
+      description: |
+        Update an OAuth app's configuration.
+        <br><br>
+        <b>Admin Only:</b> Requires admin privileges.
+        <br><br>
+        <b>Rate Limited:</b> 10 requests per minute.
+        <br><br>
+        <b>Note:</b> To regenerate the client secret, use the
+        `/oauth-clients/{appId}/regenerate-secret` endpoint.
+      operationId: updateOAuthApp
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: appId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: OAuth app ID
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateOAuthAppRequest'
+        required: true
+      responses:
+        '200':
+          description: OAuth app updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthAppResponse'
+        '400':
+          description: Validation error
+        '401':
+          description: Unauthorized
+        '403':
+          description: Admin privileges required
+        '404':
+          description: OAuth app not found
+        '429':
+          description: Rate limit exceeded
+
+    delete:
+      tags:
+        - OAuth Apps
+      summary: Delete OAuth app
+      description: |
+        Delete (soft delete) an OAuth app.
+        <br><br>
+        This marks the app as deleted and revokes all its tokens.
+        The app cannot be restored after deletion.
+        <br><br>
+        <b>Admin Only:</b> Requires admin privileges.
+        <br><br>
+        <b>Rate Limited:</b> 10 requests per minute.
+      operationId: deleteOAuthApp
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: appId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: OAuth app ID
+      responses:
+        '200':
+          description: OAuth app deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "OAuth app deleted successfully"
+        '401':
+          description: Unauthorized
+        '403':
+          description: Admin privileges required
+        '404':
+          description: OAuth app not found
+        '429':
+          description: Rate limit exceeded
+
+  /oauth-clients/{appId}/regenerate-secret:
+    post:
+      tags:
+        - OAuth Apps
+      summary: Regenerate client secret
+      description: |
+        Regenerate the client secret for an OAuth app.
+        <br><br>
+        The old secret is immediately invalidated. Any clients using the old
+        secret will fail to authenticate until updated with the new secret.
+        <br><br>
+        <b>Important:</b> The new secret is only returned once. Store it securely.
+        <br><br>
+        <b>Admin Only:</b> Requires admin privileges.
+        <br><br>
+        <b>Rate Limited:</b> 10 requests per minute.
+      operationId: regenerateOAuthAppSecret
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: appId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: OAuth app ID
+      responses:
+        '200':
+          description: New client secret generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthAppWithSecret'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Admin privileges required
+        '404':
+          description: OAuth app not found
+        '429':
+          description: Rate limit exceeded
+
+  /oauth-clients/{appId}/suspend:
+    post:
+      tags:
+        - OAuth Apps
+      summary: Suspend OAuth app
+      description: |
+        Suspend an OAuth app, preventing it from authenticating or issuing tokens.
+        <br><br>
+        Existing tokens remain valid until they expire, but no new tokens can
+        be obtained. Use this for temporary access suspension.
+        <br><br>
+        <b>Admin Only:</b> Requires admin privileges.
+        <br><br>
+        <b>Rate Limited:</b> 10 requests per minute.
+      operationId: suspendOAuthApp
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: appId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: OAuth app ID
+      responses:
+        '200':
+          description: OAuth app suspended
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthAppResponse'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Admin privileges required
+        '404':
+          description: OAuth app not found
+        '429':
+          description: Rate limit exceeded
+
+  /oauth-clients/{appId}/activate:
+    post:
+      tags:
+        - OAuth Apps
+      summary: Activate suspended OAuth app
+      description: |
+        Reactivate a suspended OAuth app, allowing it to authenticate and issue tokens again.
+        <br><br>
+        <b>Admin Only:</b> Requires admin privileges.
+        <br><br>
+        <b>Rate Limited:</b> 10 requests per minute.
+      operationId: activateOAuthApp
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: appId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: OAuth app ID
+      responses:
+        '200':
+          description: OAuth app activated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthAppResponse'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Admin privileges required
+        '404':
+          description: OAuth app not found
+        '429':
+          description: Rate limit exceeded
+
+  /oauth-clients/{appId}/tokens:
+    get:
+      tags:
+        - OAuth Apps
+      summary: List app tokens
+      description: |
+        List all active tokens issued to an OAuth app.
+        <br><br>
+        Useful for monitoring app usage and identifying tokens to revoke.
+        <br><br>
+        <b>Admin Only:</b> Requires admin privileges.
+      operationId: listOAuthAppTokens
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: appId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: OAuth app ID
+      responses:
+        '200':
+          description: List of tokens
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OAuthTokenListItem'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Admin privileges required
+        '404':
+          description: OAuth app not found
+
+  /oauth-clients/{appId}/revoke-all-tokens:
+    post:
+      tags:
+        - OAuth Apps
+      summary: Revoke all app tokens
+      description: |
+        Revoke all tokens (access and refresh) issued to an OAuth app.
+        <br><br>
+        Use this for emergency access removal or when rotating credentials.
+        <br><br>
+        <b>Admin Only:</b> Requires admin privileges.
+        <br><br>
+        <b>Rate Limited:</b> 10 requests per minute.
+      operationId: revokeAllOAuthAppTokens
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: appId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: OAuth app ID
+      responses:
+        '200':
+          description: All tokens revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "All tokens revoked successfully"
+                  count:
+                    type: integer
+                    description: Number of tokens revoked
+        '401':
+          description: Unauthorized
+        '403':
+          description: Admin privileges required
+        '404':
+          description: OAuth app not found
+        '429':
+          description: Rate limit exceeded
 
   /userAccount/refresh/token:
     post:
