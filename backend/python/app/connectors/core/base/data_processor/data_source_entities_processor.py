@@ -192,9 +192,16 @@ class DataSourceEntitiesProcessor:
                     relation_type = RecordRelations.PARENT_CHILD.value
                 await tx_store.create_record_relation(parent_record.id, record.id, relation_type)
 
-    async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> None:
+    async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> Optional[str]:
+        """
+        Prepare record group by looking up or creating it, and set record_group_id on the record.
+        This should be called BEFORE saving the record so record_group_id is included in the first save.
+
+        Returns:
+            record_group_id if record group was found/created, None otherwise
+        """
         if record.external_record_group_id is None:
-            return
+            return None
 
         record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id,
                                                                       external_id=record.external_record_group_id)
@@ -212,13 +219,25 @@ class DataSourceEntitiesProcessor:
             # Todo: Create a edge between the record group and the App
 
         if record_group:
-            # Set the record_group_id on the record
+            # Set the record_group_id on the record BEFORE saving
             record.record_group_id = record_group.id
-            # Create a edge between the record and the record group if it doesn't exist
-            await tx_store.create_record_group_relation(record.id, record_group.id)
+            return record_group.id
 
-            if record.inherit_permissions:
-                await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group.id)
+        return None
+
+    async def _link_record_to_group(self, record: Record, record_group_id: str, tx_store: TransactionStore) -> None:
+        """
+        Create edges between record and record group.
+        This should be called AFTER saving the record (when record.id is available).
+        """
+        if not record.id or not record_group_id:
+            return
+
+        # Create a edge between the record and the record group if it doesn't exist
+        await tx_store.create_record_group_relation(record.id, record_group_id)
+
+        if record.inherit_permissions:
+            await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group_id)
 
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
         # Set org_id for the record
@@ -391,8 +410,8 @@ class DataSourceEntitiesProcessor:
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
 
-        # Handle record group FIRST to set record_group_id before saving the record
-        await self._handle_record_group(record, tx_store)
+        # Prepare record group BEFORE saving (so record_group_id is included in first save)
+        record_group_id = await self._handle_record_group(record, tx_store)
 
         if existing_record is None:
             self.logger.info("New record: %s", record)
@@ -403,6 +422,10 @@ class DataSourceEntitiesProcessor:
             #check if revision Id is same as existing record
             if record.external_revision_id != existing_record.external_revision_id:
                 await self._handle_updated_record(record, existing_record, tx_store)
+
+        # Link record to group AFTER saving (when record.id is available for edges)
+        if record_group_id:
+            await self._link_record_to_group(record, record_group_id, tx_store)
 
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
         await self._handle_parent_record(record, tx_store)
