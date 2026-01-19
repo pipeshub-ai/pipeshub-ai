@@ -97,10 +97,11 @@ export class ApiDocsService {
       this.initialized = true;
       this.logger.info('ApiDocsService initialized successfully');
     } catch (error) {
-      this.logger.error('Failed to initialize ApiDocsService', {
+      // just log and continue
+      this.logger.warn('Failed to initialize ApiDocsService', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
-      throw error;
+      return;
     }
   }
 
@@ -108,17 +109,19 @@ export class ApiDocsService {
    * Load the merged OpenAPI spec from YAML file
    */
   private loadMergedSpec(): void {
-    const appRoot = path.resolve(__dirname, '..', '..', '..');
-    const pipeshubOpenapiPath = path.join(
-      appRoot,
-      'src',
-      'modules',
-      'api-docs',
-      'pipeshub-openapi.yaml',
-    );
+    const filename = 'pipeshub-openapi.yaml';
+
+    let pipeshubOpenapiPath = path.join(__dirname, filename);
 
     if (!fs.existsSync(pipeshubOpenapiPath)) {
-      throw new Error(`PipesHub OpenAPI spec not found at: ${pipeshubOpenapiPath}`);
+      const appRoot = path.resolve(__dirname, '..', '..', '..');
+      pipeshubOpenapiPath = path.join(appRoot, 'src', 'modules', 'api-docs', filename);
+    }
+
+    if (!fs.existsSync(pipeshubOpenapiPath)) {
+      // log warning and continue
+      this.logger.warn(`PipesHub OpenAPI spec not found at: ${pipeshubOpenapiPath}`);
+      return;
     }
 
     this.mergedSpec = yaml.load(fs.readFileSync(pipeshubOpenapiPath, 'utf8')) as any;
