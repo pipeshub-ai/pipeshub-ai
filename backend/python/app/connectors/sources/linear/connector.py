@@ -18,7 +18,12 @@ from uuid import uuid4
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import AppGroups, Connectors, RecordRelations
+from app.config.constants.arangodb import (
+    AppGroups,
+    Connectors,
+    LinkRelationshipTag,
+    RecordRelations,
+)
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -85,6 +90,7 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    RelatedExternalRecord,
     Status,
     TicketRecord,
     WebpageRecord,
@@ -160,7 +166,6 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
             filter_type=FilterType.LIST,
             category=FilterCategory.SYNC,
             description="Filter issues by team (leave empty for all teams)",
-            default_value=[],
             option_source_type=OptionSourceType.DYNAMIC
         ))
         .add_filter_field(CommonFields.modified_date_filter("Filter issues by modification date."))
@@ -2557,6 +2562,46 @@ class LinearConnector(BaseConnector):
             creator_name=creator_name,
             inherit_permissions=True,
         )
+
+        # Extract and map issue relationships
+        relations = issue_data.get("relations", {})
+        relation_nodes = relations.get("nodes", []) if relations else []
+
+        # Map Linear relationship types to LinkRelationshipTag enum values
+        type_mapping = {
+            "blocks": LinkRelationshipTag.BLOCKS.value,
+            "blocked": LinkRelationshipTag.BLOCKED_BY.value,
+            "related": LinkRelationshipTag.RELATED.value,
+            "duplicate": LinkRelationshipTag.DUPLICATES.value,
+        }
+
+        # Process each relation
+        related_external_records = []
+        for relation in relation_nodes:
+            relation_type = relation.get("type")
+            related_issue = relation.get("relatedIssue", {})
+            related_issue_id = related_issue.get("id") if related_issue else None
+
+            # Skip if missing required data
+            if not related_issue_id or not relation_type:
+                continue
+
+            # Map Linear type to LinkRelationshipTag enum value
+            custom_tag = type_mapping.get(relation_type)
+
+            # Only create record if we have a valid mapping
+            if custom_tag:
+                related_external_records.append(
+                    RelatedExternalRecord(
+                        external_record_id=related_issue_id,
+                        record_type=RecordType.TICKET,
+                        relation_type=RecordRelations.LINKED_TO,
+                        custom_relationship_tag=custom_tag,
+                    )
+                )
+
+        # Add all related external records to ticket
+        ticket.related_external_records.extend(related_external_records)
 
         return ticket
 

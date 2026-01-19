@@ -17,6 +17,7 @@ from app.config.constants.arangodb import (
     Connectors,
     GraphNames,
     OriginTypes,
+    RecordRelations,
 )
 from app.config.constants.service import config_node_constants
 from app.models.entities import (
@@ -665,6 +666,53 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return len(results)
         except Exception as e:
             self.logger.error(f"❌ Delete edges from failed: {str(e)}")
+            raise
+
+    async def delete_linked_to_edges_from(
+        self,
+        from_id: str,
+        from_collection: str,
+        collection: str,
+        transaction: Optional[str] = None
+    ) -> int:
+        """
+        Delete LINKED_TO edges from a node - FULLY ASYNC.
+
+        This method deletes only edges with relationshipType == "LINKED_TO" to avoid
+        deleting other relationship types like PARENT_CHILD.
+
+        Args:
+            from_id: Source node ID
+            from_collection: Source node collection name
+            collection: Edge collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            int: Number of edges deleted
+        """
+        # Construct ArangoDB-style _from value
+        from_node = f"{from_collection}/{from_id}"
+
+        query = f"""
+        FOR edge IN {collection}
+            FILTER edge._from == @from_node
+            FILTER edge.relationshipType == @relationship_type
+            REMOVE edge IN {collection}
+            RETURN OLD
+        """
+
+        try:
+            results = await self.http_client.execute_aql(
+                query,
+                {
+                    "from_node": from_node,
+                    "relationship_type": RecordRelations.LINKED_TO.value
+                },
+                txn_id=transaction
+            )
+            return len(results)
+        except Exception as e:
+            self.logger.error(f"❌ Delete LINKED_TO edges from failed: {str(e)}")
             raise
 
     async def delete_edges_to(

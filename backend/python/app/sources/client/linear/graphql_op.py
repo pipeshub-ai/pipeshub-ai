@@ -83,6 +83,16 @@ class LinearGraphQLOperations:
                         identifier
                     }
                 }
+                relations {
+                    nodes {
+                        id
+                        type
+                        relatedIssue {
+                            id
+                            identifier
+                        }
+                    }
+                }
                 comments {
                     nodes {
                         ...CommentFields

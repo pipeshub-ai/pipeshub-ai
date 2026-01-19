@@ -23,6 +23,8 @@ from app.models.entities import (
     CommentRecord,
     FileRecord,
     IndexingStatus,
+    LinkPublicStatus,
+    LinkRecord,
     MailRecord,
     Person,
     ProjectRecord,
@@ -167,6 +169,14 @@ class DataSourceEntitiesProcessor:
                 **base_params,
                 author_source_id="",  # Will be updated when real parent is synced
             )
+        elif parent_record_type == RecordType.LINK:
+            return LinkRecord(
+                **base_params,
+                url=parent_external_id,  # Use external_id as placeholder URL
+                title=None,
+                is_public=LinkPublicStatus.UNKNOWN,
+                linked_record_id=None,
+            )
         else:
             raise ValueError(
                 f"Unsupported parent record type: {parent_record_type.value}. for _handle_parent_record"
@@ -207,11 +217,26 @@ class DataSourceEntitiesProcessor:
         Handle related external records by creating LINKED_TO relations.
         Creates placeholder records if not found, then creates LINKED_TO edges.
 
+        This method first deletes existing LINKED_TO edges from this record to avoid duplicates
+        and stale relationships, then creates new edges based on the current related_external_records.
+
         Args:
             record: The record to create relations for
             related_external_records: List of RelatedExternalRecord objects (strict type checking)
             tx_store: Transaction store
         """
+        # First, delete existing LINKED_TO edges from this record to avoid duplicates and stale relationships
+        try:
+            deleted_count = await tx_store.delete_linked_to_edges_from(
+                from_id=record.id,
+                from_collection=CollectionNames.RECORDS.value,
+                collection=CollectionNames.RECORD_RELATIONS.value
+            )
+            if deleted_count > 0:
+                self.logger.debug(f"Deleted {deleted_count} existing LINKED_TO edge(s) for record: {record.id}")
+        except Exception as e:
+            self.logger.warning(f"Failed to delete existing LINKED_TO edges for record {record.id}: {str(e)}")
+
         if not related_external_records:
             return
 
@@ -545,9 +570,6 @@ class DataSourceEntitiesProcessor:
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
 
-        # Handle record group FIRST to set record_group_id before saving the record
-        await self._handle_record_group(record, tx_store)
-
         if existing_record is None:
             self.logger.info("New record: %s", record)
             await self._handle_new_record(record, tx_store)
@@ -557,6 +579,9 @@ class DataSourceEntitiesProcessor:
             #check if revision Id is same as existing record
             if record.external_revision_id != existing_record.external_revision_id:
                 await self._handle_updated_record(record, existing_record, tx_store)
+
+        # Handle record group
+        await self._handle_record_group(record, tx_store)
 
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
         await self._handle_parent_record(record, tx_store)

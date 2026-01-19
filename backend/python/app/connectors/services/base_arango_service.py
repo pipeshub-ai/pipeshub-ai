@@ -6380,6 +6380,52 @@ class BaseArangoService:
             self.logger.error("❌ Failed to delete edges from source: %s in collection: %s: %s", from_key, collection, str(e))
             return 0
 
+    async def delete_linked_to_edges_from(self, from_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> int:
+        """
+        Delete LINKED_TO edges originating from a specific source node.
+
+        This method deletes only edges with relationshipType == "LINKED_TO" to avoid
+        deleting other relationship types like PARENT_CHILD.
+
+        Args:
+            from_key: The source node key (e.g., "records/12345")
+            collection: The edge collection name
+            transaction: Optional transaction database
+
+        Returns:
+            int: Number of edges deleted
+        """
+        try:
+            self.logger.info("🚀 Deleting LINKED_TO edges from source: %s in collection: %s", from_key, collection)
+            query = """
+            FOR edge IN @@collection
+                FILTER edge._from == @from_key
+                FILTER edge.relationshipType == @relationship_type
+                REMOVE edge IN @@collection
+                RETURN OLD
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query,
+                bind_vars={
+                    "from_key": from_key,
+                    "@collection": collection,
+                    "relationship_type": "LINKED_TO"
+                }
+            )
+            deleted_edges = list(cursor)
+            count = len(deleted_edges)
+
+            if count > 0:
+                self.logger.info("✅ Successfully deleted %d LINKED_TO edges from source: %s", count, from_key)
+            else:
+                self.logger.debug("📝 No LINKED_TO edges found from source: %s in collection: %s", from_key, collection)
+
+            return count
+        except Exception as e:
+            self.logger.error("❌ Failed to delete LINKED_TO edges from source: %s in collection: %s: %s", from_key, collection, str(e))
+            return 0
+
     async def delete_parent_child_edges_to(self, to_key: str, transaction: Optional[TransactionDatabase] = None) -> int:
         """
         Delete PARENT_CHILD edges pointing to a specific target record.
