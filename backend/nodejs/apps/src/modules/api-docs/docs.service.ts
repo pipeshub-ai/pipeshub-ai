@@ -108,7 +108,14 @@ export class ApiDocsService {
    * Load the merged OpenAPI spec from YAML file
    */
   private loadMergedSpec(): void {
-    const pipeshubOpenapiPath = path.join(__dirname, 'pipeshub-openapi.yaml');
+    const appRoot = path.resolve(__dirname, '..', '..', '..');
+    const pipeshubOpenapiPath = path.join(
+      appRoot,
+      'src',
+      'modules',
+      'api-docs',
+      'pipeshub-openapi.yaml',
+    );
 
     if (!fs.existsSync(pipeshubOpenapiPath)) {
       throw new Error(`PipesHub OpenAPI spec not found at: ${pipeshubOpenapiPath}`);
