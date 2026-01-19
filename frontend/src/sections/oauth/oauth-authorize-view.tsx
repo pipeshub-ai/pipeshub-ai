@@ -184,15 +184,20 @@ export function OAuthAuthorizeView() {
         body: JSON.stringify({
           client_id: clientId,
           redirect_uri: redirectUri,
-          scope,
-          state,
-          code_challenge: codeChallenge,
-          code_challenge_method: codeChallengeMethod,
+          scope: scope || '',
+          state: state || '',
+          code_challenge: codeChallenge || undefined,
+          code_challenge_method: codeChallengeMethod || undefined,
           consent,
         }),
       });
 
       const data = await response.json();
+
+      // Check for errors first
+      if (!response.ok) {
+        throw new Error(data.error_description || data.error || 'Authorization failed');
+      }
 
       if (data.redirectUrl) {
         // Redirect to the client's callback URL with the code
