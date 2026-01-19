@@ -9968,7 +9968,7 @@ class BaseArangoService:
             // Get folder RECORDS document
             LET folder_record = DOCUMENT(@@records_collection, @folder_id)
             FILTER folder_record != null
-            
+
             // Get associated FILES document via IS_OF_TYPE edge
             LET folder_file = FIRST(
                 FOR isEdge IN @@is_of_type
@@ -9977,9 +9977,9 @@ class BaseArangoService:
                     FILTER f != null AND f.isFile == false
                     RETURN f
             )
-            
+
             FILTER folder_file != null
-            
+
             // Return combined folder data
             RETURN MERGE(
                 folder_record,
