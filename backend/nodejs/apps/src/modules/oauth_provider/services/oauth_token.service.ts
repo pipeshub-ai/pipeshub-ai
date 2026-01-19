@@ -1,5 +1,5 @@
 import { injectable, inject } from 'inversify'
-import jwt from 'jsonwebtoken'
+import jwt, { Algorithm, Secret } from 'jsonwebtoken'
 import crypto from 'crypto'
 import { v4 as uuidv4 } from 'uuid'
 import { Types } from 'mongoose'
@@ -17,15 +17,38 @@ import {
   IntrospectResponse,
   TokenListItem,
 } from '../types/oauth.types'
-import { RSAKeyService } from './rsa_key.service'
+import { JwtConfig, getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig'
 
 @injectable()
 export class OAuthTokenService {
+  private algorithm: Algorithm
+  private signingKey: Secret
+  private verifyKey: Secret
+  private keyId?: string
+
   constructor(
     @inject('Logger') private logger: Logger,
-    @inject('RSAKeyService') private rsaKeyService: RSAKeyService,
+    @inject('JwtConfig') private jwtConfig: JwtConfig,
     @inject('OAUTH_ISSUER') private issuer: string,
-  ) {}
+  ) {
+    const keyConfig = getJwtKeyFromConfig(jwtConfig)
+    this.algorithm = keyConfig.algorithm
+    this.signingKey = keyConfig.signingKey
+    this.verifyKey = keyConfig.verifyKey
+    this.keyId = keyConfig.keyId
+  }
+
+  getAlgorithm(): Algorithm {
+    return this.algorithm
+  }
+
+  getKeyId(): string | undefined {
+    return this.keyId
+  }
+
+  getPublicKey(): string | undefined {
+    return this.jwtConfig.publicKey
+  }
 
   /**
    * Generate access and refresh tokens
@@ -54,10 +77,11 @@ export class OAuthTokenService {
       token_type: 'access',
     }
 
-    const accessToken = jwt.sign(accessTokenPayload, this.rsaKeyService.getPrivateKey(), {
-      algorithm: 'RS256',
-      keyid: this.rsaKeyService.getKeyId(),
-    })
+    const signOptions: jwt.SignOptions = { algorithm: this.algorithm }
+    if (this.keyId) {
+      signOptions.keyid = this.keyId
+    }
+    const accessToken = jwt.sign(accessTokenPayload, this.signingKey, signOptions)
 
     // Store access token hash for revocation lookup
     const accessTokenHash = this.hashToken(accessToken)
@@ -93,10 +117,7 @@ export class OAuthTokenService {
         token_type: 'refresh',
       }
 
-      const refreshToken = jwt.sign(refreshTokenPayload, this.rsaKeyService.getPrivateKey(), {
-        algorithm: 'RS256',
-        keyid: this.rsaKeyService.getKeyId(),
-      })
+      const refreshToken = jwt.sign(refreshTokenPayload, this.signingKey, signOptions)
 
       // Store refresh token
       const refreshTokenHash = this.hashToken(refreshToken)
@@ -127,8 +148,8 @@ export class OAuthTokenService {
    */
   async verifyAccessToken(token: string): Promise<OAuthTokenPayload> {
     try {
-      const payload = jwt.verify(token, this.rsaKeyService.getPublicKey(), {
-        algorithms: ['RS256'],
+      const payload = jwt.verify(token, this.verifyKey, {
+        algorithms: [this.algorithm],
       }) as OAuthTokenPayload
 
       if (payload.token_type !== 'access') {
@@ -163,8 +184,8 @@ export class OAuthTokenService {
    */
   async verifyRefreshToken(token: string): Promise<OAuthTokenPayload> {
     try {
-      const payload = jwt.verify(token, this.rsaKeyService.getPublicKey(), {
-        algorithms: ['RS256'],
+      const payload = jwt.verify(token, this.verifyKey, {
+        algorithms: [this.algorithm],
       }) as OAuthTokenPayload
 
       if (payload.token_type !== 'refresh') {
@@ -347,8 +368,8 @@ export class OAuthTokenService {
    */
   async introspectToken(token: string, clientId: string): Promise<IntrospectResponse> {
     try {
-      const payload = jwt.verify(token, this.rsaKeyService.getPublicKey(), {
-        algorithms: ['RS256'],
+      const payload = jwt.verify(token, this.verifyKey, {
+        algorithms: [this.algorithm],
       }) as OAuthTokenPayload
       const tokenHash = this.hashToken(token)
 

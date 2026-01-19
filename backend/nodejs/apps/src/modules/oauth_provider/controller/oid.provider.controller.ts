@@ -1,10 +1,10 @@
 import { injectable, inject } from 'inversify'
+import crypto from 'crypto'
 import { Request, Response, NextFunction } from 'express'
 import { Types } from 'mongoose'
 import { OAuthTokenService } from '../services/oauth_token.service'
 import { ScopeValidatorService } from '../services/scope.validator.service'
-import { RSAKeyService } from '../services/rsa_key.service'
-import { OpenIDConfiguration } from '../types/oauth.types'
+import { OpenIDConfiguration, JWKS, JWK } from '../types/oauth.types'
 import { AppConfig } from '../../tokens_manager/config/config'
 import { Users } from '../../user_management/schema/users.schema'
 import { buildWwwAuthenticateHeader } from '../middlewares/oauth.auth.middleware'
@@ -26,7 +26,6 @@ export class OIDCProviderController {
     @inject('OAuthTokenService') private oauthTokenService: OAuthTokenService,
     @inject('ScopeValidatorService')
     private scopeValidatorService: ScopeValidatorService,
-    @inject('RSAKeyService') private rsaKeyService: RSAKeyService,
     @inject('AppConfig') private appConfig: AppConfig,
   ) {}
 
@@ -165,7 +164,7 @@ export class OIDCProviderController {
         'client_secret_post',
       ],
       subject_types_supported: ['public'],
-      id_token_signing_alg_values_supported: ['RS256'],
+      id_token_signing_alg_values_supported: [this.oauthTokenService.getAlgorithm()],
       claims_supported: [
         'sub',
         'iss',
@@ -190,13 +189,47 @@ export class OIDCProviderController {
    * JSON Web Key Set endpoint
    *
    * Returns the public keys used to verify JWT signatures.
-   * Uses RS256 (RSA Signature with SHA-256) for asymmetric signing,
-   * allowing third-party clients to validate JWTs using the public key.
+   * Only available when using asymmetric algorithms (RS256).
+   * For symmetric algorithms (HS256), returns an empty key set.
    *
    * @see https://datatracker.ietf.org/doc/html/rfc7517
    */
   async jwks(_req: Request, res: Response, _next: NextFunction): Promise<void> {
-    // Return the JWKS containing the RS256 public key
-    res.json(this.rsaKeyService.getJWKS())
+    const algorithm = this.oauthTokenService.getAlgorithm()
+
+    if (algorithm === 'RS256') {
+      const publicKey = this.oauthTokenService.getPublicKey()
+      const keyId = this.oauthTokenService.getKeyId()
+
+      if (publicKey && keyId) {
+        const jwk = this.publicKeyToJWK(publicKey, keyId)
+        const jwks: JWKS = { keys: [jwk] }
+        res.json(jwks)
+        return
+      }
+    }
+
+    // For HS256 or if no public key available, return empty JWKS
+    res.json({ keys: [] })
+  }
+
+  /**
+   * Convert PEM public key to JWK format
+   */
+  private publicKeyToJWK(publicKeyPem: string, kid: string): JWK {
+    const publicKeyObject = crypto.createPublicKey(publicKeyPem)
+    const jwkExport = publicKeyObject.export({ format: 'jwk' }) as {
+      n: string
+      e: string
+    }
+
+    return {
+      kty: 'RSA',
+      use: 'sig',
+      alg: 'RS256',
+      kid,
+      n: jwkExport.n,
+      e: jwkExport.e,
+    }
   }
 }
