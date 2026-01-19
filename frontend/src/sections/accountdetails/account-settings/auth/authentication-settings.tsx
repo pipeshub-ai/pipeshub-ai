@@ -15,6 +15,8 @@ import {
 
 import axios from 'src/utils/axios';
 
+import { getDocumentationUrl, shouldShowDocs } from 'src/utils/docs-helper';
+
 import AuthMethodsList from './components/auth-methods-list';
 // Component imports
 import AuthMethodsHeader from './components/auth-methods-header';
@@ -466,39 +468,41 @@ const AuthenticationSettings: React.FC = () => {
         </Alert>
       </Snackbar>
       
-      <Alert 
-        variant="outlined" 
-        severity="info" 
-        sx={{ 
-          mt: 3,
-          mb: 1,
-          borderRadius: 1,
-          borderColor: alpha(theme.palette.info.main, theme.palette.mode === 'dark' ? 0.3 : 0.2),
-          '& .MuiAlert-icon': {
-            color: theme.palette.info.main,
-          },
-        }}
-      >
-        <Typography variant="body2">
-          Refer to{' '}
-          <Link 
-            href="https://docs.pipeshub.com/auth" 
-            target="_blank" 
-            rel="noopener"
-            sx={{
-              color: theme.palette.primary.main,
-              textDecoration: 'none',
-              fontWeight: 500,
-              '&:hover': {
-                textDecoration: 'underline',
-              },
-            }}
-          >
-            the documentation
-          </Link>{' '}
-          for more information.
-        </Typography>
-      </Alert>
+      {shouldShowDocs() && getDocumentationUrl('authentication/overview') && (
+        <Alert
+          variant="outlined"
+          severity="info"
+          sx={{
+            mt: 3,
+            mb: 1,
+            borderRadius: 1,
+            borderColor: alpha(theme.palette.info.main, theme.palette.mode === 'dark' ? 0.3 : 0.2),
+            '& .MuiAlert-icon': {
+              color: theme.palette.info.main,
+            },
+          }}
+        >
+          <Typography variant="body2">
+            Refer to{' '}
+            <Link
+              href={getDocumentationUrl('authentication/overview')}
+              target="_blank"
+              rel="noopener"
+              sx={{
+                color: theme.palette.primary.main,
+                textDecoration: 'none',
+                fontWeight: 500,
+                '&:hover': {
+                  textDecoration: 'underline',
+                },
+              }}
+            >
+              the documentation
+            </Link>{' '}
+            for more information.
+          </Typography>
+        </Alert>
+      )}
     </Container>
   );
 };

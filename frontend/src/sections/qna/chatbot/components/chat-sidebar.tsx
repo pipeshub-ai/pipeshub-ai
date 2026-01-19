@@ -41,6 +41,7 @@ import {
 } from '@mui/material';
 
 import axiosInstance from 'src/utils/axios';
+import { getAssistantName } from 'src/config-global';
 import { useWhiteLabel } from 'src/context/WhiteLabelContext';
 
 import ArchivedChatsDialog from './dialogs/archieve-chat-dialog';
@@ -449,7 +450,7 @@ const ChatSidebar = ({
           }}
         >
           {activeTab === 'my'
-            ? `Start a new conversation to begin chatting with ${displayName} Agent`
+            ? 'Start a new conversation to begin chatting'
             : 'When someone shares a conversation with you, it will appear here'}
         </Typography>
         {activeTab === 'my' && (
@@ -630,7 +631,7 @@ const ChatSidebar = ({
           <Icon icon={menuIcon} />
         </IconButton>
         <Typography variant="h6" sx={{ flex: 1 }}>
-          {displayName} Agent
+          {getAssistantName()}
         </Typography>
         <>
           <Tooltip title="Archived Chats">

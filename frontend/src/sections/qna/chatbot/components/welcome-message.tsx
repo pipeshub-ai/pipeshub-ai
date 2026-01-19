@@ -12,6 +12,7 @@ import {
   Typography,
 } from '@mui/material';
 
+import { getAppName, getAppTagline, getGithubUrl, hasGithubLink } from 'src/config-global';
 import { useWhiteLabel } from 'src/context/WhiteLabelContext';
 
 import ChatInput from './chat-input';
@@ -20,6 +21,12 @@ import { Model, ChatMode } from '../types';
 // Simple Footer component
 const Footer = memo(({ isDark }: { isDark: boolean }) => {
   const theme = useTheme();
+  const githubUrl = getGithubUrl();
+
+  // Don't render footer if no GitHub URL configured
+  if (!hasGithubLink()) {
+    return null;
+  }
 
   return (
     <Box
@@ -34,7 +41,7 @@ const Footer = memo(({ isDark }: { isDark: boolean }) => {
       }}
     >
       <Link
-        href="https://github.com/pipeshub-ai/pipeshub-ai"
+        href={githubUrl}
         target="_blank"
         underline="none"
         sx={{
@@ -62,7 +69,7 @@ const Footer = memo(({ isDark }: { isDark: boolean }) => {
             color: 'inherit',
           }}
         />
-        pipeshub-ai
+        {getAppName() || 'Repository'}
       </Link>
     </Box>
   );
@@ -158,41 +165,45 @@ const WelcomeMessageComponent = ({
           mt: { xs: -2, sm: -8 },
         }}
       >
-        <Typography
-          variant="h5"
-          sx={{
-            fontWeight: 600,
-            color: theme.palette.text.primary,
-            mb: 2,
-            fontSize: { xs: '1.6rem', sm: '1.85rem' },
-            letterSpacing: '-0.03em',
-            background: isDark
-              ? 'linear-gradient(90deg, #fff 0%, #e0e0e0 100%)'
-              : 'linear-gradient(90deg, #222 0%, #555 100%)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-          }}
-        >
-          {displayName} AI
-        </Typography>
+        {getAppName() && (
+          <Typography
+            variant="h5"
+            sx={{
+              fontWeight: 600,
+              color: theme.palette.text.primary,
+              mb: 2,
+              fontSize: { xs: '1.6rem', sm: '1.85rem' },
+              letterSpacing: '-0.03em',
+              background: isDark
+                ? 'linear-gradient(90deg, #fff 0%, #e0e0e0 100%)'
+                : 'linear-gradient(90deg, #222 0%, #555 100%)',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent',
+            }}
+          >
+            {getAppName()}
+          </Typography>
+        )}
 
-        <Typography
-          variant="caption"
-          sx={{
-            fontWeight: 500,
-            color: theme.palette.primary.main,
-            letterSpacing: '0.02em',
-            fontSize: '0.85rem',
-            opacity: 0.92,
-            background: isDark
-              ? `linear-gradient(90deg, ${theme.palette.primary.main} 0%, ${alpha(theme.palette.primary.light, 0.8)} 100%)`
-              : `linear-gradient(90deg, ${theme.palette.primary.main} 0%, ${theme.palette.primary.dark} 100%)`,
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-          }}
-        >
-          Workplace AI that understands your workplace inside out
-        </Typography>
+        {getAppTagline() && (
+          <Typography
+            variant="caption"
+            sx={{
+              fontWeight: 500,
+              color: theme.palette.primary.main,
+              letterSpacing: '0.02em',
+              fontSize: '0.85rem',
+              opacity: 0.92,
+              background: isDark
+                ? `linear-gradient(90deg, ${theme.palette.primary.main} 0%, ${alpha(theme.palette.primary.light, 0.8)} 100%)`
+                : `linear-gradient(90deg, ${theme.palette.primary.main} 0%, ${theme.palette.primary.dark} 100%)`,
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent',
+            }}
+          >
+            {getAppTagline()}
+          </Typography>
+        )}
       </Box>
 
       {/* ChatInput Component */}

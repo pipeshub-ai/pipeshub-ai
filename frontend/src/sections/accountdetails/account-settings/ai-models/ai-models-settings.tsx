@@ -18,6 +18,7 @@ import {
 } from '@mui/material';
 
 import { Iconify } from 'src/components/iconify';
+import { getDocumentationUrl, shouldShowDocs, DOCS_PATHS } from 'src/utils/docs-helper';
 import robotIcon from '@iconify-icons/mdi/robot';
 import llmIcon from '@iconify-icons/mdi/chat';
 import embeddingIcon from '@iconify-icons/mdi/vector-polygon';
@@ -408,47 +409,49 @@ const AiModelsSettings: React.FC = () => {
                 />
 
                 {/* Info Alert */}
-                <Alert 
-                  variant="outlined" 
-                  severity="info"
-                  icon={<Iconify icon={infoIcon} width={20} height={20} />}
-                  sx={{ 
-                    borderRadius: 1.5,
-                    borderColor: alpha(theme.palette.info.main, 0.2),
-                    backgroundColor: alpha(theme.palette.info.main, 0.04),
-                    '& .MuiAlert-message': {
-                      width: '100%',
-                    },
-                  }}
-                >
-                  <Stack direction="row" justifyContent="space-between" alignItems="center">
-                    <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                      Click the specific model type (LLM or Embedding) for each provider to configure exactly what you need.
-                    </Typography>
-                    <Box
-                      component="a"
-                      href="https://docs.pipeshub.com/ai-models/overview" 
-                      target="_blank" 
-                      rel="noopener"
-                      sx={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 0.5,
-                        color: theme.palette.info.main,
-                        textDecoration: 'none',
-                        fontWeight: 600,
-                        fontSize: '0.875rem',
-                        '&:hover': { 
-                          textDecoration: 'underline',
-                          color: theme.palette.info.dark,
-                        },
-                      }}
-                    >
-                      Learn more
-                      <Iconify icon={arrowRightIcon} width={14} height={14} />
-                    </Box>
-                  </Stack>
-                </Alert>
+                {shouldShowDocs() && getDocumentationUrl(DOCS_PATHS.AI_MODELS_OVERVIEW) && (
+                  <Alert
+                    variant="outlined"
+                    severity="info"
+                    icon={<Iconify icon={infoIcon} width={20} height={20} />}
+                    sx={{
+                      borderRadius: 1.5,
+                      borderColor: alpha(theme.palette.info.main, 0.2),
+                      backgroundColor: alpha(theme.palette.info.main, 0.04),
+                      '& .MuiAlert-message': {
+                        width: '100%',
+                      },
+                    }}
+                  >
+                    <Stack direction="row" justifyContent="space-between" alignItems="center">
+                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                        Click the specific model type (LLM or Embedding) for each provider to configure exactly what you need.
+                      </Typography>
+                      <Box
+                        component="a"
+                        href={getDocumentationUrl(DOCS_PATHS.AI_MODELS_OVERVIEW)}
+                        target="_blank"
+                        rel="noopener"
+                        sx={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 0.5,
+                          color: theme.palette.info.main,
+                          textDecoration: 'none',
+                          fontWeight: 600,
+                          fontSize: '0.875rem',
+                          '&:hover': {
+                            textDecoration: 'underline',
+                            color: theme.palette.info.dark,
+                          },
+                        }}
+                      >
+                        Learn more
+                        <Iconify icon={arrowRightIcon} width={14} height={14} />
+                      </Box>
+                    </Stack>
+                  </Alert>
+                )}
               </Stack>
             </Fade>
           )}

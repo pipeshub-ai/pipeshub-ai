@@ -36,6 +36,7 @@ import {
 } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
 import { Iconify } from 'src/components/iconify';
+import { getDocumentationUrl, shouldShowDocs, DOCS_PATHS } from 'src/utils/docs-helper';
 import infoIcon from '@iconify-icons/mdi/info-circle';
 import plusCircleIcon from '@iconify-icons/mdi/plus-circle';
 import magniferIcon from '@iconify-icons/mdi/magnify';
@@ -1197,35 +1198,53 @@ const Connectors: React.FC = () => {
           {/* Info Alert */}
           {!isFirstLoad && !isSwitchingScope && connectors.length > 0 && (
             <Fade in timeout={600}>
-              <Alert
-                variant="outlined"
-                severity="info"
-                icon={<Iconify icon={infoIcon} width={20} height={20} />}
-                sx={{
-                  mt: 3,
-                  borderRadius: 1.5,
-                  borderColor: alpha(theme.palette.info.main, 0.2),
-                  backgroundColor: alpha(theme.palette.info.main, 0.04),
-                }}
-              >
-                <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                  Click any connector to configure settings and start syncing data automatically.
-                  Refer to{' '}
-                  <a
-                    href="https://docs.pipeshub.com/connectors/overview"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{
-                      color: theme.palette.primary.main,
-                      textDecoration: 'none',
-                      fontWeight: 600,
-                    }}
-                  >
-                    the documentation
-                  </a>{' '}
-                  for more information.
-                </Typography>
-              </Alert>
+              {shouldShowDocs() && getDocumentationUrl(DOCS_PATHS.CONNECTORS_OVERVIEW) ? (
+                <Alert
+                  variant="outlined"
+                  severity="info"
+                  icon={<Iconify icon={infoIcon} width={20} height={20} />}
+                  sx={{
+                    mt: 3,
+                    borderRadius: 1.5,
+                    borderColor: alpha(theme.palette.info.main, 0.2),
+                    backgroundColor: alpha(theme.palette.info.main, 0.04),
+                  }}
+                >
+                  <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                    Click any connector to configure settings and start syncing data automatically.
+                    Refer to{' '}
+                    <a
+                      href={getDocumentationUrl(DOCS_PATHS.CONNECTORS_OVERVIEW)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{
+                        color: theme.palette.primary.main,
+                        textDecoration: 'none',
+                        fontWeight: 600,
+                      }}
+                    >
+                      the documentation
+                    </a>{' '}
+                    for more information.
+                  </Typography>
+                </Alert>
+              ) : (
+                <Alert
+                  variant="outlined"
+                  severity="info"
+                  icon={<Iconify icon={infoIcon} width={20} height={20} />}
+                  sx={{
+                    mt: 3,
+                    borderRadius: 1.5,
+                    borderColor: alpha(theme.palette.info.main, 0.2),
+                    backgroundColor: alpha(theme.palette.info.main, 0.04),
+                  }}
+                >
+                  <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                    Click any connector to configure settings and start syncing data automatically.
+                  </Typography>
+                </Alert>
+              )}
             </Fade>
           )}
         </Box>

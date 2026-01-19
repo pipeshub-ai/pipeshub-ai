@@ -27,6 +27,7 @@ import {
 import axios from 'src/utils/axios';
 
 import DynamicForm from 'src/components/dynamic-form/components/dynamic-form';
+import { getDocumentationUrl, DOCS_PATHS } from 'src/utils/docs-helper';
 
 import { createScrollableContainerStyle } from 'src/sections/qna/chatbot/utils/styles/scrollbar';
 
@@ -53,7 +54,7 @@ const CONFIGURATION_STEPS = [
       'LLM configuration is required to proceed with setup. All fields marked with * are required.',
     isRequired: true,
     canSkip: false,
-    documentationUrl: 'https://docs.pipeshub.com/ai-models/overview',
+    documentationUrl: getDocumentationUrl(DOCS_PATHS.AI_MODELS_OVERVIEW),
   },
   {
     id: 'embedding' as ConfigType,
@@ -65,7 +66,7 @@ const CONFIGURATION_STEPS = [
       'Select the embedding provider to use. You can use the default system embeddings or configure a specific provider.',
     isRequired: false,
     canSkip: true,
-    documentationUrl: 'https://docs.pipeshub.com/ai-models/overview',
+    documentationUrl: getDocumentationUrl(DOCS_PATHS.AI_MODELS_OVERVIEW),
   },
   {
     id: 'storage' as ConfigType,
@@ -76,7 +77,7 @@ const CONFIGURATION_STEPS = [
       'Choose your preferred storage solution. Local storage is used by default if skipped.',
     isRequired: false,
     canSkip: true,
-    documentationUrl: 'https://docs.pipeshub.com/system-overview/storage',
+    documentationUrl: getDocumentationUrl(DOCS_PATHS.STORAGE),
   },
   {
     id: 'smtp' as ConfigType,
@@ -87,7 +88,7 @@ const CONFIGURATION_STEPS = [
       'Set up email delivery for notifications and alerts. This is optional but recommended.',
     isRequired: false,
     canSkip: true,
-    documentationUrl: 'https://docs.pipeshub.com/smtp',
+    documentationUrl: getDocumentationUrl(DOCS_PATHS.SMTP),
   },
 ] as const;
 
