@@ -677,6 +677,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         """
         if not self.drive_data_source:
             self.logger.error("Drive data source not initialized")
+            await self._reinitialize_credentials()
             return
 
         # Get user info
@@ -1266,9 +1267,71 @@ class GoogleDriveIndividualConnector(BaseConnector):
             self.logger.error(f"❌ Error creating app user: {e}", exc_info=True)
             raise
 
+    async def _reinitialize_credentials(self) -> None:
+        """
+        Reinitialize the credentials and clients if they have been closed or are invalid.
+        This prevents "HTTP transport has already been closed" errors when the connector
+        instance is reused across multiple scheduled runs that are days apart.
+        """
+        try:
+            # Test if the Google client is still valid by attempting a simple API call
+            if self.drive_data_source:
+                try:
+                    await self.drive_data_source.about_get(fields="user(displayName,emailAddress)")
+                    self.logger.debug("✅ Google Drive client is valid and active")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Google Drive client needs reinitialization: {e}")
+                    # Reinitialize Google client
+                    await self._reinitialize_google_client()
+            else:
+                self.logger.warning("⚠️ Drive data source not initialized, reinitializing")
+                await self._reinitialize_google_client()
+
+        except Exception as e:
+            self.logger.error(f"❌ Error during credential reinitialization check: {e}", exc_info=True)
+            # Try to reinitialize the client as a fallback
+            await self._reinitialize_google_client()
+
+    async def _reinitialize_google_client(self) -> None:
+        """Reinitialize the Google Drive client and data source."""
+        try:
+            # Close old client if it exists
+            if hasattr(self, 'google_client') and self.google_client:
+                try:
+                    # Google clients don't have explicit close methods, but we can clear the reference
+                    pass
+                except Exception:
+                    pass
+
+            # Reinitialize Google Client using build_from_services
+            self.google_client = await GoogleClient.build_from_services(
+                service_name="drive",
+                logger=self.logger,
+                config_service=self.config_service,
+                is_individual=True,  # This is an individual connector
+                version="v3",
+                connector_instance_id=self.connector_id
+            )
+
+            # Create Google Drive Data Source from the client
+            self.drive_data_source = GoogleDriveDataSource(
+                self.google_client.get_client()
+            )
+
+            self.logger.info("✅ Google Drive client and data source reinitialized successfully")
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to reinitialize Google Drive client: {e}",
+                exc_info=True
+            )
+            raise ValueError(f"Failed to reinitialize Google Drive client: {e}") from e
+
     async def run_sync(self) -> None:
 
         self.logger.info("Starting sync for Google Drive Individual")
+
+        # Reinitialize credentials if needed
+        await self._reinitialize_credentials()
 
         self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "drive", self.connector_id, self.logger
@@ -1333,8 +1396,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
             self.logger.info(f"Starting reindex for {len(records)} Google Drive records")
 
             if not self.drive_data_source:
-                self.logger.error("Drive data source not initialized. Call init() first.")
-                raise Exception("Drive data source not initialized. Call init() first.")
+                self.logger.error("Drive data source not initialized.")
+                await self._reinitialize_credentials()
 
             # Get user information
             fields = 'user(displayName,emailAddress,permissionId)'

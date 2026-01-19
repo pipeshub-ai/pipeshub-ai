@@ -315,6 +315,113 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.error(f"❌ Error initializing Google Drive enterprise connector: {ex}", exc_info=True)
             raise
 
+    async def _reinitialize_credentials(self) -> None:
+        """
+        Reinitialize the credentials and clients if they have been closed or are invalid.
+        This prevents "HTTP transport has already been closed" errors when the connector
+        instance is reused across multiple scheduled runs that are days apart.
+        """
+        try:
+            # Test if the drive client is still valid by attempting a simple API call
+            if self.drive_data_source:
+                try:
+                    await self.drive_data_source.about_get(fields="user(displayName,emailAddress)")
+                    self.logger.debug("✅ Drive client is valid and active")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Drive client needs reinitialization: {e}")
+                    # Reinitialize drive client
+                    await self._reinitialize_drive_client()
+            else:
+                self.logger.warning("⚠️ Drive data source not initialized, reinitializing")
+                await self._reinitialize_drive_client()
+
+            # Test if the admin client is still valid by attempting a simple API call
+            if self.admin_data_source:
+                try:
+                    await self.admin_data_source.users_list(customer="my_customer", maxResults=1)
+                    self.logger.debug("✅ Admin client is valid and active")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Admin client needs reinitialization: {e}")
+                    # Reinitialize admin client
+                    await self._reinitialize_admin_client()
+            else:
+                self.logger.warning("⚠️ Admin data source not initialized, reinitializing")
+                await self._reinitialize_admin_client()
+
+        except Exception as e:
+            self.logger.error(f"❌ Error during credential reinitialization check: {e}", exc_info=True)
+            # Try to reinitialize both clients as a fallback
+            await self._reinitialize_drive_client()
+            await self._reinitialize_admin_client()
+
+    async def _reinitialize_drive_client(self) -> None:
+        """Reinitialize the Google Drive client and data source."""
+        try:
+            # Close old client if it exists
+            if hasattr(self, 'drive_client') and self.drive_client:
+                try:
+                    # Google clients don't have explicit close methods, but we can clear the reference
+                    pass
+                except Exception:
+                    pass
+
+            # Reinitialize Google Drive Client using build_from_services
+            self.drive_client = await GoogleClient.build_from_services(
+                service_name="drive",
+                logger=self.logger,
+                config_service=self.config_service,
+                is_individual=False,  # This is an enterprise connector
+                version="v3",
+                connector_instance_id=self.connector_id
+            )
+
+            # Create Google Drive Data Source from the client
+            self.drive_data_source = GoogleDriveDataSource(
+                self.drive_client.get_client()
+            )
+
+            self.logger.info("✅ Google Drive client and data source reinitialized successfully")
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to reinitialize Google Drive client: {e}",
+                exc_info=True
+            )
+            raise ValueError(f"Failed to reinitialize Google Drive client: {e}") from e
+
+    async def _reinitialize_admin_client(self) -> None:
+        """Reinitialize the Google Admin client and data source."""
+        try:
+            # Close old client if it exists
+            if hasattr(self, 'admin_client') and self.admin_client:
+                try:
+                    # Google clients don't have explicit close methods, but we can clear the reference
+                    pass
+                except Exception:
+                    pass
+
+            # Reinitialize Google Admin Client using build_from_services
+            self.admin_client = await GoogleClient.build_from_services(
+                service_name="admin",
+                logger=self.logger,
+                config_service=self.config_service,
+                is_individual=False,  # This is an enterprise connector
+                version="directory_v1",
+                connector_instance_id=self.connector_id
+            )
+
+            # Create Google Admin Data Source from the client
+            self.admin_data_source = GoogleAdminDataSource(
+                self.admin_client.get_client()
+            )
+
+            self.logger.info("✅ Google Admin client and data source reinitialized successfully")
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to reinitialize Google Admin client: {e}",
+                exc_info=True
+            )
+            raise ValueError(f"Failed to reinitialize Google Admin client: {e}") from e
+
     async def run_sync(self) -> None:
         """
         Main entry point for the Google Drive enterprise connector.
@@ -322,6 +429,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         """
         try:
             self.logger.info("Starting Google Drive enterprise connector sync")
+
+            # Reinitialize credentials if needed
+            await self._reinitialize_credentials()
 
             # Load sync and indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -355,8 +465,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         """Sync all users from Google Workspace Admin API."""
         try:
             if not self.admin_data_source:
-                self.logger.error("Admin data source not initialized. Call init() first.")
-                raise ValueError("Admin data source not initialized")
+                self.logger.error("Admin data source not initialized.")
 
             self.logger.info("Fetching all users from Google Workspace Admin API...")
             all_users: List[AppUser] = []
@@ -2576,8 +2685,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.info(f"Starting reindex for {len(records)} Google Drive enterprise records")
 
             if not self.drive_data_source:
-                self.logger.error("Drive data source not initialized. Call init() first.")
-                raise Exception("Drive data source not initialized. Call init() first.")
+                self.logger.error("Drive data source not initialized.")
+                await self._reinitialize_credentials()
 
             # Check records at source for updates
             org_id = self.data_entities_processor.org_id
