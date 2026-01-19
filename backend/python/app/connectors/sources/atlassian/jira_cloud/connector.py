@@ -709,6 +709,7 @@ async def adf_to_text_with_images(
             app_categories=["Storage"]
         )
     ])\
+    .with_info("⚠️ Important: In order for users to get access to Jira data, each user needs to make their email visible in their Jira account settings. Users can do this by going to their Jira profile settings and switching email visibility to Public.")\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/jira.svg")
         .with_realtime_support(False)
@@ -732,7 +733,6 @@ async def adf_to_text_with_images(
             filter_type=FilterType.LIST,
             category=FilterCategory.SYNC,
             description="Filter issues by project keys (e.g., PROJ1, PROJ2)",
-            default_value=[],
             option_source_type=OptionSourceType.DYNAMIC
         ))
         .add_filter_field(CommonFields.modified_date_filter("Filter issues by modification date."))
