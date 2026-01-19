@@ -75,6 +75,7 @@ from app.models.entities import (
     AppUserGroup,
     FileRecord,
     IndexingStatus,
+    ItemType,
     LinkPublicStatus,
     LinkRecord,
     MimeTypes,
@@ -85,7 +86,6 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
     Status,
-    ItemType,
     TicketRecord,
     WebpageRecord,
 )

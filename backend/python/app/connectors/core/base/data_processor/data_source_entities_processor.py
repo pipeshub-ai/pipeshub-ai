@@ -291,14 +291,22 @@ class DataSourceEntitiesProcessor:
 
     async def _handle_ticket_user_edges(self, ticket: TicketRecord, tx_store: TransactionStore) -> None:
         """
-        Create user relationship edges for tickets (ASSIGNED_TO, CREATED_BY).
+        Create user relationship edges for tickets (ASSIGNED_TO, CREATED_BY, REPORTED_BY).
 
         This method creates edges in the ticketRelations collection linking tickets to users.
+        It first deletes existing edges for this ticket to avoid duplicates, then creates new ones.
 
         Args:
             ticket: The TicketRecord to create edges for
             tx_store: The transaction store
         """
+        # First, delete existing ticket-user edges for this ticket to avoid duplicates
+        try:
+            from_key = f"{CollectionNames.RECORDS.value}/{ticket.id}"
+            await tx_store.delete_edges_from(from_key, CollectionNames.TICKET_RELATIONS.value)
+        except Exception as e:
+            self.logger.warning(f"Failed to delete existing ticket-user edges for ticket {ticket.id}: {str(e)}")
+
         edges_to_create = []
 
         # Create ASSIGNED_TO edge if assignee exists and user is found
@@ -340,6 +348,26 @@ class DataSourceEntitiesProcessor:
                     self.logger.debug(f"User with email {ticket.creator_email} not found, skipping CREATED_BY edge for ticket {ticket.id}")
             except Exception as e:
                 self.logger.warning(f"Failed to create CREATED_BY edge for ticket {ticket.id}: {str(e)}")
+
+        # Create REPORTED_BY edge if reporter exists and user is found
+        if ticket.reporter_email:
+            try:
+                # Only get existing user by email - do not create if not found
+                user = await tx_store.get_user_by_email(ticket.reporter_email)
+
+                if user:
+                    edges_to_create.append({
+                        "_from": f"{CollectionNames.RECORDS.value}/{ticket.id}",
+                        "_to": f"{CollectionNames.USERS.value}/{user.id}",
+                        "edgeType": TicketEdgeTypes.REPORTED_BY.value,
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    })
+                    self.logger.debug(f"Created REPORTED_BY edge for ticket {ticket.id} to user {user.email}")
+                else:
+                    self.logger.debug(f"User with email {ticket.reporter_email} not found, skipping REPORTED_BY edge for ticket {ticket.id}")
+            except Exception as e:
+                self.logger.warning(f"Failed to create REPORTED_BY edge for ticket {ticket.id}: {str(e)}")
 
         # Batch create all edges
         if edges_to_create:
@@ -533,15 +561,12 @@ class DataSourceEntitiesProcessor:
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
         await self._handle_parent_record(record, tx_store)
 
-        # Create a edge between the record and the record group if it doesn't exist and if record_group_id is provided
-        await self._handle_record_group(record, tx_store)
-
         # Create LINKED_TO edges for related external records if record has related_external_records
         # (This field is in base Record class with default_factory=list, so it always exists)
         if record.related_external_records:
             await self._handle_related_external_records(record, record.related_external_records, tx_store)
 
-        # Create ticket-user relationship edges (ASSIGNED_TO, CREATED_BY) if record is a TicketRecord
+        # Create ticket-user relationship edges (ASSIGNED_TO, CREATED_BY, REPORTED_BY) if record is a TicketRecord
         if isinstance(record, TicketRecord):
             await self._handle_ticket_user_edges(record, tx_store)
 
