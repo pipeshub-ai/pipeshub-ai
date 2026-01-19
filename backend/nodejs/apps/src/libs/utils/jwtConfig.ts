@@ -34,6 +34,11 @@ export async function getJwtConfig(logger: Logger): Promise<JwtConfig> {
 
   if (algorithm === 'RS256') {
     const rsaPrivateKey = process.env.OAUTH_RSA_PRIVATE_KEY
+    if (!rsaPrivateKey && process.env.NODE_ENV === 'production') {
+      throw new Error(
+        'OAUTH_RSA_PRIVATE_KEY must be set for RS256 algorithm in production',
+      )
+    }
     const rsaKeyService = new RSAKeyService(logger, rsaPrivateKey)
 
     return {

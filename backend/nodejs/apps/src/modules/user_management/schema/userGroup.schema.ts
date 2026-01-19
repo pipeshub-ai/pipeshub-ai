@@ -1,4 +1,4 @@
-import { generateUniqueSlug } from '../controller/counters.controller';
+import { generateUniqueSlug } from '../../../libs/utils/counter';
 import { Document, Schema, Types, model } from 'mongoose';
 
 export const groupTypes = ['admin', 'standard', 'everyone', 'custom'];

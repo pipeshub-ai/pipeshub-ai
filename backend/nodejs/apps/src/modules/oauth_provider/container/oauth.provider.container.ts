@@ -14,6 +14,7 @@ import { ScopeValidatorService } from '../services/scope.validator.service'
 import { OAuthAppController } from '../controller/oauth.app.controller'
 import { OAuthProviderController } from '../controller/oauth.provider.controller'
 import { OIDCProviderController } from '../controller/oid.provider.controller'
+import { OAuthAuthMiddleware } from '../middlewares/oauth.auth.middleware'
 
 const loggerConfig = {
   service: 'OAuth Provider',
@@ -51,7 +52,7 @@ export class OAuthProviderContainer {
 
     // OAuth issuer - use backend URL if not explicitly configured
     const oauthIssuer =
-      (appConfig as any).oauthIssuer ||
+      appConfig.oauthIssuer ||
       `${appConfig.authBackend}/api/v1/oauth-provider`
     container.bind<string>('OAUTH_ISSUER').toConstantValue(oauthIssuer)
 
@@ -128,6 +129,16 @@ export class OAuthProviderContainer {
       container
         .bind<OAuthTokenService>('OAuthTokenService')
         .toConstantValue(oauthTokenService)
+
+      // Initialize OAuth Auth Middleware
+      const oauthAuthMiddleware = new OAuthAuthMiddleware(
+        logger,
+        oauthTokenService,
+        scopeValidatorService,
+      )
+      container
+        .bind<OAuthAuthMiddleware>('OAuthAuthMiddleware')
+        .toConstantValue(oauthAuthMiddleware)
 
       // Initialize Controllers
       container

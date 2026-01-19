@@ -4,7 +4,8 @@ import type { AuthResponse } from 'src/auth/context/jwt';
 import { z as zod } from 'zod';
 import PropTypes from 'prop-types';
 import { useForm } from 'react-hook-form';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate } from 'react-router';
+import { useSearchParams } from 'src/routes/hooks';
 // Import specific icons
 import emailIcon from '@iconify-icons/mdi/email';
 import googleIcon from '@iconify-icons/mdi/google';
@@ -210,7 +211,7 @@ export const AuthenticationView = () => {
   const emailFromStore = useSelector((state: RootState) => state.auth.email);
   const { checkUserSession } = useAuthContext();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const searchParams = useSearchParams();
   const returnTo = searchParams.get('returnTo');
 
   const [snackbar, setSnackbar] = useState({

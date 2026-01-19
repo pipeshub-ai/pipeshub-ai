@@ -7,7 +7,10 @@ import { ScopeValidatorService } from '../services/scope.validator.service'
 import { OpenIDConfiguration, JWKS, JWK } from '../types/oauth.types'
 import { AppConfig } from '../../tokens_manager/config/config'
 import { Users } from '../../user_management/schema/users.schema'
-import { buildWwwAuthenticateHeader } from '../middlewares/oauth.auth.middleware'
+import {
+  OAuthRequest,
+  buildWwwAuthenticateHeader,
+} from '../middlewares/oauth.auth.middleware'
 
 /**
  * OpenID Connect Provider Controller
@@ -31,97 +34,54 @@ export class OIDCProviderController {
 
   /**
    * UserInfo endpoint - GET /oauth2/userinfo
+   * Authentication and scope validation handled by OAuthAuthMiddleware
    * @see OpenID Connect Core 1.0 Section 5.3
-   * @see RFC 6750 for Bearer Token authentication
    */
   async userInfo(
-    req: Request,
+    req: OAuthRequest,
     res: Response,
     _next: NextFunction,
   ): Promise<void> {
-    try {
-      // Extract and verify access token
-      const authHeader = req.headers.authorization
-      if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        // RFC 6750 Section 3.1: Missing token
-        res.setHeader(
-          'WWW-Authenticate',
-          buildWwwAuthenticateHeader('invalid_request', 'Bearer token required'),
-        )
-        res.status(401).json({
-          error: 'invalid_request',
-          error_description: 'Bearer token required',
-        })
-        return
-      }
+    // OAuth data is attached by OAuthAuthMiddleware
+    const { oauth } = req
+    const scopes = oauth!.scopes
+    const userId = oauth!.payload.sub
 
-      const token = authHeader.substring(7)
-      const payload = await this.oauthTokenService.verifyAccessToken(token)
-
-      // Check for required scope
-      const scopes = payload.scope.split(' ')
-      if (!scopes.includes('openid')) {
-        // RFC 6750 Section 3.1: Insufficient scope
-        res.setHeader(
-          'WWW-Authenticate',
-          buildWwwAuthenticateHeader('insufficient_scope', 'openid scope required', 'openid'),
-        )
-        res.status(403).json({
-          error: 'insufficient_scope',
-          error_description: 'openid scope required',
-        })
-        return
-      }
-
-      // Get user info
-      const user = await Users.findById(payload.sub)
-      if (!user) {
-        // RFC 6750 Section 3.1: Invalid token (user not found)
-        res.setHeader(
-          'WWW-Authenticate',
-          buildWwwAuthenticateHeader('invalid_token', 'User not found'),
-        )
-        res.status(401).json({
-          error: 'invalid_token',
-          error_description: 'User not found',
-        })
-        return
-      }
-
-      const userInfo: Record<string, unknown> = {
-        sub: (user._id as Types.ObjectId).toString(),
-      }
-
-      // Add claims based on scopes
-      if (scopes.includes('profile')) {
-        userInfo.name = `${user.firstName || ''} ${user.lastName || ''}`.trim()
-        userInfo.given_name = user.firstName
-        userInfo.family_name = user.lastName
-        // Note: profilePictureUrl is not in the User schema
-        // updatedAt comes from mongoose timestamps
-        const userDoc = user as unknown as { updatedAt?: Date }
-        if (userDoc.updatedAt) {
-          userInfo.updated_at = Math.floor(userDoc.updatedAt.getTime() / 1000)
-        }
-      }
-
-      if (scopes.includes('email')) {
-        userInfo.email = user.email
-        userInfo.email_verified = user.hasLoggedIn
-      }
-
-      res.json(userInfo)
-    } catch (error) {
-      // RFC 6750 Section 3.1: Token validation error
+    // Get user info
+    const user = await Users.findById(userId)
+    if (!user) {
       res.setHeader(
         'WWW-Authenticate',
-        buildWwwAuthenticateHeader('invalid_token', (error as Error).message),
+        buildWwwAuthenticateHeader('invalid_token', 'User not found'),
       )
       res.status(401).json({
         error: 'invalid_token',
-        error_description: (error as Error).message,
+        error_description: 'User not found',
       })
+      return
     }
+
+    const userInfo: Record<string, unknown> = {
+      sub: (user._id as Types.ObjectId).toString(),
+    }
+
+    // Add claims based on scopes
+    if (scopes.includes('profile')) {
+      userInfo.name = `${user.firstName || ''} ${user.lastName || ''}`.trim()
+      userInfo.given_name = user.firstName
+      userInfo.family_name = user.lastName
+      const userDoc = user as unknown as { updatedAt?: Date }
+      if (userDoc.updatedAt) {
+        userInfo.updated_at = Math.floor(userDoc.updatedAt.getTime() / 1000)
+      }
+    }
+
+    if (scopes.includes('email')) {
+      userInfo.email = user.email
+      userInfo.email_verified = user.hasLoggedIn
+    }
+
+    res.json(userInfo)
   }
 
   /**

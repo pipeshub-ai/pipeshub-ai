@@ -7,6 +7,7 @@ import { OIDCProviderController } from '../controller/oid.provider.controller'
 import { Logger } from '../../../libs/services/logger.service'
 import { AuthTokenService } from '../../../libs/services/authtoken.service'
 import { createOAuthRedirectMiddleware } from '../middlewares/oauth.redirect.middleware'
+import { OAuthAuthMiddleware } from '../middlewares/oauth.auth.middleware'
 import { AppConfig } from '../../tokens_manager/config/config'
 import {
   authorizeQuerySchema,
@@ -25,6 +26,7 @@ export function createOAuthProviderRouter(container: Container): Router {
     'OIDCProviderController',
   )
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware')
+  const oauthAuthMiddleware = container.get<OAuthAuthMiddleware>('OAuthAuthMiddleware')
   const logger = container.get<Logger>('Logger')
   const authTokenService = container.get<AuthTokenService>('AuthTokenService')
   const appConfig = container.get<AppConfig>('AppConfig')
@@ -102,10 +104,12 @@ export function createOAuthProviderRouter(container: Container): Router {
   /**
    * GET /userinfo
    * OpenID Connect UserInfo endpoint
-   * Bearer token authentication
+   * Bearer token authentication with 'openid' scope required
    */
   router.get(
     '/userinfo',
+    oauthAuthMiddleware.authenticate,
+    oauthAuthMiddleware.requireScopes('openid'),
     (req: Request, res: Response, next: NextFunction) =>
       oidcController.userInfo(req, res, next),
   )

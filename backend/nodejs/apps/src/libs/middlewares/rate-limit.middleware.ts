@@ -127,8 +127,8 @@ export function createOAuthClientRateLimiter(logger: Logger): RequestHandler {
       const retryAfter = res.getHeader('Retry-After');
       const authenticatedUserReq = req as AuthenticatedUserRequest;
       const key = authenticatedUserReq.user?.userId
-        ? `user:${authenticatedUserReq.user.userId}`
-        : `ip:${getClientIp(req)}`;
+        ? `oauth-client:user:${authenticatedUserReq.user.userId}`
+        : `oauth-client:ip:${getClientIp(req)}`;
 
       logger.warn('OAuth client rate limit exceeded', {
         key,
