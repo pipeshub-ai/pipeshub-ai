@@ -4,7 +4,7 @@ import type { AuthResponse } from 'src/auth/context/jwt';
 import { z as zod } from 'zod';
 import PropTypes from 'prop-types';
 import { useForm } from 'react-hook-form';
-import { useNavigate } from 'react-router';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 // Import specific icons
 import emailIcon from '@iconify-icons/mdi/email';
 import googleIcon from '@iconify-icons/mdi/google';
@@ -210,6 +210,9 @@ export const AuthenticationView = () => {
   const emailFromStore = useSelector((state: RootState) => state.auth.email);
   const { checkUserSession } = useAuthContext();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const returnTo = searchParams.get('returnTo');
+
   const [snackbar, setSnackbar] = useState({
     open: false,
     message: '',
@@ -287,8 +290,9 @@ export const AuthenticationView = () => {
     if (checkUserSession) {
       await checkUserSession();
     }
-    // router.push('/');
-    navigate('/');
+    // Navigate to returnTo URL if present (e.g., OAuth consent page), otherwise go to home
+    const targetUrl = returnTo || '/';
+    navigate(targetUrl);
   };
 
   // Handle Google login success
@@ -445,15 +449,14 @@ export const AuthenticationView = () => {
     const checkOrgExists = async () => {
       try {
         const response = await OrgExists();
+        // Preserve query params when navigating
+        const queryString = searchParams.toString();
+        const suffix = queryString ? `?${queryString}` : '';
+
         if (response.exists === false) {
-          // setSnackbar({
-          //   open: true,
-          //   message: `Set up account to continue`,
-          //   severity: 'error',
-          // });
-          navigate('/auth/sign-up');
+          navigate(`/auth/sign-up${suffix}`);
         } else {
-          navigate('/auth/sign-in');
+          navigate(`/auth/sign-in${suffix}`);
         }
       } catch (err) {
         console.error('Error checking if organization exists:', err);
