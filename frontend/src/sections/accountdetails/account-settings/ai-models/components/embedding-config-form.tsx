@@ -6,6 +6,7 @@
 import React, { forwardRef } from 'react';
 import { Link, Alert } from '@mui/material';
 import DynamicForm, { DynamicFormRef } from 'src/components/dynamic-form/components/dynamic-form';
+import { getDocumentationUrl, shouldShowDocs, DOCS_PATHS } from 'src/utils/docs-helper';
 
 import { modelService } from '../services/universal-config';
 
@@ -30,13 +31,15 @@ export interface EmbeddingConfigFormRef extends DynamicFormRef {}
         updateConfig={modelService.updateEmbeddingConfig}
       />
 
-      <Alert variant="outlined" severity="info" sx={{ my: 3 }}>
-        Refer to{' '}
-        <Link href="https://docs.pipeshub.com/ai-models/overview" target="_blank" rel="noopener">
-          the documentation
-        </Link>{' '}
-        for more information.
-      </Alert>
+      {shouldShowDocs() && getDocumentationUrl(DOCS_PATHS.AI_MODELS_OVERVIEW) && (
+        <Alert variant="outlined" severity="info" sx={{ my: 3 }}>
+          Refer to{' '}
+          <Link href={getDocumentationUrl(DOCS_PATHS.AI_MODELS_OVERVIEW)} target="_blank" rel="noopener">
+            the documentation
+          </Link>{' '}
+          for more information.
+        </Alert>
+      )}
     </>
   )
 );

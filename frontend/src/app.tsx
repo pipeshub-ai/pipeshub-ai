@@ -2,11 +2,13 @@ import 'src/global.css';
 
 // ----------------------------------------------------------------------
 
+import { useEffect } from 'react';
 import { Provider } from 'react-redux';
 
 import { Router } from 'src/routes/sections';
 
 import { useScrollToTop } from 'src/hooks/use-scroll-to-top';
+import { getAppTitle } from 'src/config-global';
 
 import { LocalizationProvider } from 'src/locales';
 import { AdminProvider } from 'src/context/AdminContext';
@@ -33,6 +35,14 @@ const AuthProvider = JwtAuthProvider;
 
 export default function App() {
   useScrollToTop();
+
+  // Update document title if whitelabel title is configured
+  useEffect(() => {
+    const title = getAppTitle();
+    if (title) {
+      document.title = title;
+    }
+  }, []);
 
   return (
     <I18nProvider>
