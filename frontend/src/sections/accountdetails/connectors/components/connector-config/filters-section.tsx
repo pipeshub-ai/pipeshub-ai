@@ -1186,9 +1186,9 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
       // Exclude enable_manual_sync from indexing filters accordion
       (field) => filterType !== 'indexing' || field.name !== 'enable_manual_sync'
     );
-    const activeFilterNames = Object.keys(formData).filter(
-      (key) => formData[key] !== undefined && formData[key] !== null
-    );
+    // Only consider filters with a valid operator as "active" (consistent with getActiveFilters)
+    // This ensures filters with invalid defaults don't get stuck in limbo
+    const activeFilterNames = Object.keys(formData).filter((key) => !!formData[key]?.operator);
     
     return availableFields.filter((field) => !activeFilterNames.includes(field.name));
   };
