@@ -255,3 +255,18 @@ export interface OAuthAuthenticatedRequest {
     email: string
   }
 }
+
+// JWK (JSON Web Key) - RFC 7517
+export interface JWK {
+  kty: 'RSA'
+  use: 'sig'
+  alg: 'RS256'
+  kid: string
+  n: string
+  e: string
+}
+
+// JWKS (JSON Web Key Set)
+export interface JWKS {
+  keys: JWK[]
+}

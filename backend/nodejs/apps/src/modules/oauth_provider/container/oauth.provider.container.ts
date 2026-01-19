@@ -6,11 +6,11 @@ import { EncryptionService } from '../../../libs/encryptor/encryptor'
 import { ConfigurationManagerConfig } from '../../configuration_manager/config/config'
 import { AppConfig } from '../../tokens_manager/config/config'
 import { ConfigService } from '../../tokens_manager/services/cm.service'
+import { JwtConfig, getJwtConfig } from '../../../libs/utils/jwtConfig'
 import { OAuthAppService } from '../services/oauth.app.service'
 import { OAuthTokenService } from '../services/oauth_token.service'
 import { AuthorizationCodeService } from '../services/authorization_code.service'
 import { ScopeValidatorService } from '../services/scope.validator.service'
-import { RSAKeyService } from '../services/rsa_key.service'
 import { OAuthAppController } from '../controller/oauth.app.controller'
 import { OAuthProviderController } from '../controller/oauth.provider.controller'
 import { OIDCProviderController } from '../controller/oid.provider.controller'
@@ -116,18 +116,13 @@ export class OAuthProviderContainer {
         .bind<OAuthAppService>('OAuthAppService')
         .toConstantValue(oauthAppService)
 
-      // Initialize RSA Key Service for RS256 token signing
-      // Load from OAUTH_RSA_PRIVATE_KEY env var if available, otherwise generate new keys
-      // The key must be in PEM format (-----BEGIN PRIVATE KEY-----)
-      const rsaPrivateKey = process.env.OAUTH_RSA_PRIVATE_KEY
-      const rsaKeyService = new RSAKeyService(logger, rsaPrivateKey)
-      container
-        .bind<RSAKeyService>('RSAKeyService')
-        .toConstantValue(rsaKeyService)
+      // Get JWT configuration from platform config
+      const jwtConfig = await getJwtConfig(logger)
+      container.bind<JwtConfig>('JwtConfig').toConstantValue(jwtConfig)
 
       const oauthTokenService = new OAuthTokenService(
         logger,
-        rsaKeyService,
+        jwtConfig,
         container.get<string>('OAUTH_ISSUER'),
       )
       container
@@ -164,7 +159,6 @@ export class OAuthProviderContainer {
           return new OIDCProviderController(
             oauthTokenService,
             scopeValidatorService,
-            rsaKeyService,
             appConfig,
           )
         })
