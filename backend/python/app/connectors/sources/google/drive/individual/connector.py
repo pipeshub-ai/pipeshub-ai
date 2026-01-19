@@ -678,7 +678,6 @@ class GoogleDriveIndividualConnector(BaseConnector):
         if not self.drive_data_source:
             self.logger.error("Drive data source not initialized")
             await self._reinitialize_credentials()
-            return
 
         # Get user info
         fields = 'user(displayName,emailAddress,permissionId)'
@@ -1297,11 +1296,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         try:
             # Close old client if it exists
             if hasattr(self, 'google_client') and self.google_client:
-                try:
-                    # Google clients don't have explicit close methods, but we can clear the reference
-                    pass
-                except Exception:
-                    pass
+                self.google_client = None
 
             # Reinitialize Google Client using build_from_services
             self.google_client = await GoogleClient.build_from_services(

@@ -359,11 +359,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         try:
             # Close old client if it exists
             if hasattr(self, 'drive_client') and self.drive_client:
-                try:
-                    # Google clients don't have explicit close methods, but we can clear the reference
-                    pass
-                except Exception:
-                    pass
+                self.drive_client = None
 
             # Reinitialize Google Drive Client using build_from_services
             self.drive_client = await GoogleClient.build_from_services(
@@ -393,11 +389,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         try:
             # Close old client if it exists
             if hasattr(self, 'admin_client') and self.admin_client:
-                try:
-                    # Google clients don't have explicit close methods, but we can clear the reference
-                    pass
-                except Exception:
-                    pass
+                self.admin_client = None
 
             # Reinitialize Google Admin Client using build_from_services
             self.admin_client = await GoogleClient.build_from_services(
@@ -465,7 +457,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         """Sync all users from Google Workspace Admin API."""
         try:
             if not self.admin_data_source:
-                self.logger.error("Admin data source not initialized.")
+                self.logger.error("Admin data source not initialized. Call init() first.")
+                raise ValueError("Admin data source not initialized")
 
             self.logger.info("Fetching all users from Google Workspace Admin API...")
             all_users: List[AppUser] = []
