@@ -109,23 +109,27 @@ export class ApiDocsService {
    * Load the merged OpenAPI spec from YAML file
    */
   private loadMergedSpec(): void {
-    const filename = 'pipeshub-openapi.yaml';
+    const appRoot = path.resolve(__dirname, '..', '..', '..');
+    // TODO: fix it properly
+    const specPath =
+      process.env.NODE_ENV !== 'production'
+        ? path.join(__dirname, 'pipeshub-openapi.yaml')
+        : path.join(appRoot, 'backend', 'src', 'modules', 'api-docs', 'pipeshub-openapi.yaml');
 
-    let pipeshubOpenapiPath = path.join(__dirname, filename);
-
-    if (!fs.existsSync(pipeshubOpenapiPath)) {
-      const appRoot = path.resolve(__dirname, '..', '..', '..');
-      pipeshubOpenapiPath = path.join(appRoot, 'src', 'modules', 'api-docs', filename);
-    }
-
-    if (!fs.existsSync(pipeshubOpenapiPath)) {
-      // log warning and continue
-      this.logger.warn(`PipesHub OpenAPI spec not found at: ${pipeshubOpenapiPath}`);
+    if (!fs.existsSync(specPath)) {
+      this.logger.warn(`PipesHub OpenAPI spec not found at: ${specPath}`);
       return;
     }
 
-    this.mergedSpec = yaml.load(fs.readFileSync(pipeshubOpenapiPath, 'utf8')) as any;
-    this.logger.info('Merged OpenAPI spec loaded successfully');
+    try {
+      this.mergedSpec = yaml.load(fs.readFileSync(specPath, 'utf8')) as any;
+      this.logger.info('Merged OpenAPI spec loaded successfully');
+    } catch (error) {
+      this.logger.warn('Failed to load merged OpenAPI spec', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      return;
+    }
   }
 
   /**
