@@ -667,7 +667,7 @@ class CommonFields:
             filter_type=FilterType.MULTISELECT,
             category=FilterCategory.SYNC,
             description="Sync files with specific extensions",
-            default_value=True,
+            default_value=[],
             option_source_type=OptionSourceType.STATIC,
             options=[
                 FilterOption(id=ext.value, label=f".{ext.value}")

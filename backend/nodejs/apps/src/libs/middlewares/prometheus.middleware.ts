@@ -39,7 +39,7 @@ export function metricsMiddleware(container: Container) {
           res.statusCode,
         );
       } else if (res.statusCode >= 200 && res.statusCode < 400) {
-        logger.info(
+        logger.debug(
           `Request success: RequestId: ${requestId} StatusCode: ${res.statusCode} Method: ${req.method} Path: ${req.path} (User: ${userId}, Org: ${orgId})`,
         );
         prometheusService.recordActivity(

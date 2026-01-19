@@ -1188,12 +1188,7 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
     );
     // Only consider filters with a valid operator as "active" (consistent with getActiveFilters)
     // This ensures filters with invalid defaults don't get stuck in limbo
-    const activeFilterNames = Object.keys(formData).filter(
-      (key) => {
-        const filterValue = formData[key];
-        return filterValue !== undefined && filterValue !== null && !!filterValue.operator;
-      }
-    );
+    const activeFilterNames = Object.keys(formData).filter((key) => !!formData[key]?.operator);
     
     return availableFields.filter((field) => !activeFilterNames.includes(field.name));
   };

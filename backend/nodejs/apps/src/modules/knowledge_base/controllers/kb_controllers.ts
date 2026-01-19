@@ -399,7 +399,7 @@ export const listKnowledgeBases =
       );
 
       // Log successful retrieval
-      logger.info('Knowledge bases retrieved successfully');
+      logger.debug('Knowledge bases retrieved successfully');
     } catch (error: any) {
       logger.error('Error listing knowledge bases', {
         error: error.message,
@@ -1738,7 +1738,7 @@ export const getAllRecords =
         throw new BadRequestError('Limit must be between 1 and 100');
       }
 
-      logger.info('Getting all records for user', {
+      logger.debug('Getting all records for user', {
         userId,
         orgId,
         page,
@@ -1814,7 +1814,7 @@ export const getAllRecords =
       const result = response.data as any;
 
       // Log successful retrieval
-      logger.info('All records retrieved successfully', {
+      logger.debug('All records retrieved successfully', {
         totalRecords: result.pagination?.totalCount || 0,
         page: result.pagination?.page || page,
         userId,
