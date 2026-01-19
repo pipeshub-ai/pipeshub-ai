@@ -134,6 +134,16 @@ export class ApiDocsService {
         order: 1,
       },
       {
+        id: 'oauth-app-management',
+        name: 'OAuth App Management',
+        description: 'OAuth 2.0 authorization server, app registration, and OpenID Connect',
+        version: '1.0.0',
+        basePath: '/api/v1',
+        tags: ['OAuth Provider', 'OAuth Apps', 'OpenID Connect'],
+        source: 'nodejs',
+        order: 2,
+      },
+      {
         id: 'user-management',
         name: 'User Management',
         description: 'User, team, and organization management',
@@ -141,7 +151,7 @@ export class ApiDocsService {
         basePath: '/api/v1',
         tags: ['Users', 'Teams', 'Organizations', 'User Groups'],
         source: 'nodejs',
-        order: 2,
+        order: 3,
       },
       {
         id: 'storage',
@@ -151,7 +161,7 @@ export class ApiDocsService {
         basePath: '/api/v1/document',
         tags: ['Document Upload', 'Document Management', 'Document Buffer', 'Version Control', 'Storage Internal'],
         source: 'nodejs',
-        order: 3,
+        order: 4,
       },
       {
         id: 'knowledge-base',
@@ -161,7 +171,7 @@ export class ApiDocsService {
         basePath: '/api/v1/knowledgeBase',
         tags: ['Knowledge Bases', 'Folders', 'Records', 'Permissions', 'Upload', 'Connector'],
         source: 'nodejs',
-        order: 4,
+        order: 5,
       },
       {
         id: 'enterprise-search',
@@ -171,7 +181,7 @@ export class ApiDocsService {
         basePath: '/api/v1',
         tags: ['Conversations', 'Semantic Search'],
         source: 'nodejs',
-        order: 5,
+        order: 6,
       },
       {
         id: 'connector-manager',
@@ -181,7 +191,7 @@ export class ApiDocsService {
         basePath: '/api/v1/connectors',
         tags: ['Core Connectors', 'Connector Configuration', 'Connector Control', 'Connector OAuth', 'Connector Filters', 'Connector Records', 'Connector Statistics', 'Connector Streaming', 'Connector Webhooks'],
         source: 'nodejs',
-        order: 6,
+        order: 7,
       },
       {
         id: 'configuration-manager',
@@ -191,7 +201,7 @@ export class ApiDocsService {
         basePath: '/api/v1/configurationManager',
         tags: ['Storage Configuration', 'SMTP Configuration', 'Auth Configuration', 'Database Configuration', 'Platform Settings', 'AI Models Configuration', 'Branding Configuration', 'Metrics Collection'],
         source: 'nodejs',
-        order: 7,
+        order: 8,
       },
       {
         id: 'crawling-manager',
@@ -201,7 +211,7 @@ export class ApiDocsService {
         basePath: '/api/v1/crawlingManager',
         tags: ['Crawling Jobs', 'Queue Management'],
         source: 'nodejs',
-        order: 8,
+        order: 9,
       },
       {
         id: 'mail',
@@ -211,7 +221,7 @@ export class ApiDocsService {
         basePath: '/api/v1/mail',
         tags: ['Email Operations', 'Email Configuration'],
         source: 'nodejs',
-        order: 9,
+        order: 10,
       },
       // ==================== INTERNAL PYTHON SERVICES ====================
       // These are internal PipesHub microservices that require scoped service tokens
@@ -223,7 +233,7 @@ export class ApiDocsService {
         basePath: 'http://localhost:8000',
         tags: ['Query Service'],
         source: 'python',
-        order: 10,
+        order: 11,
       },
       {
         id: 'indexing-service',
@@ -233,7 +243,7 @@ export class ApiDocsService {
         basePath: 'http://localhost:8091',
         tags: ['Indexing Service'],
         source: 'python',
-        order: 11,
+        order: 12,
       },
       {
         id: 'connector-service-internal',
@@ -243,7 +253,7 @@ export class ApiDocsService {
         basePath: 'http://localhost:8088',
         tags: ['Connector Service'],
         source: 'python',
-        order: 12,
+        order: 13,
       },
       {
         id: 'docling-service',
@@ -253,7 +263,7 @@ export class ApiDocsService {
         basePath: 'http://localhost:8081',
         tags: ['Docling Service'],
         source: 'python',
-        order: 13,
+        order: 14,
       },
     ];
   }
@@ -354,6 +364,12 @@ export class ApiDocsService {
         name: 'System',
         description: 'Configuration, crawling, and mail services',
         modules: this.modules.filter(m => ['configuration-manager', 'crawling-manager', 'mail'].includes(m.id)),
+      },
+      {
+        id: 'oauth',
+        name: 'OAuth App Management',
+        description: 'OAuth 2.0 authorization server and app management',
+        modules: this.modules.filter(m => ['oauth-app-management'].includes(m.id)),
       },
       {
         id: 'internal-services',
