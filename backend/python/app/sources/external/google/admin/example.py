@@ -161,7 +161,7 @@ async def main() -> None:
     
     try:
         # Get user email for Gmail API (use the same user email as Drive)
-        user_email = "abhishek@pipeshub.app"
+        user_email = "vishwjeet.pawar@pipeshub.app"
         
         enterprise_gmail_client = await build_enterprise_client_from_credentials(
             service_name="gmail",
@@ -237,6 +237,7 @@ async def main() -> None:
             userId=user_email,
             maxResults=5
         )
+        print("threads_response", threads_response)
         threads = threads_response.get("threads", [])
         print(f"\n✅ Found {len(threads)} threads. Fetching all messages for each thread...\n")
         
@@ -326,6 +327,13 @@ async def main() -> None:
                 traceback.print_exc()
                 print()
 
+        # #----------------------! Test History List API !-----------------------------------#
+        history_response = await gmail_data_source.users_history_list(
+                        userId=user_email,
+                        startHistoryId=9910,
+                        maxResults=10
+                    )
+        print("history_response", history_response)
 
         # #----------------------! Print last 25 messages to check sort order !-----------------------------------#
         # print("\n📧 Fetching last 25 messages to check sort order...")

@@ -314,7 +314,7 @@ class GoogleGmailDataSource:
         if historyTypes is not None:
             kwargs['historyTypes'] = historyTypes
 
-        request = self.client.users_history().list(**kwargs) # type: ignore
+        request = self.client.users().history().list(**kwargs) # type: ignore
         return request.execute()
 
     async def users_messages_trash(

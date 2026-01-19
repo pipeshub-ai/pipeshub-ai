@@ -135,18 +135,17 @@ async def test_run() -> None:
     # Initialize ArangoHTTPProvider
     graph_provider = ArangoHTTPProvider(logger, config_service)
     await graph_provider.connect()
-    
+
     # NOTE: The GraphDataStore transaction system includes ALL collections from CollectionNames
     # (including ticketRelations, even though Gmail doesn't use tickets). This is a design
     # limitation - transactions are overly broad. In production, all collections should be
     # initialized during database setup. For this example, we create missing collections.
-    from app.config.constants.arangodb import CollectionNames
-    
+
     # Get the HTTP client from the provider
     http_client = graph_provider.http_client
     if not http_client:
         raise Exception("Failed to get HTTP client from graph provider")
-    
+
     # Create ticketRelations collection if it doesn't exist
     # The create_collection method handles the case where it already exists
     try:
@@ -162,7 +161,7 @@ async def test_run() -> None:
     except Exception as e:
         logger.warning(f"⚠️ Error creating ticketRelations collection: {e}")
         # Continue anyway - the collection might exist or the error might be non-critical
-    
+
     data_store_provider = GraphDataStore(logger, graph_provider)
 
     # Create test users BEFORE initializing the connector

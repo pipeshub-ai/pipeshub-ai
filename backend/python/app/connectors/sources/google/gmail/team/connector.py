@@ -1,11 +1,17 @@
+import asyncio
 import logging
+import uuid
 from logging import Logger
-from typing import Dict, List, Optional
+from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import (
+    MimeTypes,
+    OriginTypes,
+    RecordRelations,
+)
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -14,6 +20,7 @@ from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
+    generate_record_sync_point_key,
 )
 from app.connectors.core.registry.auth_builder import AuthType, OAuthScopeConfig
 from app.connectors.core.registry.connector_builder import (
@@ -26,15 +33,26 @@ from app.connectors.core.registry.connector_builder import (
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOptionsResponse,
+    IndexingFilterKey,
     load_connector_filters,
 )
 from app.connectors.sources.google.common.apps import GmailApp
-from app.models.entities import AppUser, AppUserGroup, Record, RecordGroup, RecordGroupType
+from app.models.entities import (
+    AppUser,
+    AppUserGroup,
+    FileRecord,
+    IndexingStatus,
+    MailRecord,
+    Record,
+    RecordGroup,
+    RecordGroupType,
+    RecordType,
+)
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.admin.admin import GoogleAdminDataSource
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
-from app.utils.time_conversion import parse_timestamp
+from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
 
 @ConnectorBuilder("Gmail Workspace")\
@@ -236,8 +254,600 @@ class GoogleGmailTeamConnector(BaseConnector):
             self.logger.error(f"❌ Error initializing Google Gmail enterprise connector: {ex}", exc_info=True)
             raise
 
+    async def _process_gmail_message(
+        self,
+        user_email: str,
+        message: Dict,
+        thread_id: str,
+        previous_message_id: Optional[str]
+    ) -> Optional[Tuple[MailRecord, List[Permission], List[Dict]]]:
+        """
+        Process a single Gmail message and create a MailRecord.
+
+        Args:
+            user_email: Email of the user who owns the message
+            message: Message data from Gmail API
+            thread_id: Thread ID this message belongs to
+            previous_message_id: ID of previous message in thread (for sibling relation)
+
+        Returns:
+            Tuple of (MailRecord, List[Permission], List[attachment_info]) or None
+        """
+        try:
+            # Extract message metadata
+            message_id = message.get('id')
+            if not message_id:
+                return None
+
+            message.get('labelIds', [])
+            message.get('snippet', '')
+            internal_date = message.get('internalDate')  # Epoch milliseconds as string
+
+            # Parse headers
+            payload = message.get('payload', {})
+            headers = payload.get('headers', [])
+            parsed_headers = self._parse_gmail_headers(headers)
+
+            # Extract header fields
+            subject = parsed_headers.get('subject', '(No Subject)')
+            from_email = parsed_headers.get('from', '')
+            to_emails_str = parsed_headers.get('to', '')
+            cc_emails_str = parsed_headers.get('cc', '')
+            bcc_emails_str = parsed_headers.get('bcc', '')
+            internet_message_id = parsed_headers.get('message-id', '')
+
+            # Parse email lists
+            to_emails = self._parse_email_list(to_emails_str)
+            cc_emails = self._parse_email_list(cc_emails_str)
+            bcc_emails = self._parse_email_list(bcc_emails_str)
+
+            # Convert internal_date to milliseconds
+            source_created_at = None
+            if internal_date:
+                try:
+                    source_created_at = int(internal_date)
+                except (ValueError, TypeError):
+                    source_created_at = get_epoch_timestamp_in_ms()
+            else:
+                source_created_at = get_epoch_timestamp_in_ms()
+
+            # Create MailRecord
+            mail_record = MailRecord(
+                id=str(uuid.uuid4()),
+                org_id=self.data_entities_processor.org_id,
+                record_name=subject[:255] if subject else "(No Subject)",  # Truncate if too long
+                record_type=RecordType.MAIL,
+                record_group_type=RecordGroupType.MAILBOX,
+                external_record_id=message_id,
+                external_record_group_id=thread_id,
+                thread_id=thread_id,
+                version=0,
+                origin=OriginTypes.CONNECTOR,
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                created_at=get_epoch_timestamp_in_ms(),
+                updated_at=get_epoch_timestamp_in_ms(),
+                source_created_at=source_created_at,
+                source_updated_at=source_created_at,
+                mime_type=MimeTypes.GMAIL.value,
+                subject=subject,
+                from_email=from_email,
+                to_emails=to_emails,
+                cc_emails=cc_emails,
+                bcc_emails=bcc_emails,
+                internet_message_id=internet_message_id,
+            )
+
+            # Create owner permission
+            permissions = [self._create_owner_permission(user_email)]
+
+            # Add READ permissions for recipients (to, cc, bcc)
+            # Collect all unique recipient emails
+            all_recipient_emails = set()
+            all_recipient_emails.update(to_emails)
+            all_recipient_emails.update(cc_emails)
+            all_recipient_emails.update(bcc_emails)
+
+            # Create READ permission for each recipient (excluding the owner)
+            user_email_lower = user_email.lower()
+            for recipient_email in all_recipient_emails:
+                if recipient_email and recipient_email.lower() != user_email_lower:
+                    recipient_permission = Permission(
+                        email=recipient_email,
+                        type=PermissionType.READ,
+                        entity_type=EntityType.USER
+                    )
+                    permissions.append(recipient_permission)
+
+            # Extract attachment info
+            attachment_infos = []
+            parts = payload.get('parts', [])
+
+            def extract_attachments(parts_list):
+                """Recursively extract attachments from message parts."""
+                attachments = []
+                for part in parts_list:
+                    # Check if this part is an attachment
+                    if part.get('filename'):
+                        body = part.get('body', {})
+                        attachment_id = body.get('attachmentId')
+                        if attachment_id:
+                            attachments.append({
+                                'attachmentId': attachment_id,
+                                'filename': part.get('filename'),
+                                'mimeType': part.get('mimeType', 'application/octet-stream'),
+                                'size': body.get('size', 0)
+                            })
+
+                    # Recursively check nested parts
+                    if part.get('parts'):
+                        attachments.extend(extract_attachments(part.get('parts')))
+
+                return attachments
+
+            attachment_infos = extract_attachments(parts)
+
+            self.logger.debug(
+                f"Processed message {message_id} in thread {thread_id}: "
+                f"{subject[:50]}... ({len(attachment_infos)} attachments)"
+            )
+
+            return (mail_record, permissions, attachment_infos)
+
+        except Exception as e:
+            self.logger.error(
+                f"Error processing Gmail message {message.get('id', 'unknown')}: {e}",
+                exc_info=True
+            )
+            return None
+
+    async def _process_gmail_message_generator(
+        self,
+        messages: List[Dict],
+        user_email: str,
+        thread_id: str
+    ) -> AsyncGenerator[Tuple[Optional[MailRecord], List[Permission], List[Dict]], None]:
+        """
+        Process Gmail messages and yield records with their permissions.
+        Generator for non-blocking processing of large datasets.
+
+        Args:
+            messages: List of Gmail message dictionaries
+            user_email: Email of the user who owns the messages
+            thread_id: Thread ID these messages belong to
+        """
+        for message in messages:
+            try:
+                result = await self._process_gmail_message(
+                    user_email,
+                    message,
+                    thread_id,
+                    None  # previous_message_id is handled in caller for sibling relations
+                )
+
+                if result:
+                    yield result
+
+                # Allow other tasks to run
+                await asyncio.sleep(0)
+
+            except Exception as e:
+                self.logger.error(f"Error processing message in generator: {e}", exc_info=True)
+                continue
+
+    async def _process_gmail_attachment(
+        self,
+        user_email: str,
+        message_id: str,
+        attachment_info: Dict,
+        parent_mail_permissions: List[Permission]
+    ) -> Optional[Tuple[FileRecord, List[Permission]]]:
+        """
+        Process a single Gmail attachment and create a FileRecord.
+
+        Args:
+            user_email: Email of the user who owns the message
+            message_id: ID of the parent message
+            attachment_info: Attachment metadata dict with attachmentId, filename, mimeType, size
+            parent_mail_permissions: Permissions from parent mail (attachments inherit these)
+
+        Returns:
+            Tuple of (FileRecord, List[Permission]) or None
+        """
+        try:
+            attachment_id = attachment_info.get('attachmentId')
+            filename = attachment_info.get('filename', 'unnamed_attachment')
+            mime_type = attachment_info.get('mimeType', 'application/octet-stream')
+            size = attachment_info.get('size', 0)
+
+            if not attachment_id:
+                return None
+
+            # Extract file extension from filename
+            extension = None
+            if '.' in filename:
+                extension = filename.rsplit('.', 1)[-1].lower()
+
+            # Create FileRecord
+            file_record = FileRecord(
+                id=str(uuid.uuid4()),
+                org_id=self.data_entities_processor.org_id,
+                record_name=filename,
+                record_type=RecordType.FILE,
+                record_group_type=RecordGroupType.MAILBOX,
+                external_record_id=attachment_id,
+                parent_external_record_id=message_id,
+                parent_record_type=RecordType.MAIL,
+                version=0,
+                origin=OriginTypes.CONNECTOR,
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                created_at=get_epoch_timestamp_in_ms(),
+                updated_at=get_epoch_timestamp_in_ms(),
+                source_created_at=get_epoch_timestamp_in_ms(),
+                source_updated_at=get_epoch_timestamp_in_ms(),
+                mime_type=mime_type,
+                size_in_bytes=size,
+                extension=extension,
+                is_file=True,
+            )
+
+            # Check indexing filter for attachments
+            if not self.indexing_filters.is_enabled(IndexingFilterKey.ATTACHMENTS, default=True):
+                file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+            # Inherit parent mail permissions
+            attachment_permissions = parent_mail_permissions
+
+            self.logger.debug(
+                f"Processed attachment {attachment_id}: {filename} ({size} bytes)"
+            )
+
+            return (file_record, attachment_permissions)
+
+        except Exception as e:
+            self.logger.error(f"Error processing Gmail attachment {attachment_info.get('attachmentId', 'unknown')}: {e}")
+            return None
+
+    async def _process_gmail_attachment_generator(
+        self,
+        user_email: str,
+        message_id: str,
+        attachment_infos: List[Dict],
+        parent_mail_permissions: List[Permission]
+    ) -> AsyncGenerator[Tuple[Optional[FileRecord], List[Permission]], None]:
+        """
+        Process Gmail attachments and yield records with their permissions.
+        Generator for non-blocking processing of large datasets.
+
+        Args:
+            user_email: Email of the user who owns the message
+            message_id: ID of the parent message
+            attachment_infos: List of attachment metadata dictionaries
+            parent_mail_permissions: Permissions from parent mail (attachments inherit these)
+        """
+        for attach_info in attachment_infos:
+            try:
+                attach_result = await self._process_gmail_attachment(
+                    user_email,
+                    message_id,
+                    attach_info,
+                    parent_mail_permissions
+                )
+
+                if attach_result:
+                    yield attach_result
+
+                # Allow other tasks to run
+                await asyncio.sleep(0)
+
+            except Exception as e:
+                self.logger.error(f"Error processing attachment in generator: {e}", exc_info=True)
+                continue
+
+    async def _run_sync_with_yield(self, user_email: str) -> None:
+        """
+        Synchronizes Gmail mailbox contents for a specific user using yielding for non-blocking operation.
+
+        Args:
+            user_email: The user email address
+        """
+        try:
+            self.logger.info(f"Starting sync for user {user_email}")
+
+            # Create user-specific Gmail client with impersonation
+            user_gmail_client = await self._create_user_gmail_client(user_email)
+
+            # Get user profile to extract historyId for incremental sync
+            try:
+                profile = await user_gmail_client.users_get_profile(userId=user_email)
+                history_id = profile.get('historyId')
+                self.logger.info(f"Retrieved historyId {history_id} for user {user_email}")
+            except Exception as e:
+                self.logger.warning(f"Failed to get historyId for user {user_email}: {e}")
+                history_id = None
+
+            # Get sync point for this user
+            sync_point_key = generate_record_sync_point_key(RecordType.MAIL.value, "user", user_email)
+            sync_point = await self.gmail_delta_sync_point.read_sync_point(sync_point_key)
+
+            # Initialize sync point data
+            page_token = sync_point.get('pageToken') if sync_point else None
+
+            # Initialize batch processing
+            batch_records = []
+            batch_count = 0
+            total_threads = 0
+            total_messages = 0
+
+            # Fetch threads with pagination
+            while True:
+                try:
+                    # Fetch threads list
+                    threads_response = await user_gmail_client.users_threads_list(
+                        userId=user_email,
+                        maxResults=100,
+                        pageToken=page_token
+                    )
+
+                    threads = threads_response.get('threads', [])
+                    if not threads:
+                        break
+
+                    self.logger.info(f"Fetched {len(threads)} threads for user {user_email}")
+                    total_threads += len(threads)
+
+                    # Process each thread
+                    for thread_data in threads:
+                        thread_id = thread_data.get('id')
+                        if not thread_id:
+                            continue
+
+                        try:
+                            # Get full thread with all messages
+                            thread = await user_gmail_client.users_threads_get(
+                                userId=user_email,
+                                id=thread_id,
+                                format="full"
+                            )
+
+                            messages = thread.get('messages', [])
+                            if not messages:
+                                continue
+
+                            # Process messages in thread sequentially (ascending order) using generator
+                            previous_message_id = None
+
+                            async for mail_record, permissions, attachment_infos in self._process_gmail_message_generator(
+                                messages,
+                                user_email,
+                                thread_id
+                            ):
+                                try:
+                                    # Add email to batch
+                                    batch_records.append((mail_record, permissions))
+                                    batch_count += 1
+                                    total_messages += 1
+
+                                    # Create SIBLING relation if there was a previous message
+                                    if previous_message_id:
+                                        try:
+                                            async with self.data_store_provider.transaction() as tx_store:
+                                                await tx_store.create_record_relation(
+                                                    previous_message_id,
+                                                    mail_record.id,
+                                                    RecordRelations.SIBLING.value
+                                                )
+                                        except Exception as relation_error:
+                                            self.logger.error(f"Error creating sibling relation: {relation_error}")
+
+                                    # Update previous message ID
+                                    previous_message_id = mail_record.id
+
+                                    # Process attachments using generator
+                                    message_id = mail_record.external_record_id
+                                    async for attach_record, attach_perms in self._process_gmail_attachment_generator(
+                                        user_email,
+                                        message_id,
+                                        attachment_infos,
+                                        permissions
+                                    ):
+                                        # Add attachment to SAME batch_records list
+                                        batch_records.append((attach_record, attach_perms))
+                                        batch_count += 1
+
+                                    # Process batch when it reaches the size limit
+                                    if batch_count >= self.batch_size:
+                                        await self.data_entities_processor.on_new_records(batch_records)
+                                        self.logger.info(f"Processed batch of {batch_count} records for user {user_email}")
+                                        batch_records = []
+                                        batch_count = 0
+
+                                        # Allow other operations to proceed
+                                        await asyncio.sleep(0.1)
+
+                                except Exception as msg_error:
+                                    self.logger.error(f"Error processing message: {msg_error}")
+                                    continue
+
+                        except Exception as thread_error:
+                            self.logger.error(f"Error processing thread {thread_id}: {thread_error}")
+                            continue
+
+                    # Check for next page
+                    next_page_token = threads_response.get('nextPageToken')
+                    if next_page_token:
+                        page_token = next_page_token
+
+                        # Save intermediate pageToken for resumability
+                        await self.gmail_delta_sync_point.update_sync_point(
+                            sync_point_key,
+                            {
+                                "pageToken": page_token,
+                                "historyId": history_id
+                            }
+                        )
+                    else:
+                        # No more pages
+                        break
+
+                except Exception as page_error:
+                    self.logger.error(f"Error fetching threads page: {page_error}")
+                    raise
+
+            # Process remaining records in batch
+            if batch_records:
+                await self.data_entities_processor.on_new_records(batch_records)
+                self.logger.info(f"Processed final batch of {batch_count} records for user {user_email}")
+
+            # Update sync point with final state (clear pageToken, keep historyId)
+            await self.gmail_delta_sync_point.update_sync_point(
+                sync_point_key,
+                {
+                    "pageToken": None,
+                    "historyId": history_id,
+                    "lastSyncTimestamp": get_epoch_timestamp_in_ms()
+                }
+            )
+
+            self.logger.info(
+                f"Completed sync for user {user_email}: "
+                f"{total_threads} threads, {total_messages} messages"
+            )
+
+        except Exception as ex:
+            self.logger.error(f"❌ Error in sync for user {user_email}: {ex}")
+            raise
+
     async def _process_users_in_batches(self, users: List[AppUser]) -> None:
-        pass
+        """
+        Process users in concurrent batches for improved performance.
+
+        Args:
+            users: List of users to process
+        """
+        try:
+            # Get all active users from organization
+            all_active_users = await self.data_entities_processor.get_all_active_users()
+            active_user_emails = {active_user.email.lower() for active_user in all_active_users}
+
+            # Filter users to sync (only active users)
+            active_users = [
+                user for user in users
+                if user.email and user.email.lower() in active_user_emails
+            ]
+
+            self.logger.info(f"Found {len(active_users)} active users out of {len(users)} total users")
+
+            if not active_users:
+                self.logger.warning("No active users to process")
+                return
+
+            # Process users in concurrent batches
+            for i in range(0, len(active_users), self.max_concurrent_batches):
+                batch = active_users[i:i + self.max_concurrent_batches]
+
+                self.logger.info(f"Processing batch {i // self.max_concurrent_batches + 1} with {len(batch)} users")
+
+                sync_tasks = [
+                    self._run_sync_with_yield(user.email)
+                    for user in batch
+                ]
+
+                await asyncio.gather(*sync_tasks, return_exceptions=True)
+                await asyncio.sleep(1)  # Sleep between batches to prevent overwhelming the API
+
+            self.logger.info("Completed processing all user batches")
+
+        except Exception as e:
+            self.logger.error(f"❌ Error processing users in batches: {e}")
+            raise
+
+    async def _create_user_gmail_client(self, user_email: str) -> GoogleGmailDataSource:
+        """
+        Create impersonated Gmail client for specific user.
+
+        Args:
+            user_email: Email of user to impersonate
+
+        Returns:
+            GoogleGmailDataSource for the user
+        """
+        try:
+            user_gmail_client = await GoogleClient.build_from_services(
+                service_name="gmail",
+                logger=self.logger,
+                config_service=self.config_service,
+                is_individual=False,  # Enterprise connector
+                version="v1",
+                user_email=user_email,  # Impersonate this user
+                connector_instance_id=self.connector_id
+            )
+
+            user_gmail_data_source = GoogleGmailDataSource(
+                user_gmail_client.get_client()
+            )
+
+            return user_gmail_data_source
+
+        except Exception as e:
+            self.logger.error(f"Error creating Gmail client for user {user_email}: {e}")
+            raise
+
+    def _parse_gmail_headers(self, headers: List[Dict]) -> Dict[str, str]:
+        """
+        Parse Gmail message headers into a dictionary.
+
+        Args:
+            headers: List of header dictionaries from Gmail API
+
+        Returns:
+            Dictionary mapping header names to values
+        """
+        parsed_headers = {}
+
+        for header in headers:
+            name = header.get('name', '').lower()
+            value = header.get('value', '')
+
+            if name in ['subject', 'from', 'to', 'cc', 'bcc', 'message-id', 'date']:
+                parsed_headers[name] = value
+
+        return parsed_headers
+
+    def _create_owner_permission(self, user_email: str) -> Permission:
+        """
+        Create owner permission for the user.
+
+        Args:
+            user_email: Email of the user
+
+        Returns:
+            Permission object with OWNER type
+        """
+        return Permission(
+            email=user_email,
+            type=PermissionType.OWNER,
+            entity_type=EntityType.USER
+        )
+
+    def _parse_email_list(self, email_string: str) -> List[str]:
+        """
+        Parse comma-separated email string into list of emails.
+
+        Args:
+            email_string: Comma-separated email addresses
+
+        Returns:
+            List of email addresses
+        """
+        if not email_string:
+            return []
+
+        # Split by comma and clean up
+        emails = [email.strip() for email in email_string.split(',')]
+        # Filter out empty strings
+        return [email for email in emails if email]
 
     async def run_sync(self) -> None:
         """
@@ -567,13 +1177,13 @@ class GoogleGmailTeamConnector(BaseConnector):
                 raise
 
         return members
-        
+
     async def _sync_record_groups(self, users: List[AppUser]) -> None:
         """Sync record groups (labels) for users.
-        
+
         For each user, fetches their Gmail labels and creates record groups
         with owner permissions from the user to each label record group.
-        
+
         Args:
             users: List of AppUser objects to sync labels for
         """
@@ -694,7 +1304,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                                 client.close()
                     except Exception as cleanup_error:
                         self.logger.debug(f"Error during client cleanup for {user.email}: {cleanup_error}")
-                    
+
                     # Clear references to help with garbage collection
                     user_gmail_data_source = None
                     user_gmail_client = None
