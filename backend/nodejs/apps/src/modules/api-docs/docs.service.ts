@@ -110,14 +110,13 @@ export class ApiDocsService {
    */
   private loadMergedSpec(): void {
     const appRoot = path.resolve(__dirname, '..', '..', '..');
-    // TODO: fix it properly
-    const specPath =
-      process.env.NODE_ENV !== 'production'
-        ? path.join(__dirname, 'pipeshub-openapi.yaml')
-        : path.join(appRoot, 'backend', 'src', 'modules', 'api-docs', 'pipeshub-openapi.yaml');
-
-    if (!fs.existsSync(specPath)) {
-      this.logger.warn(`PipesHub OpenAPI spec not found at: ${specPath}`);
+    const paths = [
+      path.join(__dirname, 'pipeshub-openapi.yaml'),
+      path.join(appRoot, 'src', 'modules', 'api-docs', 'pipeshub-openapi.yaml'),
+    ];
+    const specPath = paths.find((p) => fs.existsSync(p));
+    if (!specPath) {
+      this.logger.warn(`PipesHub OpenAPI spec not found in any of: ${paths.join(', ')}`);
       return;
     }
 
