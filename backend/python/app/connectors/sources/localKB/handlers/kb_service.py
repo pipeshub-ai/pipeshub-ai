@@ -496,7 +496,7 @@ class KnowledgeBaseService :
                 return validation_result
 
             # Additional validation for parent folder
-            folder_valid = await self.arango_service.validate_folder_exists_in_kb(kb_id, parent_folder_id)
+            folder_valid = await self.arango_service.validate_folder_in_kb(kb_id, parent_folder_id)
             if not folder_valid:
                 return {
                     "success": False,
@@ -876,7 +876,7 @@ class KnowledgeBaseService :
                 }
 
             # Step 2: Validate folder exists in KB
-            folder_exists = await self.arango_service.validate_folder_exists_in_kb(kb_id, folder_id)
+            folder_exists = await self.arango_service.validate_folder_in_kb(kb_id, folder_id)
             if not folder_exists:
                 return {
                     "success": False,
