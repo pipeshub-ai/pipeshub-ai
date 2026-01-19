@@ -391,9 +391,6 @@ class DataSourceEntitiesProcessor:
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
 
-        # Handle record group FIRST to set record_group_id before saving the record
-        await self._handle_record_group(record, tx_store)
-
         if existing_record is None:
             self.logger.info("New record: %s", record)
             await self._handle_new_record(record, tx_store)
@@ -403,6 +400,9 @@ class DataSourceEntitiesProcessor:
             #check if revision Id is same as existing record
             if record.external_revision_id != existing_record.external_revision_id:
                 await self._handle_updated_record(record, existing_record, tx_store)
+
+        # Handle record group
+        await self._handle_record_group(record, tx_store)
 
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
         await self._handle_parent_record(record, tx_store)
