@@ -4,6 +4,31 @@ import { Logger } from '../services/logger.service';
 import { TooManyRequestsError } from '../errors/http.errors';
 import { AuthenticatedUserRequest, AuthenticatedServiceRequest } from './types';
 
+/**
+ * Get client IP address from request
+ */
+function getClientIp(req: Request): string {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded) {
+    const forwardedValue = typeof forwarded === 'string' ? forwarded : forwarded[0];
+    if (forwardedValue) {
+      const ips = forwardedValue.split(',');
+      const firstIp = ips[0];
+      if (firstIp) {
+        return firstIp.trim();
+      }
+    }
+  }
+  const realIp = req.headers['x-real-ip'];
+  if (realIp) {
+    const realIpValue = typeof realIp === 'string' ? realIp : realIp[0];
+    if (realIpValue) {
+      return realIpValue;
+    }
+  }
+  return req.ip || req.socket.remoteAddress || 'unknown';
+}
+
 // Single global rate limiter: 10,000 requests per 1 minute
 export function createGlobalRateLimiter(logger: Logger): RequestHandler {
   const config: Partial<Options> = {
@@ -73,27 +98,58 @@ export function createGlobalRateLimiter(logger: Logger): RequestHandler {
     return `ip:${getClientIp(req)}`;
   }
 
-  function getClientIp(req: Request): string {
-    const forwarded = req.headers['x-forwarded-for'];
-    if (forwarded) {
-      const forwardedValue = typeof forwarded === 'string' ? forwarded : forwarded[0];
-      if (forwardedValue) {
-        const ips = forwardedValue.split(',');
-        const firstIp = ips[0];
-        if (firstIp) {
-          return firstIp.trim();
-        }
+  return rateLimit(config);
+}
+
+/**
+ * Rate limiter for OAuth client management endpoints
+ * Stricter limits: 10 requests per minute per user/IP
+ * Used for creating, updating, and deleting OAuth applications
+ */
+export function createOAuthClientRateLimiter(logger: Logger): RequestHandler {
+  const config: Partial<Options> = {
+    windowMs: 60 * 1000, // 1 minute
+    max: 10, // 10 requests per minute
+    standardHeaders: true,
+    legacyHeaders: false,
+
+    keyGenerator: (req: Request): string => {
+      const authenticatedUserReq = req as AuthenticatedUserRequest;
+
+      if (authenticatedUserReq.user?.userId) {
+        return `oauth-client:user:${authenticatedUserReq.user.userId}`;
       }
-    }
-    const realIp = req.headers['x-real-ip'];
-    if (realIp) {
-      const realIpValue = typeof realIp === 'string' ? realIp : realIp[0];
-      if (realIpValue) {
-        return realIpValue;
-      }
-    }
-    return req.ip || req.socket.remoteAddress || 'unknown';
-  }
+      const ip = getClientIp(req);
+      return `oauth-client:ip:${ip}`;
+    },
+
+    handler: (req: Request, res: Response): void => {
+      const retryAfter = res.getHeader('Retry-After');
+      const authenticatedUserReq = req as AuthenticatedUserRequest;
+      const key = authenticatedUserReq.user?.userId
+        ? `oauth-client:user:${authenticatedUserReq.user.userId}`
+        : `oauth-client:ip:${getClientIp(req)}`;
+
+      logger.warn('OAuth client rate limit exceeded', {
+        key,
+        path: req.path,
+        method: req.method,
+        ip: getClientIp(req),
+        retryAfter,
+      });
+
+      const error = new TooManyRequestsError(
+        'Too many OAuth client requests. Please try again later.',
+      );
+      res.status(429).json({
+        error: {
+          code: error.code,
+          message: error.message,
+          retryAfter: retryAfter ? parseInt(retryAfter as string, 10) : null,
+        },
+      });
+    },
+  };
 
   return rateLimit(config);
 }

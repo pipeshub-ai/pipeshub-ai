@@ -626,6 +626,62 @@ export class ConfigService {
     return parsedKeys.cookieSecret;
   }
 
+  public async getOAuthBackendUrl(): Promise<string> {
+    // Assuming the OAuth backend is the same as the auth backend
+    // When oauth is served from different backend, this method should be overridden
+    return this.getAuthBackendUrl();
+  }
+
+  // OAuth Provider Configuration
+
+  /**
+   * Initialize OAuth issuer configuration in the config store.
+   * This should be called once during application startup/setup.
+   * Separating this from the getter prevents race conditions when
+   * multiple service instances start concurrently.
+   */
+  public async initializeOAuthIssuer(): Promise<void> {
+    const url =
+      (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
+      '{}';
+
+    const parsedUrl = JSON.parse(url);
+
+    // Only initialize if not already set
+    if (!parsedUrl.oauthProvider?.issuer) {
+      parsedUrl.oauthProvider = {
+        ...parsedUrl.oauthProvider,
+        issuer:
+          normalizeUrl(process.env.OAUTH_ISSUER!) ||
+          `http://localhost:${process.env.PORT ?? 3000}`,
+      };
+
+      await this.keyValueStoreService.set<string>(
+        configPaths.endpoint,
+        JSON.stringify(parsedUrl),
+      );
+    }
+  }
+
+  /**
+   * Get the OAuth issuer URL. This is a pure getter with no side effects.
+   * Call initializeOAuthIssuer() during application startup to seed the config.
+   */
+  public async getOAuthIssuer(): Promise<string> {
+    const url =
+      (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
+      '{}';
+
+    const parsedUrl = JSON.parse(url);
+
+    // Return stored value, or fall back to env var, or default
+    return (
+      normalizeUrl(process.env.OAUTH_ISSUER!) ||
+      normalizeUrl(parsedUrl.oauthProvider?.issuer) ||
+      `http://localhost:${process.env.PORT ?? 3000}`
+    );
+  }
+
   public async getRsAvailable(): Promise<string> {
     if (!process.env.REPLICA_SET_AVAILABLE) {
       const mongoUri = (
