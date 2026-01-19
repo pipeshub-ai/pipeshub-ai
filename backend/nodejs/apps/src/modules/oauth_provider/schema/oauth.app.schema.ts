@@ -1,5 +1,5 @@
 import mongoose, { Document, Schema, Model, Types } from 'mongoose'
-import { generateUniqueSlug } from '../../auth/controller/counters.controller'
+import { generateUniqueSlug } from '../../../libs/utils/counter'
 
 export enum OAuthAppStatus {
   ACTIVE = 'active',
