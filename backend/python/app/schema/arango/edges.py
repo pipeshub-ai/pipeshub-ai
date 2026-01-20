@@ -47,6 +47,7 @@ ticket_relations_schema = {
             },
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
+            "sourceTimestamp": {"type": "number"},
         },
         "required": ["edgeType", "createdAtTimestamp"],
         "additionalProperties": True,

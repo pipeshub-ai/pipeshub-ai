@@ -714,6 +714,10 @@ class TicketRecord(Record):
     reporter_name: Optional[str] = None
     creator_email: Optional[str] = None
     creator_name: Optional[str] = None
+    # Connector-provided timestamps for when relationships were established
+    assignee_source_timestamp: Optional[int] = None
+    creator_source_timestamp: Optional[int] = None
+    reporter_source_timestamp: Optional[int] = None
 
     def to_arango_record(self) -> Dict:
         def _get_value(field_value: Optional[Union[Enum, str]]) -> Optional[str]:
@@ -737,6 +741,9 @@ class TicketRecord(Record):
             "assigneeEmail": self.assignee_email,
             "creatorEmail": self.creator_email,
             "creatorName": self.creator_name,
+            "assigneeSourceTimestamp": self.assignee_source_timestamp,
+            "creatorSourceTimestamp": self.creator_source_timestamp,
+            "reporterSourceTimestamp": self.reporter_source_timestamp,
         }
 
     @staticmethod
@@ -798,6 +805,9 @@ class TicketRecord(Record):
             reporter_name=ticket_doc.get("reporterName"),
             creator_email=ticket_doc.get("creatorEmail"),
             creator_name=ticket_doc.get("creatorName"),
+            assignee_source_timestamp=ticket_doc.get("assigneeSourceTimestamp"),
+            creator_source_timestamp=ticket_doc.get("creatorSourceTimestamp"),
+            reporter_source_timestamp=ticket_doc.get("reporterSourceTimestamp"),
         )
 
     def to_kafka_record(self) -> Dict:

@@ -327,8 +327,7 @@ class DataSourceEntitiesProcessor:
         """
         # First, delete existing ticket-user edges for this ticket to avoid duplicates
         try:
-            from_key = f"{CollectionNames.RECORDS.value}/{ticket.id}"
-            await tx_store.delete_edges_from(from_key, CollectionNames.TICKET_RELATIONS.value)
+            await tx_store.delete_edges_from(ticket.id, CollectionNames.RECORDS.value, CollectionNames.TICKET_RELATIONS.value)
         except Exception as e:
             self.logger.warning(f"Failed to delete existing ticket-user edges for ticket {ticket.id}: {str(e)}")
 
@@ -341,13 +340,22 @@ class DataSourceEntitiesProcessor:
                 user = await tx_store.get_user_by_email(ticket.assignee_email)
 
                 if user:
-                    edges_to_create.append({
+                    # For ASSIGNED_TO, use connector-provided timestamp if available, otherwise fallback to source_updated_at
+                    source_timestamp = None
+                    if hasattr(ticket, 'assignee_source_timestamp') and ticket.assignee_source_timestamp:
+                        source_timestamp = ticket.assignee_source_timestamp
+                    elif hasattr(ticket, 'source_updated_at') and ticket.source_updated_at:
+                        source_timestamp = ticket.source_updated_at
+                    edge_data = {
                         "_from": f"{CollectionNames.RECORDS.value}/{ticket.id}",
                         "_to": f"{CollectionNames.USERS.value}/{user.id}",
                         "edgeType": TicketEdgeTypes.ASSIGNED_TO.value,
                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                    })
+                    }
+                    if source_timestamp:
+                        edge_data["sourceTimestamp"] = source_timestamp
+                    edges_to_create.append(edge_data)
                     self.logger.debug(f"Created ASSIGNED_TO edge for ticket {ticket.id} to user {user.email}")
                 else:
                     self.logger.debug(f"User with email {ticket.assignee_email} not found, skipping ASSIGNED_TO edge for ticket {ticket.id}")
@@ -361,13 +369,22 @@ class DataSourceEntitiesProcessor:
                 user = await tx_store.get_user_by_email(ticket.creator_email)
 
                 if user:
-                    edges_to_create.append({
+                    # For CREATED_BY, use connector-provided timestamp if available, otherwise fallback to source_created_at
+                    source_timestamp = None
+                    if hasattr(ticket, 'creator_source_timestamp') and ticket.creator_source_timestamp:
+                        source_timestamp = ticket.creator_source_timestamp
+                    elif hasattr(ticket, 'source_created_at') and ticket.source_created_at:
+                        source_timestamp = ticket.source_created_at
+                    edge_data = {
                         "_from": f"{CollectionNames.RECORDS.value}/{ticket.id}",
                         "_to": f"{CollectionNames.USERS.value}/{user.id}",
                         "edgeType": TicketEdgeTypes.CREATED_BY.value,
                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                    })
+                    }
+                    if source_timestamp:
+                        edge_data["sourceTimestamp"] = source_timestamp
+                    edges_to_create.append(edge_data)
                     self.logger.debug(f"Created CREATED_BY edge for ticket {ticket.id} to user {user.email}")
                 else:
                     self.logger.debug(f"User with email {ticket.creator_email} not found, skipping CREATED_BY edge for ticket {ticket.id}")
@@ -381,13 +398,22 @@ class DataSourceEntitiesProcessor:
                 user = await tx_store.get_user_by_email(ticket.reporter_email)
 
                 if user:
-                    edges_to_create.append({
+                    # For REPORTED_BY, use connector-provided timestamp if available, otherwise fallback to source_created_at
+                    source_timestamp = None
+                    if hasattr(ticket, 'reporter_source_timestamp') and ticket.reporter_source_timestamp:
+                        source_timestamp = ticket.reporter_source_timestamp
+                    elif hasattr(ticket, 'source_created_at') and ticket.source_created_at:
+                        source_timestamp = ticket.source_created_at
+                    edge_data = {
                         "_from": f"{CollectionNames.RECORDS.value}/{ticket.id}",
                         "_to": f"{CollectionNames.USERS.value}/{user.id}",
                         "edgeType": TicketEdgeTypes.REPORTED_BY.value,
                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                    })
+                    }
+                    if source_timestamp:
+                        edge_data["sourceTimestamp"] = source_timestamp
+                    edges_to_create.append(edge_data)
                     self.logger.debug(f"Created REPORTED_BY edge for ticket {ticket.id} to user {user.email}")
                 else:
                     self.logger.debug(f"User with email {ticket.reporter_email} not found, skipping REPORTED_BY edge for ticket {ticket.id}")
