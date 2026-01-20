@@ -2697,3 +2697,53 @@ export const resyncConnectorRecords =
       return; // Added return statement
     }
   };
+
+/**
+ * Move a record (file or folder) to a different location within the same KB.
+ */
+export const moveRecord =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { userId } = req.user || {};
+      const { kbId, recordId } = req.params;
+      const { newParentId } = req.body;
+
+      if (!userId) {
+        throw new UnauthorizedError('User authentication required');
+      }
+
+      logger.info(
+        `Moving record ${recordId} to ${newParentId ? `folder ${newParentId}` : 'KB root'} in KB ${kbId}`,
+      );
+
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/record/${recordId}/move`,
+        HttpMethod.PUT,
+        req.headers as Record<string, string>,
+        { newParentId },
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Moving record',
+        'Record not found',
+      );
+    } catch (error: any) {
+      logger.error('Error moving record', {
+        error: error.message,
+        kbId: req.params.kbId,
+        recordId: req.params.recordId,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handleError = handleBackendError(error, 'move record');
+      next(handleError);
+    }
+  };

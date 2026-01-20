@@ -728,3 +728,13 @@ export const deletePermissionsSchema = z.object({
     kbId: z.string().uuid(),
   }),
 });
+
+export const moveRecordSchema = z.object({
+  body: z.object({
+    newParentId: z.string().nullable(),
+  }),
+  params: z.object({
+    kbId: z.string().uuid(),
+    recordId: z.string().min(1),
+  }),
+});

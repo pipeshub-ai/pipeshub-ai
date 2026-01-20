@@ -30,6 +30,7 @@ import {
   createRootFolder,
   uploadRecordsToKB,
   getKnowledgeHubNodes,
+  moveRecord,
 } from '../controllers/kb_controllers';
 import { ArangoService } from '../../../libs/services/arango.service';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
@@ -60,6 +61,7 @@ import {
   listKnowledgeBasesSchema,
   reindexRecordSchema,
   getConnectorStatsSchema,
+  moveRecordSchema,
 } from '../validators/validators';
 // Clean up unused commented import
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
@@ -503,6 +505,15 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(deletePermissionsSchema),
     removeKBPermission(appConfig),
+  );
+
+  // Move record (file or folder) to another location
+  router.put(
+    '/:kbId/record/:recordId/move',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(moveRecordSchema),
+    moveRecord(appConfig),
   );
 
   return router;
