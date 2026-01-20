@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    AppGroups,
     CollectionNames,
     Connectors,
     MimeTypes,
@@ -221,7 +222,7 @@ class GCSDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
 
 
 @ConnectorBuilder("GCS")\
-    .in_group("GCS")\
+    .in_group(AppGroups.GOOGLE_CLOUD.value)\
     .with_description("Sync files and folders from Google Cloud Storage")\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\

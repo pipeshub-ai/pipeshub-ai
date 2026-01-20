@@ -9300,15 +9300,10 @@ class BaseArangoService:
             parent_path = "/"  # Default for KB root
 
             if parent_folder_id:
-                # Validate folder exists and belongs to KB
-                folder_valid = await self.validate_folder_exists_in_kb(kb_id, parent_folder_id)
-                if not folder_valid:
-                    return self._validation_error(404, f"Folder {parent_folder_id} not found in KB {kb_id}")
-
-                # Get parent folder details
-                parent_folder = await self.get_document(parent_folder_id, CollectionNames.FILES.value)
+                # Get and validate folder in a single query (optimized)
+                parent_folder = await self.get_and_validate_folder_in_kb(kb_id, parent_folder_id)
                 if not parent_folder:
-                    return self._validation_error(404, f"Parent folder {parent_folder_id} not found")
+                    return self._validation_error(404, f"Folder {parent_folder_id} not found in KB {kb_id}")
 
                 parent_path = parent_folder.get("path", "/")
 
@@ -10022,16 +10017,43 @@ class BaseArangoService:
             raise
 
     async def get_folder_record_by_id(self, folder_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
+        """
+        Get folder by ID. Folders are represented by RECORDS documents with associated FILES documents.
+        Returns combined folder data from both collections.
+        """
         try:
             db = transaction if transaction else self.db
             query = """
-            FOR file IN @@files
-                FILTER file._key == @folder_id
-                RETURN file
+            // Get folder RECORDS document
+            LET folder_record = DOCUMENT(@@records_collection, @folder_id)
+            FILTER folder_record != null
+
+            // Get associated FILES document via IS_OF_TYPE edge
+            LET folder_file = FIRST(
+                FOR isEdge IN @@is_of_type
+                    FILTER isEdge._from == folder_record._id
+                    LET f = DOCUMENT(isEdge._to)
+                    FILTER f != null AND f.isFile == false
+                    RETURN f
+            )
+
+            FILTER folder_file != null
+
+            // Return combined folder data
+            RETURN MERGE(
+                folder_record,
+                {
+                    name: folder_file.name,
+                    isFile: folder_file.isFile,
+                    extension: folder_file.extension,
+                    recordGroupId: folder_record.connectorId
+                }
+            )
             """
             cursor = db.aql.execute(query, bind_vars={
                 "folder_id": folder_id,
-                "@files": CollectionNames.FILES.value,
+                "@records_collection": CollectionNames.RECORDS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
             })
             return next(cursor, None)
         except Exception as e:
@@ -10099,7 +10121,7 @@ class BaseArangoService:
             if result:
                 self.logger.debug(f"✅ Found folder '{folder_name}' in parent")
             else:
-                self.logger.debug(f"❌ Folder '{folder_name}' not found in parent")
+                self.logger.debug(f"📝 Folder '{folder_name}' not found in parent (will be created if needed)")
 
             return result
 
@@ -10191,13 +10213,9 @@ class BaseArangoService:
             try:
                 # Step 1: Validate parent folder exists (if nested)
                 if parent_folder_id:
-                    parent_folder = await self.get_folder_record_by_id(parent_folder_id, transaction)
+                    parent_folder = await self.get_and_validate_folder_in_kb(kb_id, parent_folder_id, transaction)
                     if not parent_folder:
-                        raise ValueError(f"Parent folder {parent_folder_id} not found")
-                    if parent_folder.get("isFile") is not False:
-                        raise ValueError(f"Parent {parent_folder_id} is not a folder")
-                    if parent_folder.get("recordGroupId") != kb_id:
-                        raise ValueError(f"Parent folder does not belong to KB {kb_id}")
+                        raise ValueError(f"Parent folder {parent_folder_id} not found in KB {kb_id}")
 
                     self.logger.info(f"✅ Validated parent folder: {parent_folder.get('name')}")
 
@@ -10327,7 +10345,7 @@ class BaseArangoService:
                 return {
                     "id": folder_id,
                     "name": folder_name,
-                    "webUrl": folder_data["webUrl"],
+                    "webUrl": record_data["webUrl"],
                     "exists": False,
                     "success": True
                 }
@@ -10441,6 +10459,85 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error(f"❌ Failed to validate folder in KB: {str(e)}")
             return False
+
+    async def get_and_validate_folder_in_kb(
+        self,
+        kb_id: str,
+        folder_id: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[Dict]:
+        """
+        Get folder by ID and validate it belongs to the specified KB in a single query.
+        This combines validate_folder_in_kb() and get_folder_record_by_id() for better performance.
+
+        Returns:
+            Dict with folder data if valid and belongs to KB, None otherwise
+        """
+        try:
+            db = transaction if transaction else self.db
+
+            query = """
+            // Get folder RECORDS document
+            LET folder_record = DOCUMENT(@@records_collection, @folder_id)
+            FILTER folder_record != null
+            FILTER folder_record.connectorId == @kb_id
+
+            // Get associated FILES document via IS_OF_TYPE edge
+            LET folder_file = FIRST(
+                FOR isEdge IN @@is_of_type
+                    FILTER isEdge._from == folder_record._id
+                    LET f = DOCUMENT(isEdge._to)
+                    FILTER f != null AND f.isFile == false
+                    RETURN f
+            )
+
+            FILTER folder_file != null
+
+            // Verify BELONGS_TO relationship
+            LET relationship = FIRST(
+                FOR edge IN @@belongs_to_collection
+                    FILTER edge._from == @folder_from
+                    FILTER edge._to == @kb_to
+                    FILTER edge.entityType == @entity_type
+                    RETURN 1
+            )
+
+            // Return folder data only if all validations pass
+            FILTER relationship != null
+
+            // Return combined folder data
+            RETURN MERGE(
+                folder_record,
+                {
+                    name: folder_file.name,
+                    isFile: folder_file.isFile,
+                    extension: folder_file.extension,
+                    recordGroupId: folder_record.connectorId
+                }
+            )
+            """
+
+            cursor = db.aql.execute(query, bind_vars={
+                "folder_id": folder_id,
+                "kb_id": kb_id,
+                "folder_from": f"records/{folder_id}",
+                "kb_to": f"recordGroups/{kb_id}",
+                "entity_type": Connectors.KNOWLEDGE_BASE.value,
+                "@records_collection": CollectionNames.RECORDS.value,
+                "@belongs_to_collection": CollectionNames.BELONGS_TO.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+            })
+
+            result = next(cursor, None)
+
+            if not result:
+                self.logger.warning(f"⚠️ Folder {folder_id} validation failed for KB {kb_id}")
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get and validate folder in KB: {str(e)}")
+            return None
 
     async def validate_record_in_folder(self, folder_id: str, record_id: str, transaction: Optional[TransactionDatabase] = None) -> bool:
         """Check if a record is a child of a folder via PARENT_CHILD edge.

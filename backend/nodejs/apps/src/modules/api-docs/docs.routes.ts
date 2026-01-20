@@ -114,6 +114,84 @@ function getDocumentationHtml(): string {
     [data-theme="dark"] .response-status.success { background: rgba(0, 172, 58, 0.15); color: #00d147; }
     [data-theme="dark"] .response-status.error { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
 
+    [data-theme="dark"] .response-headers-section { background: rgba(0,0,0,0.3); border-color: rgba(255,255,255,0.1); }
+    [data-theme="dark"] .response-headers-toggle { background: rgba(0,0,0,0.4); }
+    [data-theme="dark"] .response-headers-toggle:hover { background: rgba(0,0,0,0.5); }
+    [data-theme="dark"] .response-headers-toggle-left { color: var(--code-text); }
+    [data-theme="dark"] .response-headers-count { background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.7); }
+    [data-theme="dark"] .response-headers-content { background: rgba(0,0,0,0.2); }
+    [data-theme="dark"] .header-row { border-color: rgba(255,255,255,0.1); }
+    [data-theme="dark"] .header-value { color: var(--code-text); }
+
+    [data-theme="dark"] .body-field-group {
+      background: rgba(0,0,0,0.2);
+      border-color: rgba(255,255,255,0.05);
+    }
+
+    [data-theme="dark"] .body-field-input input,
+    [data-theme="dark"] .body-field-input select,
+    [data-theme="dark"] .body-field-input textarea {
+      background: rgba(0,0,0,0.3);
+      border-color: rgba(255,255,255,0.1);
+      color: var(--code-text);
+    }
+
+    [data-theme="dark"] .body-field-input input::placeholder,
+    [data-theme="dark"] .body-field-input textarea::placeholder {
+      color: rgba(255,255,255,0.3);
+    }
+
+    [data-theme="dark"] .body-field-input select {
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+    }
+
+    [data-theme="dark"] .body-field-label {
+      color: var(--code-text);
+    }
+
+    [data-theme="dark"] .body-field-label .field-type {
+      color: rgba(255,255,255,0.4);
+    }
+
+    [data-theme="dark"] .body-field-desc {
+      color: rgba(255,255,255,0.4);
+    }
+
+    [data-theme="dark"] .nested-object {
+      background: rgba(0,0,0,0.15);
+    }
+
+    [data-theme="dark"] .param-input-label {
+      color: var(--code-text);
+    }
+
+    [data-theme="dark"] .array-add-btn,
+    [data-theme="dark"] .array-remove-btn {
+      background: rgba(255,255,255,0.1);
+      border-color: rgba(255,255,255,0.1);
+      color: var(--code-text);
+    }
+
+    [data-theme="dark"] .array-add-btn:hover {
+      background: rgba(255,255,255,0.15);
+    }
+
+    [data-theme="dark"] .array-remove-btn {
+      background: rgba(239, 68, 68, 0.2);
+      border-color: rgba(239, 68, 68, 0.3);
+      color: #fca5a5;
+    }
+
+    [data-theme="dark"] .array-remove-btn:hover {
+      background: rgba(239, 68, 68, 0.3);
+    }
+
+    [data-theme="dark"] .response-pre {
+      background: rgba(0,0,0,0.3);
+      border-color: rgba(255,255,255,0.1);
+      color: var(--code-text);
+    }
+
     [data-theme="dark"] .module-card {
       background: var(--bg-secondary);
       border-color: var(--border-color);
@@ -995,6 +1073,98 @@ function getDocumentationHtml(): string {
       border-color: var(--accent-green);
     }
 
+    .input-mode-toggle {
+      display: flex;
+      gap: 0;
+      margin-bottom: 12px;
+      background: rgba(0,0,0,0.2);
+      border-radius: 6px;
+      padding: 3px;
+    }
+
+    .input-mode-btn {
+      flex: 1;
+      padding: 6px 12px;
+      background: transparent;
+      border: none;
+      border-radius: 4px;
+      color: var(--text-muted);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .input-mode-btn:hover {
+      color: var(--text-secondary);
+    }
+
+    .input-mode-btn.active {
+      background: var(--accent-green);
+      color: white;
+    }
+
+    [data-theme="dark"] .input-mode-toggle {
+      background: rgba(0,0,0,0.3);
+    }
+
+    :root:not([data-theme="dark"]) .input-mode-toggle {
+      background: var(--bg-tertiary);
+    }
+
+    :root:not([data-theme="dark"]) .input-mode-btn {
+      color: var(--text-muted);
+    }
+
+    :root:not([data-theme="dark"]) .input-mode-btn:hover {
+      color: var(--text-secondary);
+    }
+
+    :root:not([data-theme="dark"]) .input-mode-btn.active {
+      background: var(--accent-green);
+      color: white;
+    }
+
+    .raw-json-textarea {
+      width: 100%;
+      min-height: 200px;
+      padding: 12px;
+      background: rgba(0,0,0,0.3);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 6px;
+      color: var(--code-text);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      outline: none;
+      resize: vertical;
+      transition: border-color 0.2s;
+    }
+
+    .raw-json-textarea:focus {
+      border-color: var(--accent-green);
+    }
+
+    .raw-json-textarea.error {
+      border-color: var(--accent-red);
+    }
+
+    .raw-json-error {
+      color: var(--accent-red);
+      font-size: 12px;
+      margin-top: 4px;
+    }
+
+    [data-theme="dark"] .raw-json-textarea {
+      background: rgba(0,0,0,0.4);
+      border-color: rgba(255,255,255,0.15);
+    }
+
+    :root:not([data-theme="dark"]) .raw-json-textarea {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+    }
+
     .file-upload-container {
       width: 100%;
       position: relative;
@@ -1121,7 +1291,7 @@ function getDocumentationHtml(): string {
     .param-input-label {
       min-width: 120px;
       font-size: 13px;
-      color: var(--code-text);
+      color: var(--text-primary);
       font-family: 'JetBrains Mono', monospace;
     }
 
@@ -1133,9 +1303,9 @@ function getDocumentationHtml(): string {
     .body-field-group {
       margin-bottom: 12px;
       padding: 12px;
-      background: rgba(0,0,0,0.2);
+      background: var(--bg-secondary);
       border-radius: 8px;
-      border: 1px solid rgba(255,255,255,0.05);
+      border: 1px solid var(--border-color);
     }
 
     .body-field-row {
@@ -1153,7 +1323,7 @@ function getDocumentationHtml(): string {
       min-width: 140px;
       padding-top: 10px;
       font-size: 13px;
-      color: var(--code-text);
+      color: var(--text-primary);
       font-family: 'JetBrains Mono', monospace;
     }
 
@@ -1165,7 +1335,7 @@ function getDocumentationHtml(): string {
     .body-field-label .field-type {
       display: block;
       font-size: 11px;
-      color: rgba(255,255,255,0.4);
+      color: var(--text-muted);
       margin-top: 2px;
       font-weight: normal;
     }
@@ -1179,10 +1349,10 @@ function getDocumentationHtml(): string {
     .body-field-input textarea {
       width: 100%;
       padding: 10px 12px;
-      background: rgba(0,0,0,0.3);
-      border: 1px solid rgba(255,255,255,0.1);
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
       border-radius: 6px;
-      color: var(--code-text);
+      color: var(--text-primary);
       font-family: 'JetBrains Mono', monospace;
       font-size: 13px;
       outline: none;
@@ -1197,7 +1367,7 @@ function getDocumentationHtml(): string {
 
     .body-field-input input::placeholder,
     .body-field-input textarea::placeholder {
-      color: rgba(255,255,255,0.3);
+      color: var(--text-muted);
     }
 
     .body-field-input textarea {
@@ -1208,7 +1378,7 @@ function getDocumentationHtml(): string {
     .body-field-input select {
       cursor: pointer;
       appearance: none;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23475569' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
       background-repeat: no-repeat;
       background-position: right 12px center;
       padding-right: 36px;
@@ -1216,7 +1386,7 @@ function getDocumentationHtml(): string {
 
     .body-field-desc {
       font-size: 11px;
-      color: rgba(255,255,255,0.4);
+      color: var(--text-secondary);
       margin-top: 4px;
     }
 
@@ -1224,7 +1394,7 @@ function getDocumentationHtml(): string {
       margin-left: 0;
       margin-top: 8px;
       padding: 12px;
-      background: rgba(0,0,0,0.15);
+      background: var(--bg-tertiary);
       border-radius: 6px;
       border-left: 2px solid var(--accent-blue);
     }
@@ -1255,27 +1425,28 @@ function getDocumentationHtml(): string {
     .array-add-btn,
     .array-remove-btn {
       padding: 8px 12px;
-      background: rgba(255,255,255,0.1);
-      border: 1px solid rgba(255,255,255,0.1);
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-color);
       border-radius: 6px;
-      color: var(--code-text);
+      color: var(--text-primary);
       font-size: 12px;
       cursor: pointer;
       transition: all 0.2s;
     }
 
     .array-add-btn:hover {
-      background: rgba(255,255,255,0.15);
+      background: var(--border-color);
     }
 
     .array-remove-btn {
       padding: 8px 10px;
-      background: rgba(239, 68, 68, 0.2);
+      background: rgba(239, 68, 68, 0.1);
       border-color: rgba(239, 68, 68, 0.3);
+      color: #991b1b;
     }
 
     .array-remove-btn:hover {
-      background: rgba(239, 68, 68, 0.3);
+      background: rgba(239, 68, 68, 0.2);
     }
 
     .execute-btn {
@@ -1309,7 +1480,7 @@ function getDocumentationHtml(): string {
     }
 
     .response-pre {
-      background: rgba(0,0,0,0.3);
+      background: var(--bg-secondary);
       border-radius: 6px;
       padding: 16px;
       max-height: 400px;
@@ -1317,6 +1488,8 @@ function getDocumentationHtml(): string {
       font-size: 12px;
       white-space: pre-wrap;
       word-break: break-word;
+      color: var(--text-primary);
+      border: 1px solid var(--border-color);
     }
 
     .response-status {
@@ -1334,6 +1507,91 @@ function getDocumentationHtml(): string {
     .response-status.error {
       background: rgba(239, 68, 68, 0.12);
       color: #991b1b;
+    }
+
+    /* Response headers section */
+    .response-headers-section {
+      margin-top: 12px;
+      background: var(--bg-secondary);
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid var(--border-color);
+    }
+
+    .response-headers-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      background: var(--bg-tertiary);
+      cursor: pointer;
+      transition: background 0.15s;
+      user-select: none;
+    }
+
+    .response-headers-toggle:hover {
+      background: var(--border-color);
+    }
+
+    .response-headers-toggle-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-primary);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .response-headers-toggle-icon {
+      transition: transform 0.2s;
+    }
+
+    .response-headers-section.expanded .response-headers-toggle-icon {
+      transform: rotate(90deg);
+    }
+
+    .response-headers-count {
+      font-size: 11px;
+      padding: 2px 8px;
+      background: var(--bg-tertiary);
+      border-radius: 10px;
+      color: var(--text-secondary);
+    }
+
+    .response-headers-content {
+      display: none;
+      padding: 12px 14px;
+      background: var(--bg-primary);
+    }
+
+    .response-headers-section.expanded .response-headers-content {
+      display: block;
+    }
+
+    .header-row {
+      display: flex;
+      padding: 6px 0;
+      border-bottom: 1px solid var(--border-color);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+    }
+
+    .header-row:last-child {
+      border-bottom: none;
+    }
+
+    .header-name {
+      min-width: 180px;
+      color: var(--accent-blue);
+      font-weight: 500;
+    }
+
+    .header-value {
+      flex: 1;
+      color: var(--text-primary);
+      word-break: break-all;
     }
 
     /* Schema display */
@@ -2130,6 +2388,7 @@ function getDocumentationHtml(): string {
             <div class="code-tab" data-tab="curl">cURL</div>
             <div class="code-tab" data-tab="javascript">JavaScript</div>
             <div class="code-tab" data-tab="python">Python</div>
+            <div class="code-tab" data-tab="requestbody" id="requestBodyTab" style="display: none;">Request Body</div>
           </div>
           <div class="code-content" id="codeContent">
             <!-- Try It Panel -->
@@ -2156,7 +2415,15 @@ function getDocumentationHtml(): string {
               </div>
               <div id="requestBodySection" class="try-it-section" style="display: none;">
                 <label class="try-it-label">Request Body</label>
+                <div class="input-mode-toggle" id="inputModeToggle">
+                  <button type="button" class="input-mode-btn active" data-mode="form">Form</button>
+                  <button type="button" class="input-mode-btn" data-mode="raw">Raw JSON</button>
+                </div>
                 <div id="requestBodyInputs"></div>
+                <div id="rawJsonInput" style="display: none;">
+                  <textarea id="rawJsonTextarea" class="raw-json-textarea" placeholder='{"key": "value"}'></textarea>
+                  <div id="rawJsonError" class="raw-json-error" style="display: none;"></div>
+                </div>
               </div>
               <button id="executeBtn" class="execute-btn">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -2167,6 +2434,18 @@ function getDocumentationHtml(): string {
               <div id="responseSection" class="try-it-section" style="display: none;">
                 <label class="try-it-label">Response <span id="responseStatus"></span></label>
                 <pre id="responseBody" class="response-pre"></pre>
+                <div id="responseHeadersSection" class="response-headers-section">
+                  <div class="response-headers-toggle">
+                    <div class="response-headers-toggle-left">
+                      <svg class="response-headers-toggle-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="9 18 15 12 9 6"></polyline>
+                      </svg>
+                      <span>Response Headers</span>
+                    </div>
+                    <span id="responseHeadersCount" class="response-headers-count">0</span>
+                  </div>
+                  <div id="responseHeadersContent" class="response-headers-content"></div>
+                </div>
               </div>
             </div>
             <!-- Code Examples Panel -->
@@ -2685,37 +2964,80 @@ function getDocumentationHtml(): string {
 
     // Generate example from schema
     function generateExample(schema, depth = 0) {
-      if (depth > 5) return '...';
+      if (depth > 6) return '...';
 
       const resolved = resolveSchema(schema);
       if (!resolved) return {};
 
+      // Check for explicit example or default first
       if (resolved.example !== undefined) return resolved.example;
       if (resolved.default !== undefined) return resolved.default;
 
+      // Handle oneOf/anyOf - pick the first option that produces a meaningful example
+      if (resolved.oneOf && resolved.oneOf.length > 0) {
+        // Try to find a non-string option first (usually more informative)
+        for (const option of resolved.oneOf) {
+          const optResolved = resolveSchema(option);
+          if (optResolved && (optResolved.type === 'object' || optResolved.properties)) {
+            return generateExample(option, depth + 1);
+          }
+        }
+        // Fall back to first option
+        return generateExample(resolved.oneOf[0], depth + 1);
+      }
+
+      if (resolved.anyOf && resolved.anyOf.length > 0) {
+        // Try to find a non-string option first
+        for (const option of resolved.anyOf) {
+          const optResolved = resolveSchema(option);
+          if (optResolved && (optResolved.type === 'object' || optResolved.properties)) {
+            return generateExample(option, depth + 1);
+          }
+        }
+        return generateExample(resolved.anyOf[0], depth + 1);
+      }
+
+      // Handle allOf - merge all schemas
+      if (resolved.allOf && resolved.allOf.length > 0) {
+        let mergedExample = {};
+        for (const item of resolved.allOf) {
+          const itemExample = generateExample(item, depth + 1);
+          if (typeof itemExample === 'object' && itemExample !== null) {
+            mergedExample = { ...mergedExample, ...itemExample };
+          }
+        }
+        return mergedExample;
+      }
+
       switch (resolved.type) {
         case 'string':
-          if (resolved.enum) return resolved.enum[0];
+          if (resolved.enum && resolved.enum.length > 0) return resolved.enum[0];
           if (resolved.format === 'date-time') return new Date().toISOString();
           if (resolved.format === 'date') return new Date().toISOString().split('T')[0];
           if (resolved.format === 'email') return 'user@example.com';
-          if (resolved.format === 'uri') return 'https://example.com';
+          if (resolved.format === 'uri' || resolved.format === 'url') return 'https://example.com';
+          if (resolved.format === 'uuid') return '550e8400-e29b-41d4-a716-446655440000';
+          if (resolved.format === 'password') return 'password123';
+          if (resolved.format === 'binary') return '<binary data>';
           return 'string';
         case 'number':
+          if (resolved.example !== undefined) return resolved.example;
+          if (resolved.minimum !== undefined) return resolved.minimum;
+          if (resolved.maximum !== undefined) return Math.floor(resolved.maximum / 2);
+          return 0;
         case 'integer':
-          return resolved.minimum || 0;
+          if (resolved.example !== undefined) return resolved.example;
+          if (resolved.minimum !== undefined) return resolved.minimum;
+          if (resolved.maximum !== undefined) return Math.floor(resolved.maximum / 2);
+          return 0;
         case 'boolean':
           return true;
         case 'array':
-          return [generateExample(resolved.items || {}, depth + 1)];
-        case 'object':
-          if (!resolved.properties) return {};
-          const obj = {};
-          for (const [key, value] of Object.entries(resolved.properties)) {
-            obj[key] = generateExample(value, depth + 1);
+          if (resolved.items) {
+            return [generateExample(resolved.items, depth + 1)];
           }
-          return obj;
-        default:
+          return [];
+        case 'object':
           if (resolved.properties) {
             const obj = {};
             for (const [key, value] of Object.entries(resolved.properties)) {
@@ -2723,7 +3045,30 @@ function getDocumentationHtml(): string {
             }
             return obj;
           }
-          return null;
+          // Object without properties - return empty object
+          if (resolved.additionalProperties) {
+            return { key: generateExample(resolved.additionalProperties, depth + 1) };
+          }
+          return {};
+        default:
+          // No explicit type but has properties - treat as object
+          if (resolved.properties) {
+            const obj = {};
+            for (const [key, value] of Object.entries(resolved.properties)) {
+              obj[key] = generateExample(value, depth + 1);
+            }
+            return obj;
+          }
+          // Check for enum without type
+          if (resolved.enum && resolved.enum.length > 0) {
+            return resolved.enum[0];
+          }
+          // Check for additionalProperties
+          if (resolved.additionalProperties) {
+            return { key: generateExample(resolved.additionalProperties, depth + 1) };
+          }
+          // Return empty object instead of null for unknown types
+          return {};
       }
     }
 
@@ -2952,6 +3297,24 @@ function getDocumentationHtml(): string {
       // Execute button
       document.getElementById('executeBtn')?.addEventListener('click', executeRequest);
 
+      // Input mode toggle (Form/Raw JSON)
+      document.getElementById('inputModeToggle')?.addEventListener('click', (e) => {
+        const btn = e.target.closest('.input-mode-btn');
+        if (btn && btn.dataset.mode) {
+          toggleInputMode(btn.dataset.mode);
+        }
+      });
+
+      // Validate raw JSON on input
+      document.getElementById('rawJsonTextarea')?.addEventListener('input', validateRawJson);
+
+      // Response headers toggle - use event delegation on the section
+      document.getElementById('responseHeadersSection')?.addEventListener('click', (e) => {
+        if (e.target.closest('.response-headers-toggle')) {
+          toggleResponseHeaders();
+        }
+      });
+
       // Theme toggle
       document.getElementById('themeToggle')?.addEventListener('click', toggleTheme);
     }
@@ -2969,6 +3332,84 @@ function getDocumentationHtml(): string {
         codeExamplesPanel.style.display = 'block';
         updateCodeExample(tab);
       }
+    }
+
+    // Track current input mode (form or raw)
+    let currentInputMode = 'form';
+
+    // Toggle between Form and Raw JSON input modes
+    function toggleInputMode(mode) {
+      currentInputMode = mode;
+
+      const formInputs = document.getElementById('requestBodyInputs');
+      const rawJsonInput = document.getElementById('rawJsonInput');
+      const rawJsonTextarea = document.getElementById('rawJsonTextarea');
+
+      // Update button states
+      document.querySelectorAll('.input-mode-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.mode === mode);
+      });
+
+      if (mode === 'form') {
+        formInputs.style.display = 'block';
+        rawJsonInput.style.display = 'none';
+      } else {
+        formInputs.style.display = 'none';
+        rawJsonInput.style.display = 'block';
+
+        // Pre-populate raw JSON from form fields if empty
+        if (!rawJsonTextarea.value.trim()) {
+          const bodyFromFields = collectBodyFields();
+          if (Object.keys(bodyFromFields).length > 0) {
+            rawJsonTextarea.value = JSON.stringify(bodyFromFields, null, 2);
+          } else if (currentEndpoint?.requestBody?.content?.['application/json']?.schema) {
+            // Generate example from schema
+            const example = generateExample(currentEndpoint.requestBody.content['application/json'].schema);
+            rawJsonTextarea.value = JSON.stringify(example, null, 2);
+          }
+        }
+        validateRawJson();
+      }
+    }
+
+    // Validate raw JSON input
+    function validateRawJson() {
+      const textarea = document.getElementById('rawJsonTextarea');
+      const errorDiv = document.getElementById('rawJsonError');
+
+      if (!textarea.value.trim()) {
+        textarea.classList.remove('error');
+        errorDiv.style.display = 'none';
+        return true;
+      }
+
+      try {
+        JSON.parse(textarea.value);
+        textarea.classList.remove('error');
+        errorDiv.style.display = 'none';
+        return true;
+      } catch (e) {
+        textarea.classList.add('error');
+        errorDiv.textContent = 'Invalid JSON: ' + e.message;
+        errorDiv.style.display = 'block';
+        return false;
+      }
+    }
+
+    // Get request body based on current input mode
+    function getRequestBody() {
+      if (currentInputMode === 'raw') {
+        const rawJson = document.getElementById('rawJsonTextarea')?.value?.trim();
+        if (rawJson) {
+          try {
+            return JSON.parse(rawJson);
+          } catch (e) {
+            return null;
+          }
+        }
+        return {};
+      }
+      return collectBodyFields();
     }
 
     // Execute API request
@@ -3060,8 +3501,13 @@ function getDocumentationHtml(): string {
           // Don't set Content-Type header - browser will set it with boundary
         } else {
           // Use JSON for regular requests
-          const body = collectBodyFields();
-          if (Object.keys(body).length > 0) {
+          // Check if using raw JSON mode and validate
+          if (currentInputMode === 'raw' && !validateRawJson()) {
+            alert('Please fix the JSON syntax errors before executing.');
+            return;
+          }
+          const body = getRequestBody();
+          if (body && Object.keys(body).length > 0) {
             options.headers['Content-Type'] = 'application/json';
             options.body = JSON.stringify(body);
           }
@@ -3093,15 +3539,81 @@ function getDocumentationHtml(): string {
         responseStatus.textContent = response.status + ' ' + response.statusText;
         responseStatus.className = 'response-status ' + (response.ok ? 'success' : 'error');
         responseBody.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+
+        // Display response headers
+        displayResponseHeaders(response.headers);
       } catch (error) {
         responseSection.style.display = 'block';
         responseStatus.textContent = 'Error';
         responseStatus.className = 'response-status error';
         responseBody.textContent = error.message;
+        // Hide headers section on error
+        const headersSection = document.getElementById('responseHeadersSection');
+        if (headersSection) headersSection.style.display = 'none';
       } finally {
         executeBtn.innerHTML = originalText;
         executeBtn.disabled = false;
       }
+    }
+
+    // Display response headers in collapsible section
+    function displayResponseHeaders(headers) {
+      const headersSection = document.getElementById('responseHeadersSection');
+      const headersCount = document.getElementById('responseHeadersCount');
+      const headersContent = document.getElementById('responseHeadersContent');
+
+      if (!headersSection || !headersCount || !headersContent) return;
+
+      // Convert headers to array using entries() iterator
+      const headerEntries = [];
+      try {
+        // Use entries() which is more widely supported
+        for (const [name, value] of headers.entries()) {
+          headerEntries.push({ name, value });
+        }
+      } catch (e) {
+        // Fallback: try forEach if entries() fails
+        try {
+          headers.forEach((value, name) => {
+            headerEntries.push({ name, value });
+          });
+        } catch (e2) {
+          console.warn('Could not read response headers:', e2);
+        }
+      }
+
+      // Update count
+      headersCount.textContent = headerEntries.length;
+
+      // Build headers HTML
+      if (headerEntries.length > 0) {
+        headersSection.style.display = 'block';
+        headersContent.innerHTML = headerEntries.map(h =>
+          '<div class="header-row">' +
+            '<span class="header-name">' + escapeHtml(h.name) + '</span>' +
+            '<span class="header-value">' + escapeHtml(h.value) + '</span>' +
+          '</div>'
+        ).join('');
+        // Ensure collapsed by default
+        headersSection.classList.remove('expanded');
+      } else {
+        headersSection.style.display = 'none';
+      }
+    }
+
+    // Toggle response headers section
+    function toggleResponseHeaders() {
+      const headersSection = document.getElementById('responseHeadersSection');
+      if (headersSection) {
+        headersSection.classList.toggle('expanded');
+      }
+    }
+
+    // Escape HTML helper
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
     }
 
     // Collect body fields into object
@@ -3252,6 +3764,20 @@ function getDocumentationHtml(): string {
       // Request body
       const requestBodySection = document.getElementById('requestBodySection');
       const requestBodyInputs = document.getElementById('requestBodyInputs');
+      const inputModeToggle = document.getElementById('inputModeToggle');
+      const rawJsonInput = document.getElementById('rawJsonInput');
+      const rawJsonTextarea = document.getElementById('rawJsonTextarea');
+      const requestBodyTab = document.getElementById('requestBodyTab');
+
+      // Reset input mode to form
+      currentInputMode = 'form';
+      document.querySelectorAll('.input-mode-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.mode === 'form');
+      });
+      requestBodyInputs.style.display = 'block';
+      rawJsonInput.style.display = 'none';
+      rawJsonTextarea.value = '';
+      document.getElementById('rawJsonError').style.display = 'none';
 
       if (ep.requestBody && ['POST', 'PUT', 'PATCH'].includes(ep.method)) {
         requestBodySection.style.display = 'block';
@@ -3261,17 +3787,25 @@ function getDocumentationHtml(): string {
         const jsonContent = ep.requestBody.content?.['application/json'];
 
         if (multipartContent?.schema) {
-          // Handle file upload
+          // Handle file upload - hide input mode toggle for file uploads
+          inputModeToggle.style.display = 'none';
+          requestBodyTab.style.display = 'none';
           const resolved = resolveSchema(multipartContent.schema);
           requestBodyInputs.innerHTML = renderMultipartFields(resolved, multipartContent.schema.required || resolved?.required || []);
         } else if (jsonContent?.schema) {
+          // Show input mode toggle and Request Body tab for JSON content
+          inputModeToggle.style.display = 'flex';
+          requestBodyTab.style.display = 'block';
           const resolved = resolveSchema(jsonContent.schema);
           requestBodyInputs.innerHTML = renderBodyFields(resolved, jsonContent.schema.required || resolved?.required || []);
         } else {
+          inputModeToggle.style.display = 'none';
+          requestBodyTab.style.display = 'none';
           requestBodyInputs.innerHTML = '<div class="body-field-desc">No schema available</div>';
         }
       } else {
         requestBodySection.style.display = 'none';
+        requestBodyTab.style.display = 'none';
       }
 
       // Reset response
@@ -3978,6 +4512,74 @@ function getDocumentationHtml(): string {
           code += ',' + NL + '    json=' + bodyExample;
         }
         code += NL + ')' + NL + NL + 'data = response.json()';
+      } else if (lang === 'requestbody') {
+        // Show editable request body JSON
+        code = bodyExample || '{}';
+
+        document.getElementById('codeExamplesPanel').innerHTML =
+          '<div class="code-block" style="margin: 8px;">' +
+          '<div class="code-block-header">' +
+          '<span class="code-block-title">Request Body (JSON)</span>' +
+          '<button class="copy-btn" id="copyBtn">Copy</button>' +
+          '</div>' +
+          '<textarea id="codeBodyTextarea" class="raw-json-textarea" style="margin: 0; border-radius: 0 0 8px 8px; min-height: 300px;">' + escapeHtml(code) + '</textarea>' +
+          '<div id="codeBodyError" class="raw-json-error" style="display: none; padding: 0 12px 12px;"></div>' +
+          '<div style="padding: 12px; border-top: 1px solid var(--border-color);">' +
+          '<button class="execute-btn" id="useInTryItBtn" style="width: 100%;">' +
+          '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+          '<path d="M12 5v14M5 12h14"></path>' +
+          '</svg>' +
+          'Use in Try It' +
+          '</button>' +
+          '</div>' +
+          '</div>';
+
+        // Add copy button handler
+        document.getElementById('copyBtn').onclick = function() {
+          const textarea = document.getElementById('codeBodyTextarea');
+          navigator.clipboard.writeText(textarea.value);
+          this.textContent = 'Copied!';
+          setTimeout(() => { this.textContent = 'Copy'; }, 2000);
+        };
+
+        // Add "Use in Try It" button handler
+        document.getElementById('useInTryItBtn').onclick = function() {
+          const textarea = document.getElementById('codeBodyTextarea');
+          const errorDiv = document.getElementById('codeBodyError');
+          try {
+            JSON.parse(textarea.value);
+            // Valid JSON - copy to raw JSON input and switch to Try It
+            document.getElementById('rawJsonTextarea').value = textarea.value;
+            // Switch to raw mode
+            toggleInputMode('raw');
+            // Switch to Try It tab
+            document.querySelectorAll('.code-tab').forEach(t => t.classList.remove('active'));
+            document.querySelector('.code-tab[data-tab="tryit"]').classList.add('active');
+            currentTab = 'tryit';
+            switchTab('tryit');
+          } catch (e) {
+            errorDiv.textContent = 'Invalid JSON: ' + e.message;
+            errorDiv.style.display = 'block';
+          }
+        };
+
+        // Validate on input
+        document.getElementById('codeBodyTextarea').addEventListener('input', function() {
+          const errorDiv = document.getElementById('codeBodyError');
+          try {
+            if (this.value.trim()) {
+              JSON.parse(this.value);
+            }
+            this.classList.remove('error');
+            errorDiv.style.display = 'none';
+          } catch (e) {
+            this.classList.add('error');
+            errorDiv.textContent = 'Invalid JSON: ' + e.message;
+            errorDiv.style.display = 'block';
+          }
+        });
+
+        return; // Early return since we handled rendering differently
       }
 
       document.getElementById('codeExamplesPanel').innerHTML =

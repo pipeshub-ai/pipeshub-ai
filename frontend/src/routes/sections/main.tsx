@@ -14,6 +14,9 @@ const Page500 = lazy(() => import('src/pages/error/500'));
 const Page403 = lazy(() => import('src/pages/error/403'));
 const Page404 = lazy(() => import('src/pages/error/404'));
 
+// OAuth
+const OAuthAuthorizePage = lazy(() => import('src/pages/oauth/authorize'));
+
 // ----------------------------------------------------------------------
 
 export const mainRoutes = [
@@ -36,5 +39,15 @@ export const mainRoutes = [
       { path: '404', element: <Page404 /> },
       { path: '403', element: <Page403 /> },
     ],
+  },
+  // OAuth routes (outside dashboard layout)
+  {
+    path: 'oauth',
+    element: (
+      <Suspense fallback={<SplashScreen />}>
+        <Outlet />
+      </Suspense>
+    ),
+    children: [{ path: 'authorize', element: <OAuthAuthorizePage /> }],
   },
 ];

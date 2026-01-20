@@ -77,7 +77,7 @@ class AppGroups(Enum):
     BOOKSTACK = "BookStack"
     S3 = "S3"
     MINIO = "MinIO"
-    GCS = "GCS"
+    GOOGLE_CLOUD = "Google Cloud"
     AZURE = "Azure"
     LINEAR = "Linear"
 

@@ -1,5 +1,5 @@
 import { Address } from '../../../libs/utils/address.utils';
-import { generateUniqueSlug } from '../controller/counters.controller';
+import { generateUniqueSlug } from '../../../libs/utils/counter';
 import mongoose, { Document, Schema } from 'mongoose';
 
 // Define the interface for Org Document

@@ -28,6 +28,7 @@ from app.modules.parsers.excel.prompt_template import (
     row_text_prompt,
     table_summary_prompt,
 )
+from app.utils.indexing_helpers import generate_simple_row_text
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
 
@@ -291,42 +292,67 @@ class CSVParser:
         blocks = []
         children = []
 
-        batch_size = 50
+        # Get threshold from environment variable (default: 1000)
+        threshold = int(os.getenv("MAX_TABLE_ROWS_FOR_LLM", "1000"))
 
-        # Create batches
-        batches = []
-        for i in range(0, len(csv_result), batch_size):
-            batch = csv_result[i : i + batch_size]
-            batches.append((i, batch))  # Store start index and batch data
+        # Check if table exceeds threshold
+        use_llm_for_rows = len(csv_result) <= threshold
 
-        # Process batches with controlled concurrency to avoid overwhelming the system
+        if use_llm_for_rows:
+            # Use LLM for row descriptions
+            batch_size = 50
 
-        max_concurrent_batches = min(10, len(batches))  # Limit concurrent batches
-        batch_results = []
+            # Create batches
+            batches = []
+            for i in range(0, len(csv_result), batch_size):
+                batch = csv_result[i : i + batch_size]
+                batches.append((i, batch))  # Store start index and batch data
 
-        for i in range(0, len(batches), max_concurrent_batches):
-            current_batches = batches[i:i + max_concurrent_batches]
+            # Process batches with controlled concurrency to avoid overwhelming the system
 
-            # Process current batch group
-            batch_tasks = []
-            for start_idx, batch in current_batches:
-                task = self.get_rows_text(llm, batch)
-                batch_tasks.append((start_idx, batch, task))
+            max_concurrent_batches = min(10, len(batches))  # Limit concurrent batches
+            batch_results = []
 
-            # Wait for current batch group to complete
-            task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])
+            for i in range(0, len(batches), max_concurrent_batches):
+                current_batches = batches[i:i + max_concurrent_batches]
 
-            # Combine results with their metadata
-            for j, (start_idx, batch, _) in enumerate(batch_tasks):
-                row_texts = task_results[j]
-                batch_results.append((start_idx, batch, row_texts))
+                # Process current batch group
+                batch_tasks = []
+                for start_idx, batch in current_batches:
+                    task = self.get_rows_text(llm, batch)
+                    batch_tasks.append((start_idx, batch, task))
 
-        # Process results and create blocks
-        for start_idx, batch, row_texts in batch_results:
-            for idx, (row, row_text) in enumerate(
-                    zip(batch, row_texts), start=start_idx
-                ):
-                # row_entry = {"number": idx, "content": row, "type": "row"}
+                # Wait for current batch group to complete
+                task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])
+
+                # Combine results with their metadata
+                for j, (start_idx, batch, _) in enumerate(batch_tasks):
+                    row_texts = task_results[j]
+                    batch_results.append((start_idx, batch, row_texts))
+
+            # Process results and create blocks
+            for start_idx, batch, row_texts in batch_results:
+                for idx, (row, row_text) in enumerate(
+                        zip(batch, row_texts), start=start_idx
+                    ):
+                    blocks.append(
+                        Block(
+                            index=idx,
+                            type=BlockType.TABLE_ROW,
+                            format=DataFormat.JSON,
+                            data={
+                                "row_natural_language_text": row_text,
+                                "row_number": idx+1,
+                                "row":json.dumps(row)
+                            },
+                            parent_index=0,
+                        )
+                        )
+                    children.append(BlockContainerIndex(block_index=idx))
+        else:
+            # Use simple format for rows (skip LLM)
+            for idx, row in enumerate(csv_result):
+                row_text = generate_simple_row_text(row)
                 blocks.append(
                     Block(
                         index=idx,
@@ -339,7 +365,7 @@ class CSVParser:
                         },
                         parent_index=0,
                     )
-                    )
+                )
                 children.append(BlockContainerIndex(block_index=idx))
 
         csv_markdown = self.to_markdown(csv_result)

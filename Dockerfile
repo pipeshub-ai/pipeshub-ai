@@ -76,7 +76,7 @@ WORKDIR /app
 
 COPY --from=nodejs-backend /app/backend/dist ./backend/dist
 COPY --from=nodejs-backend /app/backend/src/modules/mail ./backend/src/modules/mail
-COPY --from=nodejs-backend /app/backend/src/modules/api-docs/pipeshub-openapi.yaml ./backend/dist/modules/api-docs/pipeshub-openapi.yaml
+COPY --from=nodejs-backend /app/backend/src/modules/api-docs/pipeshub-openapi.yaml ./backend/src/modules/api-docs/pipeshub-openapi.yaml
 COPY --from=nodejs-backend /app/backend/node_modules ./backend/dist/node_modules
 COPY --from=frontend-build /app/frontend/dist ./backend/dist/public
 COPY backend/python/app/ /app/python/app/

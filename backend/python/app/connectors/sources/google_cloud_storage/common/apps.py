@@ -8,4 +8,4 @@ class GCSApp(App):
     """App definition for Google Cloud Storage connector."""
 
     def __init__(self, connector_id: str) -> None:
-        super().__init__(Connectors.GCS, AppGroups.GCS, connector_id)
+        super().__init__(Connectors.GCS, AppGroups.GOOGLE_CLOUD, connector_id)

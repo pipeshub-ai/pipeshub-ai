@@ -111,12 +111,7 @@ class RecordEventHandler(BaseEventService):
                 record_id, CollectionNames.RECORDS.value
             )
 
-            if record is None:
-                self.logger.error(f"❌ Record {record_id} not found in database")
-                return
 
-            if virtual_record_id is None:
-                virtual_record_id = record.get("virtualRecordId")
 
             self.logger.info(
                 f"Processing record {record_id} with event type: {event_type}. "
@@ -131,6 +126,13 @@ class RecordEventHandler(BaseEventService):
                 yield {"event": "parsing_complete", "data": {"record_id": record_id}}
                 yield {"event": "indexing_complete", "data": {"record_id": record_id}}
                 return
+
+            if record is None:
+                self.logger.error(f"❌ Record {record_id} not found in database")
+                return
+
+            if virtual_record_id is None:
+                virtual_record_id = record.get("virtualRecordId")
 
             if event_type == EventTypes.UPDATE_RECORD.value:
                 await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
