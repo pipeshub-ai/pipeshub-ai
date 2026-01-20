@@ -50,7 +50,7 @@ import TextViewer from '../qna/chatbot/components/text-highlighter';
 import MarkdownViewer from '../qna/chatbot/components/markdown-highlighter';
 import { KnowledgeBaseAPI } from './services/api';
 import ImageHighlighter from '../qna/chatbot/components/image-highlighter';
-import { getExtensionFromMimeType} from './utils/utils';
+import { getExtensionFromMimeType } from './utils/utils';
 
 const MAX_FILE_SIZE_MB = 10; // 10MB
 
@@ -542,8 +542,8 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
   const handleDownload = async () => {
     try {
       setIsDownloading(true);
-      const recordId = origin === ORIGIN.UPLOAD ? externalRecordId : record._key;
-      await KnowledgeBaseAPI.handleDownloadDocument(recordId, recordName, origin);
+      // Always use record._key - the backend handles both KB and connector records via unified stream API
+      await KnowledgeBaseAPI.handleDownloadDocument(record._key, recordName);
     } catch (error) {
       console.error('Failed to download document:', error);
       setSnackbar({
@@ -586,108 +586,65 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
       }
 
       let fileDataLoaded = false;
-      let loadedFileUrl = '';
+
       let loadedFileBuffer: ArrayBuffer | null = null;
 
-      if (record.origin === ORIGIN.UPLOAD) {
-        try {
-          setViewerState((prev) => ({ ...prev, loadingStep: 'Downloading document...' }));
+      // Unified streaming - use stream/record API for both KB and connector records
+      try {
+        setViewerState((prev) => ({ ...prev, loadingStep: 'Downloading document...' }));
 
-          const downloadResponse = await axios.get(
-            `/api/v1/document/${externalRecordId}/download`,
-            { responseType: 'blob' }
+        let params: { convertTo?: string } = {};
+
+        // Handle PowerPoint files - request PDF conversion
+        if (record?.fileRecord && ['pptx', 'ppt'].includes(record?.fileRecord?.extension)) {
+          params = { convertTo: 'application/pdf' };
+          if (record.fileRecord.sizeInBytes / 1048576 > MAX_FILE_SIZE_MB) {
+            throw new Error('Large file size, redirecting to web page');
+          }
+        }
+
+        const publicConnectorUrlResponse = await ConnectorApiService.getConnectorPublicUrl();
+        let streamResponse;
+
+        // Use the unified stream/record API - backend handles both KB and connector records
+        if (publicConnectorUrlResponse && publicConnectorUrlResponse.url) {
+          const CONNECTOR_URL = publicConnectorUrlResponse.url;
+          streamResponse = await axios.get(
+            `${CONNECTOR_URL}/api/v1/stream/record/${recordId}`,
+            { responseType: 'blob', params }
           );
-
-          setViewerState((prev) => ({ ...prev, loadingStep: 'Processing document data...' }));
-
-          const reader = new FileReader();
-          const textPromise = new Promise<string>((resolve) => {
-            reader.onload = () => {
-              resolve(reader.result?.toString() || '');
-            };
-          });
-
-          reader.readAsText(downloadResponse.data);
-          const text = await textPromise;
-
-          try {
-            const jsonData = JSON.parse(text);
-            if (jsonData && jsonData.signedUrl) {
-              loadedFileUrl = jsonData.signedUrl;
-              fileDataLoaded = true;
-            }
-          } catch (e) {
-            const bufferReader = new FileReader();
-            const arrayBufferPromise = new Promise<ArrayBuffer>((resolve) => {
-              bufferReader.onload = () => {
-                resolve(bufferReader.result as ArrayBuffer);
-              };
-              bufferReader.readAsArrayBuffer(downloadResponse.data);
-            });
-
-            loadedFileBuffer = await arrayBufferPromise;
-            fileDataLoaded = true;
-          }
-        } catch (error) {
-          console.error('Error downloading document:', error);
-          showErrorAndRedirect('Failed to load document from upload');
-          return;
+        } else {
+          streamResponse = await axios.get(
+            `${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${recordId}`,
+            { responseType: 'blob', params }
+          );
         }
-      } else if (record.origin === ORIGIN.CONNECTOR) {
-        try {
-          setViewerState((prev) => ({ ...prev, loadingStep: 'Connecting to document source...' }));
 
-          let params = {};
+        if (!streamResponse) return;
 
-          // Handle PowerPoint files
-          if (record?.fileRecord && ['pptx', 'ppt'].includes(record?.fileRecord?.extension)) {
-            params = { convertTo: 'application/pdf' };
-            if (record.fileRecord.sizeInBytes / 1048576 > MAX_FILE_SIZE_MB) {
-              throw new Error('Large file size, redirecting to web page');
-            }
-          }
+        setViewerState((prev) => ({ ...prev, loadingStep: 'Processing document...' }));
 
-          const publicConnectorUrlResponse = await ConnectorApiService.getConnectorPublicUrl();
-          let connectorResponse;
+        const bufferReader = new FileReader();
+        const arrayBufferPromise = new Promise<ArrayBuffer>((resolve, reject) => {
+          bufferReader.onload = () => {
+            const originalBuffer = bufferReader.result as ArrayBuffer;
+            const bufferCopy = originalBuffer.slice(0);
+            resolve(bufferCopy);
+          };
+          bufferReader.onerror = () => {
+            reject(new Error('Failed to read blob as array buffer'));
+          };
+          bufferReader.readAsArrayBuffer(streamResponse.data);
+        });
 
-          if (publicConnectorUrlResponse && publicConnectorUrlResponse.url) {
-            const CONNECTOR_URL = publicConnectorUrlResponse.url;
-            connectorResponse = await axios.get(
-              `${CONNECTOR_URL}/api/v1/stream/record/${recordId}`,
-              { responseType: 'blob', params }
-            );
-          } else {
-            connectorResponse = await axios.get(
-              `${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${recordId}`,
-              { responseType: 'blob', params }
-            );
-          }
-
-          if (!connectorResponse) return;
-
-          setViewerState((prev) => ({ ...prev, loadingStep: 'Processing document...' }));
-
-          const bufferReader = new FileReader();
-          const arrayBufferPromise = new Promise<ArrayBuffer>((resolve, reject) => {
-            bufferReader.onload = () => {
-              const originalBuffer = bufferReader.result as ArrayBuffer;
-              const bufferCopy = originalBuffer.slice(0);
-              resolve(bufferCopy);
-            };
-            bufferReader.onerror = () => {
-              reject(new Error('Failed to read blob as array buffer'));
-            };
-            bufferReader.readAsArrayBuffer(connectorResponse.data);
-          });
-
-          loadedFileBuffer = await arrayBufferPromise;
-          fileDataLoaded = true;
-        } catch (err) {
-          console.error('Error downloading document:', err);
-          showErrorAndRedirect('Failed to load document from connector');
-          return;
-        }
+        loadedFileBuffer = await arrayBufferPromise;
+        fileDataLoaded = true;
+      } catch (err) {
+        console.error('Error downloading document:', err);
+        showErrorAndRedirect('Failed to load document');
+        return;
       }
+
 
       if (fileDataLoaded) {
         // Use recordType to determine document type for mail records
@@ -701,7 +658,7 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
             ...prev,
             phase: 'ready',
             documentType,
-            fileUrl: loadedFileUrl,
+            fileUrl: '',
             fileBuffer: loadedFileBuffer,
             recordCitations: null,
           }));
@@ -855,7 +812,7 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
             style={{ color: getExtensionColor(extension, recordTypeForDisplay) }}
           />
           <Box sx={{ flexGrow: 1 }}>
-          <Tooltip title={recordName} arrow placement="top">
+            <Tooltip title={recordName} arrow placement="top">
               <Box>
                 <Typography variant="h6" gutterBottom>
                   {recordName.length > 60 ? `${recordName.substring(0, 60)}...` : recordName}

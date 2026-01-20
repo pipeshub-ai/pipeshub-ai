@@ -65,6 +65,22 @@ class KnowledgeHubService:
         return any([q, node_types, record_types, origins, connector_ids, kb_ids,
                     indexing_status, created_at, updated_at, size])
 
+    def _has_flattening_filters(self, q: Optional[str], node_types: Optional[List[str]],
+                                 record_types: Optional[List[str]], origins: Optional[List[str]],
+                                 connector_ids: Optional[List[str]], kb_ids: Optional[List[str]],
+                                 indexing_status: Optional[List[str]],
+                                 created_at: Optional[Dict], updated_at: Optional[Dict],
+                                 size: Optional[Dict]) -> bool:
+        """Check if any filters that should trigger flattened/recursive search are provided.
+
+        These filters should return flattened results (all nested children):
+        - q, nodeTypes, recordTypes, origins, connectorIds, kbIds,
+          createdAt, updatedAt, size, indexingStatus
+        Note: sortBy and sortOrder are NOT included as they don't trigger flattening.
+        """
+        return any([q, node_types, record_types, origins, connector_ids, kb_ids,
+                    indexing_status, created_at, updated_at, size])
+
     async def get_nodes(
         self,
         user_id: str,
@@ -86,6 +102,7 @@ class KnowledgeHubService:
         created_at: Optional[Dict[str, Optional[int]]] = None,
         updated_at: Optional[Dict[str, Optional[int]]] = None,
         size: Optional[Dict[str, Optional[int]]] = None,
+        flattened: bool = False,
         include: Optional[List[str]] = None,
     ) -> KnowledgeHubNodesResponse:
         """
@@ -120,15 +137,21 @@ class KnowledgeHubService:
             user_key = user.get('_key')
 
             # Get nodes based on request type
-            # If parent_id is provided with search query, do recursive search within that parent
-            # If parent_id is provided without search, browse direct children only
+            # If parent_id is provided with flattening filters or flattened=true, do recursive search
+            # If parent_id is provided without filters, browse direct children only
             # If no parent_id with search filters, do global search
+
+            # Check if flattening filters are applied (these should return flattened results)
+            has_flattening_filters = self._has_flattening_filters(
+                q, node_types, record_types, origins, connector_ids, kb_ids,
+                indexing_status, created_at, updated_at, size
+            )
 
             # Initialize available_filters
             available_filters = None
 
-            if parent_id and q:
-                # Recursive search within parent and all its descendants
+            if parent_id and (has_flattening_filters or flattened):
+                # Recursive search within parent and all its descendants (flattened view)
                 items, total_count, _ = await self._get_recursive_search_nodes(
                     user_key=user_key,
                     org_id=org_id,
@@ -441,11 +464,16 @@ class KnowledgeHubService:
             bind_vars["origins"] = origins
             filter_conditions.append("node.source IN @origins")
 
-        if connector_ids:
+        # Handle connector_ids and kb_ids with OR logic when both are provided
+        # This ensures we get results from both connectors AND knowledge bases (union)
+        if connector_ids and kb_ids:
+            bind_vars["connector_ids"] = connector_ids
+            bind_vars["kb_ids"] = kb_ids
+            filter_conditions.append("(node.appId IN @connector_ids OR node.kbId IN @kb_ids)")
+        elif connector_ids:
             bind_vars["connector_ids"] = connector_ids
             filter_conditions.append("node.appId IN @connector_ids")
-
-        if kb_ids:
+        elif kb_ids:
             bind_vars["kb_ids"] = kb_ids
             filter_conditions.append("node.kbId IN @kb_ids")
 
@@ -497,14 +525,14 @@ class KnowledgeHubService:
             include_kbs = True
             include_apps = True
 
-            # Filter by kb_ids if provided
-            if kb_ids and len(kb_ids) > 0:
-                # If specifically asking for KBs, we should include them
-                include_kbs = True
-                # But if searching for explicit Apps (connector_ids), we might exclude KBs unless origins say otherwise
-                if connector_ids and not origins:
-                    pass # Keep both included and let ID intersection handle it?
-                         # Actually KBs don't have connector_ids, Apps don't have kb_ids.
+            # Handle connector_ids and kb_ids filters:
+            # - If only connector_ids provided: exclude KBs (show filtered apps only)
+            # - If only kb_ids provided: exclude apps (show filtered KBs only)
+            # - If both provided: include both, filter each appropriately
+            if connector_ids and not kb_ids:
+                include_kbs = False  # Only show apps matching connector_ids
+            elif kb_ids and not connector_ids:
+                include_apps = False  # Only show KBs matching kb_ids
 
             if node_types:
                 if 'kb' not in node_types and 'recordGroup' not in node_types:
@@ -553,7 +581,7 @@ class KnowledgeHubService:
             nodes_data = result.get('nodes', [])
             total_count = result.get('total', 0)
 
-            # Filter KBs if kb_ids provided
+            # Filter KBs by kb_ids if provided (keeps apps as-is, filters KBs to match kb_ids)
             if kb_ids:
                 nodes_data = [
                     n for n in nodes_data
@@ -610,7 +638,7 @@ class KnowledgeHubService:
             apps_data = options.get('apps', [])
 
             kb_options = [FilterOption(id=k['id'], label=k['name']) for k in kbs_data]
-            app_options = [FilterOption(id=a['id'], label=a['name']) for a in apps_data]
+            app_options = [FilterOption(id=a['id'], label=a['name'], type=a.get('type')) for a in apps_data]
 
             return AvailableFilters(
                 nodeTypes=[
@@ -653,6 +681,7 @@ class KnowledgeHubService:
 
     async def _get_recursive_search_nodes(
         self,
+        user_key: str,  # Currently unused but kept for potential future permission checks
         org_id: str,
         parent_id: str,
         parent_type: str,
@@ -737,12 +766,21 @@ class KnowledgeHubService:
                 bind_vars["origins"] = origins
                 filter_conditions.append("node.source IN @origins")
 
-            if connector_ids:
+            # Handle connector_ids and kb_ids with OR logic when both are provided
+            # This ensures we get results from both connectors AND knowledge bases (union)
+            if connector_ids and kb_ids:
+                bind_vars["connector_ids"] = connector_ids
+                bind_vars["kb_ids"] = kb_ids
+                # Match App/KB nodes by ID or records/recordGroups by connectorId/kbId
+                filter_conditions.append(
+                    "((node.nodeType == 'app' AND node.id IN @connector_ids) OR (node.connectorId IN @connector_ids) OR "
+                    "(node.nodeType == 'kb' AND node.id IN @kb_ids) OR (node.kbId IN @kb_ids))"
+                )
+            elif connector_ids:
                 bind_vars["connector_ids"] = connector_ids
                 # Match App nodes by ID or records/recordGroups by connectorId
                 filter_conditions.append("(node.nodeType == 'app' AND node.id IN @connector_ids) OR (node.connectorId IN @connector_ids)")
-
-            if kb_ids:
+            elif kb_ids:
                 bind_vars["kb_ids"] = kb_ids
                 # Match KB nodes by ID or records/recordGroups by kbId
                 filter_conditions.append("(node.nodeType == 'kb' AND node.id IN @kb_ids) OR (node.kbId IN @kb_ids)")
@@ -994,6 +1032,7 @@ class KnowledgeHubService:
             origin=origin,
             connector=doc.get('connector'),
             recordType=doc.get('recordType'),
+            recordGroupType=doc.get('recordGroupType'),
             indexingStatus=doc.get('indexingStatus'),
             createdAt=doc.get('createdAt', 0),
             updatedAt=doc.get('updatedAt', 0),
@@ -1002,6 +1041,7 @@ class KnowledgeHubService:
             extension=doc.get('extension'),
             webUrl=doc.get('webUrl'),
             hasChildren=doc.get('hasChildren', False),
+            previewRenderable=doc.get('previewRenderable'),
         )
 
         return item

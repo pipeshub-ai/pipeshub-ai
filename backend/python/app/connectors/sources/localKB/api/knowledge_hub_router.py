@@ -198,6 +198,7 @@ async def get_knowledge_hub_root_nodes(
     created_at: Optional[str] = Query(None, description="Created date range: gte:timestamp,lte:timestamp"),
     updated_at: Optional[str] = Query(None, description="Updated date range: gte:timestamp,lte:timestamp"),
     size: Optional[str] = Query(None, description="Size range: gte:bytes,lte:bytes"),
+    flattened: bool = Query(False, description="Return flattened view with all nested children (even without filters)"),
     include: Optional[str] = Query(None, description="Comma-separated includes: breadcrumbs, counts, availableFilters, permissions"),
     knowledge_hub_service: KnowledgeHubService = Depends(get_knowledge_hub_service),
 ) -> Union[KnowledgeHubNodesResponse, Dict[str, Any]]:
@@ -227,6 +228,7 @@ async def get_knowledge_hub_root_nodes(
         created_at=created_at,
         updated_at=updated_at,
         size=size,
+        flattened=flattened,
         include=include,
     )
 
@@ -258,6 +260,7 @@ async def get_knowledge_hub_children_nodes(
     created_at: Optional[str] = Query(None, description="Created date range: gte:timestamp,lte:timestamp"),
     updated_at: Optional[str] = Query(None, description="Updated date range: gte:timestamp,lte:timestamp"),
     size: Optional[str] = Query(None, description="Size range: gte:bytes,lte:bytes"),
+    flattened: bool = Query(False, description="Return flattened view with all nested children (even without filters)"),
     include: Optional[str] = Query(None, description="Comma-separated includes: breadcrumbs, counts, availableFilters, permissions"),
     knowledge_hub_service: KnowledgeHubService = Depends(get_knowledge_hub_service),
 ) -> Union[KnowledgeHubNodesResponse, Dict[str, Any]]:
@@ -292,6 +295,7 @@ async def get_knowledge_hub_children_nodes(
         created_at=created_at,
         updated_at=updated_at,
         size=size,
+        flattened=flattened,
         include=include,
     )
 
@@ -316,6 +320,7 @@ async def _handle_get_nodes(
     created_at: Optional[str],
     updated_at: Optional[str],
     size: Optional[str],
+    flattened: bool,
     include: Optional[str],
 ) -> Union[KnowledgeHubNodesResponse, Dict[str, Any]]:
     """Shared handler for both root and children node retrieval."""
@@ -408,6 +413,7 @@ async def _handle_get_nodes(
             created_at=parsed_created_at,
             updated_at=parsed_updated_at,
             size=parsed_size,
+            flattened=flattened,
             include=parsed_include,
         )
 

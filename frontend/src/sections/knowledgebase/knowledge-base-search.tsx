@@ -71,14 +71,14 @@ export default function KnowledgeBaseSearch() {
     moduleId: [],
     appSpecificRecordType: [],
     app: [],
-    kb: [] 
+    kb: []
   });
   const scrollableStyles = createScrollableContainerStyle(theme);
 
   // Get connector data from the hook at parent level for optimal performance
   const { activeConnectors, inactiveConnectors } = useConnectors();
   const allConnectors = [...activeConnectors, ...inactiveConnectors];
-  
+
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [topK, setTopK] = useState<number>(INITIAL_TOP_K);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -99,7 +99,7 @@ export default function KnowledgeBaseSearch() {
   const [recordsMap, setRecordsMap] = useState<Record<string, PipesHub.Record>>({});
   const [fileBuffer, setFileBuffer] = useState<ArrayBuffer | null>(null);
   const [highlightedCitation, setHighlightedCitation] = useState<SearchResult | null>();
-  
+
   // Prevent rapid filter changes
   const isFilterChanging = useRef(false);
 
@@ -187,7 +187,7 @@ export default function KnowledgeBaseSearch() {
 
       const results = data.searchResults || [];
       const recordResult = data.records || [];
-      
+
       setSearchResults(results);
 
       // Check if we can load more: if results length is less than topK, no more results available
@@ -196,7 +196,7 @@ export default function KnowledgeBaseSearch() {
 
       const recordsLookupMap = aggregateRecordsByRecordId(recordResult);
       setRecordsMap(recordsLookupMap);
-      
+
       const citations = aggregateCitationsByRecordId(results);
       setAggregatedCitations(citations);
     } catch (error) {
@@ -218,13 +218,13 @@ export default function KnowledgeBaseSearch() {
 
   const handleSearchQueryChange = (query: string): void => {
     setSearchQuery(query);
-    
+
     // Reset topK and canLoadMore when query changes
     if (query.trim() !== searchQuery.trim()) {
       setTopK(INITIAL_TOP_K);
       setCanLoadMore(true);
     }
-    
+
     if (!query.trim()) {
       setHasSearched(false);
       setCanLoadMore(false);
@@ -252,13 +252,13 @@ export default function KnowledgeBaseSearch() {
     recordCitation?: SearchResult
   ): Promise<void> => {
     // Check if previewRenderable is false - if so, open webUrl instead of viewer
-    const previewRenderable = recordCitation?.metadata?.previewRenderable ?? 
-                               recordsMap[recordId]?.previewRenderable;
-    
+    const previewRenderable = recordCitation?.metadata?.previewRenderable ??
+      recordsMap[recordId]?.previewRenderable;
+
     if (previewRenderable === false) {
       const record = recordsMap[recordId];
       const webUrl = getWebUrlWithFragment(record, recordCitation);
-      
+
       if (webUrl) {
         window.open(webUrl, '_blank', 'noopener,noreferrer');
       }
@@ -277,7 +277,7 @@ export default function KnowledgeBaseSearch() {
     setRecordCitations(null);
     setFileUrl('');
     setHighlightedCitation(recordCitation);
-    
+
     const documentContainer = document.querySelector('#document-container');
     if (documentContainer) {
       documentContainer.innerHTML = '';
@@ -298,7 +298,7 @@ export default function KnowledgeBaseSearch() {
         });
         return;
       }
-      
+
       // Find the correct citation from the aggregated data
       const citation = aggregatedCitations.find((item) => item.recordId === recordId);
       if (citation) {
@@ -307,243 +307,123 @@ export default function KnowledgeBaseSearch() {
 
       let fileDataLoaded = false;
 
-      if (record.origin === ORIGIN.UPLOAD) {
-        const fetchRecordId = record.externalRecordId || '';
-        if (!fetchRecordId) {
-          console.error('No external record ID available');
-          setSnackbar({
-            open: true,
-            message: 'External record ID not available.',
-            severity: 'error',
-          });
-          return;
+      // Unified streaming - use stream/record API for both KB and connector records
+      try {
+        let params: { convertTo?: string } = {};
+        if (['pptx', 'ppt'].includes(record?.extension)) {
+          params = { convertTo: 'application/pdf' };
+          handleLargePPTFile(record);
         }
 
-        try {
-          const response = await axios.get(`/api/v1/document/${fetchRecordId}/download`, {
+        const publicConnectorUrlResponse = await ConnectorApiService.getConnectorPublicUrl();
+        let response;
+
+        if (publicConnectorUrlResponse && publicConnectorUrlResponse.url) {
+          const CONNECTOR_URL = publicConnectorUrlResponse.url;
+          response = await axios.get(`${CONNECTOR_URL}/api/v1/stream/record/${recordId}`, {
             responseType: 'blob',
+            params,
           });
-
-          const reader = new FileReader();
-          const textPromise = new Promise<string>((resolve) => {
-            reader.onload = () => {
-              resolve(reader.result?.toString() || '');
-            };
-          });
-
-          reader.readAsText(response.data);
-          const text = await textPromise;
-
-          let filename;
-          const contentDisposition = response.headers['content-disposition'];
-
-          if (contentDisposition) {
-            // First try to parse filename*=UTF-8'' format (RFC 5987) for Unicode support
-            const filenameStarMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
-            if (filenameStarMatch && filenameStarMatch[1]) {
-              // Decode the percent-encoded UTF-8 filename
-              try {
-                filename = decodeURIComponent(filenameStarMatch[1]);
-              } catch (e) {
-                console.error('Failed to decode UTF-8 filename', e);
-              }
-            }
-            
-            // Fallback to basic filename="..." format if filename* not found
-            if (!filename) {
-              const filenameMatch = contentDisposition.match(/filename="?([^";\n]*)"?/i);
-              if (filenameMatch && filenameMatch[1]) {
-                filename = filenameMatch[1];
-              }
-            }
-          }
-          if (!filename && record.recordName) {
-            filename = record.recordName;
-          }
-
-          try {
-            const jsonData = JSON.parse(text);
-            if (jsonData && jsonData.signedUrl) {
-              setFileUrl(jsonData.signedUrl);
-              fileDataLoaded = true;
-            }
-          } catch (e) {
-            const bufferReader = new FileReader();
-            const arrayBufferPromise = new Promise<ArrayBuffer>((resolve) => {
-              bufferReader.onload = () => {
-                resolve(bufferReader.result as ArrayBuffer);
-              };
-              bufferReader.readAsArrayBuffer(response.data);
-            });
-
-            const buffer = await arrayBufferPromise;
-            if (buffer && buffer.byteLength > 0) {
-              setFileBuffer(buffer);
-              fileDataLoaded = true;
-            } else {
-              throw new Error('Empty buffer received');
-            }
-          }
-        } catch (error) {
-          setSnackbar({
-            open: true,
-            message: 'Failed to load preview. Redirecting to the original document shortly...',
-            severity: 'info',
-          });
-          
-          let webUrl = record?.webUrl;
-
-          const hideWeburl = record?.hideWeburl ?? false;
-          if (hideWeburl) {
-            webUrl = '';
-          }
-
-          if (record.origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
-            const baseUrl = `${window.location.protocol}//${window.location.host}`;
-            webUrl = baseUrl + webUrl;
-          }
-          
-          setTimeout(() => {
-            if (webUrl) {
-              try {
-                window.open(webUrl, '_blank', 'noopener,noreferrer');
-              } catch (openError) {
-                console.error('Error opening new tab:', openError);
-                setSnackbar({
-                  open: true,
-                  message: 'Failed to automatically open the document. Please check your browser pop-up settings.',
-                  severity: 'error',
-                });
-              }
-            } else {
-              console.error('Cannot redirect: No webUrl found for the record.');
-              setSnackbar({
-                open: true,
-                message: 'Failed to load preview and cannot redirect (document URL not found).',
-                severity: 'error',
-              });
-            }
-          }, 2500);
-          return;
-        }
-      } else if (record.origin === ORIGIN.CONNECTOR) {
-        try {
-          let params = {};
-          if (['pptx', 'ppt'].includes(record?.extension)) {
-            params = {
-              convertTo: 'application/pdf',
-            };
-            handleLargePPTFile(record);
-          }
-          
-          const publicConnectorUrlResponse = await ConnectorApiService.getConnectorPublicUrl();
-          let response;
-          
-          if (publicConnectorUrlResponse && publicConnectorUrlResponse.url) {
-            const CONNECTOR_URL = publicConnectorUrlResponse.url;
-            response = await axios.get(`${CONNECTOR_URL}/api/v1/stream/record/${recordId}`, {
+        } else {
+          response = await axios.get(
+            `${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${recordId}`,
+            {
               responseType: 'blob',
               params,
-            });
-          } else {
-            response = await axios.get(
-              `${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${recordId}`,
-              {
-                responseType: 'blob',
-                params,
-              }
-            );
-          }
-          
-          if (!response) return;
-
-          let filename;
-          const contentDisposition = response.headers['content-disposition'];
-
-          if (contentDisposition) {
-            // First try to parse filename*=UTF-8'' format (RFC 5987) for Unicode support
-            const filenameStarMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
-            if (filenameStarMatch && filenameStarMatch[1]) {
-              // Decode the percent-encoded UTF-8 filename
-              try {
-                filename = decodeURIComponent(filenameStarMatch[1]);
-              } catch (e) {
-                console.error('Failed to decode UTF-8 filename', e);
-              }
             }
-            
-            // Fallback to basic filename="..." format if filename* not found
-            if (!filename) {
-              const filenameMatch = contentDisposition.match(/filename="?([^";\n]*)"?/i);
-              if (filenameMatch && filenameMatch[1]) {
-                filename = filenameMatch[1];
-              }
+          );
+        }
+
+        if (!response) return;
+
+        let filename;
+        const contentDisposition = response.headers['content-disposition'];
+
+        if (contentDisposition) {
+          const filenameStarMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+          if (filenameStarMatch && filenameStarMatch[1]) {
+            try {
+              filename = decodeURIComponent(filenameStarMatch[1]);
+            } catch (e) {
+              console.error('Failed to decode UTF-8 filename', e);
             }
           }
 
-          if(!filename && record.recordName) {
-            filename = record.recordName;
+          if (!filename) {
+            const filenameMatch = contentDisposition.match(/filename="?([^";\n]*)"?/i);
+            if (filenameMatch && filenameMatch[1]) {
+              filename = filenameMatch[1];
+            }
           }
+        }
 
-          const bufferReader = new FileReader();
-          const arrayBufferPromise = new Promise<ArrayBuffer>((resolve, reject) => {
-            bufferReader.onload = () => {
-              const originalBuffer = bufferReader.result as ArrayBuffer;
-              const bufferCopy = originalBuffer.slice(0);
-              resolve(bufferCopy);
-            };
-            bufferReader.onerror = () => {
-              reject(new Error('Failed to read blob as array buffer'));
-            };
-            bufferReader.readAsArrayBuffer(response.data);
-          });
+        if (!filename && record.recordName) {
+          filename = record.recordName;
+        }
 
-          const buffer = await arrayBufferPromise;
-          if (buffer && buffer.byteLength > 0) {
-            setFileBuffer(buffer);
-            fileDataLoaded = true;
-          } else {
-            throw new Error('Empty buffer received');
-          }
-        } catch (err) {
-          console.error('Error downloading document:', err);
-          setSnackbar({
-            open: true,
-            message: 'Failed to load preview. Redirecting to the original document shortly...',
-            severity: 'info',
-          });
-          
-          let webUrl = record?.webUrl;
-          
-          if (record.origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
-            const baseUrl = `${window.location.protocol}//${window.location.host}`;
-            webUrl = baseUrl + webUrl;
-          }
+        const bufferReader = new FileReader();
+        const arrayBufferPromise = new Promise<ArrayBuffer>((resolve, reject) => {
+          bufferReader.onload = () => {
+            const originalBuffer = bufferReader.result as ArrayBuffer;
+            const bufferCopy = originalBuffer.slice(0);
+            resolve(bufferCopy);
+          };
+          bufferReader.onerror = () => {
+            reject(new Error('Failed to read blob as array buffer'));
+          };
+          bufferReader.readAsArrayBuffer(response.data);
+        });
 
-          setTimeout(() => {
-            if (webUrl) {
-              try {
-                window.open(webUrl, '_blank', 'noopener,noreferrer');
-              } catch (openError) {
-                console.error('Error opening new tab:', openError);
-                setSnackbar({
-                  open: true,
-                  message: 'Failed to automatically open the document. Please check your browser pop-up settings.',
-                  severity: 'error',
-                });
-              }
-            } else {
-              console.error('Cannot redirect: No webUrl found for the record.');
+        const buffer = await arrayBufferPromise;
+        if (buffer && buffer.byteLength > 0) {
+          setFileBuffer(buffer);
+          fileDataLoaded = true;
+        } else {
+          throw new Error('Empty buffer received');
+        }
+      } catch (err) {
+        console.error('Error downloading document:', err);
+        setSnackbar({
+          open: true,
+          message: 'Failed to load preview. Redirecting to the original document shortly...',
+          severity: 'info',
+        });
+
+        let webUrl = record?.webUrl;
+
+        const hideWeburl = record?.hideWeburl ?? false;
+        if (hideWeburl) {
+          webUrl = '';
+        }
+
+        if (record.origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
+          const baseUrl = `${window.location.protocol}//${window.location.host}`;
+          webUrl = baseUrl + webUrl;
+        }
+
+        setTimeout(() => {
+          if (webUrl) {
+            try {
+              window.open(webUrl, '_blank', 'noopener,noreferrer');
+            } catch (openError) {
+              console.error('Error opening new tab:', openError);
               setSnackbar({
                 open: true,
-                message: 'Failed to load preview and cannot redirect (document URL not found).',
+                message: 'Failed to automatically open the document. Please check your browser pop-up settings.',
                 severity: 'error',
               });
             }
-          }, 2500);
+          } else {
+            console.error('Cannot redirect: No webUrl found for the record.');
+            setSnackbar({
+              open: true,
+              message: 'Failed to load preview and cannot redirect (document URL not found).',
+              severity: 'error',
+            });
+          }
+        }, 2500);
 
-          return;
-        }
+        return;
       }
 
       // Only set the document type if file data was successfully loaded
@@ -684,7 +564,7 @@ export default function KnowledgeBaseSearch() {
         />
       );
     }
-    
+
     if (isMarkdown && (fileUrl || fileBuffer)) {
       return (
         <MarkdownViewer
@@ -702,7 +582,7 @@ export default function KnowledgeBaseSearch() {
       // Get extension from record if available
       const recordId = recordCitations?.recordId;
       const extension = recordId ? recordsMap[recordId]?.extension : undefined;
-      
+
       return (
         <ImageHighlighter
           key={`image-viewer-${recordId || 'new'}`}
@@ -780,7 +660,7 @@ export default function KnowledgeBaseSearch() {
             allConnectors={allConnectors}
           />
         </Box>
-        
+
         {isCitationViewerOpen && (
           <Divider orientation="vertical" flexItem sx={{ borderRightWidth: 3 }} />
         )}

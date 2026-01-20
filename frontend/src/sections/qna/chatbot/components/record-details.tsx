@@ -198,96 +198,57 @@ const RecordDetails = ({ recordId, onExternalLink }: RecordDetailsProps) => {
 
   const handleOpenPDFViewer = async () => {
     const record = recordData?.record;
-    if (record?.origin === ORIGIN.UPLOAD) {
-      if (record?.externalRecordId) {
-        try {
-          const { externalRecordId } = record;
-          const response = await axios.get(`/api/v1/document/${externalRecordId}/download`, {
-            responseType: 'blob',
-          });
+    if (!record) return;
 
-          // Read the blob response as text to check if it's JSON with signedUrl
-          const reader = new FileReader();
-          const textPromise = new Promise<string>((resolve) => {
-            reader.onload = () => {
-              resolve(reader.result?.toString() || '');
-            };
-          });
+    try {
+      const publicConnectorUrlResponse = await ConnectorApiService.getConnectorPublicUrl();
+      let response;
 
-          reader.readAsText(response.data);
-          const text = await textPromise;
-
-          try {
-            // Try to parse as JSON to check for signedUrl property
-            const jsonData = JSON.parse(text);
-            if (jsonData && jsonData.signedUrl) {
-              setPdfUrl(jsonData.signedUrl);
-              setIsPDFViewerOpen(true);
-              return;
-            }
-          } catch (e) {
-            // Case 2: Local storage - Return buffer
-            const bufferReader = new FileReader();
-            const arrayBufferPromise = new Promise<ArrayBuffer>((resolve) => {
-              bufferReader.onload = () => {
-                resolve(bufferReader.result as ArrayBuffer);
-              };
-              bufferReader.readAsArrayBuffer(response.data);
-            });
-
-            const buffer = await arrayBufferPromise;
-            setFileBuffer(buffer);
-            setIsPDFViewerOpen(true);
-            return;
-          }
-
-          throw new Error('Invalid response format');
-        } catch (err) {
-          console.error('Error downloading document:', err);
-          throw new Error('Failed to download document');
-        }
+      const params: any = {};
+      if (record?.recordType === 'MAIL') {
+        params.convertTo = 'pdf';
       }
-    } else if (record?.origin === ORIGIN.CONNECTOR) {
-      try {
-        const publicConnectorUrlResponse = await ConnectorApiService.getConnectorPublicUrl();
-        let response;
-        if (publicConnectorUrlResponse && publicConnectorUrlResponse.url) {
-          const CONNECTOR_URL = publicConnectorUrlResponse.url;
-          response = await axios.get(`${CONNECTOR_URL}/api/v1/stream/record/${recordId}`, {
-            responseType: 'blob',
-          });
-        } else {
-          response = await axios.get(
-            `${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${recordId}`,
-            {
-              responseType: 'blob',
-            }
-          );
-        }
-        if (!response) return;
 
-        // Convert blob directly to ArrayBuffer
-        const bufferReader = new FileReader();
-        const arrayBufferPromise = new Promise<ArrayBuffer>((resolve, reject) => {
-          bufferReader.onload = () => {
-            // Create a copy of the buffer to prevent detachment issues
-            const originalBuffer = bufferReader.result as ArrayBuffer;
-            const bufferCopy = originalBuffer.slice(0);
-            resolve(bufferCopy);
-          };
-          bufferReader.onerror = () => {
-            reject(new Error('Failed to read blob as array buffer'));
-          };
-          bufferReader.readAsArrayBuffer(response.data);
+      // Unified streaming logic for both KB and Connector records
+      if (publicConnectorUrlResponse && publicConnectorUrlResponse.url) {
+        const CONNECTOR_URL = publicConnectorUrlResponse.url;
+        response = await axios.get(`${CONNECTOR_URL}/api/v1/stream/record/${recordId}`, {
+          responseType: 'blob',
+          params,
         });
-
-        const buffer = await arrayBufferPromise;
-        setFileBuffer(buffer);
-        setIsPDFViewerOpen(true);
-      } catch (err) {
-        console.error('Error downloading document:', err);
-        throw new Error(`Failed to download document: ${err.message}`);
+      } else {
+        response = await axios.get(
+          `${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${recordId}`,
+          {
+            responseType: 'blob',
+            params,
+          }
+        );
       }
+
+      if (!response) return;
+
+      // Convert blob directly to ArrayBuffer
+      const bufferReader = new FileReader();
+      const arrayBufferPromise = new Promise<ArrayBuffer>((resolve, reject) => {
+        bufferReader.onload = () => {
+          // Create a copy of the buffer to prevent detachment issues
+          const originalBuffer = bufferReader.result as ArrayBuffer;
+          const bufferCopy = originalBuffer.slice(0);
+          resolve(bufferCopy);
+        };
+        bufferReader.onerror = () => {
+          reject(new Error('Failed to read blob as array buffer'));
+        };
+        bufferReader.readAsArrayBuffer(response.data);
+      });
+
+      const buffer = await arrayBufferPromise;
+      setFileBuffer(buffer);
+      setIsPDFViewerOpen(true);
+    } catch (err: any) {
+      console.error('Error downloading document:', err);
+      throw new Error(`Failed to download document: ${err.message || err}`);
     }
   };
 
@@ -400,7 +361,7 @@ const RecordDetails = ({ recordId, onExternalLink }: RecordDetailsProps) => {
   // Check hideWeburl flag
   const hideWeburl = record.hideWeburl ?? false;
 
-    // Get connector info
+  // Get connector info
   const connectorName = record.connectorName || (record.origin === 'UPLOAD' ? 'UPLOAD' : '');
   const connectorInfo = connectorData[connectorName?.toUpperCase()] || {
     iconPath: '/assets/icons/connectors/default.svg',
@@ -910,7 +871,7 @@ const RecordDetails = ({ recordId, onExternalLink }: RecordDetailsProps) => {
             pdfUrl={pdfUrl}
             pdfBuffer={fileBuffer}
             fileName={record.fileRecord?.name || 'Document'}
-            // citations={citations}
+          // citations={citations}
           />
         )}
       </Box>
