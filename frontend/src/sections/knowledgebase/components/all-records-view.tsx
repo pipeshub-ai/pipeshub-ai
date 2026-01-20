@@ -680,9 +680,9 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
   };
 
   // Handle download document
-  const handleDownload = async (externalRecordId: string, recordName: string, origin: string) => {
+  const handleDownload = async (recordId: string, recordName: string) => {
     try {
-      await KnowledgeBaseAPI.handleDownloadDocument(externalRecordId, recordName, origin);
+      await KnowledgeBaseAPI.handleDownloadDocument(recordId, recordName);
       setSnackbar({
         open: true,
         message: 'Download started successfully',
@@ -927,10 +927,10 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
         // Priority: record level > fileRecord level
         // Using ?? (nullish coalescing) to correctly handle 0 as a valid file size
         const size = params.row.sizeInBytes ?? params.value?.sizeInBytes;
-        
+
         const formattedSize =
-          size !== undefined && size !== null && !Number.isNaN(size) && size >= 0 
-            ? formatFileSize(size) 
+          size !== undefined && size !== null && !Number.isNaN(size) && size >= 0
+            ? formatFileSize(size)
             : '—';
 
         return (
@@ -1116,59 +1116,56 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
             },
             ...(canDownload
               ? [
-                  {
-                    label: getDownloadLabel(),
-                    icon: downloadIcon,
-                    color: theme.palette.primary.main,
-                    onClick: () =>
-                      handleDownload(
-                        params.row.origin === ORIGIN.UPLOAD
-                          ? params.row.externalRecordId!
-                          : params.row.id,
-                        params.row.recordName,
-                        params.row.origin
-                      ),
-                  },
-                ]
+                {
+                  label: getDownloadLabel(),
+                  icon: downloadIcon,
+                  color: theme.palette.primary.main,
+                  onClick: () =>
+                    handleDownload(
+                      params.row.id,
+                      params.row.recordName
+                    ),
+                },
+              ]
               : []),
             // Show reindex options to everyone (no permission check)
             ...((params.row.indexingStatus === 'FAILED' || params.row.indexingStatus === 'NOT_STARTED' || params.row.indexingStatus === 'CONNECTOR_DISABLED')
               ? [
-                  {
-                    label: 'Retry Indexing',
-                    icon: refreshIcon,
-                    color: theme.palette.warning.main,
-                    onClick: () => handleRetryIndexing(params.row.id),
-                  },
-                ]
+                {
+                  label: 'Retry Indexing',
+                  icon: refreshIcon,
+                  color: theme.palette.warning.main,
+                  onClick: () => handleRetryIndexing(params.row.id),
+                },
+              ]
               : []),
             // Show manual indexing to everyone (no permission check)
             ...(params.row.indexingStatus === 'AUTO_INDEX_OFF'
               ? [
-                  {
-                    label: 'Start Manual Indexing',
-                    icon: refreshIcon,
-                    color: theme.palette.success.main,
-                    onClick: () => handleRetryIndexing(params.row.id),
-                  },
-                ]
+                {
+                  label: 'Start Manual Indexing',
+                  icon: refreshIcon,
+                  color: theme.palette.success.main,
+                  onClick: () => handleRetryIndexing(params.row.id),
+                },
+              ]
               : []),
             // Only show delete option for OWNER and WRITER, and hide if origin is CONNECTOR
             ...(canModify && params.row.origin !== ORIGIN.CONNECTOR
               ? [
-                  {
-                    label: 'Delete Record',
-                    icon: trashCanIcon,
-                    color: theme.palette.error.main,
-                    onClick: () =>
-                      setDeleteDialogData({
-                        open: true,
-                        recordId: params.row.id,
-                        recordName: params.row.recordName,
-                      }),
-                    isDanger: true,
-                  },
-                ]
+                {
+                  label: 'Delete Record',
+                  icon: trashCanIcon,
+                  color: theme.palette.error.main,
+                  onClick: () =>
+                    setDeleteDialogData({
+                      open: true,
+                      recordId: params.row.id,
+                      recordName: params.row.recordName,
+                    }),
+                  isDanger: true,
+                },
+              ]
               : []),
           ];
 
@@ -1428,9 +1425,9 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
                             outline: 'none',
                           },
                           '& .MuiDataGrid-columnHeader:focus, .MuiDataGrid-columnHeader:focus-within':
-                            {
-                              outline: 'none',
-                            },
+                          {
+                            outline: 'none',
+                          },
                         }}
                       />
                     </Box>
@@ -1542,21 +1539,21 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
                         transition: 'all 0.15s ease',
                         ...(isDangerItem
                           ? {
-                              color: 'error.main',
-                              '&:hover': {
-                                bgcolor: 'error.lighter',
-                                transform: 'translateX(2px)',
-                              },
-                            }
+                            color: 'error.main',
+                            '&:hover': {
+                              bgcolor: 'error.lighter',
+                              transform: 'translateX(2px)',
+                            },
+                          }
                           : {
-                              '&:hover': {
-                                bgcolor: (theme1) =>
-                                  theme1.palette.mode === 'dark'
-                                    ? alpha('#fff', 0.06)
-                                    : alpha('#000', 0.04),
-                                transform: 'translateX(2px)',
-                              },
-                            }),
+                            '&:hover': {
+                              bgcolor: (theme1) =>
+                                theme1.palette.mode === 'dark'
+                                  ? alpha('#fff', 0.06)
+                                  : alpha('#000', 0.04),
+                              transform: 'translateX(2px)',
+                            },
+                          }),
                       }}
                     >
                       <ListItemIcon
