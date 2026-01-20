@@ -8,7 +8,7 @@ shared S3CompatibleBaseConnector to handle common functionality.
 from logging import Logger
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import Connectors, ExtensionTypes
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -27,6 +27,7 @@ from app.connectors.core.registry.connector_builder import (
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterField,
+    FilterOption,
     FilterType,
     ListOperator,
     MultiselectOperator,
@@ -100,12 +101,16 @@ S3DataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
         .add_filter_field(FilterField(
             name="file_extensions",
             display_name="File Extensions",
-            filter_type=FilterType.LIST,
+            filter_type=FilterType.MULTISELECT,
             category=FilterCategory.SYNC,
             description="Filter files by extension (e.g., pdf, docx, txt). Leave empty to sync all files.",
-            option_source_type=OptionSourceType.MANUAL,
+            option_source_type=OptionSourceType.STATIC,
             default_value=[],
-            default_operator=ListOperator.IN.value
+            default_operator=MultiselectOperator.IN.value,
+            options=[
+                FilterOption(id=ext.value, label=f".{ext.value}")
+                for ext in ExtensionTypes
+            ]
         ))
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))

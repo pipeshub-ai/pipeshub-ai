@@ -22,6 +22,7 @@ from app.config.constants.arangodb import (
     AppGroups,
     CollectionNames,
     Connectors,
+    ExtensionTypes,
     MimeTypes,
     OriginTypes,
 )
@@ -264,12 +265,16 @@ class GCSDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         .add_filter_field(FilterField(
             name="file_extensions",
             display_name="File Extensions",
-            filter_type=FilterType.LIST,
+            filter_type=FilterType.MULTISELECT,
             category=FilterCategory.SYNC,
             description="Filter files by extension (e.g., pdf, docx, txt). Leave empty to sync all files.",
-            option_source_type=OptionSourceType.MANUAL,
+            option_source_type=OptionSourceType.STATIC,
             default_value=[],
-            default_operator=ListOperator.IN.value
+            default_operator=MultiselectOperator.IN.value,
+            options=[
+                FilterOption(id=ext.value, label=f".{ext.value}")
+                for ext in ExtensionTypes
+            ]
         ))
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
