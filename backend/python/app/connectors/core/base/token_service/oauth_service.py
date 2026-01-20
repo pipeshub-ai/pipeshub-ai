@@ -160,18 +160,47 @@ class OAuthProvider:
         # Note: State validation is handled in handle_callback, not here
         # This method only exchanges the code for a token
 
+        # Check if we need to use Basic Auth (e.g., for Notion)
+        use_basic_auth = self.config.additional_params.get("use_basic_auth", False)
+        use_json_body = self.config.additional_params.get("use_json_body", False)
+
         data = {
             "grant_type": GrantType.AUTHORIZATION_CODE.value,
             "code": code,
             "redirect_uri": self.config.redirect_uri,
-            "client_id": self.config.client_id,
-            "client_secret": self.config.client_secret,
         }
+
+        # Notion and some other providers use Basic Auth header instead of body params
+        if not use_basic_auth:
+            data["client_id"] = self.config.client_id
+            data["client_secret"] = self.config.client_secret
+
         if code_verifier:
             data["code_verifier"] = code_verifier
 
         session = await self.session
-        async with session.post(self.config.token_url, data=data) as response:
+        headers = {}
+
+        # Prepare headers for providers requiring Basic Auth (e.g., Notion)
+        if use_basic_auth:
+            credentials = f"{self.config.client_id}:{self.config.client_secret}"
+            encoded_credentials = base64.b64encode(credentials.encode()).decode()
+            headers["Authorization"] = f"Basic {encoded_credentials}"
+
+            # Add Notion-specific version header if present
+            if "notion_version" in self.config.additional_params:
+                headers["Notion-Version"] = self.config.additional_params["notion_version"]
+
+        # Prepare POST request kwargs (JSON or form-encoded)
+        post_kwargs = {"headers": headers}
+        if use_json_body:
+            headers["Content-Type"] = "application/json"
+            post_kwargs["json"] = data
+        else:
+            post_kwargs["data"] = data
+
+        # Make token exchange request
+        async with session.post(self.config.token_url, **post_kwargs) as response:
             if response.status != HttpStatusCode.SUCCESS.value:
                 # Get detailed error info for debugging
                 error_text = await response.text()
@@ -205,15 +234,43 @@ class OAuthProvider:
 
     async def refresh_access_token(self, refresh_token: str) -> OAuthToken:
         """Refresh access token using refresh token"""
+        # Check if we need to use Basic Auth (e.g., for Notion)
+        use_basic_auth = self.config.additional_params.get("use_basic_auth", False)
+        use_json_body = self.config.additional_params.get("use_json_body", False)
+
         data = {
             "grant_type": GrantType.REFRESH_TOKEN.value,
             "refresh_token": refresh_token,
-            "client_id": self.config.client_id,
-            "client_secret": self.config.client_secret
         }
 
+        # Notion and some other providers use Basic Auth header instead of body params
+        if not use_basic_auth:
+            data["client_id"] = self.config.client_id
+            data["client_secret"] = self.config.client_secret
+
         session = await self.session
-        async with session.post(self.config.token_url, data=data) as response:
+        headers = {}
+
+        # Prepare headers for providers requiring Basic Auth (e.g., Notion)
+        if use_basic_auth:
+            credentials = f"{self.config.client_id}:{self.config.client_secret}"
+            encoded_credentials = base64.b64encode(credentials.encode()).decode()
+            headers["Authorization"] = f"Basic {encoded_credentials}"
+
+            # Add Notion-specific version header if present
+            if "notion_version" in self.config.additional_params:
+                headers["Notion-Version"] = self.config.additional_params["notion_version"]
+
+        # Prepare POST request kwargs (JSON or form-encoded)
+        post_kwargs = {"headers": headers}
+        if use_json_body:
+            headers["Content-Type"] = "application/json"
+            post_kwargs["json"] = data
+        else:
+            post_kwargs["data"] = data
+
+        # Make token refresh request
+        async with session.post(self.config.token_url, **post_kwargs) as response:
             if response.status == HttpStatusCode.FORBIDDEN.value:
                 # Log additional details for 403 errors (common with expired/invalid refresh tokens)
                 error_text = await response.text()

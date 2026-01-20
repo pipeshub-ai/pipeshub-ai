@@ -13,6 +13,7 @@ export const APP_TYPES = {
   SERVICENOW: 'servicenow',
   WEB: 'web',
   LOCAL: 'local',
+  NOTION: 'notion',
 } as const;
 
 export type AppType = (typeof APP_TYPES)[keyof typeof APP_TYPES];

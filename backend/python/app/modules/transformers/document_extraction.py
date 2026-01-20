@@ -102,9 +102,15 @@ class DocumentExtraction(Transformer):
         for block in blocks:
             if block.type.value == "text":
                 if block.data:
+                    # Handle dict data (e.g., COMMENT blocks with full metadata)
+                    if isinstance(block.data, dict):
+                        text_content = block.data.get("text", "")
+                    else:
+                        text_content = block.data
+
                     candidate = {
                         "type": "text",
-                        "text": block.data if block.data else ""
+                        "text": text_content if text_content else ""
                     }
                     increment = count_tokens(candidate["text"])
                     if total_tokens + increment > MAX_TOKENS:

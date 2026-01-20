@@ -6,10 +6,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from bs4 import BeautifulSoup
 from html_to_markdown import convert
 
-from app.config.constants.ai_models import (
-    AzureDocIntelligenceModel,
-    OCRProvider,
-)
+from app.config.constants.ai_models import AzureDocIntelligenceModel, OCRProvider
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -27,6 +24,7 @@ from app.models.blocks import (
     BlockType,
     CitationMetadata,
     DataFormat,
+    GroupType,
     Point,
 )
 from app.models.entities import Record, RecordType
@@ -603,6 +601,111 @@ class Processor:
             self.logger.error(f"❌ Error processing DOCX document: {str(e)}")
             raise
 
+    async def _enhance_tables_with_llm(self, block_containers: BlocksContainer) -> None:
+        """
+        Enhance TABLE BlockGroups with LLM-generated summaries and row descriptions.
+
+        This method processes all TABLE BlockGroups in the container:
+        - Generates table summary and enhanced column headers using LLM
+        - Generates natural language descriptions for each row
+        - Updates BlockGroup and Block data with enhanced content
+
+        Args:
+            block_containers: The BlocksContainer to enhance in-place
+        """
+        from app.utils.indexing_helpers import (
+            get_rows_text,
+            get_table_summary_n_headers,
+        )
+
+        # Find all TABLE BlockGroups
+        table_groups = [
+            bg for bg in block_containers.block_groups
+            if bg.type == GroupType.TABLE
+        ]
+
+        if not table_groups:
+            self.logger.debug("No TABLE BlockGroups found, skipping LLM enhancement")
+            return
+
+        self.logger.info(f"🤖 Enhancing {len(table_groups)} tables with LLM summaries")
+
+        for table_group in table_groups:
+            try:
+                # Get table markdown from data
+                table_markdown = table_group.data.get("table_markdown") if table_group.data else None
+                if not table_markdown:
+                    self.logger.warning(f"No table_markdown found for table group {table_group.index}")
+                    continue
+
+                # Get LLM-enhanced summary and column headers
+                response = await get_table_summary_n_headers(self.config_service, table_markdown)
+
+                if response:
+                    table_summary = response.summary or ""
+                    column_headers = response.headers or []
+
+                    # Update BlockGroup with enhanced data
+                    table_group.description = table_summary
+                    if table_group.data is None:
+                        table_group.data = {}
+                    table_group.data["table_summary"] = table_summary
+                    table_group.data["column_headers"] = column_headers
+
+                    # Update TableMetadata if column headers are available
+                    if column_headers and table_group.table_metadata:
+                        table_group.table_metadata.column_names = column_headers
+
+                    self.logger.debug(f"Enhanced table {table_group.index} with summary: {table_summary[:100]}...")
+
+                    # Get all child row blocks for this table
+                    row_blocks = []
+                    row_dicts = []
+
+                    if table_group.children:
+                        for child_idx in table_group.children:
+                            if child_idx.block_index is not None:
+                                block = block_containers.blocks[child_idx.block_index]
+                                if block.type == BlockType.TABLE_ROW:
+                                    row_blocks.append(block)
+                                    # Extract row dict from block data
+                                    if block.data and "cells" in block.data:
+                                        # Create row dict mapping column headers to cell values
+                                        cells = block.data["cells"]
+                                        if isinstance(cells, list) and column_headers:
+                                            row_dict = {
+                                                col: cells[i] if i < len(cells) else ""
+                                                for i, col in enumerate(column_headers)
+                                            }
+                                            row_dicts.append(row_dict)
+                                        else:
+                                            row_dicts.append({})
+
+                    # Generate LLM row descriptions (skip header row)
+                    if row_dicts and len(row_dicts) > 1:
+                        try:
+                            table_data = {"grid": [[row] for row in row_dicts[1:]]}  # Skip header
+                            row_descriptions, _ = await get_rows_text(
+                                self.config_service, table_data, table_summary, column_headers
+                            )
+
+                            # Update row blocks with LLM descriptions (skip header row)
+                            for i, description in enumerate(row_descriptions):
+                                if i + 1 < len(row_blocks):  # +1 to skip header
+                                    row_block = row_blocks[i + 1]
+                                    if row_block.data:
+                                        row_block.data["row_natural_language_text"] = description
+
+                            self.logger.debug(f"Enhanced {len(row_descriptions)} rows with LLM descriptions")
+                        except Exception as e:
+                            self.logger.warning(f"Failed to generate row descriptions: {e}")
+                else:
+                    self.logger.warning(f"No LLM response for table {table_group.index}")
+
+            except Exception as e:
+                self.logger.error(f"Error enhancing table {table_group.index}: {e}")
+                # Continue with other tables even if one fails
+
     async def process_blocks(
         self, recordName, recordId, version, source, orgId, blocks_data, virtual_record_id
     ) -> AsyncGenerator[Dict[str, Any], None]:
@@ -646,6 +749,9 @@ class Processor:
 
             # Signal parsing complete after blocks are processed
             yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+
+            # Enhance TABLE BlockGroups with LLM summaries and row descriptions
+            await self._enhance_tables_with_llm(block_containers)
 
             # Get record from database
             record = await self.arango_service.get_document(

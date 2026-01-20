@@ -1,4 +1,5 @@
 import hashlib
+import json
 from typing import Any, AsyncGenerator, Dict
 from uuid import uuid4
 
@@ -80,7 +81,10 @@ class EventProcessor:
         record_type = doc.get("recordType")
 
         if md5_checksum is None and content:
-            if isinstance(content, str):
+            if isinstance(content, dict):
+                # For structured content like BlocksContainer, convert to JSON string
+                content = json.dumps(content, sort_keys=True).encode('utf-8')
+            elif isinstance(content, str):
                 content = content.encode('utf-8')
             md5_checksum = hashlib.md5(content).hexdigest()
             doc.update({"md5Checksum": md5_checksum})
