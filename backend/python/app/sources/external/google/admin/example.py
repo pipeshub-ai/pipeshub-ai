@@ -7,7 +7,7 @@ import json
 import logging
 import os
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.admin.admin import GoogleAdminDataSource
@@ -172,19 +172,19 @@ async def main() -> None:
         
         gmail_data_source = GoogleGmailDataSource(enterprise_gmail_client.get_client())
         
-        # List all labels
-        print(f"\n📋 Listing all labels for user: {user_email}...")
-        labels_response = await gmail_data_source.users_labels_list(userId=user_email)
-        print("labels_response", labels_response)
-        labels = labels_response.get("labels", [])
+        # # List all labels
+        # print(f"\n📋 Listing all labels for user: {user_email}...")
+        # labels_response = await gmail_data_source.users_labels_list(userId=user_email)
+        # print("labels_response", labels_response)
+        # labels = labels_response.get("labels", [])
         
-        if labels:
-            print(f"✅ Found {len(labels)} labels:")
-            for label in labels:
-                label_id = label.get("id", "")
-                label_name = label.get("name", "")
-                label_type = label.get("type", "")
-                print(f"  - {label_name} (ID: {label_id}, Type: {label_type})")
+        # if labels:
+        #     print(f"✅ Found {len(labels)} labels:")
+        #     for label in labels:
+        #         label_id = label.get("id", "")
+        #         label_name = label.get("name", "")
+        #         label_type = label.get("type", "")
+        #         print(f"  - {label_name} (ID: {label_id}, Type: {label_type})")
             
             # Get 3 messages from each label
             # print(f"\n📧 Fetching 3 messages from each label...")
@@ -231,192 +231,169 @@ async def main() -> None:
             # else:
             #     print(f"\n✅ Total messages found across all labels: {total_messages_found}")
 
-        # Fetch threads first, then all messages in each thread
-        print("\n📧 Fetching threads...")
+        # Fetch the latest thread and its messages
+        print("\n📧 Fetching latest thread...")
         threads_response = await gmail_data_source.users_threads_list(
             userId=user_email,
-            maxResults=5
+            maxResults=1  # Get only the latest thread
         )
-        print("threads_response", threads_response)
         threads = threads_response.get("threads", [])
-        print(f"\n✅ Found {len(threads)} threads. Fetching all messages for each thread...\n")
         
-        # Helper function to extract headers from message payload
-        def extract_headers(payload):
-            headers = {}
-            if isinstance(payload, dict):
-                for header in payload.get("headers", []):
-                    name = header.get("name", "").lower()
-                    value = header.get("value", "")
-                    headers[name] = value
-            return headers
-        
-        # Helper function to format date
-        def format_date(internal_date):
-            if not internal_date:
-                return "N/A"
-            try:
-                timestamp = int(internal_date) / 1000
-                return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
-            except:
-                return str(internal_date)
-        
-        # Process each thread
-        for thread_num, thread in enumerate(threads, 1):
+        if not threads:
+            print("❌ No threads found")
+        else:
+            print(f"✅ Found latest thread. Fetching all messages...\n")
+            
+            # Helper function to extract headers from message payload
+            def extract_headers(payload):
+                headers = {}
+                if isinstance(payload, dict):
+                    for header in payload.get("headers", []):
+                        name = header.get("name", "").lower()
+                        value = header.get("value", "")
+                        headers[name] = value
+                return headers
+            
+            # Helper function to format date
+            def format_date(internal_date):
+                if not internal_date:
+                    return "N/A"
+                try:
+                    timestamp = int(internal_date) / 1000
+                    return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+                except:
+                    return str(internal_date)
+            
+            # Helper function to extract attachment info from Gmail message payload
+            def extract_attachment_infos(message: Dict) -> List[Dict]:
+                """Extract attachment info from Gmail message payload.
+                
+                Args:
+                    message: Message data from Gmail API
+                    
+                Returns:
+                    List of attachment info dictionaries
+                """
+                attachment_infos = []
+                payload = message.get('payload', {})
+                parts = payload.get('parts', [])
+
+                def extract_attachments(parts_list):
+                    """Recursively extract attachments from message parts."""
+                    attachments = []
+                    for part in parts_list:
+                        # Check if this part is an attachment
+                        if part.get('filename'):
+                            body = part.get('body', {})
+                            attachment_id = body.get('attachmentId')
+                            if attachment_id:
+                                attachments.append({
+                                    'attachmentId': attachment_id,
+                                    'filename': part.get('filename'),
+                                    'mimeType': part.get('mimeType', 'application/octet-stream'),
+                                    'size': body.get('size', 0)
+                                })
+
+                        # Recursively check nested parts
+                        if part.get('parts'):
+                            attachments.extend(extract_attachments(part.get('parts')))
+
+                    return attachments
+
+                attachment_infos = extract_attachments(parts)
+                return attachment_infos
+            
+            # Process the latest thread
+            thread = threads[0]
             thread_id = thread.get("id", "N/A")
             if thread_id == "N/A":
-                continue
-            
-            try:
-                # Get full thread details (includes all messages in the thread)
-                thread_details = await gmail_data_source.users_threads_get(
-                    userId=user_email,
-                    id=thread_id,
-                    format="full"
-                )
-                
-                messages = thread_details.get("messages", [])
-                history_id = thread_details.get("historyId", "N/A")
-                
-                print("=" * 80)
-                print(f"🧵 Thread {thread_num} of {len(threads)}")
-                print("=" * 80)
-                print(f"Thread ID: {thread_id}")
-                print(f"History ID: {history_id}")
-                print(f"Number of messages in thread: {len(messages)}")
-                print()
-                
-                # Display each message in the thread
-                for msg_num, message in enumerate(messages, 1):
-                    msg_id = message.get("id", "N/A")
-                    if msg_id == "N/A":
-                        continue
-                    
-                    # Extract headers
-                    payload = message.get("payload", {})
-                    headers = extract_headers(payload)
-                    
-                    # Extract other message info
-                    snippet = message.get("snippet", "No preview available")
-                    label_ids = message.get("labelIds", [])
-                    internal_date = message.get("internalDate", "")
-                    date_str = format_date(internal_date)
-                    
-                    # Print message details
-                    print("-" * 80)
-                    print(f"  📨 Message {msg_num} of {len(messages)} in Thread")
-                    print("-" * 80)
-                    print(f"  Message ID: {msg_id}")
-                    print(f"  Date: {date_str}")
-                    print(f"  From: {headers.get('from', 'N/A')}")
-                    print(f"  To: {headers.get('to', 'N/A')}")
-                    if headers.get('cc'):
-                        print(f"  CC: {headers.get('cc', 'N/A')}")
-                    if headers.get('bcc'):
-                        print(f"  BCC: {headers.get('bcc', 'N/A')}")
-                    print(f"  Subject: {headers.get('subject', 'No Subject')}")
-                    print(f"  Labels: {', '.join(label_ids) if label_ids else 'None'}")
-                    print(f"  Preview: {snippet}")
-                    print()
-                
-                print()  # Extra line between threads
-                
-            except Exception as e:
-                print(f"  ⚠️  Error fetching thread {thread_id}: {e}")
-                import traceback
-                traceback.print_exc()
-                print()
-
-        # #----------------------! Test History List API !-----------------------------------#
-        history_response = await gmail_data_source.users_history_list(
+                print("❌ Thread ID is missing")
+            else:
+                try:
+                    # Get full thread details (includes all messages in the thread)
+                    thread_details = await gmail_data_source.users_threads_get(
                         userId=user_email,
-                        startHistoryId=9910,
-                        maxResults=10
+                        id=thread_id,
+                        format="full"
                     )
-        print("history_response", history_response)
+                    
+                    messages = thread_details.get("messages", [])
+                    history_id = thread_details.get("historyId", "N/A")
+                    
+                    print("=" * 80)
+                    print("🧵 Latest Thread")
+                    print("=" * 80)
+                    print(f"Thread ID: {thread_id}")
+                    print(f"History ID: {history_id}")
+                    print(f"Number of messages in thread: {len(messages)}")
+                    print()
+                    
+                    # Display each message in the thread
+                    for msg_num, message in enumerate(messages, 1):
+                        msg_id = message.get("id", "N/A")
+                        if msg_id == "N/A":
+                            continue
+                        
+                        # Extract headers
+                        payload = message.get("payload", {})
+                        headers = extract_headers(payload)
 
-        # #----------------------! Print last 25 messages to check sort order !-----------------------------------#
-        # print("\n📧 Fetching last 25 messages to check sort order...")
-        # messages_response = await gmail_data_source.users_messages_list(
-        #     userId=user_email,
-        #     maxResults=10
-        # )
-        # print("messages_response", messages_response)
-        # print("\n\n\n\n\n")
-        # messages = messages_response.get("messages", [])
-        # print(f"\n✅ Found {len(messages)} messages. Fetching details...\n")
-        
-        # # Helper function to format date
-        # def format_date(internal_date):
-        #     if not internal_date:
-        #         return "N/A"
-        #     try:
-        #         timestamp = int(internal_date) / 1000
-        #         return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
-        #     except:
-        #         return str(internal_date)
-        
-        # # Fetch and display full details for each message
-        # for i, msg in enumerate(messages, 1):
-        #     msg_id = msg.get("id", "N/A")
-        #     if msg_id == "N/A":
-        #         continue
-                
-        #     try:
-        #         # Get full message details
-        #         message_details = await gmail_data_source.users_messages_get(
-        #             userId=user_email,
-        #             id=msg_id,
-        #             format="full"
-        #         )
-        #         print("message_details", message_details)
-                
-        #         # Extract headers
-        #         headers = {}
-        #         for header in message_details.get("payload", {}).get("headers", []):
-        #             name = header.get("name", "").lower()
-        #             value = header.get("value", "")
-        #             headers[name] = value
-                
-        #         # Extract other message info
-        #         snippet = message_details.get("snippet", "No preview available")
-        #         thread_id = message_details.get("threadId", "N/A")
-        #         label_ids = message_details.get("labelIds", [])
-        #         internal_date = message_details.get("internalDate", "")
-                
-        #         # Format date
-        #         date_str = format_date(internal_date)
-                
-        #         # Print message details with emphasis on date for sort order checking
-        #         print("=" * 80)
-        #         print(f"📨 Message {i} of {len(messages)}")
-        #         print("=" * 80)
-        #         print(f"Date: {date_str} (Internal Date: {internal_date})")
-        #         print(f"Message ID: {msg_id}")
-        #         print(f"Thread ID: {thread_id}")
-        #         print(f"From: {headers.get('from', 'N/A')}")
-        #         print(f"To: {headers.get('to', 'N/A')}")
-        #         if headers.get('cc'):
-        #             print(f"CC: {headers.get('cc', 'N/A')}")
-        #         if headers.get('bcc'):
-        #             print(f"BCC: {headers.get('bcc', 'N/A')}")
-        #         print(f"Subject: {headers.get('subject', 'No Subject')}")
-        #         print(f"Labels: {', '.join(label_ids) if label_ids else 'None'}")
-        #         print(f"\nPreview:")
-        #         print(f"  {snippet}")
-        #         print()
-                
-        #     except Exception as e:
-        #         print(f"  ⚠️  Error fetching details for message {msg_id}: {e}")
-        #         print()
-        
-        # # Summary of sort order
-        # print("\n" + "=" * 80)
-        # print("SORT ORDER SUMMARY")
-        # print("=" * 80)
-        # print("Messages are displayed in the order returned by the API.")
-        # print("Check the dates above to verify if they are sorted (newest first or oldest first).")
-        # print("=" * 80)
+                        # NEW: Extract the Global Message-ID from headers
+                        global_msg_id = headers.get('message-id', 'N/A')
+                        print(f"  Global Message-ID: {global_msg_id}")
+                        
+                        # Extract other message info
+                        snippet = message.get("snippet", "No preview available")
+                        label_ids = message.get("labelIds", [])
+                        internal_date = message.get("internalDate", "")
+                        date_str = format_date(internal_date)
+                        
+                        # Print message details
+                        print("-" * 80)
+                        print(f"  📨 Message {msg_num} of {len(messages)} in Thread")
+                        print("-" * 80)
+                        print(f"  Message ID: {msg_id}")
+                        print(f"  Date: {date_str}")
+                        print(f"  From: {headers.get('from', 'N/A')}")
+                        print(f"  To: {headers.get('to', 'N/A')}")
+                        if headers.get('cc'):
+                            print(f"  CC: {headers.get('cc', 'N/A')}")
+                        if headers.get('bcc'):
+                            print(f"  BCC: {headers.get('bcc', 'N/A')}")
+                        print(f"  Subject: {headers.get('subject', 'No Subject')}")
+                        print(f"  Labels: {', '.join(label_ids) if label_ids else 'None'}")
+                        print(f"  Preview: {snippet}")
+                        
+                        # Extract and print attachment info
+                        attachment_infos = extract_attachment_infos(message)
+                        if attachment_infos:
+                            print(f"  📎 Attachments ({len(attachment_infos)}):")
+                            for attach_num, attach_info in enumerate(attachment_infos, 1):
+                                attachment_id = attach_info.get('attachmentId', 'N/A')
+                                filename = attach_info.get('filename', 'Unnamed')
+                                mime_type = attach_info.get('mimeType', 'N/A')
+                                size = attach_info.get('size', 0)
+                                # Format size in human-readable format
+                                if size < 1024:
+                                    size_str = f"{size} B"
+                                elif size < 1024 * 1024:
+                                    size_str = f"{size / 1024:.2f} KB"
+                                else:
+                                    size_str = f"{size / (1024 * 1024):.2f} MB"
+                                    
+                                print(f"    {attach_num}. {filename}")
+                                print(f"       ID: {attachment_id}")
+                                print(f"       Type: {mime_type}")
+                                print(f"       Size: {size_str}")
+                        else:
+                            print(f"  📎 Attachments: None")
+                        print()
+                    
+                except Exception as e:
+                    print(f"  ⚠️  Error fetching thread {thread_id}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    print()
                 
     except Exception as e:
         print(f"❌ Error with Gmail API: {e}")

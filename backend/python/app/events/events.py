@@ -205,6 +205,10 @@ class EventProcessor:
                 if virtual_record_id is None:
                     virtual_record_id = str(uuid4())
 
+                print("\n\n\n\n\n\n")
+                print(event_data)
+                print("\n\n\n\n\n\n")
+
                 # MD5 deduplication for Gmail messages
                 html_content = event_data.get("body")
                 if html_content:

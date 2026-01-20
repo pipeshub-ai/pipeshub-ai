@@ -38,6 +38,7 @@ from app.connectors.sources.google.drive.individual.connector import (
 from app.connectors.sources.google.drive.team.connector import (
     GoogleDriveTeamConnector,
 )
+from app.connectors.sources.google.gmail.team.connector import GoogleGmailTeamConnector
 from app.connectors.sources.google_cloud_storage.connector import GCSConnector
 from app.connectors.sources.linear.connector import LinearConnector
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
@@ -67,6 +68,7 @@ class ConnectorFactory:
         "box": BoxConnector,
         "drive": GoogleDriveIndividualConnector,
         "driveworkspace": GoogleDriveTeamConnector,
+        "gmailworkspace": GoogleGmailTeamConnector,
         "dropbox": DropboxConnector,
         "dropboxpersonal": DropboxIndividualConnector,
         "nextcloud": NextcloudConnector,
