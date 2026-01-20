@@ -361,9 +361,10 @@ class DataSourceEntitiesProcessor:
                 if user:
                     # For ASSIGNED_TO, use connector-provided timestamp if available, otherwise fallback to source_updated_at
                     source_timestamp = None
-                    if hasattr(ticket, 'assignee_source_timestamp') and ticket.assignee_source_timestamp:
+                    if hasattr(ticket, 'assignee_source_timestamp') and ticket.assignee_source_timestamp is not None:
                         source_timestamp = ticket.assignee_source_timestamp
-                    elif hasattr(ticket, 'source_updated_at') and ticket.source_updated_at:
+                    elif hasattr(ticket, 'source_updated_at') and ticket.source_updated_at is not None:
+                        # Use ticket's source_updated_at even if 0 (it's the best we have)
                         source_timestamp = ticket.source_updated_at
                     edge_data = {
                         "_from": f"{CollectionNames.RECORDS.value}/{ticket.id}",
@@ -372,12 +373,9 @@ class DataSourceEntitiesProcessor:
                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                     }
-                    if source_timestamp:
+                    if source_timestamp is not None:
                         edge_data["sourceTimestamp"] = source_timestamp
                     edges_to_create.append(edge_data)
-                    self.logger.debug(f"Created ASSIGNED_TO edge for ticket {ticket.id} to user {user.email}")
-                else:
-                    self.logger.debug(f"User with email {ticket.assignee_email} not found, skipping ASSIGNED_TO edge for ticket {ticket.id}")
             except Exception as e:
                 self.logger.warning(f"Failed to create ASSIGNED_TO edge for ticket {ticket.id}: {str(e)}")
 
@@ -390,9 +388,10 @@ class DataSourceEntitiesProcessor:
                 if user:
                     # For CREATED_BY, use connector-provided timestamp if available, otherwise fallback to source_created_at
                     source_timestamp = None
-                    if hasattr(ticket, 'creator_source_timestamp') and ticket.creator_source_timestamp:
+                    if hasattr(ticket, 'creator_source_timestamp') and ticket.creator_source_timestamp is not None:
                         source_timestamp = ticket.creator_source_timestamp
-                    elif hasattr(ticket, 'source_created_at') and ticket.source_created_at:
+                    elif hasattr(ticket, 'source_created_at') and ticket.source_created_at is not None:
+                        # Use ticket's source_created_at even if 0 (it's the best we have)
                         source_timestamp = ticket.source_created_at
                     edge_data = {
                         "_from": f"{CollectionNames.RECORDS.value}/{ticket.id}",
@@ -401,12 +400,9 @@ class DataSourceEntitiesProcessor:
                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                     }
-                    if source_timestamp:
+                    if source_timestamp is not None:
                         edge_data["sourceTimestamp"] = source_timestamp
                     edges_to_create.append(edge_data)
-                    self.logger.debug(f"Created CREATED_BY edge for ticket {ticket.id} to user {user.email}")
-                else:
-                    self.logger.debug(f"User with email {ticket.creator_email} not found, skipping CREATED_BY edge for ticket {ticket.id}")
             except Exception as e:
                 self.logger.warning(f"Failed to create CREATED_BY edge for ticket {ticket.id}: {str(e)}")
 
@@ -419,9 +415,10 @@ class DataSourceEntitiesProcessor:
                 if user:
                     # For REPORTED_BY, use connector-provided timestamp if available, otherwise fallback to source_created_at
                     source_timestamp = None
-                    if hasattr(ticket, 'reporter_source_timestamp') and ticket.reporter_source_timestamp:
+                    if hasattr(ticket, 'reporter_source_timestamp') and ticket.reporter_source_timestamp is not None:
                         source_timestamp = ticket.reporter_source_timestamp
-                    elif hasattr(ticket, 'source_created_at') and ticket.source_created_at:
+                    elif hasattr(ticket, 'source_created_at') and ticket.source_created_at is not None:
+                        # Use ticket's source_created_at even if 0 (it's the best we have)
                         source_timestamp = ticket.source_created_at
                     edge_data = {
                         "_from": f"{CollectionNames.RECORDS.value}/{ticket.id}",
@@ -430,12 +427,9 @@ class DataSourceEntitiesProcessor:
                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                     }
-                    if source_timestamp:
+                    if source_timestamp is not None:
                         edge_data["sourceTimestamp"] = source_timestamp
                     edges_to_create.append(edge_data)
-                    self.logger.debug(f"Created REPORTED_BY edge for ticket {ticket.id} to user {user.email}")
-                else:
-                    self.logger.debug(f"User with email {ticket.reporter_email} not found, skipping REPORTED_BY edge for ticket {ticket.id}")
             except Exception as e:
                 self.logger.warning(f"Failed to create REPORTED_BY edge for ticket {ticket.id}: {str(e)}")
 

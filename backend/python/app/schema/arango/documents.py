@@ -398,6 +398,9 @@ ticket_record_schema = {
             "creatorEmail": {"type": ["string", "null"]},
             "creatorName": {"type": ["string", "null"]},
             "reporterName": {"type": ["string", "null"]},
+            "assigneeSourceTimestamp": {"type": ["number", "null"]},
+            "creatorSourceTimestamp": {"type": ["number", "null"]},
+            "reporterSourceTimestamp": {"type": ["number", "null"]},
         },
     },
 }
