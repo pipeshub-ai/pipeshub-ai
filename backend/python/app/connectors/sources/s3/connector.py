@@ -29,7 +29,6 @@ from app.connectors.core.registry.filters import (
     FilterField,
     FilterOption,
     FilterType,
-    ListOperator,
     MultiselectOperator,
     OptionSourceType,
     load_connector_filters,

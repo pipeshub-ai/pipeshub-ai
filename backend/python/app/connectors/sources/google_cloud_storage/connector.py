@@ -60,7 +60,6 @@ from app.connectors.core.registry.filters import (
     FilterOptionsResponse,
     FilterType,
     IndexingFilterKey,
-    ListOperator,
     MultiselectOperator,
     OptionSourceType,
     SyncFilterKey,
