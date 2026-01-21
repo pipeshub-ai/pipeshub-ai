@@ -25,21 +25,20 @@ from app.models.blocks import (
 )
 from app.modules.parsers.excel.prompt_template import (
     HeaderDetection,
-    RowDescriptions,
     TableHeaders,
     csv_header_detection_prompt,
     csv_header_generation_prompt,
     row_text_prompt_for_csv,
     table_summary_prompt,
 )
-from app.utils.indexing_helpers import generate_simple_row_text, format_rows_with_index
+from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
+from app.utils.logger import create_logger
 from app.utils.streaming import (
     invoke_with_row_descriptions_and_reflection,
     invoke_with_structured_output_and_reflection,
 )
-from app.utils.logger import create_logger
 
-logger = create_logger("csv_parser")    
+logger = create_logger("csv_parser")
 
 class CSVParser:
     def __init__(
@@ -249,6 +248,23 @@ class CSVParser:
         """Wrapper for LLM calls with retry logic"""
         return await llm.ainvoke(messages)
 
+    def _convert_rows_to_strings(self, rows: List[List[Any]], num_rows: int = 6) -> List[List[str]]:
+        """
+        Convert multiple rows to lists of strings.
+
+        Args:
+            rows: List of rows where each row is a list of values
+            num_rows: Number of rows to convert (default: 6)
+
+        Returns:
+            List of converted rows, where each row is a list of strings.
+            Returns empty list for rows that don't exist.
+        """
+        return [
+            [str(v) if v is not None else "" for v in rows[i]] if i < len(rows) else []
+            for i in range(num_rows)
+        ]
+
     async def detect_headers_with_llm(
         self, first_rows: List[List[Any]], llm: BaseChatModel
     ) -> bool:
@@ -262,19 +278,17 @@ class CSVParser:
         Returns:
             True if valid headers detected, False otherwise
         """
+        # Constants for header detection
+        MIN_ROWS_FOR_ANALYSIS = 2
+
         try:
-            if len(first_rows) < 2:
+            if len(first_rows) < MIN_ROWS_FOR_ANALYSIS:
                 # Not enough rows to analyze, assume headers exist
                 return True
 
             # Prepare rows for prompt (convert to strings for display)
-            row1 = [str(v) if v is not None else "" for v in first_rows[0]]
-            row2 = [str(v) if v is not None else "" for v in first_rows[1]]
-            row3 = [str(v) if v is not None else "" for v in first_rows[2]] if len(first_rows) > 2 else []
-            row4 = [str(v) if v is not None else "" for v in first_rows[3]] if len(first_rows) > 3 else []
-            row5 = [str(v) if v is not None else "" for v in first_rows[4]] if len(first_rows) > 4 else []
-            row6 = [str(v) if v is not None else "" for v in first_rows[5]] if len(first_rows) > 5 else []
-            
+            row1, row2, row3, row4, row5, row6 = self._convert_rows_to_strings(first_rows, 6)
+
             messages = self.csv_header_detection_prompt.format_messages(
                 row1=row1,
                 row2=row2,
@@ -434,16 +448,16 @@ class CSVParser:
         current_headers = list(csv_result[0].keys())
         first_rows = [current_headers]
         first_rows.extend([list(row.values()) for row in csv_result[:5]])
-        
+
         has_valid_headers = await self.detect_headers_with_llm(first_rows, llm)
-        
+
         # Phase 2: Generate headers if needed
         if not has_valid_headers:
             logger.info("No valid headers detected, generating headers with LLM")
             # Treat all rows as data (including first row which was treated as header)
             # Convert all rows to list format, preserving line numbers
             all_data_rows = [list(row.values()) for row in csv_result]
-            
+
             new_headers = await self.generate_headers_with_llm(
                 all_data_rows[:10],  # Use first 10 rows as sample
                 len(current_headers),
@@ -454,7 +468,7 @@ class CSVParser:
             csv_result = [{new_headers[i]: current_headers[i] for i in range(len(new_headers))}]
             # Reconstruct line_numbers: first row is line 1, then use existing line_numbers
             line_numbers = [1] + line_numbers
-            
+
             # Reconstruct remaining rows with new headers
             csv_result.extend([
                 {new_headers[i]: row[i] for i in range(len(new_headers))}
@@ -469,7 +483,7 @@ class CSVParser:
         # Check if table exceeds threshold
         use_llm_for_rows = len(csv_result) <= threshold
         table_summary = await self.get_table_summary(llm, csv_result)
-        
+
         if use_llm_for_rows:
             # Use LLM for row descriptions
             batch_size = 50

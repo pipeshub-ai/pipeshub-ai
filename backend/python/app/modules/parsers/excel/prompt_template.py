@@ -76,7 +76,7 @@ Table Summary:
 Rows Data (Total: {row_count} rows):
 {numbered_rows_data}
 
-IMPORTANT: 
+IMPORTANT:
 - You must return EXACTLY {row_count} descriptions - one for each row, in the same order.
 - Do NOT include "Row 1:", "Row 2 presents...", or any row numbers in the descriptions.
 - Focus only on describing the data content itself.
