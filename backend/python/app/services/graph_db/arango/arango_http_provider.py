@@ -549,6 +549,63 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Batch edge creation failed: {str(e)}")
             raise
 
+    async def batch_create_ticket_relations(
+        self,
+        edges: List[Dict],
+        transaction: Optional[str] = None
+    ) -> bool:
+        """
+        Batch create ticket relation edges - FULLY ASYNC.
+
+        Uses UPSERT to avoid duplicates - matches on _from, _to, and edgeType.
+        This is specialized for ticketRelations collection where multiple edges
+        can exist between the same ticket and user with different edgeType values.
+
+        Args:
+            edges: List of edge documents with _from, _to, and edgeType
+            transaction: Optional transaction ID
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            if not edges:
+                return True
+
+            self.logger.info("🚀 Batch creating ticket relation edges")
+
+            # Translate edges from generic format to ArangoDB format
+            arango_edges = self._translate_edges_to_arango(edges)
+
+            # For ticket relations, include edgeType in the UPSERT match condition
+            batch_query = """
+            FOR edge IN @edges
+                UPSERT { _from: edge._from, _to: edge._to, edgeType: edge.edgeType }
+                INSERT edge
+                UPDATE edge
+                IN @@collection
+                RETURN NEW
+            """
+            bind_vars = {
+                "edges": arango_edges,
+                "@collection": CollectionNames.TICKET_RELATIONS.value
+            }
+
+            results = await self.http_client.execute_aql(
+                batch_query,
+                bind_vars,
+                txn_id=transaction
+            )
+
+            self.logger.info(
+                f"✅ Successfully created {len(results)} ticket relation edges."
+            )
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Batch ticket relation creation failed: {str(e)}")
+            raise
+
     async def get_edge(
         self,
         from_id: str,

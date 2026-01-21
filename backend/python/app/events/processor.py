@@ -1,7 +1,7 @@
 import io
 import json
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List
+from typing import Any, AsyncGenerator, Dict, List, Tuple
 
 from bs4 import BeautifulSoup
 from html_to_markdown import convert
@@ -679,163 +679,189 @@ class Processor:
             self.logger.error(f"❌ Error processing Blocks Container: {str(e)}")
             raise
 
-    async def _process_blockgroups_through_docling(
-        self, block_containers: BlocksContainer, record_name: str
-    ) -> BlocksContainer:
+    def _separate_block_groups_by_index(
+        self, block_groups: List[BlockGroup]
+    ) -> Tuple[List[BlockGroup], List[BlockGroup]]:
         """
-        Process BlockGroups with requires_processing=True through docling.
-
-        Uses a functional approach:
-        1. Process all BlockGroups that need processing, collecting results
-        2. Calculate index mappings upfront
-        3. Build new BlocksContainer in a single pass
+        Separate block groups into those with valid index and those without.
 
         Args:
-            block_containers: BlocksContainer to process
-            record_name: Name of the record (for docling processing)
+            block_groups: List of block groups to separate
 
         Returns:
-            BlocksContainer with processed blocks merged in
+            Tuple of (block_groups_with_index, block_groups_without_index)
         """
-        if not block_containers.block_groups:
-            return block_containers
-
-        # Separate block_groups with valid index from those with None index
         block_groups_with_index: List[BlockGroup] = []
         block_groups_without_index: List[BlockGroup] = []
 
-        for bg in block_containers.block_groups:
+        for bg in block_groups:
             if bg.index is not None:
                 block_groups_with_index.append(bg)
             else:
                 block_groups_without_index.append(bg)
 
-        # Filter BlockGroups that need processing (already in sequence from connector)
-        block_groups_to_process = [
-            bg for bg in block_groups_with_index
-            if bg.requires_processing and bg.data
-        ]
+        return block_groups_with_index, block_groups_without_index
 
-        if not block_groups_to_process:
-            self.logger.debug("No BlockGroups require processing")
-            return block_containers
+    async def _process_blockgroup_images(
+        self, markdown_data: str, block_group_index: int
+    ) -> Tuple[str, Dict[str, str]]:
+        """
+        Extract images from markdown and convert URLs to base64.
 
-        self.logger.info(
-            f"🔄 Processing {len(block_groups_to_process)} BlockGroups through docling"
-        )
+        Args:
+            markdown_data: Markdown content to process
+            block_group_index: Index of the block group (for logging)
 
-        # ========== PHASE 1: Process all BlockGroups and collect results ==========
-        # Map: parent_index -> (new_block_groups, new_blocks)
-        processing_results: Dict[int, tuple[List[BlockGroup], List[Block]]] = {}
-        processor = DoclingProcessor(logger=self.logger, config=self.config_service)
-        initial_block_count = len(block_containers.blocks)
+        Returns:
+            Tuple of (modified_markdown, caption_map) where caption_map maps alt text to base64 URIs
+        """
+        caption_map: Dict[str, str] = {}
+        modified_markdown = markdown_data
 
-        # Get markdown and image parsers for processing
         md_parser = self.parsers.get(ExtensionTypes.MD.value)
         image_parser = self.parsers.get(ExtensionTypes.PNG.value)
 
-        for block_group in block_groups_to_process:
-            try:
-                # Extract markdown data from BlockGroup
-                markdown_data = block_group.data
-                if not markdown_data or not isinstance(markdown_data, str):
-                    raise ValueError(
-                        f"BlockGroup {block_group.index} has no valid markdown data"
-                    )
+        if md_parser and image_parser:
+            modified_markdown, images = md_parser.extract_and_replace_images(markdown_data)
 
-                # Extract and replace images from markdown, then convert URLs to base64
-                caption_map = {}
-                modified_markdown = markdown_data
+            if images:
+                # Collect all image URLs
+                urls_to_convert = [image["url"] for image in images]
 
-                if md_parser and image_parser:
-                    modified_markdown, images = md_parser.extract_and_replace_images(markdown_data)
+                # Convert URLs to base64
+                base64_urls = await image_parser.urls_to_base64(urls_to_convert)
 
-                    if images:
-                        # Collect all image URLs
-                        urls_to_convert = [image["url"] for image in images]
+                # Create caption map with base64 URLs
+                for i, image in enumerate(images):
+                    if base64_urls[i]:
+                        caption_map[image["new_alt_text"]] = base64_urls[i]
 
-                        # Convert URLs to base64
-                        base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+                self.logger.debug(
+                    f"📷 Extracted {len(images)} images from BlockGroup {block_group_index}, "
+                    f"converted {len([u for u in base64_urls if u])} to base64"
+                )
 
-                        # Create caption map with base64 URLs
-                        for i, image in enumerate(images):
-                            if base64_urls[i]:
-                                caption_map[image["new_alt_text"]] = base64_urls[i]
+        return modified_markdown, caption_map
 
-                        self.logger.debug(
-                            f"📷 Extracted {len(images)} images from BlockGroup {block_group.index}, "
-                            f"converted {len([u for u in base64_urls if u])} to base64"
+    def _map_base64_images_to_blocks(
+        self, blocks: List[Block], caption_map: Dict[str, str], block_group_index: int
+    ) -> None:
+        """
+        Map base64 images to image blocks using captions.
+
+        Args:
+            blocks: List of blocks to process
+            caption_map: Map of alt text to base64 URIs
+            block_group_index: Index of the block group (for logging)
+        """
+        if not caption_map:
+            return
+
+        for block in blocks:
+            if block.type == BlockType.IMAGE.value and block.image_metadata:
+                caption = block.image_metadata.captions
+                if caption:
+                    caption = caption[0] if isinstance(caption, list) else caption
+                    if caption in caption_map and caption_map[caption]:
+                        if block.data is None:
+                            block.data = {}
+                        if isinstance(block.data, dict):
+                            block.data["uri"] = caption_map[caption]
+                        else:
+                            # If data is not a dict, create a new dict with the uri
+                            block.data = {"uri": caption_map[caption]}
+                    else:
+                        self.logger.warning(
+                            f"⚠️ Skipping image with caption '{caption}' in BlockGroup {block_group_index} - no valid base64 data available"
                         )
 
-                # Parse the modified markdown to bytes
-                if md_parser:
-                    md_bytes = md_parser.parse_string(modified_markdown)
-                else:
-                    md_bytes = modified_markdown.encode('utf-8')
+    async def _process_single_blockgroup_through_docling(
+        self,
+        block_group: BlockGroup,
+        record_name: str,
+        processor: DoclingProcessor,
+        md_parser: Any
+    ) -> Tuple[List[BlockGroup], List[Block]]:
+        """
+        Process a single block group through docling.
 
-                # Create filename from BlockGroup name or use default
-                filename = block_group.name or f"{Path(record_name).stem}_blockgroup_{block_group.index}.md"
-                if not filename.endswith('.md'):
-                    filename = f"{filename}.md"
+        Args:
+            block_group: Block group to process
+            record_name: Name of the record (for filename generation)
+            processor: DoclingProcessor instance
+            md_parser: Markdown parser instance
 
-                # Process through docling
-                self.logger.debug(
-                    f"📄 Processing BlockGroup {block_group.index} ({block_group.name}) through docling"
-                )
-                processed_blocks_container = await processor.load_document(filename, md_bytes)
+        Returns:
+            Tuple of (new_block_groups, new_blocks) from processing
 
-                if not processed_blocks_container:
-                    raise ValueError(
-                        f"Docling returned empty result for BlockGroup {block_group.index}"
-                    )
+        Raises:
+            ValueError: If block group has no valid markdown data or docling returns empty result
+        """
+        # Extract markdown data from BlockGroup
+        markdown_data = block_group.data
+        if not markdown_data or not isinstance(markdown_data, str):
+            raise ValueError(
+                f"BlockGroup {block_group.index} has no valid markdown data"
+            )
 
-                # Map base64 images to image blocks using captions
-                if caption_map:
-                    for block in processed_blocks_container.blocks:
-                        if block.type == BlockType.IMAGE.value and block.image_metadata:
-                            caption = block.image_metadata.captions
-                            if caption:
-                                caption = caption[0] if isinstance(caption, list) else caption
-                                if caption in caption_map and caption_map[caption]:
-                                    if block.data is None:
-                                        block.data = {}
-                                    if isinstance(block.data, dict):
-                                        block.data["uri"] = caption_map[caption]
-                                    else:
-                                        # If data is not a dict, create a new dict with the uri
-                                        block.data = {"uri": caption_map[caption]}
-                                else:
-                                    self.logger.warning(
-                                        f"⚠️ Skipping image with caption '{caption}' in BlockGroup {block_group.index} - no valid base64 data available"
-                                    )
+        # Extract and replace images from markdown, then convert URLs to base64
+        modified_markdown, caption_map = await self._process_blockgroup_images(
+            markdown_data, block_group.index
+        )
 
-                # Store results for later merging (exclude parent_block_group reference to avoid mutation issues)
-                processing_results[block_group.index] = (
-                    processed_blocks_container.block_groups,
-                    processed_blocks_container.blocks,
-                )
+        # Parse the modified markdown to bytes
+        if md_parser:
+            md_bytes = md_parser.parse_string(modified_markdown)
+        else:
+            md_bytes = modified_markdown.encode('utf-8')
 
-                self.logger.debug(
-                    f"✅ Processed BlockGroup {block_group.index}: "
-                    f"collected {len(processed_blocks_container.blocks)} blocks, "
-                    f"{len(processed_blocks_container.block_groups)} block_groups"
-                )
+        # Create filename from BlockGroup name or use default
+        filename = block_group.name or f"{Path(record_name).stem}_blockgroup_{block_group.index}.md"
+        if not filename.endswith('.md'):
+            filename = f"{filename}.md"
 
-            except Exception as e:
-                self.logger.error(
-                    f"❌ Error processing BlockGroup {block_group.index} through docling: {e}",
-                    exc_info=True
-                )
-                # Stop processing if any BlockGroup fails
-                raise
+        # Process through docling
+        self.logger.debug(
+            f"📄 Processing BlockGroup {block_group.index} ({block_group.name}) through docling"
+        )
+        processed_blocks_container = await processor.load_document(filename, md_bytes)
 
-        if not processing_results:
-            self.logger.debug("No BlockGroups were successfully processed")
-            return block_containers
+        if not processed_blocks_container:
+            raise ValueError(
+                f"Docling returned empty result for BlockGroup {block_group.index}"
+            )
 
-        # ========== PHASE 2: Calculate index mappings upfront ==========
-        # Build map of original_index -> cumulative_shift_amount
-        # cumulative_shift = sum of new_block_groups from all parents with index < original_index
+        # Map base64 images to image blocks using captions
+        self._map_base64_images_to_blocks(
+            processed_blocks_container.blocks, caption_map, block_group.index
+        )
+
+        self.logger.debug(
+            f"✅ Processed BlockGroup {block_group.index}: "
+            f"collected {len(processed_blocks_container.blocks)} blocks, "
+            f"{len(processed_blocks_container.block_groups)} block_groups"
+        )
+
+        return processed_blocks_container.block_groups, processed_blocks_container.blocks
+
+    def _calculate_index_shift_map(
+        self,
+        block_groups_with_index: List[BlockGroup],
+        processing_results: Dict[int, Tuple[List[BlockGroup], List[Block]]]
+    ) -> Dict[int, int]:
+        """
+        Calculate index shift mappings for block groups.
+
+        Builds a map of original_index -> cumulative_shift_amount where
+        cumulative_shift = sum of new_block_groups from all parents with index < original_index.
+
+        Args:
+            block_groups_with_index: List of block groups with valid indices
+            processing_results: Map of parent_index -> (new_block_groups, new_blocks)
+
+        Returns:
+            Dictionary mapping original_index to shift amount
+        """
         index_shift_map: Dict[int, int] = {}
         cumulative_shift = 0
 
@@ -848,11 +874,34 @@ class Processor:
                 num_new_block_groups = len(processing_results[original_index][0])
                 cumulative_shift += num_new_block_groups
 
-        processed_indices = set(processing_results.keys())
+        return index_shift_map
 
-        # ========== PHASE 3: Build new BlocksContainer in a single pass ==========
+    def _build_updated_blocks_container(
+        self,
+        block_containers: BlocksContainer,
+        block_groups_with_index: List[BlockGroup],
+        block_groups_without_index: List[BlockGroup],
+        processing_results: Dict[int, Tuple[List[BlockGroup], List[Block]]],
+        index_shift_map: Dict[int, int],
+        initial_block_count: int
+    ) -> BlocksContainer:
+        """
+        Build the final BlocksContainer with updated indices.
+
+        Args:
+            block_containers: Original BlocksContainer
+            block_groups_with_index: Block groups with valid indices
+            block_groups_without_index: Block groups without indices
+            processing_results: Map of parent_index -> (new_block_groups, new_blocks)
+            index_shift_map: Map of original_index to shift amount
+            initial_block_count: Initial count of blocks
+
+        Returns:
+            New BlocksContainer with processed blocks merged in
+        """
         new_block_groups: List[BlockGroup] = []
         new_blocks: List[Block] = []
+        processed_indices = set(processing_results.keys())
 
         # Track block index offset (blocks are appended at the end)
         block_index_offset = initial_block_count
@@ -945,9 +994,94 @@ class Processor:
                 block.parent_index += index_shift_map[block.parent_index]
 
         # Build final BlocksContainer
-        result = BlocksContainer(
+        return BlocksContainer(
             block_groups=new_block_groups,
             blocks=list(block_containers.blocks) + new_blocks
+        )
+
+    async def _process_blockgroups_through_docling(
+        self, block_containers: BlocksContainer, record_name: str
+    ) -> BlocksContainer:
+        """
+        Process BlockGroups with requires_processing=True through docling.
+
+        Uses a functional approach:
+        1. Process all BlockGroups that need processing, collecting results
+        2. Calculate index mappings upfront
+        3. Build new BlocksContainer in a single pass
+
+        Args:
+            block_containers: BlocksContainer to process
+            record_name: Name of the record (for docling processing)
+
+        Returns:
+            BlocksContainer with processed blocks merged in
+        """
+        if not block_containers.block_groups:
+            return block_containers
+
+        # Separate block_groups with valid index from those with None index
+        block_groups_with_index, block_groups_without_index = self._separate_block_groups_by_index(
+            block_containers.block_groups
+        )
+
+        # Filter BlockGroups that need processing (already in sequence from connector)
+        block_groups_to_process = [
+            bg for bg in block_groups_with_index
+            if bg.requires_processing and bg.data
+        ]
+
+        if not block_groups_to_process:
+            self.logger.debug("No BlockGroups require processing")
+            return block_containers
+
+        self.logger.info(
+            f"🔄 Processing {len(block_groups_to_process)} BlockGroups through docling"
+        )
+
+        # ========== PHASE 1: Process all BlockGroups and collect results ==========
+        # Map: parent_index -> (new_block_groups, new_blocks)
+        processing_results: Dict[int, Tuple[List[BlockGroup], List[Block]]] = {}
+        processor = DoclingProcessor(logger=self.logger, config=self.config_service)
+        initial_block_count = len(block_containers.blocks)
+
+        # Get markdown parser for processing
+        md_parser = self.parsers.get(ExtensionTypes.MD.value)
+
+        for block_group in block_groups_to_process:
+            try:
+                new_block_groups, new_blocks = await self._process_single_blockgroup_through_docling(
+                    block_group, record_name, processor, md_parser
+                )
+
+                # Store results for later merging
+                processing_results[block_group.index] = (new_block_groups, new_blocks)
+
+            except Exception as e:
+                self.logger.error(
+                    f"❌ Error processing BlockGroup {block_group.index} through docling: {e}",
+                    exc_info=True
+                )
+                # Stop processing if any BlockGroup fails
+                raise
+
+        if not processing_results:
+            self.logger.debug("No BlockGroups were successfully processed")
+            return block_containers
+
+        # ========== PHASE 2: Calculate index mappings upfront ==========
+        index_shift_map = self._calculate_index_shift_map(
+            block_groups_with_index, processing_results
+        )
+
+        # ========== PHASE 3: Build new BlocksContainer in a single pass ==========
+        result = self._build_updated_blocks_container(
+            block_containers,
+            block_groups_with_index,
+            block_groups_without_index,
+            processing_results,
+            index_shift_map,
+            initial_block_count
         )
 
         self.logger.info(

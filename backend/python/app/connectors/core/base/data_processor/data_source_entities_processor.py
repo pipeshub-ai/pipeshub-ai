@@ -1,6 +1,6 @@
 import uuid
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -333,6 +333,71 @@ class DataSourceEntitiesProcessor:
         if record.inherit_permissions:
             await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group_id)
 
+    async def _prepare_ticket_user_edge(
+        self,
+        ticket: TicketRecord,
+        user_email: Optional[str],
+        edge_type: TicketEdgeTypes,
+        timestamp_attr_name: str,
+        fallback_timestamp_attr: str,
+        tx_store: TransactionStore,
+        edge_type_name: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Helper method to prepare a ticket-user edge data dictionary.
+
+        Args:
+            ticket: The TicketRecord to create edge for
+            user_email: Email of the user to link to
+            edge_type: The type of edge (ASSIGNED_TO, CREATED_BY, REPORTED_BY)
+            timestamp_attr_name: Name of the connector-provided timestamp attribute
+            fallback_timestamp_attr: Name of the fallback timestamp attribute
+            tx_store: The transaction store
+            edge_type_name: Human-readable name for logging
+
+        Returns:
+            Edge data dictionary if user is found, None otherwise
+        """
+        if not user_email:
+            return None
+
+        try:
+            # Only get existing user by email - do not create if not found
+            user = await tx_store.get_user_by_email(user_email)
+
+            if not user:
+                return None
+
+            # Use connector-provided timestamp if available, otherwise fallback
+            source_timestamp = None
+            # Try primary timestamp first
+            if hasattr(ticket, timestamp_attr_name):
+                timestamp_value = getattr(ticket, timestamp_attr_name, None)
+                if timestamp_value is not None:
+                    source_timestamp = timestamp_value
+
+            # If primary is None or not set, try fallback
+            if source_timestamp is None and hasattr(ticket, fallback_timestamp_attr):
+                fallback_value = getattr(ticket, fallback_timestamp_attr, None)
+                if fallback_value is not None:
+                    # Use fallback timestamp even if 0 (it's the best we have)
+                    source_timestamp = fallback_value
+
+            edge_data = {
+                "_from": f"{CollectionNames.RECORDS.value}/{ticket.id}",
+                "_to": f"{CollectionNames.USERS.value}/{user.id}",
+                "edgeType": edge_type.value,
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            }
+            if source_timestamp is not None:
+                edge_data["sourceTimestamp"] = source_timestamp
+
+            return edge_data
+        except Exception as e:
+            self.logger.warning(f"Failed to create {edge_type_name} edge for ticket {ticket.id}: {str(e)}")
+            return None
+
     async def _handle_ticket_user_edges(self, ticket: TicketRecord, tx_store: TransactionStore) -> None:
         """
         Create user relationship edges for tickets (ASSIGNED_TO, CREATED_BY, REPORTED_BY).
@@ -353,89 +418,47 @@ class DataSourceEntitiesProcessor:
         edges_to_create = []
 
         # Create ASSIGNED_TO edge if assignee exists and user is found
-        if ticket.assignee_email:
-            try:
-                # Only get existing user by email - do not create if not found
-                user = await tx_store.get_user_by_email(ticket.assignee_email)
-
-                if user:
-                    # For ASSIGNED_TO, use connector-provided timestamp if available, otherwise fallback to source_updated_at
-                    source_timestamp = None
-                    if hasattr(ticket, 'assignee_source_timestamp') and ticket.assignee_source_timestamp is not None:
-                        source_timestamp = ticket.assignee_source_timestamp
-                    elif hasattr(ticket, 'source_updated_at') and ticket.source_updated_at is not None:
-                        # Use ticket's source_updated_at even if 0 (it's the best we have)
-                        source_timestamp = ticket.source_updated_at
-                    edge_data = {
-                        "_from": f"{CollectionNames.RECORDS.value}/{ticket.id}",
-                        "_to": f"{CollectionNames.USERS.value}/{user.id}",
-                        "edgeType": TicketEdgeTypes.ASSIGNED_TO.value,
-                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                    }
-                    if source_timestamp is not None:
-                        edge_data["sourceTimestamp"] = source_timestamp
-                    edges_to_create.append(edge_data)
-            except Exception as e:
-                self.logger.warning(f"Failed to create ASSIGNED_TO edge for ticket {ticket.id}: {str(e)}")
+        assignee_edge = await self._prepare_ticket_user_edge(
+            ticket=ticket,
+            user_email=ticket.assignee_email,
+            edge_type=TicketEdgeTypes.ASSIGNED_TO,
+            timestamp_attr_name="assignee_source_timestamp",
+            fallback_timestamp_attr="source_updated_at",
+            tx_store=tx_store,
+            edge_type_name="ASSIGNED_TO"
+        )
+        if assignee_edge:
+            edges_to_create.append(assignee_edge)
 
         # Create CREATED_BY edge if creator exists and user is found
-        if ticket.creator_email:
-            try:
-                # Only get existing user by email - do not create if not found
-                user = await tx_store.get_user_by_email(ticket.creator_email)
-
-                if user:
-                    # For CREATED_BY, use connector-provided timestamp if available, otherwise fallback to source_created_at
-                    source_timestamp = None
-                    if hasattr(ticket, 'creator_source_timestamp') and ticket.creator_source_timestamp is not None:
-                        source_timestamp = ticket.creator_source_timestamp
-                    elif hasattr(ticket, 'source_created_at') and ticket.source_created_at is not None:
-                        # Use ticket's source_created_at even if 0 (it's the best we have)
-                        source_timestamp = ticket.source_created_at
-                    edge_data = {
-                        "_from": f"{CollectionNames.RECORDS.value}/{ticket.id}",
-                        "_to": f"{CollectionNames.USERS.value}/{user.id}",
-                        "edgeType": TicketEdgeTypes.CREATED_BY.value,
-                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                    }
-                    if source_timestamp is not None:
-                        edge_data["sourceTimestamp"] = source_timestamp
-                    edges_to_create.append(edge_data)
-            except Exception as e:
-                self.logger.warning(f"Failed to create CREATED_BY edge for ticket {ticket.id}: {str(e)}")
+        creator_edge = await self._prepare_ticket_user_edge(
+            ticket=ticket,
+            user_email=ticket.creator_email,
+            edge_type=TicketEdgeTypes.CREATED_BY,
+            timestamp_attr_name="creator_source_timestamp",
+            fallback_timestamp_attr="source_created_at",
+            tx_store=tx_store,
+            edge_type_name="CREATED_BY"
+        )
+        if creator_edge:
+            edges_to_create.append(creator_edge)
 
         # Create REPORTED_BY edge if reporter exists and user is found
-        if ticket.reporter_email:
-            try:
-                # Only get existing user by email - do not create if not found
-                user = await tx_store.get_user_by_email(ticket.reporter_email)
+        reporter_edge = await self._prepare_ticket_user_edge(
+            ticket=ticket,
+            user_email=ticket.reporter_email,
+            edge_type=TicketEdgeTypes.REPORTED_BY,
+            timestamp_attr_name="reporter_source_timestamp",
+            fallback_timestamp_attr="source_created_at",
+            tx_store=tx_store,
+            edge_type_name="REPORTED_BY"
+        )
+        if reporter_edge:
+            edges_to_create.append(reporter_edge)
 
-                if user:
-                    # For REPORTED_BY, use connector-provided timestamp if available, otherwise fallback to source_created_at
-                    source_timestamp = None
-                    if hasattr(ticket, 'reporter_source_timestamp') and ticket.reporter_source_timestamp is not None:
-                        source_timestamp = ticket.reporter_source_timestamp
-                    elif hasattr(ticket, 'source_created_at') and ticket.source_created_at is not None:
-                        # Use ticket's source_created_at even if 0 (it's the best we have)
-                        source_timestamp = ticket.source_created_at
-                    edge_data = {
-                        "_from": f"{CollectionNames.RECORDS.value}/{ticket.id}",
-                        "_to": f"{CollectionNames.USERS.value}/{user.id}",
-                        "edgeType": TicketEdgeTypes.REPORTED_BY.value,
-                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                    }
-                    if source_timestamp is not None:
-                        edge_data["sourceTimestamp"] = source_timestamp
-                    edges_to_create.append(edge_data)
-            except Exception as e:
-                self.logger.warning(f"Failed to create REPORTED_BY edge for ticket {ticket.id}: {str(e)}")
-
-        # Batch create all edges
+        # Batch create all edges using specialized method that includes edgeType in UPSERT match
         if edges_to_create:
-            await tx_store.batch_create_edges(edges_to_create, CollectionNames.TICKET_RELATIONS.value)
+            await tx_store.batch_create_ticket_relations(edges_to_create)
             self.logger.info(f"Created {len(edges_to_create)} ticket-user edges for ticket {ticket.id}")
 
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:

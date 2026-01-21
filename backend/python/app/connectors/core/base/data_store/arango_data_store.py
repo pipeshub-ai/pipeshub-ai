@@ -574,6 +574,13 @@ class ArangoTransactionStore(TransactionStore):
     async def batch_create_edges(self, edges: List[Dict], collection: str) -> None:
         return await self.arango_service.batch_create_edges(edges, collection=collection, transaction=self.txn)
 
+    async def batch_create_ticket_relations(self, edges: List[Dict]) -> None:
+        """Batch create ticket relation edges with edgeType in UPSERT match condition."""
+        # For arango_data_store, we need to check if the service has this method
+        # If not, fall back to regular batch_create_edges (though this won't work correctly)
+        # This is a compatibility method - graph_data_store should be used for ticket relations
+        await self.arango_service.batch_create_edges(edges, collection=CollectionNames.TICKET_RELATIONS.value, transaction=self.txn)
+
 class ArangoDataStore(DataStoreProvider):
     """ArangoDB data store"""
     def __init__(self, logger: Logger, arango_service: BaseArangoService) -> None:

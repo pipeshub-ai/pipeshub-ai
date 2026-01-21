@@ -542,6 +542,10 @@ class GraphTransactionStore(TransactionStore):
     async def batch_create_edges(self, edges: List[Dict], collection: str) -> None:
         return await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn)
 
+    async def batch_create_ticket_relations(self, edges: List[Dict]) -> None:
+        """Batch create ticket relation edges with edgeType in UPSERT match condition."""
+        return await self.graph_provider.batch_create_ticket_relations(edges, transaction=self.txn)
+
     async def get_edges_to_node(self, node_id: str, edge_collection: str) -> List[Dict]:
         """Get all edges pointing to a specific node"""
         return await self.graph_provider.get_edges_to_node(node_id, edge_collection, transaction=self.txn)
