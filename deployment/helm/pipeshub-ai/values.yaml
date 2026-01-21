@@ -265,7 +265,7 @@ qdrant:
       memory: 1Gi
     requests:
       cpu: 500m
-      memory: 512M
+      memory: 512Mi
   podSecurityContext:
     runAsUser: 1000
     fsGroup: 1000
