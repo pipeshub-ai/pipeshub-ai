@@ -28,6 +28,13 @@ async def make_api_call(route: str, token: str) -> dict:
 
             # Make the request
             async with session.get(url, headers=headers) as response:
+                # Check status code FIRST - before reading content
+                if response.status != HttpStatusCode.SUCCESS.value:
+                    error_text = await response.text()
+                    raise Exception(
+                        f"API call failed with status {response.status}: {error_text}"
+                    )
+                    
                 content_type = response.headers.get("Content-Type", "").lower()
 
                 if response.status == HttpStatusCode.SUCCESS.value and "application/json" in content_type:

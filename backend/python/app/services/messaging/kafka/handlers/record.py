@@ -359,6 +359,8 @@ class RecordEventHandler(BaseEventService):
                         route=f"{connector_url}/api/v1/internal/stream/record/{record_id}", token=token
                     )
 
+                    print("\n\n\n\n\n\n\n!!!!!!!!!!!!!!!!!!!!!! response from proccess event", response)
+
                     event_data_for_processor = {
                         "eventType": event_type,
                         "payload": payload

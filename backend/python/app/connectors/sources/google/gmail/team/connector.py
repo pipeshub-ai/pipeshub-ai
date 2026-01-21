@@ -44,9 +44,17 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
 )
 from app.connectors.core.registry.filters import (
+    FilterCategory,
     FilterCollection,
+    FilterField,
+    FilterOperator,
+    FilterOption,
+    FilterOptionsResponse,
+    FilterType,
     FilterOptionsResponse,
     IndexingFilterKey,
+    SyncFilterKey,
+    DatetimeOperator,
     load_connector_filters,
 )
 from app.connectors.sources.google.common.apps import GmailApp
@@ -116,7 +124,32 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
             'https://docs.pipeshub.com/connectors/google-workspace/gmail/gmail',
             'pipeshub'
         ))
+        .add_filter_field(FilterField(
+            name=SyncFilterKey.RECEIVED_DATE.value,
+            display_name="Received Date",
+            description="Filter emails by received date. Defaults to last 90 days.",
+            filter_type=FilterType.DATETIME,
+            category=FilterCategory.SYNC,
+            default_operator=DatetimeOperator.LAST_90_DAYS.value,
+            default_value=None
+        ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.MAILS.value,
+            display_name="Index Emails",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of email messages",
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.ATTACHMENTS.value,
+            display_name="Index Attachments",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of email attachments",
+            default_value=True
+        ))
         .with_webhook_config(False, [])
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
@@ -281,6 +314,36 @@ class GoogleGmailTeamConnector(BaseConnector):
             self.logger.error(f"Error getting existing record {external_record_id}: {e}")
             return None
 
+    def _pass_date_filter(self, message: dict) -> bool:
+        """
+        Checks if the Gmail message passes the configured RECEIVED_DATE filter.
+        Relies on client-side filtering since Gmail API does not support date filtering.
+        """
+        # Check Received Date Filter
+        received_filter = self.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+        if received_filter:
+            # Get start and end timestamps in milliseconds directly
+            start_ts = received_filter.get_datetime_start()
+            end_ts = received_filter.get_datetime_end()
+
+            # Extract internalDate from message (already in epoch milliseconds as string)
+            internal_date = message.get("internalDate")
+            if internal_date:
+                try:
+                    item_ts = int(internal_date)
+                except (ValueError, TypeError):
+                    # If we can't parse the date, skip the filter check
+                    return True
+
+                # Check if message is before start date
+                if start_ts and item_ts < start_ts:
+                    return False
+                # Check if message is after end date
+                if end_ts and item_ts > end_ts:
+                    return False
+
+        return True
+
     async def _process_gmail_message(
         self,
         user_email: str,
@@ -305,10 +368,25 @@ class GoogleGmailTeamConnector(BaseConnector):
             message_id = message.get('id')
             if not message_id:
                 return None
+            
+            if not self._pass_date_filter(message):
+                self.logger.debug(f" Skipping message {message_id} due to date filter")
+                return None
 
-            message.get('labelIds', [])
+            # Extract labelIds from message
+            label_ids = message.get('labelIds', [])
             message.get('snippet', '')
             internal_date = message.get('internalDate')  # Epoch milliseconds as string
+            
+            # Determine external_record_group_id based on labelIds (SENT or INBOX)
+            # Prefer SENT if both are present
+            external_record_group_id = None
+            if "SENT" in label_ids:
+                external_record_group_id = f"{user_email}:SENT"
+            elif "INBOX" in label_ids:
+                external_record_group_id = f"{user_email}:INBOX"
+            else:
+                external_record_group_id = f"{user_email}:OTHERS"
 
             # Parse headers
             payload = message.get('payload', {})
@@ -347,12 +425,12 @@ class GoogleGmailTeamConnector(BaseConnector):
 
             if not is_new:
                 # Check if thread_id/external_record_group_id changed (metadata change)
-                current_thread_id = thread_id
-                existing_thread_id = existing_record.external_record_group_id if hasattr(existing_record, 'external_record_group_id') else None
-                if existing_thread_id and current_thread_id != existing_thread_id:
+                current_external_group_id = external_record_group_id
+                existing_external_group_id = existing_record.external_record_group_id if hasattr(existing_record, 'external_record_group_id') else None
+                if existing_external_group_id and current_external_group_id != existing_external_group_id:
                     metadata_changed = True
                     is_updated = True
-                    self.logger.info(f"Gmail message {message_id} thread changed: {existing_thread_id} -> {current_thread_id}")
+                    self.logger.info(f"Gmail message {message_id} external_record_group_id changed: {existing_external_group_id} -> {current_external_group_id}")
 
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
 
@@ -364,8 +442,9 @@ class GoogleGmailTeamConnector(BaseConnector):
                 record_type=RecordType.MAIL,
                 record_group_type=RecordGroupType.MAILBOX,
                 external_record_id=message_id,
-                external_record_group_id=thread_id,
+                external_record_group_id=external_record_group_id,
                 thread_id=thread_id,
+                label_ids=label_ids,
                 version=0 if is_new else existing_record.version + 1,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=self.connector_name,
@@ -395,7 +474,11 @@ class GoogleGmailTeamConnector(BaseConnector):
                 
                 if sender_email_lower and user_email_lower == sender_email_lower:
                     # User is the sender - create owner permission
-                    permissions.append(self._create_owner_permission(user_email))
+                    permissions.append(Permission(
+                        email=user_email,
+                        type=PermissionType.READ,
+                        entity_type=EntityType.USER
+                    ))
                 else:
                     # User is not the sender - create read permission
                     permissions.append(Permission(
@@ -1867,78 +1950,38 @@ class GoogleGmailTeamConnector(BaseConnector):
         return members
 
     async def _sync_record_groups(self, users: List[AppUser]) -> None:
-        """Sync record groups (labels) for users.
+        """Sync record groups (INBOX and SENT) for users.
 
-        For each user, fetches their Gmail labels and creates record groups
-        with owner permissions from the user to each label record group.
+        For each user, creates two record groups (INBOX and SENT) with owner
+        permissions from the user to each record group.
 
         Args:
-            users: List of AppUser objects to sync labels for
+            users: List of AppUser objects to sync record groups for
         """
         try:
             if not users:
                 self.logger.warning("No users provided for record group sync")
                 return
 
-            self.logger.info(f"Syncing record groups (labels) for {len(users)} users...")
-            total_labels_processed = 0
+            self.logger.info(f"Syncing record groups (INBOX and SENT) for {len(users)} users...")
+            total_record_groups_processed = 0
 
             for user in users:
-                user_gmail_client = None
-                user_gmail_data_source = None
                 try:
                     if not user.email:
                         self.logger.warning(f"Skipping user without email: {user.source_user_id}")
                         continue
 
-                    self.logger.debug(f"Fetching labels for user: {user.email}")
+                    self.logger.debug(f"Creating record groups for user: {user.email}")
 
-                    # Create user-specific Gmail client with impersonation
-                    user_gmail_client = await GoogleClient.build_from_services(
-                        service_name="gmail",
-                        logger=self.logger,
-                        config_service=self.config_service,
-                        is_individual=False,  # Workspace connector
-                        version="v1",
-                        user_email=user.email,  # Impersonate this user
-                        connector_instance_id=self.connector_id
-                    )
-
-                    user_gmail_data_source = GoogleGmailDataSource(
-                        user_gmail_client.get_client()
-                    )
-
-                    # Fetch labels for this user
-                    labels_response = await user_gmail_data_source.users_labels_list(
-                        userId=user.email
-                    )
-
-                    labels = labels_response.get("labels", [])
-                    if not labels:
-                        self.logger.debug(f"No labels found for user {user.email}")
-                        continue
-
-                    self.logger.info(
-                        f"Found {len(labels)} labels for user {user.email}"
-                    )
-
-                    # Create record groups for each label
-                    for label in labels:
+                    # Create record groups for INBOX and SENT
+                    for label_name in ["INBOX", "SENT", "OTHERS"]:
                         try:
-                            label_id = label.get("id", "")
-                            label_name = label.get("name", "Unnamed Label")
-
-                            if not label_id:
-                                self.logger.warning(
-                                    f"Skipping label without ID for user {user.email}: {label_name}"
-                                )
-                                continue
-
-                            # Create record group name: "{user.full_name} - {label.name}"
+                            # Create record group name: "{user.full_name} - {label_name}"
                             record_group_name = f"{user.full_name} - {label_name}"
 
-                            # Create external_group_id: "{user.email} - {label.id}"
-                            external_group_id = f"{user.email}:{label_id}"
+                            # Create external_group_id: "{user.email}:{label_name}"
+                            external_group_id = f"{user.email}:{label_name}"
 
                             # Create record group
                             record_group = RecordGroup(
@@ -1964,14 +2007,14 @@ class GoogleGmailTeamConnector(BaseConnector):
                                 [(record_group, [owner_permission])]
                             )
 
-                            total_labels_processed += 1
+                            total_record_groups_processed += 1
                             self.logger.debug(
                                 f"Created record group '{record_group_name}' for user {user.email}"
                             )
 
                         except Exception as e:
                             self.logger.error(
-                                f"Error creating record group for label '{label.get('name', 'unknown')}' "
+                                f"Error creating record group '{label_name}' "
                                 f"for user {user.email}: {e}",
                                 exc_info=True
                             )
@@ -1979,26 +2022,13 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                 except Exception as e:
                     self.logger.error(
-                        f"Error processing labels for user {user.email}: {e}",
+                        f"Error processing record groups for user {user.email}: {e}",
                         exc_info=True
                     )
                     continue
-                finally:
-                    # Cleanup user-specific client resources
-                    try:
-                        if user_gmail_data_source and hasattr(user_gmail_data_source, 'client'):
-                            client = user_gmail_data_source.client
-                            if hasattr(client, 'close'):
-                                client.close()
-                    except Exception as cleanup_error:
-                        self.logger.debug(f"Error during client cleanup for {user.email}: {cleanup_error}")
-
-                    # Clear references to help with garbage collection
-                    user_gmail_data_source = None
-                    user_gmail_client = None
 
             self.logger.info(
-                f"✅ Successfully synced {total_labels_processed} label record groups "
+                f"✅ Successfully synced {total_record_groups_processed} record groups "
                 f"for {len(users)} users"
             )
 
@@ -2547,7 +2577,9 @@ class GoogleGmailTeamConnector(BaseConnector):
 
     async def run_incremental_sync(self) -> None:
         """Run incremental sync for Google Gmail workspace."""
-        raise NotImplementedError("run_incremental_sync is not yet implemented for Google Gmail workspace")
+        self.logger.info("Running incremental sync for Google Gmail workspace")
+        await self._run_sync()
+        
 
     def handle_webhook_notification(self, notification: Dict) -> None:
         """Handle webhook notifications from Google Gmail."""
@@ -2555,7 +2587,280 @@ class GoogleGmailTeamConnector(BaseConnector):
 
     async def reindex_records(self, records: List[Record]) -> None:
         """Reindex records for Google Gmail workspace."""
-        raise NotImplementedError("reindex_records is not yet implemented for Google Gmail workspace")
+        try:
+            if not records:
+                self.logger.info("No records to reindex")
+                return
+
+            self.logger.info(f"Starting reindex for {len(records)} Google Gmail workspace records")
+
+            if not self.gmail_data_source:
+                self.logger.error("Gmail data source not initialized. Call init() first.")
+                raise Exception("Gmail data source not initialized. Call init() first.")
+
+            # Check records at source for updates
+            org_id = self.data_entities_processor.org_id
+            updated_records = []
+            non_updated_records = []
+            for record in records:
+                try:
+                    updated_record_data = await self._check_and_fetch_updated_record(org_id, record)
+                    if updated_record_data:
+                        updated_record, permissions = updated_record_data
+                        updated_records.append((updated_record, permissions))
+                    else:
+                        non_updated_records.append(record)
+                except Exception as e:
+                    self.logger.error(f"Error checking record {record.id} at source: {e}")
+                    continue
+
+            # Update DB only for records that changed at source
+            if updated_records:
+                await self.data_entities_processor.on_new_records(updated_records)
+                self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
+
+            # Publish reindex events for non updated records
+            if non_updated_records:
+                await self.data_entities_processor.reindex_existing_records(non_updated_records)
+                self.logger.info(f"Published reindex events for {len(non_updated_records)} non updated records")
+        except Exception as e:
+            self.logger.error(f"Error during Google Gmail workspace reindex: {e}", exc_info=True)
+            raise
+
+    async def _check_and_fetch_updated_record(
+        self, org_id: str, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch record from Gmail and return data for reindexing if changed."""
+        try:
+            external_record_id = record.external_record_id
+
+            if not external_record_id:
+                self.logger.warning(f"Missing external_record_id for record {record.id}")
+                return None
+
+            # Get user with permission to the node
+            user_with_permission = None
+            async with self.data_store_provider.transaction() as tx_store:
+                user_with_permission = await tx_store.get_first_user_with_permission_to_node(
+                    record.id, CollectionNames.RECORDS.value
+                )
+
+            if not user_with_permission:
+                self.logger.warning(f"No user found with permission to node: {record.id}")
+                return None
+
+            user_email = user_with_permission.email
+            if not user_email:
+                self.logger.warning(f"User found but email is missing for record {record.id}")
+                return None
+
+            # Create Gmail client with user impersonation
+            user_gmail_client = await self._create_user_gmail_client(user_email)
+
+            # Route to appropriate handler based on record type
+            record_type = record.record_type
+            if record_type == RecordType.MAIL:
+                return await self._check_and_fetch_updated_mail_record(
+                    org_id, record, user_email, user_gmail_client
+                )
+            elif record_type == RecordType.FILE:
+                return await self._check_and_fetch_updated_file_record(
+                    org_id, record, user_email, user_gmail_client
+                )
+            else:
+                self.logger.warning(f"Unknown record type {record_type} for record {record.id}")
+                return None
+
+        except Exception as e:
+            self.logger.error(f"Error checking Google Gmail workspace record {record.id} at source: {e}")
+            return None
+
+    async def _check_and_fetch_updated_mail_record(
+        self,
+        org_id: str,
+        record: Record,
+        user_email: str,
+        user_gmail_client: GoogleGmailDataSource
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch mail record from Gmail and return data for reindexing if changed."""
+        try:
+            message_id = record.external_record_id
+
+            if not message_id:
+                self.logger.warning(f"Missing message_id for record {record.id}")
+                return None
+
+            # Fetch fresh message from Gmail API
+            try:
+                message = await user_gmail_client.users_messages_get(
+                    userId=user_email,
+                    id=message_id,
+                    format="full"
+                )
+            except HttpError as e:
+                if e.resp.status == HttpStatusCode.NOT_FOUND.value:
+                    self.logger.warning(f"Message {message_id} not found at source")
+                    return None
+                raise
+
+            if not message:
+                self.logger.warning(f"Message {message_id} not found at source")
+                return None
+
+            # Extract thread_id
+            thread_id = message.get('threadId')
+            if not thread_id:
+                self.logger.warning(f"Message {message_id} has no threadId")
+                return None
+
+            # Find previous message in thread (optional)
+            previous_message_id = await self._find_previous_message_in_thread(
+                user_email,
+                user_gmail_client,
+                thread_id,
+                message_id,
+                message.get('internalDate')
+            )
+
+            # Process message using existing function
+            record_update = await self._process_gmail_message(
+                user_email,
+                message,
+                thread_id,
+                previous_message_id
+            )
+
+            if not record_update or record_update.is_deleted:
+                return None
+
+            # Only return data if there's an actual update (metadata, content, or permissions)
+            if record_update.is_updated:
+                self.logger.info(f"Record {message_id} has changed at source. Updating.")
+                # Ensure we keep the internal DB ID
+                record_update.record.id = record.id
+                return (record_update.record, record_update.new_permissions)
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Error checking Google Gmail workspace mail record {record.id} at source: {e}")
+            return None
+
+    async def _check_and_fetch_updated_file_record(
+        self,
+        org_id: str,
+        record: Record,
+        user_email: str,
+        user_gmail_client: GoogleGmailDataSource
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch file (attachment) record from Gmail and return data for reindexing if changed."""
+        try:
+            stable_attachment_id = record.external_record_id
+
+            if not stable_attachment_id:
+                self.logger.warning(f"Missing stable_attachment_id for record {record.id}")
+                return None
+
+            # Parse stableAttachmentId to get message_id and part_id
+            # Format: message_id_partId
+            if "_" not in stable_attachment_id:
+                self.logger.warning(f"Invalid stable_attachment_id format for record {record.id}: {stable_attachment_id}")
+                return None
+
+            try:
+                message_id, part_id = stable_attachment_id.split("_", 1)
+            except ValueError:
+                self.logger.warning(f"Could not parse stable_attachment_id for record {record.id}: {stable_attachment_id}")
+                return None
+
+            # Get parent message ID (should match, but use from record if available)
+            parent_message_id = record.parent_external_record_id
+            if not parent_message_id:
+                parent_message_id = message_id
+
+            # Fetch parent message from Gmail API
+            try:
+                parent_message = await user_gmail_client.users_messages_get(
+                    userId=user_email,
+                    id=parent_message_id,
+                    format="full"
+                )
+            except HttpError as e:
+                if e.resp.status == HttpStatusCode.NOT_FOUND.value:
+                    self.logger.warning(f"Parent message {parent_message_id} not found at source")
+                    return None
+                raise
+
+            if not parent_message:
+                self.logger.warning(f"Parent message {parent_message_id} not found at source")
+                return None
+
+            # Extract attachment info from parent message
+            attachment_infos = self._extract_attachment_infos(parent_message)
+
+            # Find matching attachment by stableAttachmentId
+            matching_attachment = None
+            for attach_info in attachment_infos:
+                if attach_info.get('stableAttachmentId') == stable_attachment_id:
+                    matching_attachment = attach_info
+                    break
+
+            if not matching_attachment:
+                self.logger.warning(f"Attachment {stable_attachment_id} not found in parent message {parent_message_id}")
+                return None
+
+            # Get parent mail permissions by processing parent message first
+            # Extract thread_id from parent message
+            thread_id = parent_message.get('threadId')
+            if not thread_id:
+                self.logger.warning(f"Parent message {parent_message_id} has no threadId")
+                return None
+
+            # Find previous message in thread (optional)
+            previous_message_id = await self._find_previous_message_in_thread(
+                user_email,
+                user_gmail_client,
+                thread_id,
+                parent_message_id,
+                parent_message.get('internalDate')
+            )
+
+            # Process parent message to get permissions
+            parent_mail_update = await self._process_gmail_message(
+                user_email,
+                parent_message,
+                thread_id,
+                previous_message_id
+            )
+
+            # Get permissions from parent mail update, or use empty list
+            parent_mail_permissions = []
+            if parent_mail_update and parent_mail_update.new_permissions:
+                parent_mail_permissions = parent_mail_update.new_permissions
+
+            # Process attachment using existing function
+            record_update = await self._process_gmail_attachment(
+                user_email,
+                parent_message_id,
+                matching_attachment,
+                parent_mail_permissions
+            )
+
+            if not record_update or record_update.is_deleted:
+                return None
+
+            # Only return data if there's an actual update (metadata, content, or permissions)
+            if record_update.is_updated:
+                self.logger.info(f"Record {stable_attachment_id} has changed at source. Updating.")
+                # Ensure we keep the internal DB ID
+                record_update.record.id = record.id
+                return (record_update.record, record_update.new_permissions)
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Error checking Google Gmail workspace file record {record.id} at source: {e}")
+            return None
 
     async def get_filter_options(
         self,
