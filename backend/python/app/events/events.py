@@ -455,6 +455,19 @@ class EventProcessor:
                 ):
                     yield event
 
+            elif extension == ExtensionTypes.TSV.value or mime_type == MimeTypes.TSV.value:
+                async for event in self.processor.process_csv_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    version=record_version,
+                    source=connector,
+                    orgId=org_id,
+                    csv_binary=file_content,
+                    virtual_record_id=virtual_record_id,
+                    origin=origin,
+                ):
+                    yield event
+
             elif extension == ExtensionTypes.HTML.value or mime_type == MimeTypes.HTML.value:
                 async for event in self.processor.process_html_document(
                     recordName=record_name,
