@@ -1,7 +1,7 @@
 import io
 import json
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from bs4 import BeautifulSoup
 from html_to_markdown import convert
@@ -30,6 +30,7 @@ from app.models.blocks import (
     Point,
 )
 from app.models.entities import Record, RecordType
+from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.pdf.docling import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.modules.transformers.pipeline import IndexingPipeline
@@ -780,7 +781,7 @@ class Processor:
         block_group: BlockGroup,
         record_name: str,
         processor: DoclingProcessor,
-        md_parser: Any
+        md_parser: Optional[MarkdownParser]
     ) -> Tuple[List[BlockGroup], List[Block]]:
         """
         Process a single block group through docling.

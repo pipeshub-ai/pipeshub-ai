@@ -154,7 +154,9 @@ class ArangoTransactionStore(TransactionStore):
 
     async def delete_linked_to_edges_from(self, from_id: str, from_collection: str, collection: str) -> int:
         """Delete LINKED_TO edges from a record."""
-        return await self.arango_service.delete_linked_to_edges_from(from_id, from_collection, collection, transaction=self.txn)
+        # Construct from_key in "collection/id" format as expected by BaseArangoService
+        from_key = f"{from_collection}/{from_id}"
+        return await self.arango_service.delete_linked_to_edges_from(from_key, collection, transaction=self.txn)
 
     async def delete_nodes_and_edges(self, keys: List[str], collection: str) -> None:
         return await self.arango_service.delete_nodes_and_edges(keys, collection, graph_name="knowledgeGraph", transaction=self.txn)
