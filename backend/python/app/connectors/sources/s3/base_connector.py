@@ -59,7 +59,7 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.utils.streaming import stream_content
+from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Default connector endpoint for signed URL generation
@@ -1070,11 +1070,13 @@ class S3CompatibleBaseConnector(BaseConnector):
                 detail="File not found or access denied",
             )
 
-        return StreamingResponse(
-            stream_content(signed_url, record_id=record.id, file_name=record.record_name),
-            media_type=record.mime_type if record.mime_type else "application/octet-stream",
-            headers={"Content-Disposition": f"attachment; filename={record.record_name}"},
-        )
+        return create_stream_record_response(
+                    stream_content(signed_url, record_id=record.id, file_name=record.record_name),
+                    filename=record.record_name,
+                    mime_type=record.mime_type if record.mime_type else "application/octet-stream",
+                    fallback_filename=f"record_{record.id}",
+                )
+
 
     async def cleanup(self) -> None:
         """Clean up resources used by the connector."""
