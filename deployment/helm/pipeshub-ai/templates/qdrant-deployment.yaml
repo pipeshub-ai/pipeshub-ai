@@ -127,8 +127,8 @@ spec:
     {{- toYaml .Values.qdrant.persistence.accessModes | nindent 4 }}
   resources:
     requests:
-      storage: {{ .Values.qdrant.persistence.size }}
+      storage: {{ .Values.qdrant.persistence.size | quote }}
   {{- if .Values.qdrant.persistence.storageClass }}
-  storageClassName: {{ .Values.qdrant.persistence.storageClass }}
+  storageClassName: {{ .Values.qdrant.persistence.storageClass | quote }}
   {{- end }}
 {{- end }}
