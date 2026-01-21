@@ -9,7 +9,7 @@ export const getRecordByIdSchema = z.object({
 
 export const updateRecordSchema = z.object({
   body: z.object({
-    fileBuffer: z.any(),
+    fileBuffer: z.any().optional(),
     recordName: z.string().optional(),
   }),
   params: z.object({

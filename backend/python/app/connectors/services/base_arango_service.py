@@ -8475,7 +8475,8 @@ class BaseArangoService:
     async def _create_update_record_event_payload(
         self,
         record: Dict,
-        file_record: Optional[Dict] = None
+        file_record: Optional[Dict] = None,
+        content_changed: bool = True
     ) -> Dict:
         """Create update record event payload matching Node.js format"""
         try:
@@ -8504,6 +8505,7 @@ class BaseArangoService:
                 "sourceLastModifiedTimestamp": str(record.get("sourceLastModifiedTimestamp", record.get("updatedAtTimestamp", get_epoch_timestamp_in_ms()))),
                 "virtualRecordId": record.get("virtualRecordId"),
                 "summaryDocumentId": record.get("summaryDocumentId"),
+                "contentChanged": content_changed,
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to create update record event payload: {str(e)}")
@@ -10704,7 +10706,8 @@ class BaseArangoService:
                 # Step 5: Prepare update data (no redundant validation needed)
                 timestamp = get_epoch_timestamp_in_ms()
                 # Check SHA256 to determine if version should increment
-                increment_version = True
+                # Only increment version if file is being uploaded with new content
+                increment_version = False  # Default to False, only True if file content changes
                 if file_metadata and current_file_record:
                     new_sha256 = file_metadata.get("sha256Hash")
                     current_sha256 = current_file_record.get("sha256Hash")
@@ -10712,6 +10715,10 @@ class BaseArangoService:
                     if new_sha256 and current_sha256 and new_sha256 == current_sha256:
                         increment_version = False
                         self.logger.info(f"File content unchanged (SHA256 match). Keeping version {current_record.get('version', 0)}")
+                    else:
+                        # File content changed - increment version
+                        increment_version = True
+                        self.logger.info(f"File content changed. Incrementing version to {current_record.get('version', 0) + 1}")
 
                 version = (current_record.get("version", 0)) + (1 if increment_version else 0)
                 processed_updates = {
@@ -10821,8 +10828,10 @@ class BaseArangoService:
 
                 # Step 9: Publish update event (after successful commit)
                 try:
+                    # Only trigger reindex if file content changed (not for name-only updates)
+                    content_changed = increment_version and file_metadata is not None
                     update_payload = await self._create_update_record_event_payload(
-                        updated_record, updated_file
+                        updated_record, updated_file, content_changed=content_changed
                     )
                     if update_payload:
                         await self._publish_record_event("updateRecord", update_payload)

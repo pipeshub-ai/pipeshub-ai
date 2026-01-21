@@ -222,6 +222,13 @@ class KafkaConsumerManager:
                 return True
 
             if event_type == EventTypes.UPDATE_RECORD.value:
+                content_changed = payload_data.get("contentChanged", True)
+
+                if not content_changed:
+                    # Only metadata (like name) changed, no need to reindex
+                    self.logger.info(f"📝 Metadata-only update for record {record_id}, skipping reindex")
+                    return True
+
                 await self.redis_scheduler.schedule_update(data)
                 self.logger.info(f"Scheduled update for record {record_id}")
                 record = await self.event_processor.arango_service.get_document(
