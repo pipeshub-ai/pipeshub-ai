@@ -1,0 +1,205 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "pipeshub-ai.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: main
+              containerPort: 8091
+              protocol: TCP
+            - name: connector
+              containerPort: 8088
+              protocol: TCP
+            - name: frontend
+              containerPort: 3000
+              protocol: TCP
+            - name: query
+              containerPort: 8000
+              protocol: TCP
+            - name: indexing
+              containerPort: 8081
+              protocol: TCP
+          env:
+            # Core environment settings
+            - name: NODE_ENV
+              value: {{ .Values.config.nodeEnv | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: ALLOWED_ORIGINS
+              value: {{ .Values.config.allowedOrigins | quote }}
+            
+            # Security settings
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.fullname" . }}-secrets
+                  key: secret-key
+            
+            # Public endpoints
+            - name: CONNECTOR_PUBLIC_BACKEND
+              value: {{ .Values.config.connectorPublicBackend | quote }}
+            - name: FRONTEND_PUBLIC_URL
+              value: {{ .Values.config.frontendPublicUrl | quote }}
+            
+            # Internal service URLs
+            - name: QUERY_BACKEND
+              value: "http://localhost:8000"
+            - name: CONNECTOR_BACKEND
+              value: "http://localhost:8088"
+            - name: INDEXING_BACKEND
+              value: "http://localhost:8091"
+            
+            # ETCD config
+            - name: ETCD_URL
+              value: "http://{{ include "pipeshub-ai.fullname" . }}-etcd:2379"
+            - name: ETCD_HOST
+              value: "{{ include "pipeshub-ai.fullname" . }}-etcd"
+            
+            # ArangoDB config
+            - name: ARANGO_URL
+              value: "http://{{ include "pipeshub-ai.fullname" . }}-arango:8529"
+            - name: ARANGO_DB_NAME
+              value: "es"
+            - name: ARANGO_USERNAME
+              value: "root"
+            - name: ARANGO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.fullname" . }}-secrets
+                  key: arango-password
+            
+            # Kafka config
+            - name: KAFKA_BROKERS
+              value: "{{ include "pipeshub-ai.fullname" . }}-kafka:9092"
+            
+            # Redis config
+            - name: REDIS_HOST
+              value: "{{ include "pipeshub-ai.fullname" . }}-redis-master"
+            - name: REDIS_PORT
+              value: "6379"
+            {{- if .Values.redis.auth.enabled }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.fullname" . }}-secrets
+                  key: redis-password
+            - name: REDIS_URL
+              value: "redis://:$(REDIS_PASSWORD)@{{ include "pipeshub-ai.fullname" . }}-redis-master:6379"
+            {{- else }}
+            - name: REDIS_PASSWORD
+              value: ""
+            - name: REDIS_URL
+              value: "redis://{{ include "pipeshub-ai.fullname" . }}-redis-master:6379"
+            {{- end }}
+            
+            # MongoDB config
+            {{- if .Values.mongodb.auth.enabled }}
+            - name: MONGO_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.fullname" . }}-secrets
+                  key: mongodb-username
+            - name: MONGO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.fullname" . }}-secrets
+                  key: mongodb-password
+            - name: MONGO_URI
+              value: "mongodb://$(MONGO_USERNAME):$(MONGO_PASSWORD)@{{ include "pipeshub-ai.fullname" . }}-mongodb:27017/?authSource=admin"
+            {{- else }}
+            - name: MONGO_URI
+              value: "mongodb://{{ include "pipeshub-ai.fullname" . }}-mongodb:27017"
+            {{- end }}
+            - name: MONGO_DB_NAME
+              value: "es"
+            - name: REPLICA_SET_AVAILABLE
+              value: "false"
+            
+            # Qdrant config
+            - name: QDRANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.fullname" . }}-secrets
+                  key: qdrant-api-key
+            - name: QDRANT_HOST
+              value: "{{ include "pipeshub-ai.fullname" . }}-qdrant"
+            - name: QDRANT_GRPC_PORT
+              value: "6334"
+            - name: QDRANT_PORT
+              value: "6333"
+            - name: HOME
+              value: /home/user
+
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.persistence.enabled }}
+            - name: pipeshub-storage
+              mountPath: /data/pipeshub
+              subPath: data
+            - name: pipeshub-storage
+              mountPath: /root/.local
+              subPath: root-local
+            - name: pipeshub-storage
+              mountPath: /app/python/logs
+              subPath: logs
+            - name: pipeshub-storage
+              mountPath: /home/user
+              subPath: home
+            {{- end }}
+            {{- with .Values.volumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: cache
+          emptyDir: {}
+        {{- if .Values.persistence.enabled }}
+        - name: pipeshub-storage
+          persistentVolumeClaim:
+            claimName: {{ include "pipeshub-ai.fullname" . }}
+        {{- end }}
+        {{- with .Values.volumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
