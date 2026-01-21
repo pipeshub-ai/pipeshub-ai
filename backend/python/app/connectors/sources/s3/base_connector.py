@@ -1071,11 +1071,11 @@ class S3CompatibleBaseConnector(BaseConnector):
             )
 
         return create_stream_record_response(
-                    stream_content(signed_url, record_id=record.id, file_name=record.record_name),
-                    filename=record.record_name,
-                    mime_type=record.mime_type if record.mime_type else "application/octet-stream",
-                    fallback_filename=f"record_{record.id}",
-                )
+            stream_content(signed_url, record_id=record.id, file_name=record.record_name),
+            filename=record.record_name,
+            mime_type=record.mime_type if record.mime_type else "application/octet-stream",
+            fallback_filename=f"record_{record.id}",
+        )
 
 
     async def cleanup(self) -> None:
