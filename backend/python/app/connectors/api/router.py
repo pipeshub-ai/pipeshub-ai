@@ -25,7 +25,6 @@ from fastapi import (
 )
 from fastapi.responses import Response, StreamingResponse
 from google.oauth2 import service_account
-from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 from jose import JWTError
@@ -33,12 +32,9 @@ from pydantic import BaseModel, ValidationError
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
-    AccountType,
     CollectionNames,
     Connectors,
     MimeTypes,
-    RecordRelations,
-    RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
@@ -670,9 +666,7 @@ async def download_file(
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
-        external_record_id = record.external_record_id
         connector_id = record.connector_id
-        creds = None
         # Get connector instance to check scope
         connector_instance = await arango_service.get_document(connector_id, CollectionNames.APPS.value)
         connector_type = connector_instance.get("type", None)
@@ -773,13 +767,10 @@ async def stream_record(
                 detail="You do not have permission to access this record"
             )
 
-        external_record_id = record.external_record_id
         connector = record.connector_name.value
         connector_id = record.connector_id
-        recordType = record.record_type
         logger.info(f"Connector: {connector} connector_id: {connector_id}")
         # Different auth handling based on account type and connector scope
-        creds = None
 
         try:
             container: ConnectorAppContainer = request.app.container

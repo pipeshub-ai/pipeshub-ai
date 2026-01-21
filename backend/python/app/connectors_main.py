@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.middlewares.auth import authMiddleware
 from app.api.routes.entity import router as entity_router
-from app.config.constants.arangodb import AccountType, Connectors, ConnectorScopes
+from app.config.constants.arangodb import AccountType
 from app.connectors.api.router import router
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.base.token_service.startup_service import startup_service
@@ -22,8 +22,6 @@ from app.connectors.sources.localKB.api.knowledge_hub_router import knowledge_hu
 from app.containers.connector import (
     ConnectorAppContainer,
     initialize_container,
-    initialize_enterprise_google_account_services_fn,
-    initialize_individual_google_account_services_fn,
 )
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory

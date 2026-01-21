@@ -4743,7 +4743,7 @@ class BaseArangoService:
                 signed_url_route = f"{connector_url}/api/v1/{record['orgId']}/{user_id}/{record['connectorName'].lower()}/record/{record['_key']}/signedUrl"
 
                 if record.get("recordType") == "MAIL":
-                    url = f"{connector_url}/api/v1/stream/record/{record['_key']}"
+                    f"{connector_url}/api/v1/stream/record/{record['_key']}"
 
                     mime_type = "text/gmail_content"
                     # Convert bytes to string for JSON serialization

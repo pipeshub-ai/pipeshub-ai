@@ -24,7 +24,6 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.utils.streaming import create_stream_record_response
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -44,17 +43,14 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
 )
 from app.connectors.core.registry.filters import (
+    DatetimeOperator,
     FilterCategory,
     FilterCollection,
     FilterField,
-    FilterOperator,
-    FilterOption,
     FilterOptionsResponse,
     FilterType,
-    FilterOptionsResponse,
     IndexingFilterKey,
     SyncFilterKey,
-    DatetimeOperator,
     load_connector_filters,
 )
 from app.connectors.sources.google.common.apps import GmailApp
@@ -74,6 +70,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.admin.admin import GoogleAdminDataSource
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
+from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
 
@@ -368,7 +365,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             message_id = message.get('id')
             if not message_id:
                 return None
-            
+
             if not self._pass_date_filter(message):
                 self.logger.debug(f" Skipping message {message_id} due to date filter")
                 return None
@@ -377,7 +374,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             label_ids = message.get('labelIds', [])
             message.get('snippet', '')
             internal_date = message.get('internalDate')  # Epoch milliseconds as string
-            
+
             # Determine external_record_group_id based on labelIds (SENT or INBOX)
             # Prefer SENT if both are present
             external_record_group_id = None
@@ -464,14 +461,14 @@ class GoogleGmailTeamConnector(BaseConnector):
 
             # Extract sender email from "from" header (may contain name)
             sender_email = self._extract_email_from_header(from_email)
-            
+
             # Create permission based on whether user_email is the sender
             permissions = []
             if user_email:
                 # Normalize emails for comparison (case-insensitive)
                 user_email_lower = user_email.lower()
                 sender_email_lower = sender_email.lower() if sender_email else ""
-                
+
                 if sender_email_lower and user_email_lower == sender_email_lower:
                     # User is the sender - create owner permission
                     permissions.append(Permission(
@@ -513,10 +510,10 @@ class GoogleGmailTeamConnector(BaseConnector):
 
     def _extract_attachment_infos(self, message: Dict) -> List[Dict]:
         """Extract attachment info from Gmail message payload.
-        
+
         Args:
             message: Message data from Gmail API
-            
+
         Returns:
             List of attachment info dictionaries with stable IDs
         """
@@ -525,7 +522,7 @@ class GoogleGmailTeamConnector(BaseConnector):
         parts = payload.get('parts', [])
         message_id = message.get('id')
 
-        def extract_attachments(parts_list):
+        def extract_attachments(parts_list) -> List[Dict]:
             """Recursively extract attachments from message parts."""
             attachments = []
             for part in parts_list:
@@ -534,11 +531,11 @@ class GoogleGmailTeamConnector(BaseConnector):
                     body = part.get('body', {})
                     attachment_id = body.get('attachmentId')
                     part_id = part.get('partId', 'unknown')
-                    
+
                     if attachment_id:
                         # Construct stable ID using message_id + partId
                         stable_attachment_id = f"{message_id}_{part_id}"
-                        
+
                         attachments.append({
                             'attachmentId': attachment_id,  # Volatile - for downloading
                             'stableAttachmentId': stable_attachment_id,  # Stable - for record ID
@@ -881,10 +878,10 @@ class GoogleGmailTeamConnector(BaseConnector):
                                         if msg.get('id') == message_id:
                                             message = msg
                                             break
-                                    
+
                                     if message:
                                         attachment_infos = self._extract_attachment_infos(message)
-                                        
+
                                         # Process attachments using generator
                                         async for attach_update in self._process_gmail_attachment_generator(
                                             user_email,
@@ -1079,7 +1076,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 f"{total_changes} changes processed, latest historyId: {latest_history_id}"
             )
 
-        except HttpError as http_error:
+        except HttpError:
             # Re-raise HttpError to be handled by caller (for 404 fallback)
             raise
         except Exception as ex:
@@ -1142,7 +1139,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 else:
                     break
 
-            except HttpError as http_error:
+            except HttpError:
                 # Re-raise HttpError (especially 404) to be handled by caller
                 raise
             except Exception as e:
@@ -1428,20 +1425,21 @@ class GoogleGmailTeamConnector(BaseConnector):
             )
 
             messages = thread.get('messages', [])
-            if not messages or len(messages) < 2:
+            min_messages = 2
+            if not messages or len(messages) < min_messages:
                 # No previous message if thread has less than 2 messages
                 return None
 
             # Sort messages by internalDate to find chronological order
             current_date = int(current_internal_date) if current_internal_date else 0
-            
+
             # Find messages that come before the current one
             previous_messages = []
             for msg in messages:
                 msg_id = msg.get('id')
                 if msg_id == current_message_id:
                     continue
-                
+
                 msg_date = int(msg.get('internalDate', 0))
                 if msg_date < current_date:
                     previous_messages.append((msg_id, msg_date))
@@ -2064,10 +2062,10 @@ class GoogleGmailTeamConnector(BaseConnector):
     def _extract_body_from_payload(self, payload: dict) -> str:
         """
         Extract body content from Gmail message payload.
-        
+
         Args:
             payload: Gmail message payload dictionary
-            
+
         Returns:
             Base64-encoded body content string
         """
@@ -2097,11 +2095,11 @@ class GoogleGmailTeamConnector(BaseConnector):
     async def _convert_to_pdf(self, file_path: str, temp_dir: str) -> str:
         """
         Helper function to convert file to PDF using LibreOffice.
-        
+
         Args:
             file_path: Path to the file to convert
             temp_dir: Temporary directory for output
-            
+
         Returns:
             Path to the converted PDF file
         """
@@ -2178,12 +2176,12 @@ class GoogleGmailTeamConnector(BaseConnector):
     ) -> StreamingResponse:
         """
         Stream mail body content from Gmail.
-        
+
         Args:
             gmail_service: Raw Gmail API service client
             message_id: Gmail message ID
             record: Record object
-            
+
         Returns:
             StreamingResponse with mail body content
         """
@@ -2198,7 +2196,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
             # Extract the encoded body content
             mail_content_base64 = self._extract_body_from_payload(message.get("payload", {}))
-            
+
             # Decode the Gmail URL-safe base64 encoded content
             mail_content = base64.urlsafe_b64decode(
                 mail_content_base64.encode("ASCII")
@@ -2245,7 +2243,7 @@ class GoogleGmailTeamConnector(BaseConnector):
     ) -> StreamingResponse:
         """
         Stream attachment content from Gmail with Drive fallback.
-        
+
         Args:
             gmail_service: Raw Gmail API service client
             file_id: Attachment ID or combined messageId_partId
@@ -2253,7 +2251,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             file_name: Name of the file
             mime_type: MIME type of the file
             convertTo: Optional format to convert to (e.g., "application/pdf")
-            
+
         Returns:
             StreamingResponse with attachment content
         """
@@ -2268,7 +2266,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 if parent_record:
                     message_id = parent_record.external_record_id
                     self.logger.info(f"Found parent message ID: {message_id} from parent_external_record_id")
-        
+
         if not message_id:
             self.logger.error(f"Parent message ID not found for attachment record {record.id}")
             raise HTTPException(
@@ -2281,7 +2279,7 @@ class GoogleGmailTeamConnector(BaseConnector):
         if "_" in file_id:
             try:
                 file_message_id, part_id = file_id.split("_", 1)
-                
+
                 # Use the message_id from parent record, but validate it matches
                 if file_message_id != message_id:
                     self.logger.warning(
@@ -2389,7 +2387,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                         status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                         detail="Service account credentials not found for Drive fallback"
                     )
-                
+
                 credentials = service_account.Credentials.from_service_account_info(
                     credentials_json
                 )
@@ -2482,12 +2480,12 @@ class GoogleGmailTeamConnector(BaseConnector):
     async def stream_record(self, record: Record, user_id: Optional[str] = None, convertTo: Optional[str] = None) -> StreamingResponse:
         """
         Stream a record from Google Gmail.
-        
+
         Args:
             record: Record object containing file/message information
             user_id: Optional user ID to use for impersonation
             convertTo: Optional format to convert to (e.g., "application/pdf")
-            
+
         Returns:
             StreamingResponse with file/message content
         """
@@ -2500,7 +2498,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                     status_code=HttpStatusCode.BAD_REQUEST.value,
                     detail="File ID not found in record"
                 )
-            
+
             self.logger.info(f"Streaming Gmail record: {file_id}, type: {record_type}, convertTo: {convertTo}")
 
             # Get user email from user_id if provided, otherwise get user with permission to node
@@ -2579,7 +2577,7 @@ class GoogleGmailTeamConnector(BaseConnector):
         """Run incremental sync for Google Gmail workspace."""
         self.logger.info("Running incremental sync for Google Gmail workspace")
         await self._run_sync()
-        
+
 
     def handle_webhook_notification(self, notification: Dict) -> None:
         """Handle webhook notifications from Google Gmail."""

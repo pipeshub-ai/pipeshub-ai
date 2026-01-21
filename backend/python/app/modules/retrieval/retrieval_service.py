@@ -16,7 +16,6 @@ from app.config.constants.ai_models import (
 # from langchain_cohere import CohereEmbeddings
 from app.config.constants.arangodb import (
     CollectionNames,
-    Connectors,
     RecordTypes,
 )
 from app.config.constants.service import config_node_constants

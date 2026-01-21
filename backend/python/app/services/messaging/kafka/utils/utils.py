@@ -1,6 +1,5 @@
 from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Union
 
-from app.config.constants.arangodb import Connectors
 from app.config.constants.service import config_node_constants
 from app.connectors.services.event_service import EventService
 from app.containers.connector import ConnectorAppContainer
@@ -213,8 +212,8 @@ class KafkaUtils:
                 else:
                     connector = payload.get("connector")
 
-                connector_id = payload.get("connectorId")
-                sync_tasks_registry = getattr(app_container, 'sync_tasks_registry', {})
+                payload.get("connectorId")
+                getattr(app_container, 'sync_tasks_registry', {})
                 if not connector:
                     logger.error("Missing connector in event_type or payload")
                     return False
