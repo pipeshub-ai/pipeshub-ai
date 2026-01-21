@@ -730,6 +730,10 @@ class Processor:
         processor = DoclingProcessor(logger=self.logger, config=self.config_service)
         initial_block_count = len(block_containers.blocks)
 
+        # Get markdown and image parsers for processing
+        md_parser = self.parsers.get(ExtensionTypes.MD.value)
+        image_parser = self.parsers.get(ExtensionTypes.PNG.value)
+
         for block_group in block_groups_to_process:
             try:
                 # Extract markdown data from BlockGroup
@@ -739,8 +743,35 @@ class Processor:
                         f"BlockGroup {block_group.index} has no valid markdown data"
                     )
 
-                # Convert to bytes for docling
-                md_bytes = markdown_data.encode('utf-8')
+                # Extract and replace images from markdown, then convert URLs to base64
+                caption_map = {}
+                modified_markdown = markdown_data
+
+                if md_parser and image_parser:
+                    modified_markdown, images = md_parser.extract_and_replace_images(markdown_data)
+
+                    if images:
+                        # Collect all image URLs
+                        urls_to_convert = [image["url"] for image in images]
+
+                        # Convert URLs to base64
+                        base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+
+                        # Create caption map with base64 URLs
+                        for i, image in enumerate(images):
+                            if base64_urls[i]:
+                                caption_map[image["new_alt_text"]] = base64_urls[i]
+
+                        self.logger.debug(
+                            f"📷 Extracted {len(images)} images from BlockGroup {block_group.index}, "
+                            f"converted {len([u for u in base64_urls if u])} to base64"
+                        )
+
+                # Parse the modified markdown to bytes
+                if md_parser:
+                    md_bytes = md_parser.parse_string(modified_markdown)
+                else:
+                    md_bytes = modified_markdown.encode('utf-8')
 
                 # Create filename from BlockGroup name or use default
                 filename = block_group.name or f"{Path(record_name).stem}_blockgroup_{block_group.index}.md"
@@ -757,6 +788,26 @@ class Processor:
                     raise ValueError(
                         f"Docling returned empty result for BlockGroup {block_group.index}"
                     )
+
+                # Map base64 images to image blocks using captions
+                if caption_map:
+                    for block in processed_blocks_container.blocks:
+                        if block.type == BlockType.IMAGE.value and block.image_metadata:
+                            caption = block.image_metadata.captions
+                            if caption:
+                                caption = caption[0] if isinstance(caption, list) else caption
+                                if caption in caption_map and caption_map[caption]:
+                                    if block.data is None:
+                                        block.data = {}
+                                    if isinstance(block.data, dict):
+                                        block.data["uri"] = caption_map[caption]
+                                    else:
+                                        # If data is not a dict, create a new dict with the uri
+                                        block.data = {"uri": caption_map[caption]}
+                                else:
+                                    self.logger.warning(
+                                        f"⚠️ Skipping image with caption '{caption}' in BlockGroup {block_group.index} - no valid base64 data available"
+                                    )
 
                 # Store results for later merging (exclude parent_block_group reference to avoid mutation issues)
                 processing_results[block_group.index] = (
