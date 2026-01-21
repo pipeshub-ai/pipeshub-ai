@@ -201,30 +201,19 @@ const RecordDetails = ({ recordId, onExternalLink }: RecordDetailsProps) => {
     if (!record) return;
 
     try {
-      const publicConnectorUrlResponse = await ConnectorApiService.getConnectorPublicUrl();
-      let response;
 
       const params: any = {};
       if (record?.recordType === 'MAIL') {
         params.convertTo = 'pdf';
       }
 
-      // Unified streaming logic for both KB and Connector records
-      if (publicConnectorUrlResponse && publicConnectorUrlResponse.url) {
-        const CONNECTOR_URL = publicConnectorUrlResponse.url;
-        response = await axios.get(`${CONNECTOR_URL}/api/v1/stream/record/${recordId}`, {
+      const response = await axios.get(
+        `${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${recordId}`,
+        {
           responseType: 'blob',
           params,
-        });
-      } else {
-        response = await axios.get(
-          `${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${recordId}`,
-          {
-            responseType: 'blob',
-            params,
-          }
-        );
-      }
+        }
+      );
 
       if (!response) return;
 
