@@ -65,8 +65,6 @@ from app.models.blocks import (
     BlockContainerIndex,
     BlockGroup,
     BlocksContainer,
-    BlockSubType,
-    BlockType,
     ChildRecord,
     ChildType,
     CommentAttachment,
@@ -3979,8 +3977,9 @@ class LinearConnector(BaseConnector):
           - children_records in TableRowMetadata (attachments, documents, files)
         - Thread BlockGroups (index=1,2,...) for each comment thread with:
           - parent_index=0 (pointing to Description BlockGroup)
-        - Block objects (sub_type=COMMENT) for each comment with:
+        - Comment BlockGroups (sub_type=COMMENT) for each comment with:
           - parent_index pointing to thread BlockGroup index
+          - requires_processing=True (so Docling processes them)
           - children_records in TableRowMetadata (files from comment body)
 
         Args:
@@ -3990,7 +3989,7 @@ class LinearConnector(BaseConnector):
             comment_file_children_map: Dictionary mapping comment_id to List[ChildRecord] for files in comments
 
         Returns:
-            BlocksContainer with Description BlockGroup, Thread BlockGroups, and Comment Blocks
+            BlocksContainer with Description BlockGroup, Thread BlockGroups, and Comment BlockGroups
         """
         issue_id = issue_data.get("id", "")
         issue_identifier = issue_data.get("identifier", "")
@@ -4003,7 +4002,6 @@ class LinearConnector(BaseConnector):
         block_groups: List[BlockGroup] = []
         blocks: List[Block] = []
         block_group_index = 0
-        block_index = 0
 
         # 1. Description BlockGroup (index=0)
         # Use description if available, otherwise create minimal content with title
@@ -4065,8 +4063,10 @@ class LinearConnector(BaseConnector):
                     requires_processing=False,
                 )
                 block_groups.append(thread_block_group)
+                thread_block_group_index = block_group_index
+                block_group_index += 1
 
-                # Create Block objects for each comment in the thread
+                # Create BlockGroup objects for each comment in the thread
                 for comment in thread_comments:
                     comment_body = comment.get("body", "")
                     if not comment_body:
@@ -4078,8 +4078,8 @@ class LinearConnector(BaseConnector):
                     comment_updated_at_str = comment.get("updatedAt", "")
 
                     # Parse datetime strings to datetime objects
-                    comment_created_at = self._parse_linear_datetime_to_datetime(comment_created_at_str)
-                    comment_updated_at = self._parse_linear_datetime_to_datetime(comment_updated_at_str)
+                    self._parse_linear_datetime_to_datetime(comment_created_at_str)
+                    self._parse_linear_datetime_to_datetime(comment_updated_at_str)
 
                     user = comment.get("user", {})
                     author_name = user.get("displayName") or user.get("name") or "Unknown"
@@ -4099,28 +4099,24 @@ class LinearConnector(BaseConnector):
                             children_records=comment_file_children
                         )
 
-                    # Create Block with sub_type=COMMENT
-                    comment_block = Block(
+                    # Create BlockGroup with sub_type=COMMENT
+                    comment_block_group = BlockGroup(
                         id=str(uuid4()),
-                        index=block_index,
-                        parent_index=block_group_index,  # Points to thread BlockGroup
-                        type=BlockType.TEXT,
-                        sub_type=BlockSubType.COMMENT,
+                        index=block_group_index,
+                        parent_index=thread_block_group_index,  # Points to thread BlockGroup
                         name=f"Comment by {author_name}",
-                        format=DataFormat.MARKDOWN,
+                        type=GroupType.TEXT_SECTION,
+                        sub_type=GroupSubType.COMMENT,
+                        description=f"Comment by {author_name}",
+                        source_group_id=comment_id,
                         data=comment_body,
+                        format=DataFormat.MARKDOWN,
                         weburl=comment_url if comment_url else None,
-                        source_creation_date=comment_created_at,
-                        source_update_date=comment_updated_at,
-                        source_id=comment_id,
-                        source_name=f"Comment by {author_name}",
-                        source_type="comment",
+                        requires_processing=True,
                         table_row_metadata=comment_table_row_metadata,
                     )
-                    blocks.append(comment_block)
-                    block_index += 1
-
-                block_group_index += 1
+                    block_groups.append(comment_block_group)
+                    block_group_index += 1
 
         # If no blockgroups were created (no description and no comments), create minimal BlockGroup
         if not block_groups:
@@ -4142,20 +4138,15 @@ class LinearConnector(BaseConnector):
             )
             block_groups.append(minimal_block_group)
 
-        # Populate children arrays for BlockGroups and add thread groups to description
-        # Build a map of parent_index -> list of child indices
+        # Populate children arrays for BlockGroups
+        # Build a map of parent_index -> list of child BlockGroup indices
         blockgroup_children_map = defaultdict(list)  # Maps BlockGroup index -> list of child BlockGroup indices
-        block_children_map = defaultdict(list)  # Maps BlockGroup index -> list of child Block indices
 
-        # Collect all BlockGroup children (thread groups that are children of description)
+        # Collect all BlockGroup children (thread groups that are children of description,
+        # and comment groups that are children of thread groups)
         for bg in block_groups:
             if bg.parent_index is not None:
                 blockgroup_children_map[bg.parent_index].append(bg.index)
-
-        # Collect all Block children (comment blocks that are children of thread groups)
-        for b in blocks:
-            if b.parent_index is not None:
-                block_children_map[b.parent_index].append(b.index)
 
         # Now populate the children arrays
         for bg in block_groups:
@@ -4165,11 +4156,6 @@ class LinearConnector(BaseConnector):
             if bg.index in blockgroup_children_map:
                 for child_bg_index in sorted(blockgroup_children_map[bg.index]):
                     children_list.append(BlockContainerIndex(block_group_index=child_bg_index))
-
-            # Add child Blocks
-            if bg.index in block_children_map:
-                for child_block_index in sorted(block_children_map[bg.index]):
-                    children_list.append(BlockContainerIndex(block_index=child_block_index))
 
             # Set children if we have any
             if children_list:
@@ -4421,14 +4407,15 @@ class LinearConnector(BaseConnector):
         Stream record content (issue, project, attachment, document, or file).
 
         Handles:
-        - TICKET: Stream issue BlocksContainer (description BlockGroup + thread BlockGroups with comments as Block objects)
+        - TICKET: Stream issue BlocksContainer (description BlockGroup + thread BlockGroups with comments as BlockGroups with sub_type=COMMENT)
         - PROJECT: Stream project BlocksContainer (description, milestones, updates BlockGroups)
         - LINK: Stream attachment/link from weburl
         - WEBPAGE: Stream document content (markdown)
         - FILE: Stream file content from weburl
 
-        Note: Comments are handled as Block objects (sub_type=COMMENT) within
-        issue/project BlocksContainer, not as separate records.
+        Note: Comments are handled as BlockGroups (sub_type=COMMENT) within
+        issue BlocksContainer, not as separate records. Each comment BlockGroup has
+        requires_processing=True so Docling processes the comment content.
         """
         try:
             if not self.data_source:

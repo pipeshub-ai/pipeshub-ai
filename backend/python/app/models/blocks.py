@@ -226,6 +226,7 @@ class GroupSubType(str, Enum):
     CHILD_RECORD = "child_record"
     ISSUE_CONTENT = "issue_content"
     COMMENT_THREAD = "comment_thread"
+    COMMENT = "comment"
 
 class SemanticMetadata(BaseModel):
     entities: Optional[List[Dict[str, Any]]] = None
