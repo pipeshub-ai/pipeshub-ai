@@ -7189,3 +7189,294 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # self.logger.error(f"Failed to get filter options: {e}")
             return {"kbs": [], "apps": []}
 
+    # ========================================================================
+    # Move Record API Methods
+    # ========================================================================
+
+    async def is_record_descendant_of(
+        self,
+        ancestor_id: str,
+        potential_descendant_id: str,
+        transaction: Optional[str] = None
+    ) -> bool:
+        """
+        Check if potential_descendant_id is a descendant of ancestor_id.
+        Used to prevent circular references when moving folders.
+
+        Args:
+            ancestor_id: The folder being moved (record key)
+            potential_descendant_id: The target destination (record key)
+            transaction: Optional transaction ID
+
+        Returns:
+            bool: True if potential_descendant_id is under ancestor_id
+        """
+        query = """
+        LET ancestor_doc_id = CONCAT("records/", @ancestor_id)
+
+        // Traverse down from ancestor to find if descendant is reachable
+        FOR v IN 1..100 OUTBOUND ancestor_doc_id @@record_relations
+            OPTIONS { bfs: true, uniqueVertices: "global" }
+            FILTER v._key == @descendant_id
+            LIMIT 1
+            RETURN 1
+        """
+        try:
+            result = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "ancestor_id": ancestor_id,
+                    "descendant_id": potential_descendant_id,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                },
+                txn_id=transaction
+            )
+            is_descendant = len(result) > 0 if result else False
+            self.logger.debug(
+                f"Circular reference check: {potential_descendant_id} is "
+                f"{'a descendant' if is_descendant else 'not a descendant'} of {ancestor_id}"
+            )
+            return is_descendant
+        except Exception as e:
+            self.logger.error(f"Failed to check descendant relationship: {e}")
+            return False
+
+    async def get_record_parent_info(
+        self,
+        record_id: str,
+        transaction: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get the current parent information for a record.
+
+        Args:
+            record_id: The record key
+            transaction: Optional transaction ID
+
+        Returns:
+            Dict with parent_id, parent_type ('record' or 'recordGroup'), or None if at root
+        """
+        query = """
+        LET record_doc_id = CONCAT("records/", @record_id)
+
+        // Find the incoming PARENT_CHILD edge
+        LET parent_edge = FIRST(
+            FOR edge IN @@record_relations
+                FILTER edge._to == record_doc_id
+                FILTER edge.relationshipType == "PARENT_CHILD"
+                RETURN edge
+        )
+
+        LET parent_id = parent_edge != null ? PARSE_IDENTIFIER(parent_edge._from).key : null
+        LET parent_collection = parent_edge != null ? PARSE_IDENTIFIER(parent_edge._from).collection : null
+        LET parent_type = parent_collection == "recordGroups" ? "recordGroup" : (
+            parent_collection == "records" ? "record" : null
+        )
+
+        RETURN parent_id != null ? {
+            parentId: parent_id,
+            parentType: parent_type,
+            edgeKey: parent_edge._key
+        } : null
+        """
+        try:
+            result = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "record_id": record_id,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                },
+                txn_id=transaction
+            )
+            return result[0] if result and result[0] else None
+        except Exception as e:
+            self.logger.error(f"Failed to get record parent info: {e}")
+            return None
+
+    async def delete_parent_child_edge_to_record(
+        self,
+        record_id: str,
+        transaction: Optional[str] = None
+    ) -> int:
+        """
+        Delete all PARENT_CHILD edges pointing to a record.
+
+        Args:
+            record_id: The record key (target of the edge)
+            transaction: Optional transaction ID
+
+        Returns:
+            int: Number of edges deleted
+        """
+        query = """
+        LET record_doc_id = CONCAT("records/", @record_id)
+
+        FOR edge IN @@record_relations
+            FILTER edge._to == record_doc_id
+            FILTER edge.relationshipType == "PARENT_CHILD"
+            REMOVE edge IN @@record_relations
+            RETURN OLD
+        """
+        try:
+            result = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "record_id": record_id,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                },
+                txn_id=transaction
+            )
+            deleted_count = len(result) if result else 0
+            self.logger.debug(f"Deleted {deleted_count} PARENT_CHILD edge(s) to record {record_id}")
+            return deleted_count
+        except Exception as e:
+            self.logger.error(f"Failed to delete parent-child edge: {e}")
+            if transaction:
+                raise
+            return 0
+
+    async def create_parent_child_edge(
+        self,
+        parent_id: str,
+        child_id: str,
+        parent_is_kb: bool,
+        transaction: Optional[str] = None
+    ) -> bool:
+        """
+        Create a PARENT_CHILD edge from parent to child.
+
+        Args:
+            parent_id: The parent key (folder or KB)
+            child_id: The child key (record being moved)
+            parent_is_kb: True if parent is a KB (recordGroups), False if folder (records)
+            transaction: Optional transaction ID
+
+        Returns:
+            bool: True if edge created successfully
+        """
+        parent_collection = "recordGroups" if parent_is_kb else "records"
+        timestamp = get_epoch_timestamp_in_ms()
+
+        query = """
+        INSERT {
+            _from: CONCAT(@parent_collection, "/", @parent_id),
+            _to: CONCAT("records/", @child_id),
+            relationshipType: "PARENT_CHILD",
+            createdAtTimestamp: @timestamp,
+            updatedAtTimestamp: @timestamp
+        } INTO @@record_relations
+        RETURN NEW
+        """
+        try:
+            result = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "parent_collection": parent_collection,
+                    "parent_id": parent_id,
+                    "child_id": child_id,
+                    "timestamp": timestamp,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                },
+                txn_id=transaction
+            )
+            success = len(result) > 0 if result else False
+            if success:
+                self.logger.debug(
+                    f"Created PARENT_CHILD edge: {parent_collection}/{parent_id} -> records/{child_id}"
+                )
+            return success
+        except Exception as e:
+            self.logger.error(f"Failed to create parent-child edge: {e}")
+            if transaction:
+                raise
+            return False
+
+    async def update_record_external_parent_id(
+        self,
+        record_id: str,
+        new_parent_id: str,
+        transaction: Optional[str] = None
+    ) -> bool:
+        """
+        Update the externalParentId field of a record.
+
+        Args:
+            record_id: The record key
+            new_parent_id: The new parent ID (folder ID or KB ID)
+            transaction: Optional transaction ID
+
+        Returns:
+            bool: True if updated successfully
+        """
+        timestamp = get_epoch_timestamp_in_ms()
+        query = """
+        UPDATE { _key: @record_id } WITH {
+            externalParentId: @new_parent_id,
+            updatedAtTimestamp: @timestamp
+        } IN @@records
+        RETURN NEW
+        """
+        try:
+            result = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "record_id": record_id,
+                    "new_parent_id": new_parent_id,
+                    "timestamp": timestamp,
+                    "@records": CollectionNames.RECORDS.value,
+                },
+                txn_id=transaction
+            )
+            success = len(result) > 0 if result else False
+            if success:
+                self.logger.debug(f"Updated externalParentId for record {record_id} to {new_parent_id}")
+            return success
+        except Exception as e:
+            self.logger.error(f"Failed to update record externalParentId: {e}")
+            if transaction:
+                raise
+            return False
+
+    async def is_record_folder(
+        self,
+        record_id: str,
+        transaction: Optional[str] = None
+    ) -> bool:
+        """
+        Check if a record is a folder (isFile=false in FILES collection).
+
+        Args:
+            record_id: The record key
+            transaction: Optional transaction ID
+
+        Returns:
+            bool: True if the record is a folder
+        """
+        query = """
+        LET record = DOCUMENT("records", @record_id)
+        FILTER record != null
+
+        LET file_info = FIRST(
+            FOR edge IN @@is_of_type
+                FILTER edge._from == record._id
+                LET f = DOCUMENT(edge._to)
+                FILTER f != null AND f.isFile == false
+                RETURN true
+        )
+
+        RETURN file_info == true
+        """
+        try:
+            result = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "record_id": record_id,
+                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                },
+                txn_id=transaction
+            )
+            return result[0] if result else False
+        except Exception as e:
+            self.logger.error(f"Failed to check if record is folder: {e}")
+            return False
+

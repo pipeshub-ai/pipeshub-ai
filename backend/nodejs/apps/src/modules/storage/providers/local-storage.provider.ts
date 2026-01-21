@@ -210,10 +210,12 @@ class LocalStorageAdapter implements StorageServiceInterface {
     version?: number,
   ): Promise<StorageServiceResponse<Buffer>> {
     try {
-      const fileUrl =
+      // Try localPath first, then fall back to url (for backwards compatibility)
+      let fileUrl =
         version === undefined || version === 0
-          ? document.local?.localPath
-          : document.versionHistory?.[version]?.local?.localPath;
+          ? (document.local?.localPath || document.local?.url)
+          : (document.versionHistory?.[version]?.local?.localPath ||
+             document.versionHistory?.[version]?.local?.url);
       if (!fileUrl) {
         throw new StorageNotFoundError(
           'File URL not found for requested version',
