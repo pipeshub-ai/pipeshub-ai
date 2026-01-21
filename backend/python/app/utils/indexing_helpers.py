@@ -138,7 +138,7 @@ def generate_simple_row_text(row_data: Dict[str, Any]) -> str:
     parts = []
     for key, value in row_data.items():
         # Convert value to string, handle None values
-        value_str = str(value) if value is not None else ""
+        value_str = str(value) if value is not None else "None"
         parts.append(f"{key}: {value_str}")
     return ", ".join(parts)
 
@@ -220,6 +220,14 @@ async def process_table_pymupdf(
 
 
         result["tables"].append(block_group)
+
+
+def format_rows_with_index(rows: list[dict]) -> str:
+        """Format rows with explicit numbering for clarity."""
+        numbered_rows = []
+        for i, row in enumerate(rows, 1):
+            numbered_rows.append(f"Row {i}: {json.dumps(row, indent=2)}")
+        return "\n".join(numbered_rows)
 
 
 

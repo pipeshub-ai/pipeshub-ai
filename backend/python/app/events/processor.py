@@ -703,6 +703,7 @@ class Processor:
             # Try different encodings to decode binary data
             encodings = ["utf-8", "latin1", "cp1252", "iso-8859-1"]
             csv_result = None
+            line_numbers = None
             for encoding in encodings:
                 try:
                     self.logger.debug(
@@ -715,7 +716,7 @@ class Processor:
                     csv_stream = io.StringIO(csv_text)
 
                     # Use the parser's read_stream method directly
-                    csv_result = parser.read_stream(csv_stream)
+                    csv_result, line_numbers = parser.read_stream(csv_stream)
 
                     self.logger.info(
                         f"✅ Successfully parsed CSV with {encoding} encoding. Rows: {len(csv_result):,}"
@@ -740,10 +741,7 @@ class Processor:
 
             self.logger.debug("📑 CSV result processed")
 
-            # Extract domain metadata from CSV content
-            self.logger.info("🎯 Extracting domain metadata")
             if csv_result:
-
                 record = await self.arango_service.get_document(
                     recordId, CollectionNames.RECORDS.value
                     )
@@ -759,7 +757,7 @@ class Processor:
                 yield {"event": "parsing_complete", "data": {"record_id": recordId}}
 
                 # Create blocks (involves LLM calls for row descriptions and summaries)
-                block_containers = await parser.get_blocks_from_csv_result(csv_result, llm)
+                block_containers = await parser.get_blocks_from_csv_result(csv_result, line_numbers, llm)
                 record.block_containers = block_containers
 
                 ctx = TransformContext(record=record)
