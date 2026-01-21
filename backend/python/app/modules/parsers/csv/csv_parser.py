@@ -68,7 +68,7 @@ class CSVParser:
 
     def read_file(
         self, file_path: str | Path, encoding: Optional[str] = None
-    ) -> Tuple[List[Dict[str, Any]], List[int]]:
+    ) -> Tuple[List[Dict[str, Any]], List[int]]: # line_numbers: List of line numbers from the CSV file
         """
         Read a CSV file and return its contents as a list of dictionaries.
 
@@ -96,7 +96,7 @@ class CSVParser:
         with open(file_path, "r", encoding=file_encoding) as file:
             return self.read_stream(file)
 
-    def read_stream(self, file_stream: TextIO) -> Tuple[List[Dict[str, Any]], List[int]]:
+    def read_stream(self, file_stream: TextIO) -> Tuple[List[Dict[str, Any]], List[int]]:  # line_numbers: List of line numbers from the CSV file
         """
         Read a CSV from a file stream and return its contents as a list of dictionaries.
 
@@ -115,7 +115,7 @@ class CSVParser:
         # Convert all rows to dictionaries and store them
         data = []
         line_numbers = []
-        row_number = 1
+        row_number = 2
         for row in reader:
             # Clean up the row data
             cleaned_row = {
@@ -126,7 +126,6 @@ class CSVParser:
             # Skip rows where all values are None
             if not all(value is None for value in cleaned_row.values()):
                 # Store the actual line number from the CSV file
-                # reader.line_num gives the line number of the last line read
                 line_numbers.append(row_number)
                 data.append(cleaned_row)
 
@@ -276,7 +275,6 @@ class CSVParser:
             row5 = [str(v) if v is not None else "" for v in first_rows[4]] if len(first_rows) > 4 else []
             row6 = [str(v) if v is not None else "" for v in first_rows[5]] if len(first_rows) > 5 else []
             
-            print(f"row1: {row1}")
             messages = self.csv_header_detection_prompt.format_messages(
                 row1=row1,
                 row2=row2,
@@ -529,7 +527,7 @@ class CSVParser:
             # Use simple format for rows (skip LLM)
             for idx, row in enumerate(csv_result):
                 # Use actual line number from separate list
-                actual_row_number = line_numbers[idx] if idx < len(line_numbers) else idx-1
+                actual_row_number = line_numbers[idx] if idx < len(line_numbers) else idx+1
                 row_text = generate_simple_row_text(row)
                 blocks.append(
                     Block(
