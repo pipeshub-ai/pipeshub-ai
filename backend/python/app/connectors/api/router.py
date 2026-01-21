@@ -5751,14 +5751,6 @@ async def _ensure_connector_initialized(
     Raises:
         HTTPException: If initialization fails
     """
-    # Skip synchronous initialization for Gmail and Google Drive - they use event-based initialization
-    # via specialized sync services and don't extend BaseConnector
-    is_gmail_or_drive = connector_type in [Connectors.GOOGLE_MAIL.value]
-
-    if is_gmail_or_drive:
-        logger.info(f"Skipping synchronous initialization for {connector_type} - will be initialized via event handlers")
-        return None
-
     # Check if connector already exists in container
     connector_exists = (
         hasattr(container, 'connectors_map') and

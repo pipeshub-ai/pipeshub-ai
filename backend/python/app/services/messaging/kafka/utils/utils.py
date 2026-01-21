@@ -3,9 +3,6 @@ from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Union
 from app.config.constants.arangodb import Connectors
 from app.config.constants.service import config_node_constants
 from app.connectors.services.event_service import EventService
-from app.connectors.sources.google.gmail.services.event_service.event_service import (
-    GmailEventService,
-)
 from app.containers.connector import ConnectorAppContainer
 from app.containers.indexing import IndexingAppContainer
 from app.containers.query import QueryAppContainer
