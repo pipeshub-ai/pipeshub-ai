@@ -315,26 +315,14 @@ export default function KnowledgeBaseSearch() {
           handleLargePPTFile(record);
         }
 
-        const publicConnectorUrlResponse = await ConnectorApiService.getConnectorPublicUrl();
-        let response;
-
-        if (publicConnectorUrlResponse && publicConnectorUrlResponse.url) {
-          const CONNECTOR_URL = publicConnectorUrlResponse.url;
-          response = await axios.get(`${CONNECTOR_URL}/api/v1/stream/record/${recordId}`, {
-            responseType: 'blob',
-            params,
-          });
-        } else {
-          response = await axios.get(
+        const response = await axios.get(
             `${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${recordId}`,
             {
               responseType: 'blob',
               params,
             }
           );
-        }
-
-        if (!response) return;
+        
 
         let filename;
         const contentDisposition = response.headers['content-disposition'];

@@ -1540,27 +1540,13 @@ const AgentChat = () => {
         handleLargePPTFile(record);
       }
 
-      const publicConnectorUrlResponse = await ConnectorApiService.getConnectorPublicUrl();
-      let streamResponse;
-
-      if (publicConnectorUrlResponse && publicConnectorUrlResponse.url) {
-        const CONNECTOR_URL = publicConnectorUrlResponse.url;
-        streamResponse = await axios.get(
-          `${CONNECTOR_URL}/api/v1/stream/record/${recordId}`,
-          {
-            responseType: 'blob',
-            params,
-          }
-        );
-      } else {
-        streamResponse = await axios.get(
+      const streamResponse = await axios.get(
           `${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${recordId}`,
           {
             responseType: 'blob',
             params,
           }
         );
-      }
 
       if (!streamResponse) return;
 
