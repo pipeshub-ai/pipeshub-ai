@@ -29,16 +29,11 @@ from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.connectors.sources.bookstack.connector import BookStackConnector
 from app.connectors.sources.box.connector import BoxConnector
 from app.connectors.sources.dropbox.connector import DropboxConnector
-from app.connectors.sources.dropbox_individual.connector import (
-    DropboxIndividualConnector,
-)
-from app.connectors.sources.google.drive.individual.connector import (
-    GoogleDriveIndividualConnector,
-)
-from app.connectors.sources.google.drive.team.connector import (
-    GoogleDriveTeamConnector,
-)
+from app.connectors.sources.dropbox_individual.connector import DropboxIndividualConnector
+from app.connectors.sources.google.drive.individual.connector import GoogleDriveIndividualConnector
+from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
 from app.connectors.sources.google.gmail.team.connector import GoogleGmailTeamConnector
+from app.connectors.sources.google.gmail.individual.connector import GoogleGmailIndividualConnector
 from app.connectors.sources.google_cloud_storage.connector import GCSConnector
 from app.connectors.sources.linear.connector import LinearConnector
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
@@ -68,6 +63,7 @@ class ConnectorFactory:
         "box": BoxConnector,
         "drive": GoogleDriveIndividualConnector,
         "driveworkspace": GoogleDriveTeamConnector,
+        "gmail": GoogleGmailIndividualConnector,
         "gmailworkspace": GoogleGmailTeamConnector,
         "dropbox": DropboxConnector,
         "dropboxpersonal": DropboxIndividualConnector,
