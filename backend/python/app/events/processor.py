@@ -677,7 +677,7 @@ class Processor:
             raise
 
     async def process_csv_document(
-        self, recordName, recordId, version, source, orgId, csv_binary, virtual_record_id, origin
+        self, recordName, recordId, csv_binary, virtual_record_id,extension = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process CSV document, yielding phase completion events.
 
@@ -696,7 +696,10 @@ class Processor:
         try:
             # Initialize CSV parser
             self.logger.debug("📊 Processing CSV content")
-            parser = self.parsers[ExtensionTypes.CSV.value]
+            if extension is None:
+                parser = self.parsers[ExtensionTypes.CSV.value]
+            else:
+                parser = self.parsers[extension]
 
             llm, _ = await get_llm(self.config_service)
 

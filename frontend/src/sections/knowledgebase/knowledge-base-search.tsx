@@ -54,7 +54,7 @@ export const StyledCloseButton = styled(Button)(({ theme }) => ({
 
 function getDocumentType(extension: string) {
   if (extension === 'pdf') return 'pdf';
-  if (['xlsx', 'xls', 'csv'].includes(extension)) return 'excel';
+  if (['xlsx', 'xls', 'csv', 'tsv'].includes(extension)) return 'excel';
   if (extension === 'docx') return 'docx';
   if (extension === 'html') return 'html';
   if (extension === 'txt') return 'text';

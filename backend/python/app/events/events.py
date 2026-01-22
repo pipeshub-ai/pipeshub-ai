@@ -446,12 +446,8 @@ class EventProcessor:
                 async for event in self.processor.process_csv_document(
                     recordName=record_name,
                     recordId=record_id,
-                    version=record_version,
-                    source=connector,
-                    orgId=org_id,
                     csv_binary=file_content,
                     virtual_record_id=virtual_record_id,
-                    origin=origin,
                 ):
                     yield event
 
@@ -459,12 +455,9 @@ class EventProcessor:
                 async for event in self.processor.process_csv_document(
                     recordName=record_name,
                     recordId=record_id,
-                    version=record_version,
-                    source=connector,
-                    orgId=org_id,
                     csv_binary=file_content,
                     virtual_record_id=virtual_record_id,
-                    origin=origin,
+                    extension=ExtensionTypes.TSV.value
                 ):
                     yield event
 
