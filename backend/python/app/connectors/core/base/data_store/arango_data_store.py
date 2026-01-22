@@ -579,11 +579,45 @@ class ArangoTransactionStore(TransactionStore):
         return await self.arango_service.batch_create_edges(edges, collection=collection, transaction=self.txn)
 
     async def batch_create_entity_relations(self, edges: List[Dict]) -> None:
-        """Batch create entity relation edges with edgeType in UPSERT match condition."""
-        # For arango_data_store, we need to check if the service has this method
-        # If not, fall back to regular batch_create_edges (though this won't work correctly)
-        # This is a compatibility method - graph_data_store should be used for entity relations
-        await self.arango_service.batch_create_edges(edges, collection=CollectionNames.ENTITY_RELATIONS.value, transaction=self.txn)
+        """
+        Batch create entity relation edges with edgeType in UPSERT match condition.
+
+        Uses UPSERT to avoid duplicates - matches on _from, _to, and edgeType.
+        This is specialized for entityRelations collection where multiple edges
+        can exist between the same entities with different edgeType values (e.g., ASSIGNED_TO, CREATED_BY, REPORTED_BY, LEAD_BY).
+
+        Args:
+            edges: List of edge documents with _from, _to, and edgeType
+        """
+        if not edges:
+            return
+
+        try:
+            self.logger.info("🚀 Batch creating entity relation edges")
+
+            # For entity relations, include edgeType in the UPSERT match condition
+            batch_query = """
+            FOR edge IN @edges
+                UPSERT { _from: edge._from, _to: edge._to, edgeType: edge.edgeType }
+                INSERT edge
+                UPDATE edge
+                IN @@collection
+                RETURN NEW
+            """
+            bind_vars = {
+                "edges": edges,
+                "@collection": CollectionNames.ENTITY_RELATIONS.value
+            }
+
+            cursor = self.txn.aql.execute(batch_query, bind_vars=bind_vars)
+            results = list(cursor)
+
+            self.logger.info(
+                f"✅ Successfully created {len(results)} entity relation edges."
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Batch entity relation creation failed: {str(e)}")
+            raise
 
 class ArangoDataStore(DataStoreProvider):
     """ArangoDB data store"""
