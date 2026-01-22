@@ -795,10 +795,6 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
             block_number = f"R{record_number}-{block_index}"
             data = block.get("data", "")
 
-            # Handle dict data (e.g., COMMENT blocks with full metadata)
-            if isinstance(data, dict):
-                data = data.get("text", "")
-
             if block_type == BlockType.IMAGE.value:
                 continue
             elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:

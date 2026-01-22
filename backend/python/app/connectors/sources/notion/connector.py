@@ -469,7 +469,7 @@ class NotionConnector(BaseConnector):
                         "Content-Disposition": f'attachment; filename="{record.record_name}"'
                     }
                 )
-            elif record.record_type == RecordType.NOTION_DATA_SOURCE:
+            elif record.record_type == RecordType.DATASOURCE:
                 # Fetch data source as table blocks
                 parser = NotionBlockParser(self.logger, self.config_service)
                 blocks_container = await self._fetch_data_source_as_blocks(
@@ -491,12 +491,12 @@ class NotionConnector(BaseConnector):
 
                 return StreamingResponse(
                     generate_blocks_json(),
-                    media_type='application/json',
+                    media_type='application/octet-stream',
                     headers={
                         "Content-Disposition": f'inline; filename="{record.external_record_id}_data_source.json"'
                     }
                 )
-            elif record.record_type == RecordType.NOTION_PAGE:
+            elif record.record_type == RecordType.WEBPAGE:
                 parser = NotionBlockParser(self.logger, self.config_service)
                 # Extract page URL from record.weburl (if available)
                 parent_page_url = record.weburl if hasattr(record, 'weburl') and record.weburl else None
@@ -533,7 +533,7 @@ class NotionConnector(BaseConnector):
 
                 return StreamingResponse(
                     generate_blocks_json(),
-                    media_type='application/json',
+                    media_type='application/octet-stream',
                     headers={
                         "Content-Disposition": f'inline; filename="{record.external_record_id}_page.json"'
                     }
@@ -2015,10 +2015,10 @@ class NotionConnector(BaseConnector):
                 if not data_source_id:
                     continue
 
-                # Use NOTION_DATA_SOURCE as the record type for data sources
+                # Use DATASOURCE as the record type for data sources
                 data_sources_to_resolve[data_source_id] = (
                     data_source_name,
-                    RecordType.NOTION_DATA_SOURCE,
+                    RecordType.DATASOURCE,
                     None  # No parent for data sources
                 )
 
@@ -2107,7 +2107,7 @@ class NotionConnector(BaseConnector):
                     # data is now just the text/name string
                     name = block.data if isinstance(block.data, str) else "Untitled"
                     # name field stores child_record_type
-                    type_str = block.name or "NOTION_PAGE"
+                    type_str = block.name or "WEBPAGE"
                     children_to_resolve[ext_id] = (name, RecordType[type_str], parent_ext_id)
 
             # Batch resolve/create all unique children
@@ -2190,7 +2190,7 @@ class NotionConnector(BaseConnector):
             for child_id, title in children:
                 if child_id not in children_to_resolve:
                     # Note: parent is the row page, not the data source
-                    children_to_resolve[child_id] = (title, RecordType.NOTION_PAGE, row_page_id)
+                    children_to_resolve[child_id] = (title, RecordType.WEBPAGE, row_page_id)
 
         if not children_to_resolve:
             return
@@ -2765,16 +2765,16 @@ class NotionConnector(BaseConnector):
                 # Database: title is directly in the response
                 title_parts = obj_data.get("title", [])
                 title = "".join([t.get("plain_text", "") for t in title_parts]) or "Untitled Database"
-                record_type = RecordType.NOTION_DATABASE
+                record_type = RecordType.DATABASE
             elif object_type == "data_source":
                 # Data Source: title is directly in the response (same as database)
                 title_parts = obj_data.get("title", [])
                 title = "".join([t.get("plain_text", "") for t in title_parts]) or "Untitled Data Source"
-                record_type = RecordType.NOTION_DATA_SOURCE
+                record_type = RecordType.DATASOURCE
             else:  # page
                 # Page: title is in properties
                 title = self._extract_page_title(obj_data)
-                record_type = RecordType.NOTION_PAGE
+                record_type = RecordType.WEBPAGE
 
             # Parse timestamps (same for all)
             created_time = obj_data.get("created_time")
@@ -2938,7 +2938,7 @@ class NotionConnector(BaseConnector):
                 record_name=file_name,
                 record_type=RecordType.FILE,
                 external_record_id=file_id,
-                parent_record_type=RecordType.NOTION_PAGE,
+                parent_record_type=RecordType.WEBPAGE,
                 parent_external_record_id=page_id,
                 record_group_type=RecordGroupType.NOTION_WORKSPACE,
                 external_record_group_id=self.workspace_id or "",
@@ -3031,7 +3031,7 @@ class NotionConnector(BaseConnector):
                 record_name=file_name,
                 record_type=RecordType.FILE,
                 external_record_id=file_id,
-                parent_record_type=RecordType.NOTION_PAGE,
+                parent_record_type=RecordType.WEBPAGE,
                 parent_external_record_id=page_id,
                 record_group_type=RecordGroupType.NOTION_WORKSPACE,
                 external_record_group_id=self.workspace_id or "",
@@ -3252,7 +3252,7 @@ class NotionConnector(BaseConnector):
                 minimal_record = WebpageRecord(
                     org_id=self.data_entities_processor.org_id,
                     record_name=page_title or "Database Row",
-                    record_type=RecordType.NOTION_PAGE,
+                    record_type=RecordType.WEBPAGE,
                     external_record_id=external_id,
                     external_revision_id="temporary",
                     connector_id=self.connector_id,

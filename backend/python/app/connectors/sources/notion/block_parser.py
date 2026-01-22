@@ -468,7 +468,8 @@ class NotionBlockParser:
                         id=str(uuid4()),
                         index=block_index,
                         parent_index=parent_group_index,
-                        type=BlockType.LINK,
+                        type=BlockType.TEXT,
+                        sub_type=BlockSubType.LINK,
                         format=DataFormat.TXT,
                         data=title or href or "",
                         link_metadata=LinkMetadata(
@@ -492,7 +493,8 @@ class NotionBlockParser:
             id=str(uuid4()),
             index=block_index,
             parent_index=parent_group_index,
-            type=BlockType.PARAGRAPH,
+            type=BlockType.TEXT,
+            sub_type=BlockSubType.PARAGRAPH,
             format=DataFormat.MARKDOWN,
             data=text,
             source_id=notion_block.get("id"),
@@ -562,7 +564,8 @@ class NotionBlockParser:
             id=str(uuid4()),
             index=block_index,
             parent_index=parent_group_index,
-            type=BlockType.HEADING,
+            type=BlockType.TEXT,
+            sub_type=BlockSubType.HEADING,
             format=DataFormat.MARKDOWN,
             data=text,
             name=f"H{level}",
@@ -594,7 +597,8 @@ class NotionBlockParser:
             id=str(uuid4()),
             index=block_index,
             parent_index=parent_group_index,
-            type=BlockType.QUOTE,
+            type=BlockType.TEXT,
+            sub_type=BlockSubType.QUOTE,
             format=DataFormat.MARKDOWN,
             data=formatted_text,
             source_id=notion_block.get("id"),
@@ -658,7 +662,8 @@ class NotionBlockParser:
             id=str(uuid4()),
             index=block_index,
             parent_index=parent_group_index,
-            type=BlockType.PARAGRAPH,
+            type=BlockType.TEXT,
+            sub_type=BlockSubType.PARAGRAPH,
             format=DataFormat.MARKDOWN,
             data=formatted_text,
             link_metadata=link_metadata,
@@ -701,7 +706,8 @@ class NotionBlockParser:
             id=str(uuid4()),
             index=block_index,
             parent_index=parent_group_index,
-            type=BlockType.BULLET_LIST,
+            type=BlockType.TEXT,
+            sub_type=BlockSubType.LIST_ITEM,
             format=DataFormat.MARKDOWN,
             data=formatted_text,
             list_metadata=ListMetadata(
@@ -743,7 +749,8 @@ class NotionBlockParser:
             id=str(uuid4()),
             index=block_index,
             parent_index=parent_group_index,
-            type=BlockType.NUMBERED_LIST,
+            type=BlockType.TEXT,
+            sub_type=BlockSubType.LIST_ITEM,
             format=DataFormat.MARKDOWN,
             data=formatted_text,
             list_metadata=ListMetadata(
@@ -828,7 +835,8 @@ class NotionBlockParser:
             id=str(uuid4()),
             index=block_index,
             parent_index=parent_group_index,
-            type=BlockType.CODE,
+            type=BlockType.TEXT,
+            sub_type=BlockSubType.CODE,
             format=DataFormat.TXT,
             data=text,
             name=f"{language} code" if language else "Code",
@@ -862,7 +870,8 @@ class NotionBlockParser:
             id=str(uuid4()),
             index=block_index,
             parent_index=parent_group_index,
-            type=BlockType.DIVIDER,
+            type=BlockType.TEXT,
+            sub_type=BlockSubType.DIVIDER,
             format=DataFormat.TXT,
             data="---",
             source_id=notion_block.get("id"),
@@ -901,7 +910,7 @@ class NotionBlockParser:
             source_name=title,
             source_id=page_id,
             source_type="child_page",
-            name="NOTION_PAGE",
+            name="WEBPAGE",
             weburl=self._normalize_url(
                 self._construct_block_url(parent_page_url, notion_block.get("id"))
             ),
@@ -935,7 +944,7 @@ class NotionBlockParser:
             source_name=title,
             source_id=database_id,
             source_type="child_database",
-            name="NOTION_DATA_SOURCE",
+            name="DATASOURCE",
             weburl=self._normalize_url(
                 self._construct_block_url(parent_page_url, notion_block.get("id"))
             ),
@@ -966,7 +975,8 @@ class NotionBlockParser:
             id=str(uuid4()),
             index=block_index,
             parent_index=parent_group_index,
-            type=BlockType.LINK,
+            type=BlockType.TEXT,
+            sub_type=BlockSubType.LINK,
             format=DataFormat.TXT,
             data=caption_text or url,
             link_metadata=LinkMetadata(
@@ -1001,7 +1011,8 @@ class NotionBlockParser:
             id=str(uuid4()),
             index=block_index,
             parent_index=parent_group_index,
-            type=BlockType.LINK,
+            type=BlockType.TEXT,
+            sub_type=BlockSubType.LINK,
             format=DataFormat.TXT,
             data=url,
             link_metadata=LinkMetadata(
@@ -1038,7 +1049,8 @@ class NotionBlockParser:
             id=str(uuid4()),
             index=block_index,
             parent_index=parent_group_index,
-            type=BlockType.LINK,
+            type=BlockType.TEXT,
+            sub_type=BlockSubType.LINK,
             format=DataFormat.TXT,
             data=caption_text or url,
             link_metadata=LinkMetadata(
@@ -1230,7 +1242,8 @@ class NotionBlockParser:
                     id=str(uuid4()),
                     index=block_index,
                     parent_index=parent_group_index,
-                    type=BlockType.LINK,
+                    type=BlockType.TEXT,
+                    sub_type=BlockSubType.LINK,
                     format=DataFormat.TXT,
                     data=caption_text or file_url or file_name,
                     name=file_name,
@@ -1878,7 +1891,7 @@ class NotionBlockParser:
                 except Exception as e:
                     self.logger.warning(f"Failed to fetch record info for row {page.get('id')}: {e}")
 
-            # 2. Resolve relation pages and users
+            # 2. Resolve relation pages (users are resolved in cells only, not stored in child_records)
             if relations_and_people_list and (row_num - 2) < len(relations_and_people_list):
                 relation_page_ids, people_user_ids = relations_and_people_list[row_num - 2]
 
@@ -1892,15 +1905,8 @@ class NotionBlockParser:
                         except Exception as e:
                             self.logger.warning(f"Failed to resolve relation page {page_id}: {e}")
 
-                # Resolve people users
-                if people_user_ids and get_user_child_callback:
-                    for user_id in people_user_ids:
-                        try:
-                            child_record = await get_user_child_callback(user_id)
-                            if child_record:
-                                all_children_records.append(child_record)
-                        except Exception as e:
-                            self.logger.warning(f"Failed to resolve user {user_id}: {e}")
+                # Note: Users are resolved in cells (ID -> name) but not stored in child_records
+                # The people_user_ids are used during cell value extraction to replace IDs with names
 
             # Populate children_records if we have any
             if all_children_records:
@@ -1909,8 +1915,7 @@ class NotionBlockParser:
                 row_block.table_row_metadata.children_records = all_children_records
                 self.logger.debug(
                     f"📎 Row {row_num} has {len(all_children_records)} child record(s): "
-                    f"{len([c for c in all_children_records if c.child_type == ChildType.RECORD])} records, "
-                    f"{len([c for c in all_children_records if c.child_type == ChildType.USER])} users"
+                    f"{len([c for c in all_children_records if c.child_type == ChildType.RECORD])} records"
                 )
 
             blocks.append(row_block)
@@ -2240,7 +2245,8 @@ class NotionBlockParser:
             id=str(uuid4()),
             index=block_index,
             parent_index=parent_group_index,
-            type=BlockType.CODE,
+            type=BlockType.TEXT,
+            sub_type=BlockSubType.EQUATION,
             format=DataFormat.TXT,
             data=f"$${expression}$$",
             code_metadata=CodeMetadata(
@@ -2306,29 +2312,29 @@ class NotionBlockParser:
         """
         link_type = type_data.get("type", "page_id")
         target_id = ""
-        record_type = "NOTION_PAGE"
+        record_type = "WEBPAGE"
         reference_type = "link_to_page"
 
         if link_type == "page_id":
             target_id = type_data.get("page_id", "")
-            record_type = "NOTION_PAGE"
+            record_type = "WEBPAGE"
             reference_type = "link_to_page"
         elif link_type == "database_id":
             target_id = type_data.get("database_id", "")
-            record_type = "NOTION_DATA_SOURCE"
+            record_type = "DATASOURCE"
             reference_type = "link_to_database"
         else:
             # Fallback: try both
             target_id = type_data.get("page_id") or type_data.get("database_id", "")
             if type_data.get("page_id"):
-                record_type = "NOTION_PAGE"
+                record_type = "WEBPAGE"
                 reference_type = "link_to_page"
             elif type_data.get("database_id"):
-                record_type = "NOTION_DATA_SOURCE"
+                record_type = "DATASOURCE"
                 reference_type = "link_to_database"
 
         # Use a placeholder title - will be resolved when child record is fetched
-        placeholder_title = f"{'Page' if record_type == 'NOTION_PAGE' else 'Database'} {target_id[:8] if target_id else 'Unknown'}"
+        placeholder_title = f"{'Page' if record_type == 'WEBPAGE' else 'Database'} {target_id[:8] if target_id else 'Unknown'}"
 
         return Block(
             id=str(uuid4()),

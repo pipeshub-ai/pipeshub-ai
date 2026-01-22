@@ -180,7 +180,7 @@ block_group_prompt = """* Block Group Number: R{{record_number}}-{{block_group_i
 * Block Group Type: {{label}}
 * Block Group Content:{% for block in blocks %}
   - Block Number: R{{record_number}}-{{block.index}}
-  - Block Content: {% if block.data is mapping %}{{block.data.get('text', '')}}{% else %}{{block.data}}{% endif %}
+  - Block Content: {{block.data}}
 {% endfor %}
 """
 
