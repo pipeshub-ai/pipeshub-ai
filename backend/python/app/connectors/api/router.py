@@ -6015,7 +6015,7 @@ async def toggle_connector_instance(
             org_account_type = str(org.get("accountType", "")).lower()
             custom_google_business_logic = (
                 org_account_type == "enterprise" and
-                connector_type in ["GMAIL", "DRIVE", "DRIVE WORKSPACE"] and
+                connector_type in ["GMAIL", "DRIVE", "DRIVE WORKSPACE", "GCS"] and
                 instance.get("scope") == ConnectorScope.TEAM.value
             )
 

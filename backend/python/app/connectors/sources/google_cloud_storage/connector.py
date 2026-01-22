@@ -230,10 +230,9 @@ class GCSDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
             AuthField(
                 name="serviceAccountJson",
                 display_name="Service Account JSON",
-                placeholder="Paste your service account JSON key here",
-                description="The Service Account JSON key from Google Cloud Console. Go to IAM & Admin > Service Accounts > Keys to create one.",
-                field_type="TEXTAREA",
-                max_length=10000,
+                placeholder="Click to upload service account JSON file",
+                description="Upload your Service Account JSON key file from Google Cloud Console. Go to IAM & Admin > Service Accounts > Keys to create one.",
+                field_type="FILE",
                 is_secret=True
             ),
         ])
