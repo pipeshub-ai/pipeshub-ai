@@ -71,11 +71,11 @@ from app.schema.arango.documents import (
 from app.schema.arango.edges import (
     basic_edge_schema,
     belongs_to_schema,
+    entity_relations_schema,
     inherit_permissions_schema,
     is_of_type_schema,
     permissions_schema,
     record_relations_schema,
-    ticket_relations_schema,
     user_app_relation_schema,
     user_drive_relation_schema,
 )
@@ -138,7 +138,7 @@ EDGE_COLLECTIONS = [
     (CollectionNames.BELONGS_TO_RECORD_GROUP.value, basic_edge_schema),
     (CollectionNames.INTER_CATEGORY_RELATIONS.value, basic_edge_schema),
     (CollectionNames.PERMISSION.value, permissions_schema),
-    (CollectionNames.TICKET_RELATIONS.value, ticket_relations_schema),
+    (CollectionNames.ENTITY_RELATIONS.value, entity_relations_schema),
 ]
 
 class BaseArangoService:
@@ -6380,27 +6380,37 @@ class BaseArangoService:
             self.logger.error("❌ Failed to delete edges from source: %s in collection: %s: %s", from_key, collection, str(e))
             return 0
 
-    async def delete_linked_to_edges_from(self, from_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> int:
+    async def delete_edges_by_relationship_types(
+        self,
+        from_key: str,
+        collection: str,
+        relationship_types: List[str],
+        transaction: Optional[TransactionDatabase] = None
+    ) -> int:
         """
-        Delete LINKED_TO edges originating from a specific source node.
-
-        This method deletes only edges with relationshipType == "LINKED_TO" to avoid
-        deleting other relationship types like PARENT_CHILD.
+        Delete edges by relationship types from a specific source node.
 
         Args:
             from_key: The source node key (e.g., "records/12345")
             collection: The edge collection name
+            relationship_types: List of relationship type values to delete
             transaction: Optional transaction database
 
         Returns:
             int: Number of edges deleted
         """
         try:
-            self.logger.info("🚀 Deleting LINKED_TO edges from source: %s in collection: %s", from_key, collection)
+            if not relationship_types:
+                return 0
+
+            self.logger.info(
+                "🚀 Deleting edges of types %s from source: %s in collection: %s",
+                relationship_types, from_key, collection
+            )
             query = """
             FOR edge IN @@collection
                 FILTER edge._from == @from_key
-                FILTER edge.relationshipType == @relationship_type
+                FILTER edge.relationshipType IN @relationship_types
                 REMOVE edge IN @@collection
                 RETURN OLD
             """
@@ -6410,20 +6420,29 @@ class BaseArangoService:
                 bind_vars={
                     "from_key": from_key,
                     "@collection": collection,
-                    "relationship_type": "LINKED_TO"
+                    "relationship_types": relationship_types
                 }
             )
             deleted_edges = list(cursor)
             count = len(deleted_edges)
 
             if count > 0:
-                self.logger.info("✅ Successfully deleted %d LINKED_TO edges from source: %s", count, from_key)
+                self.logger.info(
+                    "✅ Successfully deleted %d edges of types %s from source: %s",
+                    count, relationship_types, from_key
+                )
             else:
-                self.logger.debug("📝 No LINKED_TO edges found from source: %s in collection: %s", from_key, collection)
+                self.logger.debug(
+                    "📝 No edges of types %s found from source: %s in collection: %s",
+                    relationship_types, from_key, collection
+                )
 
             return count
         except Exception as e:
-            self.logger.error("❌ Failed to delete LINKED_TO edges from source: %s in collection: %s: %s", from_key, collection, str(e))
+            self.logger.error(
+                "❌ Failed to delete edges of types %s from source: %s in collection: %s: %s",
+                relationship_types, from_key, collection, str(e)
+            )
             return 0
 
     async def delete_parent_child_edges_to(self, to_key: str, transaction: Optional[TransactionDatabase] = None) -> int:

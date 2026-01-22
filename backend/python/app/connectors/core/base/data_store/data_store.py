@@ -204,8 +204,7 @@ class BaseDataStore(ABC):
         self,
         from_record_id: str,
         to_record_id: str,
-        relation_type: str,
-        custom_relationship_tag: Optional[str] = None
+        relation_type: str
     ) -> None:
         pass
 
@@ -242,14 +241,21 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def delete_linked_to_edges_from(self, from_id: str, from_collection: str, collection: str) -> int:
+    async def delete_edges_by_relationship_types(
+        self,
+        from_id: str,
+        from_collection: str,
+        collection: str,
+        relationship_types: List[str]
+    ) -> int:
         """
-        Delete LINKED_TO edges from a record.
+        Delete edges from a record by relationship types.
 
         Args:
             from_id: Source record ID
             from_collection: Source record collection name
             collection: Edge collection name
+            relationship_types: List of relationship type values to delete
 
         Returns:
             int: Number of edges deleted

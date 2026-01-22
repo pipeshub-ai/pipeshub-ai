@@ -21,7 +21,6 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppGroups,
     Connectors,
-    LinkRelationshipTag,
     RecordRelations,
 )
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -58,7 +57,7 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.linear.common.apps import LinearApp
-from app.connectors.utils.value_mapper import ValueMapper
+from app.connectors.utils.value_mapper import ValueMapper, map_relationship_type
 from app.models.blocks import (
     Block,
     BlockComment,
@@ -71,7 +70,6 @@ from app.models.blocks import (
     DataFormat,
     GroupSubType,
     GroupType,
-    TableRowMetadata,
 )
 from app.models.entities import (
     AppUser,
@@ -1766,9 +1764,7 @@ class LinearConnector(BaseConnector):
                         source_group_id=link_id,
                         weburl=link_record.weburl,
                         requires_processing=False,  # No data to process, just a child record reference
-                        table_row_metadata=TableRowMetadata(
-                            children_records=[child_record]
-                        )
+                        children_records=[child_record]
                     )
                     block_groups.append(block_group)
 
@@ -1851,9 +1847,7 @@ class LinearConnector(BaseConnector):
                         source_group_id=document_id,
                         weburl=webpage_record.weburl,
                         requires_processing=False,  # No data to process, just a child record reference
-                        table_row_metadata=TableRowMetadata(
-                            children_records=[child_record]
-                        )
+                        children_records=[child_record]
                     )
                     block_groups.append(block_group)
 
@@ -1873,7 +1867,7 @@ class LinearConnector(BaseConnector):
         tx_store,
     ) -> List[ChildRecord]:
         """
-        Process issue attachments and create ChildRecords for TableRowMetadata.
+        Process issue attachments and create ChildRecords.
         Creates LinkRecords if they don't exist (like projects do).
 
         Args:
@@ -1942,7 +1936,7 @@ class LinearConnector(BaseConnector):
         tx_store,
     ) -> List[ChildRecord]:
         """
-        Process issue documents and create ChildRecords for TableRowMetadata.
+        Process issue documents and create ChildRecords.
         Creates WebpageRecords if they don't exist (like projects do).
 
         Args:
@@ -2005,19 +1999,31 @@ class LinearConnector(BaseConnector):
     async def _process_content_files_for_children(
         self,
         content: str,
-        parent_id: str,
+        parent_external_id: str,
+        parent_node_id: str,
+        parent_record_type: RecordType,
+        team_id: str,
         tx_store,
+        parent_created_at: Optional[int] = None,
+        parent_updated_at: Optional[int] = None,
+        parent_weburl: Optional[str] = None,
     ) -> List[ChildRecord]:
         """
         Process files extracted from content (description/body) and create ChildRecords.
-        Fetches already-synced FileRecords from database (excluding images).
+        Creates FileRecords if they don't exist (excluding images).
 
         This method is reusable for both issues and projects.
 
         Args:
             content: Markdown content to extract files from
-            parent_id: Parent record external ID (for logging)
+            parent_external_id: External ID of parent (issue or project)
+            parent_node_id: Internal ID of parent record
+            parent_record_type: Type of parent record (TICKET or PROJECT)
+            team_id: Team ID for external_record_group_id
             tx_store: Transaction store for looking up existing records
+            parent_created_at: Source created timestamp of parent (in ms)
+            parent_updated_at: Source updated timestamp of parent (in ms)
+            parent_weburl: Web URL of parent record (used for file weburl)
 
         Returns:
             List of ChildRecord objects for files (excluding images)
@@ -2027,29 +2033,32 @@ class LinearConnector(BaseConnector):
         if not content:
             return child_records
 
-        # Extract file URLs from content (excluding images)
-        file_urls = self._extract_file_urls_from_markdown(content, exclude_images=True)
+        # Extract files from markdown and create FileRecords if they don't exist
+        file_records = await self._extract_files_from_markdown(
+            markdown_text=content,
+            parent_external_id=parent_external_id,
+            parent_node_id=parent_node_id,
+            parent_record_type=parent_record_type,
+            team_id=team_id,
+            tx_store=tx_store,
+            parent_created_at=parent_created_at,
+            parent_updated_at=parent_updated_at,
+            parent_weburl=parent_weburl,
+            exclude_images=True,
+            indexing_filter_key=IndexingFilterKey.FILES
+        )
 
-        for file_info in file_urls:
-            try:
-                file_url = file_info["url"]
+        # Save FileRecords if any were created (new files added after sync)
+        if file_records:
+            await self.data_entities_processor.on_new_records(file_records)
 
-                # Look up existing file record by URL (external_record_id = file_url)
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=file_url
-                )
-
-                if existing_record:
-                    child_records.append(ChildRecord(
-                        child_type=ChildType.RECORD,
-                        child_id=existing_record.id,
-                        child_name=existing_record.record_name
-                    ))
-
-            except Exception as e:
-                self.logger.error(f"❌ Error processing file {file_info.get('url', 'unknown')} for children_records: {e}", exc_info=True)
-                continue
+        # Create ChildRecords for the files
+        for file_record, _ in file_records:
+            child_records.append(ChildRecord(
+                child_type=ChildType.RECORD,
+                child_id=file_record.id,
+                child_name=file_record.record_name
+            ))
 
         return child_records
 
@@ -2184,7 +2193,13 @@ class LinearConnector(BaseConnector):
                     external_id=file_url
                 )
 
-                # Transform to FileRecord
+                # If file already exists, reuse it (files in Linear markdown never change, only added/deleted)
+                if existing_file and existing_file.record_type == RecordType.FILE:
+                    # Files inherit permissions from parent, so pass empty list
+                    file_records.append((existing_file, []))
+                    continue
+
+                # File doesn't exist, create new FileRecord
                 file_record = await self._transform_file_url_to_file_record(
                     file_url=file_url,
                     filename=filename,
@@ -2192,7 +2207,7 @@ class LinearConnector(BaseConnector):
                     parent_node_id=parent_node_id,
                     parent_record_type=parent_record_type,
                     team_id=team_id,
-                    existing_record=existing_file,
+                    existing_record=None,  # No existing record, creating new one
                     parent_created_at=parent_created_at,
                     parent_updated_at=parent_updated_at,
                     parent_weburl=parent_weburl
@@ -2565,14 +2580,6 @@ class LinearConnector(BaseConnector):
         relations = issue_data.get("relations", {})
         relation_nodes = relations.get("nodes", []) if relations else []
 
-        # Map Linear relationship types to LinkRelationshipTag enum values
-        type_mapping = {
-            "blocks": LinkRelationshipTag.BLOCKS.value,
-            "blocked": LinkRelationshipTag.BLOCKED_BY.value,
-            "related": LinkRelationshipTag.RELATED.value,
-            "duplicate": LinkRelationshipTag.DUPLICATES.value,
-        }
-
         # Process each relation
         related_external_records = []
         for relation in relation_nodes:
@@ -2584,17 +2591,16 @@ class LinearConnector(BaseConnector):
             if not related_issue_id or not relation_type:
                 continue
 
-            # Map Linear type to LinkRelationshipTag enum value
-            custom_tag = type_mapping.get(relation_type)
+            # Map Linear type to RecordRelations enum using standard utility
+            mapped_relation_type = map_relationship_type(relation_type)
 
-            # Only create record if we have a valid mapping
-            if custom_tag:
+            # Only create record if we got a valid RecordRelations enum (not a string)
+            if isinstance(mapped_relation_type, RecordRelations):
                 related_external_records.append(
                     RelatedExternalRecord(
                         external_record_id=related_issue_id,
                         record_type=RecordType.TICKET,
-                        relation_type=RecordRelations.LINKED_TO,
-                        custom_relationship_tag=custom_tag,
+                        relation_type=mapped_relation_type,
                     )
                 )
 
@@ -3593,7 +3599,7 @@ class LinearConnector(BaseConnector):
             weburl: Web URL for the original source context (e.g., Linear project page)
             data: Content data (markdown/HTML) to be processed
             group_type: Type of the block group (defaults to TEXT_SECTION)
-            group_subtype: Optional subtype of the block group (e.g., MILESTONE, UPDATE, PROJECT_CONTENT)
+            group_subtype: Optional subtype of the block group (e.g., MILESTONE, UPDATE, CONTENT)
             description: Optional description of the block group
             source_group_id: Optional source group identifier
             format: Data format (defaults to MARKDOWN)
@@ -3751,7 +3757,7 @@ class LinearConnector(BaseConnector):
                 weburl=weburl,
                 data=combined_content,
                 group_type=GroupType.TEXT_SECTION,
-                group_subtype=GroupSubType.PROJECT_CONTENT,
+                group_subtype=GroupSubType.CONTENT,
                 description=project_description or "Project content and description",
                 source_group_id=f"{project_id}_description_content",
                 format=DataFormat.MARKDOWN,
@@ -3909,7 +3915,7 @@ class LinearConnector(BaseConnector):
                 weburl=weburl,
                 data=minimal_data,
                 group_type=GroupType.TEXT_SECTION,
-                group_subtype=GroupSubType.PROJECT_CONTENT,
+                group_subtype=GroupSubType.CONTENT,
                 description="Project information",
                 source_group_id=project_id,
                 format=DataFormat.MARKDOWN,
@@ -3974,13 +3980,13 @@ class LinearConnector(BaseConnector):
         This creates:
         - Description BlockGroup (index=0) with:
           - Issue description markdown
-          - children_records in TableRowMetadata (attachments, documents, files)
+          - children_records (attachments, documents, files)
         - Thread BlockGroups (index=1,2,...) for each comment thread with:
           - parent_index=0 (pointing to Description BlockGroup)
         - Comment BlockGroups (sub_type=COMMENT) for each comment with:
           - parent_index pointing to thread BlockGroup index
           - requires_processing=True (so Docling processes them)
-          - children_records in TableRowMetadata (files from comment body)
+          - children_records (files from comment body)
 
         Args:
             issue_data: Full issue data from Linear API (with nested data)
@@ -4010,26 +4016,19 @@ class LinearConnector(BaseConnector):
         # Convert images in description to base64
         description_content = await self._convert_images_to_base64_in_markdown(description_content)
 
-        # Create TableRowMetadata with children_records if any
-        table_row_metadata = None
-        if children_records:
-            table_row_metadata = TableRowMetadata(
-                children_records=children_records
-            )
-
         description_block_group = BlockGroup(
             id=str(uuid4()),
             index=block_group_index,
             name=issue_title if issue_title else (f"{issue_identifier} - Description" if issue_identifier else "Issue Description"),
             type=GroupType.TEXT_SECTION,
-            sub_type=GroupSubType.ISSUE_CONTENT,
+            sub_type=GroupSubType.CONTENT,
             description=f"Description for issue {issue_identifier}" if issue_identifier else "Issue description",
             source_group_id=f"{issue_id}_description",
             data=description_content,
             format=DataFormat.MARKDOWN,
             weburl=weburl,
             requires_processing=True,
-            table_row_metadata=table_row_metadata,
+            children_records=children_records,
         )
         block_groups.append(description_block_group)
         block_group_index += 1
@@ -4092,13 +4091,6 @@ class LinearConnector(BaseConnector):
                     if comment_file_children_map and comment_id in comment_file_children_map:
                         comment_file_children = comment_file_children_map[comment_id]
 
-                    # Create TableRowMetadata with children_records if comment has files
-                    comment_table_row_metadata = None
-                    if comment_file_children:
-                        comment_table_row_metadata = TableRowMetadata(
-                            children_records=comment_file_children
-                        )
-
                     # Create BlockGroup with sub_type=COMMENT
                     comment_block_group = BlockGroup(
                         id=str(uuid4()),
@@ -4113,7 +4105,7 @@ class LinearConnector(BaseConnector):
                         format=DataFormat.MARKDOWN,
                         weburl=comment_url if comment_url else None,
                         requires_processing=True,
-                        table_row_metadata=comment_table_row_metadata,
+                        children_records=comment_file_children,
                     )
                     block_groups.append(comment_block_group)
                     block_group_index += 1
@@ -4127,14 +4119,14 @@ class LinearConnector(BaseConnector):
                 index=0,
                 name=f"{issue_identifier} - Description" if issue_identifier else "Issue Description",
                 type=GroupType.TEXT_SECTION,
-                sub_type=GroupSubType.ISSUE_CONTENT,
+                sub_type=GroupSubType.CONTENT,
                 description=f"Description for issue {issue_identifier}" if issue_identifier else "Issue description",
                 source_group_id=f"{issue_id}_description",
                 data=minimal_data,
                 format=DataFormat.MARKDOWN,
                 weburl=weburl,
                 requires_processing=True,
-                table_row_metadata=TableRowMetadata(children_records=children_records) if children_records else None,
+                children_records=children_records,
             )
             block_groups.append(minimal_block_group)
 
@@ -4238,28 +4230,32 @@ class LinearConnector(BaseConnector):
                     create_block_groups=True
                 )
 
-            # Fetch FileRecords from database (already synced during project sync)
+            # Extract files from project content and create FileRecords if they don't exist
             if project_content:
+                # Get project timestamps for file records
+                project_created_at = self._parse_linear_datetime(project_data.get("createdAt", "")) or 0
+                project_updated_at = self._parse_linear_datetime(project_data.get("updatedAt", "")) or 0
+
                 file_children = await self._process_content_files_for_children(
                     content=project_content,
-                    parent_id=record_id,
-                    tx_store=tx_store
+                    parent_external_id=record_id,
+                    parent_node_id=record.id,
+                    parent_record_type=RecordType.PROJECT,
+                    team_id=record.external_record_group_id or "",
+                    tx_store=tx_store,
+                    parent_created_at=project_created_at,
+                    parent_updated_at=project_updated_at,
+                    parent_weburl=project_weburl
                 )
 
         # Add file children to the first BlockGroup's (description) children_records
         if file_children and blocks_container.block_groups:
             first_block_group = blocks_container.block_groups[0]
-            if first_block_group.table_row_metadata:
-                # Append to existing children_records
-                if first_block_group.table_row_metadata.children_records:
-                    first_block_group.table_row_metadata.children_records.extend(file_children)
-                else:
-                    first_block_group.table_row_metadata.children_records = file_children
+            # Append to existing children_records
+            if first_block_group.children_records:
+                first_block_group.children_records.extend(file_children)
             else:
-                # Create new table_row_metadata with children_records
-                first_block_group.table_row_metadata = TableRowMetadata(
-                    children_records=file_children
-                )
+                first_block_group.children_records = file_children
 
         # Add BlockGroups for external links and documents to the blocks container
         base_index = len(blocks_container.block_groups)
@@ -4335,12 +4331,22 @@ class LinearConnector(BaseConnector):
                 )
                 all_children.extend(document_children)
 
-            # Process files from description (excluding images)
+            # Process files from description (excluding images) and create FileRecords if they don't exist
             if issue_description:
+                # Get issue timestamps for file records
+                issue_created_at = self._parse_linear_datetime(issue_data.get("createdAt", "")) or 0
+                issue_updated_at = self._parse_linear_datetime(issue_data.get("updatedAt", "")) or 0
+
                 file_children = await self._process_content_files_for_children(
                     content=issue_description,
-                    parent_id=issue_id,
-                    tx_store=tx_store
+                    parent_external_id=issue_id,
+                    parent_node_id=record.id,
+                    parent_record_type=RecordType.TICKET,
+                    team_id=record.external_record_group_id or "",
+                    tx_store=tx_store,
+                    parent_created_at=issue_created_at,
+                    parent_updated_at=issue_updated_at,
+                    parent_weburl=issue_weburl
                 )
                 all_children.extend(file_children)
 
@@ -4825,10 +4831,6 @@ class LinearConnector(BaseConnector):
                 project_data, team_id, record
             )
 
-            # Set indexing status based on filters
-            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.PROJECTS):
-                project_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
-
             # Extract issues data directly from project_data and add to related_external_records
             issues_data = project_data.get("issues", {}).get("nodes", [])
             if issues_data:
@@ -4964,7 +4966,6 @@ class LinearConnector(BaseConnector):
                     return None
 
             # Attachment has changed, transform and return
-            # Get issue_id from attachment_data first, fallback to record
             issue_data = attachment_data.get("issue", {})
             issue_id = issue_data.get("id", record.parent_external_record_id or "")
             team_id = record.external_record_group_id or ""
@@ -5071,7 +5072,6 @@ class LinearConnector(BaseConnector):
                     return None
 
             # Link has changed, transform and return
-            # project_id already set above
             team_id = record.external_record_group_id or ""
 
             # Get parent node ID - prefer from parent_record if provided, otherwise use record's parent_node_id

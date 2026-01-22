@@ -152,11 +152,18 @@ class ArangoTransactionStore(TransactionStore):
     async def delete_edges_between_collections(self, from_key: str, edge_collection: str, to_collection: str) -> None:
         return await self.arango_service.delete_edges_between_collections(from_key, edge_collection, to_collection, transaction=self.txn)
 
-    async def delete_linked_to_edges_from(self, from_id: str, from_collection: str, collection: str) -> int:
-        """Delete LINKED_TO edges from a record."""
-        # Construct from_key in "collection/id" format as expected by BaseArangoService
+    async def delete_edges_by_relationship_types(
+        self,
+        from_id: str,
+        from_collection: str,
+        collection: str,
+        relationship_types: List[str]
+    ) -> int:
+        """Delete edges by relationship types from a record."""
         from_key = f"{from_collection}/{from_id}"
-        return await self.arango_service.delete_linked_to_edges_from(from_key, collection, transaction=self.txn)
+        return await self.arango_service.delete_edges_by_relationship_types(
+            from_key, collection, relationship_types, transaction=self.txn
+        )
 
     async def delete_nodes_and_edges(self, keys: List[str], collection: str) -> None:
         return await self.arango_service.delete_nodes_and_edges(keys, collection, graph_name="knowledgeGraph", transaction=self.txn)
@@ -412,8 +419,7 @@ class ArangoTransactionStore(TransactionStore):
         self,
         from_record_id: str,
         to_record_id: str,
-        relation_type: str,
-        custom_relationship_tag: Optional[str] = None
+        relation_type: str
     ) -> None:
         record_edge = {
                     "_from": f"{CollectionNames.RECORDS.value}/{from_record_id}",
@@ -422,10 +428,6 @@ class ArangoTransactionStore(TransactionStore):
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 }
-
-        # Add customRelationshipTag if provided
-        if custom_relationship_tag:
-            record_edge["customRelationshipTag"] = custom_relationship_tag
 
         await self.arango_service.batch_create_edges(
             [record_edge], collection=CollectionNames.RECORD_RELATIONS.value, transaction=self.txn
@@ -576,12 +578,12 @@ class ArangoTransactionStore(TransactionStore):
     async def batch_create_edges(self, edges: List[Dict], collection: str) -> None:
         return await self.arango_service.batch_create_edges(edges, collection=collection, transaction=self.txn)
 
-    async def batch_create_ticket_relations(self, edges: List[Dict]) -> None:
-        """Batch create ticket relation edges with edgeType in UPSERT match condition."""
+    async def batch_create_entity_relations(self, edges: List[Dict]) -> None:
+        """Batch create entity relation edges with edgeType in UPSERT match condition."""
         # For arango_data_store, we need to check if the service has this method
         # If not, fall back to regular batch_create_edges (though this won't work correctly)
-        # This is a compatibility method - graph_data_store should be used for ticket relations
-        await self.arango_service.batch_create_edges(edges, collection=CollectionNames.TICKET_RELATIONS.value, transaction=self.txn)
+        # This is a compatibility method - graph_data_store should be used for entity relations
+        await self.arango_service.batch_create_edges(edges, collection=CollectionNames.ENTITY_RELATIONS.value, transaction=self.txn)
 
 class ArangoDataStore(DataStoreProvider):
     """ArangoDB data store"""

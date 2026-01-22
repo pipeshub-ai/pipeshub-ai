@@ -5,10 +5,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     CollectionNames,
+    EntityRelations,
     MimeTypes,
     OriginTypes,
     RecordRelations,
-    TicketEdgeTypes,
 )
 from app.config.constants.service import config_node_constants
 from app.connectors.core.base.data_store.data_store import (
@@ -75,6 +75,9 @@ class DataSourceEntitiesProcessor:
         RecordType.CONFLUENCE_PAGE,
         RecordType.CONFLUENCE_BLOGPOST,
         RecordType.SHAREPOINT_PAGE,
+        RecordType.PROJECT,
+        RecordType.LINK,
+        RecordType.TICKET
     ]
     def __init__(self, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
         self.logger = logger
@@ -214,31 +217,38 @@ class DataSourceEntitiesProcessor:
         tx_store: TransactionStore
     ) -> None:
         """
-        Handle related external records by creating LINKED_TO relations.
-        Creates placeholder records if not found, then creates LINKED_TO edges.
+        Handle related external records by creating record relations.
+        Creates placeholder records if not found, then creates edges with the specified relation types.
 
-        This method first deletes existing LINKED_TO edges from this record to avoid duplicates
-        and stale relationships, then creates new edges based on the current related_external_records.
+        This method first deletes existing edges of the same relationship types from this record
+        to avoid duplicates and stale relationships, then creates new edges based on the current related_external_records.
 
         Args:
             record: The record to create relations for
             related_external_records: List of RelatedExternalRecord objects (strict type checking)
             tx_store: Transaction store
         """
-        # First, delete existing LINKED_TO edges from this record to avoid duplicates and stale relationships
-        try:
-            deleted_count = await tx_store.delete_linked_to_edges_from(
-                from_id=record.id,
-                from_collection=CollectionNames.RECORDS.value,
-                collection=CollectionNames.RECORD_RELATIONS.value
-            )
-            if deleted_count > 0:
-                self.logger.debug(f"Deleted {deleted_count} existing LINKED_TO edge(s) for record: {record.id}")
-        except Exception as e:
-            self.logger.warning(f"Failed to delete existing LINKED_TO edges for record {record.id}: {str(e)}")
-
         if not related_external_records:
             return
+
+        # Collect unique relationship types that will be created
+        relation_types_to_delete = {rel.relation_type.value for rel in related_external_records if rel.relation_type}
+
+        if relation_types_to_delete:
+            try:
+                deleted_count = await tx_store.delete_edges_by_relationship_types(
+                    from_id=record.id,
+                    from_collection=CollectionNames.RECORDS.value,
+                    collection=CollectionNames.RECORD_RELATIONS.value,
+                    relationship_types=list(relation_types_to_delete)
+                )
+                if deleted_count > 0:
+                    self.logger.debug(
+                        f"Deleted {deleted_count} existing edge(s) of types {relation_types_to_delete} "
+                        f"for record: {record.id}"
+                    )
+            except Exception as e:
+                self.logger.warning(f"Failed to delete existing edges for record {record.id}: {str(e)}")
 
         for related_ext_record in related_external_records:
             # Strict type check - only accept RelatedExternalRecord objects
@@ -272,18 +282,15 @@ class DataSourceEntitiesProcessor:
                 )
                 await tx_store.batch_upsert_records([related_record])
 
-            # Create LINKED_TO relation
+            # Create relation using the specific relation_type
             if related_record and isinstance(related_record, Record):
                 # relation_type_enum is already a RecordRelations enum, get its value
                 relation_type = relation_type_enum.value
-                # Get custom_relationship_tag from RelatedExternalRecord (e.g., "is blocked by, blocks, clones" for Jira)
-                custom_relationship_tag = related_ext_record.custom_relationship_tag
 
                 await tx_store.create_record_relation(
                     from_record_id=record.id,
                     to_record_id=related_record.id,
-                    relation_type=relation_type,
-                    custom_relationship_tag=custom_relationship_tag
+                    relation_type=relation_type
                 )
 
     async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> Optional[str]:
@@ -337,7 +344,7 @@ class DataSourceEntitiesProcessor:
         self,
         ticket: TicketRecord,
         user_email: Optional[str],
-        edge_type: TicketEdgeTypes,
+        edge_type: EntityRelations,
         timestamp_attr_name: str,
         fallback_timestamp_attr: str,
         tx_store: TransactionStore,
@@ -400,9 +407,9 @@ class DataSourceEntitiesProcessor:
 
     async def _handle_ticket_user_edges(self, ticket: TicketRecord, tx_store: TransactionStore) -> None:
         """
-        Create user relationship edges for tickets (ASSIGNED_TO, CREATED_BY, REPORTED_BY).
+        Create entity relationship edges for tickets (ASSIGNED_TO, CREATED_BY, REPORTED_BY).
 
-        This method creates edges in the ticketRelations collection linking tickets to users.
+        This method creates edges in the entityRelations collection linking tickets to users.
         It first deletes existing edges for this ticket to avoid duplicates, then creates new ones.
 
         Args:
@@ -411,7 +418,7 @@ class DataSourceEntitiesProcessor:
         """
         # First, delete existing ticket-user edges for this ticket to avoid duplicates
         try:
-            await tx_store.delete_edges_from(ticket.id, CollectionNames.RECORDS.value, CollectionNames.TICKET_RELATIONS.value)
+            await tx_store.delete_edges_from(ticket.id, CollectionNames.RECORDS.value, CollectionNames.ENTITY_RELATIONS.value)
         except Exception as e:
             self.logger.warning(f"Failed to delete existing ticket-user edges for ticket {ticket.id}: {str(e)}")
 
@@ -421,7 +428,7 @@ class DataSourceEntitiesProcessor:
         assignee_edge = await self._prepare_ticket_user_edge(
             ticket=ticket,
             user_email=ticket.assignee_email,
-            edge_type=TicketEdgeTypes.ASSIGNED_TO,
+            edge_type=EntityRelations.ASSIGNED_TO,
             timestamp_attr_name="assignee_source_timestamp",
             fallback_timestamp_attr="source_updated_at",
             tx_store=tx_store,
@@ -434,7 +441,7 @@ class DataSourceEntitiesProcessor:
         creator_edge = await self._prepare_ticket_user_edge(
             ticket=ticket,
             user_email=ticket.creator_email,
-            edge_type=TicketEdgeTypes.CREATED_BY,
+            edge_type=EntityRelations.CREATED_BY,
             timestamp_attr_name="creator_source_timestamp",
             fallback_timestamp_attr="source_created_at",
             tx_store=tx_store,
@@ -447,7 +454,7 @@ class DataSourceEntitiesProcessor:
         reporter_edge = await self._prepare_ticket_user_edge(
             ticket=ticket,
             user_email=ticket.reporter_email,
-            edge_type=TicketEdgeTypes.REPORTED_BY,
+            edge_type=EntityRelations.REPORTED_BY,
             timestamp_attr_name="reporter_source_timestamp",
             fallback_timestamp_attr="source_created_at",
             tx_store=tx_store,
@@ -458,8 +465,56 @@ class DataSourceEntitiesProcessor:
 
         # Batch create all edges using specialized method that includes edgeType in UPSERT match
         if edges_to_create:
-            await tx_store.batch_create_ticket_relations(edges_to_create)
-            self.logger.info(f"Created {len(edges_to_create)} ticket-user edges for ticket {ticket.id}")
+            await tx_store.batch_create_entity_relations(edges_to_create)
+            self.logger.info(f"Created {len(edges_to_create)} entity relation edges for ticket {ticket.id}")
+
+    async def _handle_project_lead_edge(self, project: ProjectRecord, tx_store: TransactionStore) -> None:
+        """
+        Create entity relationship edge for project lead (LEAD_BY).
+
+        This method creates an edge in the entityRelations collection linking project to lead user.
+        It first deletes existing entity relation edges for this project to avoid duplicates, then creates a new one.
+
+        Args:
+            project: The ProjectRecord to create edge for
+            tx_store: The transaction store
+        """
+        # First, delete existing entity relation edges for this project to avoid duplicates
+        # Note: Projects currently only have LEAD_BY edges, but we delete all to be safe
+        try:
+            await tx_store.delete_edges_from(project.id, CollectionNames.RECORDS.value, CollectionNames.ENTITY_RELATIONS.value)
+        except Exception as e:
+            self.logger.warning(f"Failed to delete existing entity relation edges for project {project.id}: {str(e)}")
+
+        # Create LEAD_BY edge if lead exists and user is found
+        if not project.lead_email:
+            return
+
+        try:
+            # Only get existing user by email - do not create if not found
+            user = await tx_store.get_user_by_email(project.lead_email)
+
+            if not user:
+                return
+
+            # Use source_updated_at if available, otherwise source_created_at
+            source_timestamp = project.source_updated_at or project.source_created_at
+
+            edge_data = {
+                "_from": f"{CollectionNames.RECORDS.value}/{project.id}",
+                "_to": f"{CollectionNames.USERS.value}/{user.id}",
+                "edgeType": EntityRelations.LEAD_BY.value,
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            }
+            if source_timestamp is not None:
+                edge_data["sourceTimestamp"] = source_timestamp
+
+            # Create the edge using specialized method that includes edgeType in UPSERT match
+            await tx_store.batch_create_entity_relations([edge_data])
+            self.logger.info(f"Created LEAD_BY entity relation edge for project {project.id} -> user {user.id}")
+        except Exception as e:
+            self.logger.warning(f"Failed to create LEAD_BY edge for project {project.id}: {str(e)}")
 
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
         # Set org_id for the record
@@ -660,6 +715,10 @@ class DataSourceEntitiesProcessor:
         # Create ticket-user relationship edges (ASSIGNED_TO, CREATED_BY, REPORTED_BY) if record is a TicketRecord
         if isinstance(record, TicketRecord):
             await self._handle_ticket_user_edges(record, tx_store)
+
+        # Create project-lead relationship edge (LEAD_BY) if record is a ProjectRecord
+        if isinstance(record, ProjectRecord):
+            await self._handle_project_lead_edge(record, tx_store)
 
         # Create a edge between the base record and the specific record if it doesn't exist - isOfType - File, Mail, Message
 

@@ -9,7 +9,7 @@ enums. This ensures consistency across all connectors.
 import logging
 from typing import Callable, Dict, Optional, TypeVar, Union
 
-from app.config.constants.arangodb import LinkRelationshipTag
+from app.config.constants.arangodb import RecordRelations
 from app.models.entities import (
     DeliveryStatus,
     ItemType,
@@ -29,55 +29,23 @@ PRIORITY_MEDIUM = 3
 PRIORITY_LOW = 4
 PRIORITY_LOWEST_THRESHOLD = 5
 
-# Default mappings for common relationship tags (module-level constant for performance)
-DEFAULT_TAG_MAPPINGS: Dict[str, LinkRelationshipTag] = {
-    "relates to": LinkRelationshipTag.RELATES_TO,
-    "relates_to": LinkRelationshipTag.RELATES_TO,
-    "relatesto": LinkRelationshipTag.RELATES_TO,
-    "blocks": LinkRelationshipTag.BLOCKS,
-    "blocked by": LinkRelationshipTag.BLOCKED_BY,
-    "blocked_by": LinkRelationshipTag.BLOCKED_BY,
-    "blockedby": LinkRelationshipTag.BLOCKED_BY,
-    "is blocked by": LinkRelationshipTag.BLOCKED_BY,
-    "duplicates": LinkRelationshipTag.DUPLICATES,
-    "duplicated by": LinkRelationshipTag.DUPLICATED_BY,
-    "duplicated_by": LinkRelationshipTag.DUPLICATED_BY,
-    "duplicatedby": LinkRelationshipTag.DUPLICATED_BY,
-    "is duplicated by": LinkRelationshipTag.DUPLICATED_BY,
-    "depends on": LinkRelationshipTag.DEPENDS_ON,
-    "depends_on": LinkRelationshipTag.DEPENDS_ON,
-    "dependson": LinkRelationshipTag.DEPENDS_ON,
-    "required by": LinkRelationshipTag.REQUIRED_BY,
-    "required_by": LinkRelationshipTag.REQUIRED_BY,
-    "requiredby": LinkRelationshipTag.REQUIRED_BY,
-    "clones": LinkRelationshipTag.CLONES,
-    "cloned from": LinkRelationshipTag.CLONED_FROM,
-    "cloned_from": LinkRelationshipTag.CLONED_FROM,
-    "clonedfrom": LinkRelationshipTag.CLONED_FROM,
-    "is cloned by": LinkRelationshipTag.CLONED_BY,
-    "is_cloned_by": LinkRelationshipTag.CLONED_BY,
-    "isclonedby": LinkRelationshipTag.CLONED_BY,
-    "implements": LinkRelationshipTag.IMPLEMENTS,
-    "is implemented by": LinkRelationshipTag.IMPLEMENTED_BY,
-    "is_implemented_by": LinkRelationshipTag.IMPLEMENTED_BY,
-    "isimplementedby": LinkRelationshipTag.IMPLEMENTED_BY,
-    "reviews": LinkRelationshipTag.REVIEWS,
-    "is reviewed by": LinkRelationshipTag.REVIEWED_BY,
-    "is_reviewed_by": LinkRelationshipTag.REVIEWED_BY,
-    "isreviewedby": LinkRelationshipTag.REVIEWED_BY,
-    "causes": LinkRelationshipTag.CAUSES,
-    "is caused by": LinkRelationshipTag.CAUSED_BY,
-    "is_caused_by": LinkRelationshipTag.CAUSED_BY,
-    "iscausedby": LinkRelationshipTag.CAUSED_BY,
-    "parent": LinkRelationshipTag.PARENT,
-    "child": LinkRelationshipTag.CHILD,
-    "related": LinkRelationshipTag.RELATED,
-    "split from": LinkRelationshipTag.SPLIT_FROM,
-    "split_from": LinkRelationshipTag.SPLIT_FROM,
-    "splitfrom": LinkRelationshipTag.SPLIT_FROM,
-    "merged into": LinkRelationshipTag.MERGED_INTO,
-    "merged_into": LinkRelationshipTag.MERGED_INTO,
-    "mergedinto": LinkRelationshipTag.MERGED_INTO,
+# Default mappings for common relationship tags to RecordRelations enum (module-level constant for performance)
+# Maps connector API relationship strings to RecordRelations enum values
+DEFAULT_RELATION_MAPPINGS: Dict[str, RecordRelations] = {
+    "blocks": RecordRelations.BLOCKS,
+    "duplicates": RecordRelations.DUPLICATES,
+    "duplicate": RecordRelations.DUPLICATES,
+    "depends on": RecordRelations.DEPENDS_ON,
+    "depends_on": RecordRelations.DEPENDS_ON,
+    "dependson": RecordRelations.DEPENDS_ON,
+    "clones": RecordRelations.CLONES,
+    "implements": RecordRelations.IMPLEMENTS,
+    "reviews": RecordRelations.REVIEWS,
+    "causes": RecordRelations.CAUSES,
+    "related": RecordRelations.RELATED,
+    "relates to": RecordRelations.RELATED,
+    "relates_to": RecordRelations.RELATED,
+    "relatesto": RecordRelations.RELATED,
 }
 
 class ValueMapper:
@@ -425,9 +393,9 @@ def map_delivery_status(api_delivery_status: Optional[str], custom_mappings: Opt
     return _default_mapper.map_delivery_status(api_delivery_status)
 
 
-def map_link_relationship_tag(api_tag: Optional[str], custom_mappings: Optional[Dict[str, LinkRelationshipTag]] = None) -> Optional[Union[LinkRelationshipTag, str]]:
+def map_relationship_type(api_tag: Optional[str], custom_mappings: Optional[Dict[str, RecordRelations]] = None) -> Optional[Union[RecordRelations, str]]:
     """
-    Map connector API relationship tag value to standard LinkRelationshipTag enum.
+    Map connector API relationship tag value to standard RecordRelations enum.
 
     If no match is found, returns the original string value to preserve connector-specific tags.
 
@@ -436,23 +404,23 @@ def map_link_relationship_tag(api_tag: Optional[str], custom_mappings: Optional[
         custom_mappings: Optional connector-specific mappings to override defaults
 
     Returns:
-        Standard LinkRelationshipTag enum value, original string if no match found, or None if api_tag is None/empty
+        Standard RecordRelations enum value, original string if no match found, or None if api_tag is None/empty
     """
     if not api_tag:
         return None
 
     # Merge with custom mappings if provided
-    tag_mappings = {**DEFAULT_TAG_MAPPINGS, **(custom_mappings or {})}
+    relation_mappings = {**DEFAULT_RELATION_MAPPINGS, **(custom_mappings or {})}
 
     # Normalize the input
     normalized = api_tag.lower().strip()
 
     # Try exact match first
-    if normalized in tag_mappings:
-        return tag_mappings[normalized]
+    if normalized in relation_mappings:
+        return relation_mappings[normalized]
 
     # Try to find partial match (e.g., "relates to" matches "relates_to")
-    partial_match = ValueMapper._find_partial_match(normalized, tag_mappings)
+    partial_match = ValueMapper._find_partial_match(normalized, relation_mappings)
     if partial_match:
         return partial_match
 

@@ -123,7 +123,7 @@ class CollectionNames(Enum):
     WEBPAGES = "webpages"
     COMMENTS = "comments"
     TICKETS = "tickets"
-    TICKET_RELATIONS = "ticketRelations"
+    ENTITY_RELATIONS = "entityRelations"
     PROJECTS = "projects"
 
     # Users and groups
@@ -277,40 +277,23 @@ class RecordRelations(Enum):
     ATTACHMENT = "ATTACHMENT"
     DUPLICATE = "DUPLICATE"
     OTHERS = "OTHERS"
-    LINKED_TO = "LINKED_TO"  # For ticket linking relationships
-
-
-class LinkRelationshipTag(str, Enum):
-    """Standard relationship tags for LINKED_TO edges in ticket relationships"""
-    RELATES_TO = "RELATES_TO"
+    LINKED_TO = "LINKED_TO"
     BLOCKS = "BLOCKS"
-    BLOCKED_BY = "BLOCKED_BY"
     DUPLICATES = "DUPLICATES"
-    DUPLICATED_BY = "DUPLICATED_BY"
     DEPENDS_ON = "DEPENDS_ON"
-    REQUIRED_BY = "REQUIRED_BY"
     CLONES = "CLONES"
-    CLONED_FROM = "CLONED_FROM"
-    CLONED_BY = "CLONED_BY"
     IMPLEMENTS = "IMPLEMENTS"
-    IMPLEMENTED_BY = "IMPLEMENTED_BY"
     REVIEWS = "REVIEWS"
-    REVIEWED_BY = "REVIEWED_BY"
     CAUSES = "CAUSES"
-    CAUSED_BY = "CAUSED_BY"
-    PARENT = "PARENT"
-    CHILD = "CHILD"
     RELATED = "RELATED"
-    SPLIT_FROM = "SPLIT_FROM"
-    MERGED_INTO = "MERGED_INTO"
-    UNKNOWN = "UNKNOWN"
 
 
-class TicketEdgeTypes(Enum):
-    """Standard edge types for ticket relationships"""
+class EntityRelations(Enum):
+    """Standard edge types for entity relationships"""
     ASSIGNED_TO = "ASSIGNED_TO"
     REPORTED_BY = "REPORTED_BY"
     CREATED_BY = "CREATED_BY"
+    LEAD_BY = "LEAD_BY"
 
 class EventTypes(Enum):
     NEW_RECORD = "newRecord"

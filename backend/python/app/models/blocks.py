@@ -232,13 +232,13 @@ class GroupType(str, Enum):
     MEDIA = "media"
 
 class GroupSubType(str, Enum):
-    MILESTONE = "milestone"
-    UPDATE = "update"
-    PROJECT_CONTENT = "project_content"
-    CHILD_RECORD = "child_record"
-    ISSUE_CONTENT = "issue_content"
-    COMMENT_THREAD = "comment_thread"
-    COMMENT = "comment"
+    MILESTONE = "milestone" # Milestone block group
+    UPDATE = "update" # Update block group
+    CHILD_RECORD = "child_record" # Child record reference block group
+    CONTENT = "content" # Content block group
+    RECORD = "record" # Record block group
+    COMMENT_THREAD = "comment_thread" # Comment thread block group (used for comments in a thread)
+    COMMENT = "comment" # Comment block group
     TOGGLE = "toggle"
     CALLOUT = "callout"
     QUOTE = "quote"
@@ -291,6 +291,7 @@ class Block(BaseModel):
     link_metadata: Optional[LinkMetadata] = None
     image_metadata: Optional[ImageMetadata] = None
     semantic_metadata: Optional[SemanticMetadata] = None
+    children_records: Optional[List[ChildRecord]] = Field(default=None, description="List of child records associated with this block")
 
 class Blocks(BaseModel):
     blocks: List[Block] = Field(default_factory=list)
@@ -304,7 +305,7 @@ class BlockGroup(BaseModel):
     index: int = None
     name: Optional[str] = Field(description="Name of the block group",default=None)
     type: GroupType = Field(description="Type of the block group")
-    sub_type: Optional[GroupSubType] = Field(default=None, description="Subtype of the block group (e.g., milestone, update, project_content)")
+    sub_type: Optional[GroupSubType] = Field(default=None, description="Subtype of the block group (e.g., milestone, update, content)")
     parent_index: Optional[int] = Field(description="Index of the parent block group",default=None)
     description: Optional[str] = Field(description="Description of the block group",default=None)
     source_group_id: Optional[str] = Field(description="Source group identifier",default=None)
@@ -319,6 +320,7 @@ class BlockGroup(BaseModel):
     file_metadata: Optional[FileMetadata] = None
     link_metadata: Optional[LinkMetadata] = None
     semantic_metadata: Optional[SemanticMetadata] = None
+    children_records: Optional[List[ChildRecord]] = Field(default=None, description="List of child records associated with this block group")
     children: Optional[List[BlockContainerIndex]] = None
     data: Optional[Any] = None
     format: Optional[DataFormat] = None

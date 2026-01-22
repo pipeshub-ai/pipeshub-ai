@@ -140,22 +140,16 @@ class DeliveryStatus(str, Enum):
 
 
 class RelatedExternalRecord(BaseModel):
-    """Structured model for related external records to create LINKED_TO relations.
+    """Structured model for related external records to create record relations.
 
     This model ensures type safety and validation for related external records.
     Only external_record_id and record_type are required; relation_type defaults to LINKED_TO.
-    custom_relationship_tag is optional and used to specify the relationship type from the source system
-    (e.g., "is blocked by", "blocks", "clones" for Jira).
     """
     external_record_id: str = Field(description="External ID of the related record")
     record_type: RecordType = Field(description="Type of the related record")
     relation_type: RecordRelations = Field(
         default=RecordRelations.LINKED_TO,
-        description="Type of relation to create (defaults to LINKED_TO)"
-    )
-    custom_relationship_tag: Optional[str] = Field(
-        default=None,
-        description="Custom relationship tag from source system (e.g., 'is blocked by', 'blocks' for Jira)"
+        description="Type of relation to create (e.g., BLOCKS, CLONES, etc.)"
     )
 
 

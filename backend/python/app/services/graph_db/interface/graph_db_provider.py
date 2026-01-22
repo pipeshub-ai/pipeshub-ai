@@ -311,6 +311,30 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def delete_edges_by_relationship_types(
+        self,
+        from_id: str,
+        from_collection: str,
+        collection: str,
+        relationship_types: List[str],
+        transaction: Optional[str] = None
+    ) -> int:
+        """
+        Delete edges from a node by relationship types.
+
+        Args:
+            from_id (str): Source node ID
+            from_collection (str): Source node collection name
+            collection (str): Edge collection name
+            relationship_types (List[str]): List of relationship type values to delete
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            int: Number of edges deleted
+        """
+        pass
+
+    @abstractmethod
     async def delete_edges_to(
         self,
         to_id: str,
@@ -1127,7 +1151,6 @@ class IGraphDBProvider(ABC):
         from_record_id: str,
         to_record_id: str,
         relation_type: str,
-        custom_relationship_tag: Optional[str] = None,
         transaction: Optional[str] = None
     ) -> None:
         """
@@ -1136,8 +1159,7 @@ class IGraphDBProvider(ABC):
         Args:
             from_record_id (str): Source record ID
             to_record_id (str): Target record ID
-            relation_type (str): Type of relation (e.g., "PARENT_CHILD", "ATTACHMENT", "SIBLING", "LINKED_TO")
-            custom_relationship_tag (Optional[str]): Optional custom relationship tag from source system (e.g., "is blocked by" for Jira)
+            relation_type (str): Type of relation (e.g., "PARENT_CHILD", "ATTACHMENT", "SIBLING", "BLOCKS", etc.)
             transaction (Optional[str]): Optional transaction ID
         """
         pass

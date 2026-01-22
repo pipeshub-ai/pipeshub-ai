@@ -130,9 +130,17 @@ class GraphTransactionStore(TransactionStore):
     async def delete_edges_between_collections(self, from_id: str, from_collection: str, edge_collection: str, to_collection: str) -> None:
         return await self.graph_provider.delete_edges_between_collections(from_id, from_collection, edge_collection, to_collection, transaction=self.txn)
 
-    async def delete_linked_to_edges_from(self, from_id: str, from_collection: str, collection: str) -> int:
-        """Delete LINKED_TO edges from a record."""
-        return await self.graph_provider.delete_linked_to_edges_from(from_id, from_collection, collection, transaction=self.txn)
+    async def delete_edges_by_relationship_types(
+        self,
+        from_id: str,
+        from_collection: str,
+        collection: str,
+        relationship_types: List[str]
+    ) -> int:
+        """Delete edges by relationship types from a record."""
+        return await self.graph_provider.delete_edges_by_relationship_types(
+            from_id, from_collection, collection, relationship_types, transaction=self.txn
+        )
 
     async def delete_nodes_and_edges(self, keys: List[str], collection: str) -> None:
         return await self.graph_provider.delete_nodes_and_edges(keys, collection, graph_name="knowledgeGraph", transaction=self.txn)
@@ -377,8 +385,7 @@ class GraphTransactionStore(TransactionStore):
         self,
         from_record_id: str,
         to_record_id: str,
-        relation_type: str,
-        custom_relationship_tag: Optional[str] = None
+        relation_type: str
     ) -> None:
         """
         Create a relation edge between two records.
@@ -388,11 +395,10 @@ class GraphTransactionStore(TransactionStore):
         Args:
             from_record_id: Source record ID
             to_record_id: Target record ID
-            relation_type: Type of relation (e.g., "LINKED_TO")
-            custom_relationship_tag: Optional custom relationship tag from source system (e.g., "is blocked by" for Jira)
+            relation_type: Type of relation (e.g., "BLOCKS", "CLONES", etc.)
         """
         return await self.graph_provider.create_record_relation(
-            from_record_id, to_record_id, relation_type, custom_relationship_tag=custom_relationship_tag, transaction=self.txn
+            from_record_id, to_record_id, relation_type, transaction=self.txn
         )
     async def create_record_group_relation(self, record_id: str, record_group_id: str) -> None:
         """
@@ -542,9 +548,9 @@ class GraphTransactionStore(TransactionStore):
     async def batch_create_edges(self, edges: List[Dict], collection: str) -> None:
         return await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn)
 
-    async def batch_create_ticket_relations(self, edges: List[Dict]) -> None:
-        """Batch create ticket relation edges with edgeType in UPSERT match condition."""
-        return await self.graph_provider.batch_create_ticket_relations(edges, transaction=self.txn)
+    async def batch_create_entity_relations(self, edges: List[Dict]) -> None:
+        """Batch create entity relation edges with edgeType in UPSERT match condition."""
+        return await self.graph_provider.batch_create_entity_relations(edges, transaction=self.txn)
 
     async def get_edges_to_node(self, node_id: str, edge_collection: str) -> List[Dict]:
         """Get all edges pointing to a specific node"""

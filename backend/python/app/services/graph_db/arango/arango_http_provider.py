@@ -17,7 +17,6 @@ from app.config.constants.arangodb import (
     Connectors,
     GraphNames,
     OriginTypes,
-    RecordRelations,
 )
 from app.config.constants.service import config_node_constants
 from app.models.entities import (
@@ -549,17 +548,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Batch edge creation failed: {str(e)}")
             raise
 
-    async def batch_create_ticket_relations(
+    async def batch_create_entity_relations(
         self,
         edges: List[Dict],
         transaction: Optional[str] = None
     ) -> bool:
         """
-        Batch create ticket relation edges - FULLY ASYNC.
+        Batch create entity relation edges - FULLY ASYNC.
 
         Uses UPSERT to avoid duplicates - matches on _from, _to, and edgeType.
-        This is specialized for ticketRelations collection where multiple edges
-        can exist between the same ticket and user with different edgeType values.
+        This is specialized for entityRelations collection where multiple edges
+        can exist between the same entities with different edgeType values (e.g., ASSIGNED_TO, CREATED_BY, REPORTED_BY).
 
         Args:
             edges: List of edge documents with _from, _to, and edgeType
@@ -572,12 +571,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if not edges:
                 return True
 
-            self.logger.info("🚀 Batch creating ticket relation edges")
+            self.logger.info("🚀 Batch creating entity relation edges")
 
             # Translate edges from generic format to ArangoDB format
             arango_edges = self._translate_edges_to_arango(edges)
 
-            # For ticket relations, include edgeType in the UPSERT match condition
+            # For entity relations, include edgeType in the UPSERT match condition
             batch_query = """
             FOR edge IN @edges
                 UPSERT { _from: edge._from, _to: edge._to, edgeType: edge.edgeType }
@@ -588,7 +587,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             """
             bind_vars = {
                 "edges": arango_edges,
-                "@collection": CollectionNames.TICKET_RELATIONS.value
+                "@collection": CollectionNames.ENTITY_RELATIONS.value
             }
 
             results = await self.http_client.execute_aql(
@@ -598,12 +597,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             self.logger.info(
-                f"✅ Successfully created {len(results)} ticket relation edges."
+                f"✅ Successfully created {len(results)} entity relation edges."
             )
             return True
 
         except Exception as e:
-            self.logger.error(f"❌ Batch ticket relation creation failed: {str(e)}")
+            self.logger.error(f"❌ Batch entity relation creation failed: {str(e)}")
             raise
 
     async def get_edge(
@@ -725,35 +724,36 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Delete edges from failed: {str(e)}")
             raise
 
-    async def delete_linked_to_edges_from(
+    async def delete_edges_by_relationship_types(
         self,
         from_id: str,
         from_collection: str,
         collection: str,
+        relationship_types: List[str],
         transaction: Optional[str] = None
     ) -> int:
         """
-        Delete LINKED_TO edges from a node - FULLY ASYNC.
-
-        This method deletes only edges with relationshipType == "LINKED_TO" to avoid
-        deleting other relationship types like PARENT_CHILD.
+        Delete edges by relationship types from a node - FULLY ASYNC.
 
         Args:
             from_id: Source node ID
             from_collection: Source node collection name
             collection: Edge collection name
+            relationship_types: List of relationship type values to delete
             transaction: Optional transaction ID
 
         Returns:
             int: Number of edges deleted
         """
-        # Construct ArangoDB-style _from value
+        if not relationship_types:
+            return 0
+
         from_node = f"{from_collection}/{from_id}"
 
         query = f"""
         FOR edge IN {collection}
             FILTER edge._from == @from_node
-            FILTER edge.relationshipType == @relationship_type
+            FILTER edge.relationshipType IN @relationship_types
             REMOVE edge IN {collection}
             RETURN OLD
         """
@@ -763,13 +763,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 query,
                 {
                     "from_node": from_node,
-                    "relationship_type": RecordRelations.LINKED_TO.value
+                    "relationship_types": relationship_types
                 },
                 txn_id=transaction
             )
             return len(results)
         except Exception as e:
-            self.logger.error(f"❌ Delete LINKED_TO edges from failed: {str(e)}")
+            self.logger.error(
+                f"❌ Delete edges by relationship types failed: {str(e)}"
+            )
             raise
 
     async def delete_edges_to(
@@ -2304,7 +2306,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
         from_record_id: str,
         to_record_id: str,
         relation_type: str,
-        custom_relationship_tag: Optional[str] = None,
         transaction: Optional[str] = None
     ) -> None:
         """
@@ -2315,8 +2316,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Args:
             from_record_id: Source record ID
             to_record_id: Target record ID
-            relation_type: Type of relation (e.g., "LINKED_TO")
-            custom_relationship_tag: Optional custom relationship tag from source system (e.g., "is blocked by" for Jira)
+            relation_type: Type of relation (e.g., "BLOCKS", "CLONES", "LINKED_TO", etc.)
             transaction: Optional transaction ID
         """
         record_edge = {
@@ -2326,10 +2326,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             "createdAtTimestamp": get_epoch_timestamp_in_ms(),
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
         }
-
-        # Add customRelationshipTag if provided
-        if custom_relationship_tag:
-            record_edge["customRelationshipTag"] = custom_relationship_tag
 
         await self.batch_create_edges(
             [record_edge],
