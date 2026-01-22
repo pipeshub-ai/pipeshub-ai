@@ -120,7 +120,7 @@ class CSVParser:
         # Use first row as headers, generating placeholder names for empty values
         first_row = all_rows[0]
         headers = [
-            str(col).strip() if col and str(col).strip() else f"Column_{i}"
+            stripped if col and (stripped := str(col).strip()) else f"Column_{i}"
             for i, col in enumerate(first_row, start=1)
         ]
 
@@ -467,30 +467,31 @@ class CSVParser:
         # Phase 1: Detect if headers are valid
         current_headers = list(csv_result[0].keys())
         first_rows = [current_headers]
-        
+
         # Select up to 5 rows with the least number of empty values
         # Stop early if we find 5 perfect rows (zero empty values)
         selected_rows = []
         fallback_rows = []  # Track best rows in case we don't find 5 perfect ones
+        NUM_SAMPLE_ROWS = 5
 
         for idx, row in enumerate(csv_result):
             empty_count = self._count_empty_values(row)
-            
+
             if empty_count == 0:
                 # Perfect row with no empty values
                 selected_rows.append((idx, row, empty_count))
-                if len(selected_rows) >= 5:
+                if len(selected_rows) >= NUM_SAMPLE_ROWS:
                     break  # Early stop - found 5 perfect rows
             else:
                 # Keep track of best non-perfect rows as fallback
                 fallback_rows.append((idx, row, empty_count))
 
         # If we didn't find 5 perfect rows, supplement with the best fallback rows
-        if len(selected_rows) < 5:
+        if len(selected_rows) < NUM_SAMPLE_ROWS:
             # Sort fallback rows by empty count (ascending)
             fallback_rows.sort(key=lambda x: (x[2], x[0]))
             # Add the best fallback rows to reach 5 total
-            needed = 5 - len(selected_rows)
+            needed = NUM_SAMPLE_ROWS - len(selected_rows)
             selected_rows.extend(fallback_rows[:needed])
 
         # Sort by original index to maintain logical order for the LLM
@@ -498,7 +499,7 @@ class CSVParser:
 
         # Extract row values
         first_rows.extend([list(row[1].values()) for row in selected_rows])
-        
+
         has_valid_headers = await self.detect_headers_with_llm(first_rows, llm)
 
         # Phase 2: Generate headers if needed
