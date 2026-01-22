@@ -9,7 +9,6 @@ import base64
 import mimetypes
 from collections import defaultdict
 from datetime import datetime, timezone
-from hashlib import md5
 from logging import Logger
 from typing import Any, AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
 from urllib.parse import unquote, urlparse
@@ -326,19 +325,33 @@ class NotionConnector(BaseConnector):
         """
         Get signed URL for a comment attachment by fetching from Notion API.
 
-        Extracts comment_id from external_record_id format: ca_{comment_id}_{hash}
+        Extracts comment_id and normalized_filename from external_record_id format: ca_{comment_id}_{normalized_filename}
+        Matches attachment by normalized filename.
         """
         external_id = record.external_record_id
 
-        # Extract comment_id from format: ca_{comment_id}_{hash}
+        # Extract comment_id and normalized_filename from format: ca_{comment_id}_{normalized_filename}
         if not external_id.startswith("ca_"):
-            raise ValueError(f"Invalid comment attachment external_record_id format: {external_id}. Expected format: ca_{{comment_id}}_{{hash}}")
+            raise ValueError(
+                f"Invalid comment attachment external_record_id format: {external_id}. "
+                f"Expected format: ca_{{comment_id}}_{{normalized_filename}}"
+            )
 
+        # Remove "ca_" prefix and split
+        # The normalized_filename may contain underscores, so we need to split carefully
+        # Format: ca_{comment_id}_{normalized_filename}
+        # We know comment_id is a UUID (no underscores), so we can split on first underscore after ca_
         parts = external_id[3:].split("_", 1)
         if not parts or not parts[0]:
             raise ValueError(f"Failed to extract comment_id from external_record_id: {external_id}")
 
         comment_id = parts[0]
+        # normalized_filename is everything after the first underscore (may contain more underscores)
+        normalized_filename = parts[1] if len(parts) > 1 else None
+
+        if not normalized_filename:
+            self.logger.warning(f"No normalized filename found in external_record_id: {external_id}")
+            return record.signed_url
 
         # Fetch comment data from Notion API
         datasource = await self._get_fresh_datasource()
@@ -353,39 +366,39 @@ class NotionConnector(BaseConnector):
         if not attachments:
             return record.signed_url
 
-        # Try to match attachment by filename
+        # Match attachment by normalized filename
         for attachment in attachments:
             if "file" in attachment and isinstance(attachment["file"], dict):
                 url = attachment["file"].get("url", "")
                 if url:
-                    filename = unquote(urlparse(url).path).split("/")[-1]
-                    if filename == record.record_name:
+                    # Extract and normalize filename from attachment
+                    parsed_url = urlparse(url)
+                    path = unquote(parsed_url.path)
+                    url_filename = path.split("/")[-1] if "/" in path else ""
+                    file_name = url_filename if url_filename else (attachment.get("name") or "attachment")
+                    attachment_normalized = self._normalize_filename_for_id(file_name)
+
+                    # Match by normalized filename
+                    if attachment_normalized == normalized_filename:
                         return url
 
-        # Fallback: return first attachment URL
-        if attachments and "file" in attachments[0]:
-            first_file = attachments[0]["file"]
-            if isinstance(first_file, dict):
-                return first_file.get("url")
-
+        # No match found - return None (removed fallback to first attachment)
+        self.logger.warning(
+            f"Could not find attachment with normalized filename '{normalized_filename}' "
+            f"for comment {comment_id}"
+        )
         return record.signed_url
 
     async def _get_block_file_url(self, record: Record) -> Optional[str]:
         """
         Get signed URL for a block file by fetching from Notion API.
 
-        Extracts block_id from external_record_id format: {block_id}_{hash}
+        The external_record_id is the block_id itself.
         """
-        external_id = record.external_record_id
+        block_id = record.external_record_id
 
-        # Extract block_id from format: {block_id}_{hash}
-        parts = external_id.split("_", 1)
-        if len(parts) < self.MIN_PARTS_NEW_FORMAT:
-            raise ValueError(f"Invalid block file external_record_id format: {external_id}. Expected format: {{block_id}}_{{hash}}")
-
-        block_id = parts[0]
         if not block_id:
-            raise ValueError(f"Failed to extract block_id from external_record_id: {external_id}")
+            raise ValueError(f"Invalid block file external_record_id: {block_id}")
 
         datasource = await self._get_fresh_datasource()
         response = await datasource.retrieve_block(block_id)
@@ -851,16 +864,8 @@ class NotionConnector(BaseConnector):
 
             if object_type == "page":
                 pages_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.PAGES)
-                # If pages indexing is disabled, skip sync
-                if not pages_indexing_enabled:
-                    self.logger.info(f"⏭️  Skipping {object_type} sync - indexing disabled by filter")
-                    return
             else:  # data_source (database)
                 databases_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.DATABASES)
-                # If databases indexing is disabled, skip sync
-                if not databases_indexing_enabled:
-                    self.logger.info(f"⏭️  Skipping {object_type} sync - indexing disabled by filter")
-                    return
 
             # Get sync point key for this object type
             sync_point_key = generate_record_sync_point_key(
@@ -943,19 +948,30 @@ class NotionConnector(BaseConnector):
                     record = self._transform_to_webpage_record(obj_data, object_type)
 
                     if record:
+                        # Set indexing status based on filter
+                        if object_type == "page":
+                            if not pages_indexing_enabled:
+                                record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                        else:  # data_source (database)
+                            if not databases_indexing_enabled:
+                                record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
                         records_with_permissions.append((record, []))
                         total_synced += 1
                         self.logger.debug(f"Synced {object_type}: {record.record_name} (last_edited: {last_edited_time})")
 
                     # Fetch attachments and comment attachments from blocks (for pages only)
                     # Comments themselves are attached to blocks in the BlocksContainer
-                    if object_type == "page" and obj_id and files_indexing_enabled:
+                    if object_type == "page" and obj_id:
                         try:
                             page_url = obj_data.get("url", "")
                             attachment_records, comments_by_block = await self._fetch_page_attachments_and_comments(obj_id, page_url)
 
                             # Save block attachment FileRecords
                             for file_record in attachment_records:
+                                # Set indexing status based on filter
+                                if not files_indexing_enabled:
+                                    file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
                                 records_with_permissions.append((file_record, []))
                                 total_files += 1
 
@@ -965,6 +981,9 @@ class NotionConnector(BaseConnector):
                                     comments_by_block, obj_id, page_url
                                 )
                                 for file_record in comment_attachment_records:
+                                    # Set indexing status based on filter
+                                    if not files_indexing_enabled:
+                                        file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
                                     records_with_permissions.append((file_record, []))
                                     total_files += 1
 
@@ -1598,6 +1617,8 @@ class NotionConnector(BaseConnector):
 
             has_children = notion_block.get("has_children", False)
             block_id = notion_block.get("id", "")
+            # Get type_data for synced_block handling
+            type_data = notion_block.get(block_type, {}) if block_type else {}
 
             # Handle parsed block
             if parsed_block:
@@ -1613,7 +1634,7 @@ class NotionConnector(BaseConnector):
                         "callout": GroupSubType.CALLOUT,
                         "quote": GroupSubType.QUOTE,
                     }
-                    group_subtype = sub_type_map.get(block_type, GroupSubType.NESTED_BLOCK)
+                    sub_type = sub_type_map.get(block_type, GroupSubType.NESTED_BLOCK)
 
                     # Create wrapper BlockGroup for the block with children
                     wrapper_group = BlockGroup(
@@ -1621,7 +1642,7 @@ class NotionConnector(BaseConnector):
                         index=len(block_groups),
                         parent_index=parent_group_index,
                         type=GroupType.TEXT_SECTION,
-                        group_subtype=group_subtype,
+                        sub_type=sub_type,
                         data=parsed_block.data,  # Store block content in group data
                         source_group_id=block_id,
                         description=f"Wrapper for {parsed_block.type.value} with children",
@@ -1635,9 +1656,24 @@ class NotionConnector(BaseConnector):
                     # The wrapper's first child is the block itself
                     wrapper_children = [BlockContainerIndex(block_index=block_index)]
 
+                    # Special handling for synced_block references
+                    # If this is a synced_block reference, fetch children from the original block
+                    children_block_id = block_id
+                    if block_type == "synced_block":
+                        synced_from = type_data.get("synced_from")
+                        if synced_from and isinstance(synced_from, dict):
+                            if synced_from.get("type") == "block_id":
+                                original_block_id = synced_from.get("block_id")
+                                if original_block_id:
+                                    children_block_id = original_block_id
+                                    self.logger.debug(
+                                        f"Synced block {block_id} is a reference to {original_block_id}, "
+                                        f"fetching children from original block"
+                                    )
+
                     # Process children with wrapper as parent
                     child_indices = await self._process_blocks_recursive(
-                        block_id,
+                        children_block_id,
                         parser,
                         blocks,
                         block_groups,
@@ -1665,8 +1701,23 @@ class NotionConnector(BaseConnector):
 
                 # Fix #2: Process children and set them on the group
                 if has_children and block_id:
+                    # Special handling for synced_block references
+                    # If this is a synced_block reference, fetch children from the original block
+                    children_block_id = block_id
+                    if block_type == "synced_block":
+                        synced_from = type_data.get("synced_from")
+                        if synced_from and isinstance(synced_from, dict):
+                            if synced_from.get("type") == "block_id":
+                                original_block_id = synced_from.get("block_id")
+                                if original_block_id:
+                                    children_block_id = original_block_id
+                                    self.logger.debug(
+                                        f"Synced block {block_id} is a reference to {original_block_id}, "
+                                        f"fetching children from original block"
+                                    )
+
                     child_indices = await self._process_blocks_recursive(
-                        block_id,
+                        children_block_id,
                         parser,
                         blocks,
                         block_groups,
@@ -1821,80 +1872,169 @@ class NotionConnector(BaseConnector):
             # Clear public_data_link since image is now embedded as base64
             block.public_data_link = None
 
-    async def _get_or_create_child_record(
+    async def _batch_get_or_create_child_records(
         self,
-        child_external_id: str,
-        child_record_name: str,
-        child_record_type: RecordType,
-        parent_external_record_id: Optional[str] = None
-    ) -> ChildRecord:
-        """Get existing child record or create a minimal placeholder if not found."""
+        children_to_resolve: Dict[str, Tuple[str, RecordType, Optional[str]]]
+    ) -> Dict[str, ChildRecord]:
+        """
+        Batch get or create child records for multiple external IDs.
+
+        Uses a single transaction for lookup and a single on_new_records call for creation,
+        avoiding race conditions and improving performance.
+
+        Args:
+            children_to_resolve: Dict mapping external_id -> (name, record_type, parent_external_id)
+
+        Returns:
+            Dict mapping external_id -> ChildRecord
+        """
+        if not children_to_resolve:
+            return {}
+
+        external_ids = list(children_to_resolve.keys())
+        child_record_map: Dict[str, ChildRecord] = {}
+
+        # Step 1: Batch lookup all external IDs in one transaction
+        existing_records: Dict[str, Record] = {}
         async with self.data_store_provider.transaction() as tx_store:
-            child_record = await tx_store.get_record_by_external_id(
-                connector_id=self.connector_id,
-                external_id=child_external_id
-            )
+            for ext_id in external_ids:
+                record = await tx_store.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=ext_id
+                )
+                if record:
+                    existing_records[ext_id] = record
 
-        if child_record:
-            self.logger.debug(f"Resolved child: {child_external_id} -> {child_record.id}")
-            return ChildRecord(
+        # Step 2: Build ChildRecord for existing records
+        for ext_id, record in existing_records.items():
+            self.logger.debug(f"Resolved child: {ext_id} -> {record.id}")
+            child_record_map[ext_id] = ChildRecord(
                 child_type=ChildType.RECORD,
-                child_id=child_record.id,
-                child_name=child_record.record_name
+                child_id=record.id,
+                child_name=record.record_name
             )
 
-        # Create minimal record (will be enriched when child syncs)
-        # Use appropriate record type and MIME type
-        if child_record_type == RecordType.FILE:
-            # FILE records must use FileRecord class for proper schema compliance
-            minimal_record = FileRecord(
-                org_id=self.data_entities_processor.org_id,
-                record_name=child_record_name,
-                record_type=child_record_type,
-                external_record_id=child_external_id,
-                external_revision_id="minimal",
-                connector_id=self.connector_id,
-                connector_name=Connectors.NOTION,
-                record_group_type=RecordGroupType.NOTION_WORKSPACE,
-                external_record_group_id=self.workspace_id or "",
-                mime_type=MimeTypes.BIN.value,  # application/octet-stream for unknown file types
-                indexing_status=IndexingStatus.AUTO_INDEX_OFF.value,
-                version=1,
-                origin=OriginTypes.CONNECTOR,
-                inherit_permissions=True,
-                parent_external_record_id=parent_external_record_id,
-                is_file=True,
-                size_in_bytes=0,
-                weburl="",
-            )
-        else:
-            # PAGE/DATABASE records use WebpageRecord
-            minimal_record = WebpageRecord(
-                org_id=self.data_entities_processor.org_id,
-                record_name=child_record_name,
-                record_type=child_record_type,
-                external_record_id=child_external_id,
-                external_revision_id="minimal",
-                connector_id=self.connector_id,
-                connector_name=Connectors.NOTION,
-                record_group_type=RecordGroupType.NOTION_WORKSPACE,
-                external_record_group_id=self.workspace_id or "",
-                mime_type=MimeTypes.BLOCKS.value,  # application/blocks for pages/databases
-                indexing_status=IndexingStatus.AUTO_INDEX_OFF.value,
-                version=1,
-                origin=OriginTypes.CONNECTOR,
-                inherit_permissions=True,
-                parent_external_record_id=parent_external_record_id,
-            )
+        # Step 3: Create minimal records for missing ones
+        missing_ids = [ext_id for ext_id in external_ids if ext_id not in existing_records]
+        if missing_ids:
+            records_to_create: List[Tuple[Record, List]] = []
 
-        await self.data_entities_processor.on_new_records([(minimal_record, [])])
-        self.logger.info(f"Created minimal record: {child_external_id} -> {minimal_record.id}")
+            for ext_id in missing_ids:
+                name, record_type, parent_ext_id = children_to_resolve[ext_id]
 
-        return ChildRecord(
-            child_type=ChildType.RECORD,
-            child_id=minimal_record.id,
-            child_name=minimal_record.record_name
-        )
+                if record_type == RecordType.FILE:
+                    minimal_record = FileRecord(
+                        org_id=self.data_entities_processor.org_id,
+                        record_name=name,
+                        record_type=record_type,
+                        external_record_id=ext_id,
+                        external_revision_id="minimal",
+                        connector_id=self.connector_id,
+                        connector_name=Connectors.NOTION,
+                        record_group_type=RecordGroupType.NOTION_WORKSPACE,
+                        external_record_group_id=self.workspace_id or "",
+                        mime_type=MimeTypes.BIN.value,
+                        indexing_status=IndexingStatus.AUTO_INDEX_OFF.value,
+                        version=1,
+                        origin=OriginTypes.CONNECTOR,
+                        inherit_permissions=True,
+                        parent_external_record_id=parent_ext_id,
+                        is_file=True,
+                        size_in_bytes=0,
+                        weburl="",
+                    )
+                else:
+                    minimal_record = WebpageRecord(
+                        org_id=self.data_entities_processor.org_id,
+                        record_name=name,
+                        record_type=record_type,
+                        external_record_id=ext_id,
+                        external_revision_id="minimal",
+                        connector_id=self.connector_id,
+                        connector_name=Connectors.NOTION,
+                        record_group_type=RecordGroupType.NOTION_WORKSPACE,
+                        external_record_group_id=self.workspace_id or "",
+                        mime_type=MimeTypes.BLOCKS.value,
+                        indexing_status=IndexingStatus.AUTO_INDEX_OFF.value,
+                        version=1,
+                        origin=OriginTypes.CONNECTOR,
+                        inherit_permissions=True,
+                        parent_external_record_id=parent_ext_id,
+                    )
+
+                records_to_create.append((minimal_record, []))
+                # Pre-populate mapping (record.id is set before on_new_records)
+                child_record_map[ext_id] = ChildRecord(
+                    child_type=ChildType.RECORD,
+                    child_id=minimal_record.id,
+                    child_name=minimal_record.record_name
+                )
+
+            # Batch create all missing records in one call
+            await self.data_entities_processor.on_new_records(records_to_create)
+            self.logger.info(f"Created {len(records_to_create)} minimal placeholder records")
+
+        return child_record_map
+
+    async def _resolve_database_to_data_sources(self, database_id: str) -> List[ChildRecord]:
+        """
+        Resolve a database to its data_sources and return ChildRecords for each.
+
+        Fetches the database from Notion API, extracts its data_sources array,
+        and resolves each data_source to a ChildRecord.
+
+        Args:
+            database_id: Notion database ID
+
+        Returns:
+            List of ChildRecord objects, one for each data_source in the database
+        """
+        try:
+            # Fetch database from Notion API
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.retrieve_database(database_id)
+
+            if not response.success or not response.data:
+                self.logger.warning(f"Failed to retrieve database {database_id}: {response.error if response else 'No response'}")
+                return []
+
+            database_data = response.data.json() if response.data else {}
+            data_sources = database_data.get("data_sources", [])
+
+            if not data_sources:
+                self.logger.debug(f"Database {database_id} has no data_sources")
+                return []
+
+            # Batch resolve all data_sources to ChildRecords
+            # Collect data_sources to resolve
+            data_sources_to_resolve: Dict[str, Tuple[str, RecordType, Optional[str]]] = {}
+            for data_source in data_sources:
+                data_source_id = data_source.get("id")
+                data_source_name = data_source.get("name", "Untitled Data Source")
+
+                if not data_source_id:
+                    continue
+
+                # Use NOTION_DATA_SOURCE as the record type for data sources
+                data_sources_to_resolve[data_source_id] = (
+                    data_source_name,
+                    RecordType.NOTION_DATA_SOURCE,
+                    None  # No parent for data sources
+                )
+
+            # Batch resolve/create all data_sources using the same logic as other child records
+            if data_sources_to_resolve:
+                child_record_map = await self._batch_get_or_create_child_records(data_sources_to_resolve)
+                child_records = list(child_record_map.values())
+            else:
+                child_records = []
+
+            self.logger.info(f"Resolved database {database_id} to {len(child_records)} data_sources")
+            return child_records
+
+        except Exception as e:
+            self.logger.error(f"Error resolving database {database_id} to data_sources: {e}", exc_info=True)
+            return []
 
     async def _resolve_child_reference_blocks(
         self,
@@ -1910,51 +2050,98 @@ class NotionConnector(BaseConnector):
         by querying ArangoDB for records with matching external_record_id.
         If not found, creates a minimal record.
 
+        Uses deduplication to prevent race conditions: collects unique child references,
+        resolves each once sequentially, then maps back to all blocks.
+
         Args:
             blocks: List of blocks (modified in-place)
             parent_record: Optional parent record for permission inheritance
         """
         # Filter child reference blocks that need resolution
-        # Look for blocks with sub_type=CHILD_RECORD (child_page/child_database blocks)
         child_ref_blocks = [
             block for block in blocks
             if block.sub_type == BlockSubType.CHILD_RECORD
-            and isinstance(block.data, dict)
-            and block.data.get("child_external_id")
-            # Check if already resolved (has children_records populated)
+            and block.source_id
             and (not block.table_row_metadata or not block.table_row_metadata.children_records)
         ]
 
         if not child_ref_blocks:
             return
 
-        async def resolve_or_create_child_record(block: Block) -> None:
-            child_external_id = block.data["child_external_id"]
-            child_record_name = block.data.get("child_record_name", "Untitled")
-            child_record_type_str = block.data.get("child_record_type", "NOTION_PAGE")
+        # Step 1: Separate database references from other references
+        database_blocks: List[Block] = []
+        other_blocks: List[Block] = []
 
-            child_record_obj = await self._get_or_create_child_record(
-                child_external_id=child_external_id,
-                child_record_name=child_record_name,
-                child_record_type=RecordType[child_record_type_str],
-                parent_external_record_id=parent_record.external_record_id if parent_record else None
-            )
+        for block in child_ref_blocks:
+            reference_type = block.source_type or ""
+            if reference_type == "link_to_database":
+                database_blocks.append(block)
+            else:
+                other_blocks.append(block)
 
-            if not block.table_row_metadata:
-                block.table_row_metadata = TableRowMetadata()
-            block.table_row_metadata.children_records = [child_record_obj]
+        # Step 2: Handle database references - resolve to data_sources
+        database_child_records_map: Dict[str, List[ChildRecord]] = {}
+        if database_blocks:
+            # Collect unique database IDs
+            unique_database_ids = set()
+            for block in database_blocks:
+                database_id = block.source_id
+                if database_id:
+                    unique_database_ids.add(database_id)
 
-        # Resolve all references in parallel - exceptions will propagate and fail processing
-        await asyncio.gather(
-            *[resolve_or_create_child_record(block) for block in child_ref_blocks]
-        )
+            # Resolve each database to its data_sources
+            for database_id in unique_database_ids:
+                data_source_child_records = await self._resolve_database_to_data_sources(database_id)
+                if data_source_child_records:
+                    database_child_records_map[database_id] = data_source_child_records
+
+        # Step 3: Handle non-database references using existing logic
+        child_record_map: Dict[str, ChildRecord] = {}
+        if other_blocks:
+            # Collect unique child references (deduplicate by external_id)
+            parent_ext_id = parent_record.external_record_id if parent_record else None
+            children_to_resolve: Dict[str, Tuple[str, RecordType, Optional[str]]] = {}
+            for block in other_blocks:
+                ext_id = block.source_id
+                if ext_id and ext_id not in children_to_resolve:
+                    # data is now just the text/name string
+                    name = block.data if isinstance(block.data, str) else "Untitled"
+                    # name field stores child_record_type
+                    type_str = block.name or "NOTION_PAGE"
+                    children_to_resolve[ext_id] = (name, RecordType[type_str], parent_ext_id)
+
+            # Batch resolve/create all unique children
+            child_record_map = await self._batch_get_or_create_child_records(children_to_resolve)
+
+        # Step 4: Apply mapping to all blocks
+        for block in child_ref_blocks:
+            ext_id = block.source_id
+            reference_type = block.source_type or ""
+
+            if reference_type == "link_to_database":
+                # Database reference - use List[ChildRecord] from database mapping
+                if ext_id and ext_id in database_child_records_map:
+                    if not block.table_row_metadata:
+                        block.table_row_metadata = TableRowMetadata()
+                    block.table_row_metadata.children_records = database_child_records_map[ext_id]
+            else:
+                # Non-database reference - use single ChildRecord
+                if ext_id and ext_id in child_record_map:
+                    if not block.table_row_metadata:
+                        block.table_row_metadata = TableRowMetadata()
+                    block.table_row_metadata.children_records = [child_record_map[ext_id]]
 
     async def _resolve_table_row_children(
         self,
         blocks: List[Block],
         parent_data_source_record: Optional[Record] = None
     ) -> None:
-        """Resolve child records for table rows that have child pages."""
+        """
+        Resolve child records for table rows that have child pages.
+
+        Uses deduplication to prevent race conditions: fetches child pages for all rows,
+        collects unique child IDs, resolves each once sequentially, then maps back.
+        """
         table_row_blocks = [
             block for block in blocks
             if block.type == BlockType.TABLE_ROW
@@ -1964,9 +2151,12 @@ class NotionConnector(BaseConnector):
         if not table_row_blocks:
             return
 
-        async def resolve_row_children(block: Block) -> None:
-            row_page_id = block.source_id
+        # Step 1: Fetch child pages for each row in parallel (API calls are safe to parallelize)
+        # Store as: row_page_id -> list of (child_page_id, child_title)
+        row_children_map: Dict[str, List[Tuple[str, str]]] = {}
 
+        async def fetch_row_children(block: Block) -> Tuple[str, List[Tuple[str, str]]]:
+            row_page_id = block.source_id
             datasource = await self._get_fresh_datasource()
             response = await datasource.retrieve_block_children(
                 block_id=row_page_id,
@@ -1974,43 +2164,52 @@ class NotionConnector(BaseConnector):
             )
 
             if not response.success:
-                return
+                return (row_page_id, [])
 
             data = response.data.json() if response.data else {}
             child_blocks = data.get("results", [])
-            if not child_blocks:
-                return
 
-            child_pages = [
-                b for b in child_blocks
-                if b.get("type") == "child_page" and not b.get("archived", False)
-            ]
-            if not child_pages:
-                return
+            child_pages = []
+            for b in child_blocks:
+                if b.get("type") == "child_page" and not b.get("archived", False):
+                    child_id = b.get("id")
+                    child_title = b.get("child_page", {}).get("title", "Untitled")
+                    if child_id:
+                        child_pages.append((child_id, child_title))
 
-            children_records = []
-            for child_page_block in child_pages:
-                child_page_id = child_page_block.get("id")
-                child_page_data = child_page_block.get("child_page", {})
-                child_title = child_page_data.get("title", "Untitled")
+            return (row_page_id, child_pages)
 
-                child_record_obj = await self._get_or_create_child_record(
-                    child_external_id=child_page_id,
-                    child_record_name=child_title,
-                    child_record_type=RecordType.NOTION_PAGE,
-                    parent_external_record_id=row_page_id
-                )
-                children_records.append(child_record_obj)
+        # Fetch all row children in parallel
+        results = await asyncio.gather(*[fetch_row_children(block) for block in table_row_blocks])
+        for row_page_id, children in results:
+            row_children_map[row_page_id] = children
 
+        # Step 2: Collect unique child page IDs across all rows and build batch input
+        children_to_resolve: Dict[str, Tuple[str, RecordType, Optional[str]]] = {}
+        for row_page_id, children in row_children_map.items():
+            for child_id, title in children:
+                if child_id not in children_to_resolve:
+                    # Note: parent is the row page, not the data source
+                    children_to_resolve[child_id] = (title, RecordType.NOTION_PAGE, row_page_id)
+
+        if not children_to_resolve:
+            return
+
+        # Step 3: Batch resolve/create all unique children
+        child_record_map = await self._batch_get_or_create_child_records(children_to_resolve)
+
+        # Step 4: Apply mapping back to each block
+        for block in table_row_blocks:
+            row_page_id = block.source_id
+            children = row_children_map.get(row_page_id, [])
+            if not children:
+                continue
+
+            children_records = [child_record_map[cid] for cid, _ in children if cid in child_record_map]
             if children_records:
                 if not block.table_row_metadata:
                     block.table_row_metadata = TableRowMetadata()
                 block.table_row_metadata.children_records = children_records
-
-        # Resolve children for all rows in parallel - exceptions will propagate and fail processing
-        await asyncio.gather(
-            *[resolve_row_children(block) for block in table_row_blocks]
-        )
 
     async def _extract_comment_attachment_file_records(
         self,
@@ -2042,15 +2241,43 @@ class NotionConnector(BaseConnector):
                     if not comment_id:
                         continue
 
+                    # Track seen normalized filenames per comment to prevent duplicates
+                    seen_filenames: set[str] = set()
+
                     # Process attachments
                     attachments = comment_dict.get("attachments", [])
                     for attachment in attachments:
                         try:
-                            file_record = await self._transform_to_comment_file_record(
-                                attachment, comment_id, page_id, page_url
-                            )
-                            if file_record:
-                                all_file_records.append(file_record)
+                            # Extract filename to check for duplicates
+                            file_url = None
+                            if "file" in attachment:
+                                file_obj = attachment["file"]
+                                if isinstance(file_obj, dict):
+                                    file_url = file_obj.get("url", "")
+
+                            if file_url:
+                                # Extract and normalize filename
+                                parsed_url = urlparse(file_url)
+                                path = unquote(parsed_url.path)
+                                url_filename = path.split("/")[-1] if "/" in path else ""
+                                file_name = url_filename if url_filename else (attachment.get("name") or "attachment")
+                                normalized_filename = self._normalize_filename_for_id(file_name)
+
+                                # Skip if we've already seen this normalized filename for this comment
+                                if normalized_filename in seen_filenames:
+                                    self.logger.debug(
+                                        f"Skipping duplicate comment attachment: {normalized_filename} "
+                                        f"for comment {comment_id}"
+                                    )
+                                    continue
+
+                                # Create FileRecord
+                                file_record = await self._transform_to_comment_file_record(
+                                    attachment, comment_id, page_id, page_url
+                                )
+                                if file_record:
+                                    all_file_records.append(file_record)
+                                    seen_filenames.add(normalized_filename)
                         except Exception as e:
                             self.logger.warning(f"Failed to create FileRecord from comment attachment: {e}")
                             continue
@@ -2197,9 +2424,38 @@ class NotionConnector(BaseConnector):
         file_records: List[FileRecord] = []
         comment_attachments: List[CommentAttachment] = []
 
+        # Track seen normalized filenames per comment to prevent duplicates
+        seen_filenames: set[str] = set()
+
         attachments = notion_comment.get("attachments", [])
         for attachment in attachments:
             try:
+                # Extract filename to check for duplicates
+                file_url = None
+                if "file" in attachment:
+                    file_obj = attachment["file"]
+                    if isinstance(file_obj, dict):
+                        file_url = file_obj.get("url", "")
+
+                if not file_url:
+                    continue
+
+                # Extract and normalize filename
+                parsed_url = urlparse(file_url)
+                path = unquote(parsed_url.path)
+                url_filename = path.split("/")[-1] if "/" in path else ""
+                file_name = url_filename if url_filename else (attachment.get("name") or "attachment")
+                normalized_filename = self._normalize_filename_for_id(file_name)
+
+                # Skip if we've already seen this normalized filename for this comment
+                if normalized_filename in seen_filenames:
+                    self.logger.debug(
+                        f"Skipping duplicate comment attachment: {normalized_filename} "
+                        f"for comment {comment_id}"
+                    )
+                    continue
+
+                # Create FileRecord
                 file_record = await self._transform_to_comment_file_record(
                     attachment, comment_id, page_id, page_url
                 )
@@ -2209,6 +2465,7 @@ class NotionConnector(BaseConnector):
                         name=file_record.record_name,
                         id=file_record.id
                     ))
+                    seen_filenames.add(normalized_filename)
             except Exception as e:
                 self.logger.warning(f"Failed to create FileRecord from comment attachment: {e}")
                 continue
@@ -2302,11 +2559,18 @@ class NotionConnector(BaseConnector):
 
         # Create one BlockGroup per thread
         for discussion_id, thread_comments in comments_by_thread.items():
-            thread_block_indices: List[BlockContainerIndex] = []
+            thread_group_indices: List[BlockContainerIndex] = []
 
-            # Create COMMENT Blocks for each comment in the thread
+            # Calculate thread group index (will be after all comment groups in this thread)
+            thread_group_index = len(block_groups) + len(thread_comments)
+
+            # Create COMMENT BlockGroups for each comment in the thread
             for comment_dict in thread_comments:
                 try:
+                    comment_id = comment_dict.get("id", "")
+                    if not comment_id:
+                        continue
+
                     # Async: Create BlockComment with FileRecords
                     block_comment, file_records = await self._create_block_comment_from_notion_comment(
                         notion_comment=comment_dict,
@@ -2321,28 +2585,61 @@ class NotionConnector(BaseConnector):
 
                     all_file_records.extend(file_records)
 
-                    # Sync: Create COMMENT Block (parser)
-                    comment_block = parser.create_comment_block(
+                    # Calculate comment group index
+                    comment_group_index = len(block_groups)
+
+                    # Create CHILD_RECORD blocks for attachments
+                    attachment_block_indices: List[BlockContainerIndex] = []
+                    if block_comment.attachments:
+                        for attachment in block_comment.attachments:
+                            # attachment.id is the FileRecord.id (internal DB ID)
+                            # We need to find the FileRecord to get its external_record_id
+                            file_record = next(
+                                (fr for fr in file_records if fr.id == attachment.id),
+                                None
+                            )
+                            if file_record:
+                                # Create CHILD_RECORD block for attachment
+                                attachment_block = Block(
+                                    id=str(uuid4()),
+                                    index=len(blocks),
+                                    parent_index=comment_group_index,  # Parent is the comment group
+                                    type=BlockType.TEXT,
+                                    sub_type=BlockSubType.CHILD_RECORD,
+                                    format=DataFormat.TXT,
+                                    data=file_record.record_name,
+                                    source_name=file_record.record_name,
+                                    source_id=file_record.external_record_id,  # ca_{comment_id}_{normalized_filename}
+                                    source_type="file",
+                                    name="FILE",
+                                    weburl=file_record.weburl or page_url,
+                                )
+                                blocks.append(attachment_block)
+                                attachment_block_indices.append(BlockContainerIndex(block_index=attachment_block.index))
+
+                    # Sync: Create COMMENT BlockGroup (parser)
+                    comment_group = parser.create_comment_group(
                         block_comment=block_comment,
-                        block_index=len(blocks),
-                        parent_group_index=len(block_groups),
-                        source_id=comment_dict.get("id", "")
+                        group_index=comment_group_index,
+                        parent_group_index=thread_group_index,  # Parent is the thread group
+                        source_id=comment_id,
+                        attachment_block_indices=attachment_block_indices if attachment_block_indices else None
                     )
 
                     # Orchestration: Add to list
-                    blocks.append(comment_block)
-                    thread_block_indices.append(BlockContainerIndex(block_index=comment_block.index))
+                    block_groups.append(comment_group)
+                    thread_group_indices.append(BlockContainerIndex(block_group_index=comment_group.index))
 
                 except Exception as e:
-                    self.logger.error(f"Failed to create COMMENT Block for page-level comment: {e}")
+                    self.logger.error(f"Failed to create COMMENT BlockGroup for page-level comment: {e}")
                     continue
 
             # Sync: Create COMMENT_THREAD BlockGroup (parser)
-            if thread_block_indices:
+            if thread_group_indices:
                 thread_group = parser.create_comment_thread_group(
                     discussion_id=discussion_id,
                     group_index=len(block_groups),
-                    comment_block_indices=thread_block_indices
+                    comment_group_indices=thread_group_indices
                 )
 
                 # Orchestration: Add to list
@@ -2628,7 +2925,7 @@ class NotionConnector(BaseConnector):
                 }
                 mime_type = mime_type_defaults.get(block_type, MimeTypes.UNKNOWN.value)
 
-            file_id = f"{page_id}_{block_id}"
+            file_id = block_id
 
             # Parse timestamps from block
             created_time = notion_block.get("created_time")
@@ -2701,6 +2998,9 @@ class NotionConnector(BaseConnector):
             url_filename = path.split("/")[-1] if "/" in path else ""
             file_name = url_filename if url_filename else (attachment.get("name") or "attachment")
 
+            # Normalize filename for external_record_id
+            normalized_filename = self._normalize_filename_for_id(file_name)
+
             # Determine MIME type
             category = attachment.get("category", "")
             mime_type = MimeTypes.BIN.value
@@ -2723,8 +3023,8 @@ class NotionConnector(BaseConnector):
             if file_name and "." in file_name:
                 extension = file_name.split(".")[-1]
 
-            url_hash = md5(file_url.encode()).hexdigest()[:8]
-            file_id = f"ca_{comment_id}_{url_hash}"
+            # Use normalized filename in external_record_id format: ca_{comment_id}_{normalized_filename}
+            file_id = f"ca_{comment_id}_{normalized_filename}"
 
             file_record = FileRecord(
                 org_id=self.data_entities_processor.org_id,
@@ -2752,6 +3052,40 @@ class NotionConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error creating FileRecord from comment attachment: {e}")
             return None
+
+    def _normalize_filename_for_id(self, filename: str) -> str:
+        """
+        Normalize filename for use in external_record_id.
+        - URL decode the filename
+        - Remove/replace invalid characters
+        - Trim whitespace
+        - Handle empty filenames
+
+        Args:
+            filename: Original filename (may be URL-encoded)
+
+        Returns:
+            Normalized filename safe for use in external_record_id
+        """
+        if not filename:
+            return "attachment"
+
+        # URL decode the filename
+        normalized = unquote(filename)
+
+        # Remove/replace invalid characters: /, \, :, *, ?, ", <, >, |
+        invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+        for char in invalid_chars:
+            normalized = normalized.replace(char, '_')
+
+        # Trim whitespace
+        normalized = normalized.strip()
+
+        # Handle empty after normalization
+        if not normalized:
+            return "attachment"
+
+        return normalized
 
     # ==================== Utility Methods ====================
 

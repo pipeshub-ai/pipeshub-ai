@@ -156,27 +156,15 @@ class OAuthProvider:
 
         return f"{self.config.authorize_url}?{urlencode(params)}"
 
-    async def exchange_code_for_token(self, code: str, state: Optional[str] = None, code_verifier: Optional[str] = None) -> OAuthToken:
-        # Note: State validation is handled in handle_callback, not here
-        # This method only exchanges the code for a token
-
-        # Check if we need to use Basic Auth (e.g., for Notion)
+    async def _make_token_request(self, data: dict) -> dict:
+        """Helper to make a token request, handling different auth methods."""
         use_basic_auth = self.config.additional_params.get("use_basic_auth", False)
         use_json_body = self.config.additional_params.get("use_json_body", False)
-
-        data = {
-            "grant_type": GrantType.AUTHORIZATION_CODE.value,
-            "code": code,
-            "redirect_uri": self.config.redirect_uri,
-        }
 
         # Notion and some other providers use Basic Auth header instead of body params
         if not use_basic_auth:
             data["client_id"] = self.config.client_id
             data["client_secret"] = self.config.client_secret
-
-        if code_verifier:
-            data["code_verifier"] = code_verifier
 
         session = await self.session
         headers = {}
@@ -199,7 +187,7 @@ class OAuthProvider:
         else:
             post_kwargs["data"] = data
 
-        # Make token exchange request
+        # Make token request
         async with session.post(self.config.token_url, **post_kwargs) as response:
             if response.status != HttpStatusCode.SUCCESS.value:
                 # Get detailed error info for debugging
@@ -208,75 +196,49 @@ class OAuthProvider:
                 FIRST_8_CHARS = 8
                 masked_client_id = self.config.client_id[:FIRST_8_CHARS] + "..." if len(self.config.client_id) > FIRST_8_CHARS else "***"
                 error_msg = (
-                    f"OAuth token exchange failed with status {response.status}. "
+                    f"OAuth token request failed with status {response.status}. "
                     f"Token URL: {self.config.token_url}, "
                     f"Redirect URI: {self.config.redirect_uri}, "
                     f"Client ID (masked): {masked_client_id}, "
                     f"Response: {error_text}"
                 )
                 raise Exception(error_msg)
-            if response.status >= HttpStatusCode.BAD_REQUEST.value:
-                # Get detailed error information
-                try:
-                    error_data = await response.json()
-                    error_detail = f"HTTP {response.status}: {error_data}"
-                except Exception:
-                    error_text = await response.text()
-                    error_detail = f"HTTP {response.status}: {error_text}"
-
-                raise Exception(f"Token exchange failed: {error_detail}")
 
             response.raise_for_status()
-            token_data = await response.json()
+            return await response.json()
 
+    async def exchange_code_for_token(self, code: str, state: Optional[str] = None, code_verifier: Optional[str] = None) -> OAuthToken:
+        # Note: State validation is handled in handle_callback, not here
+        # This method only exchanges the code for a token
+
+        data = {
+            "grant_type": GrantType.AUTHORIZATION_CODE.value,
+            "code": code,
+            "redirect_uri": self.config.redirect_uri,
+        }
+
+        if code_verifier:
+            data["code_verifier"] = code_verifier
+
+        token_data = await self._make_token_request(data)
         token = OAuthToken.from_dict(token_data)
         return token
 
     async def refresh_access_token(self, refresh_token: str) -> OAuthToken:
         """Refresh access token using refresh token"""
-        # Check if we need to use Basic Auth (e.g., for Notion)
-        use_basic_auth = self.config.additional_params.get("use_basic_auth", False)
-        use_json_body = self.config.additional_params.get("use_json_body", False)
-
         data = {
             "grant_type": GrantType.REFRESH_TOKEN.value,
             "refresh_token": refresh_token,
         }
 
-        # Notion and some other providers use Basic Auth header instead of body params
-        if not use_basic_auth:
-            data["client_id"] = self.config.client_id
-            data["client_secret"] = self.config.client_secret
-
-        session = await self.session
-        headers = {}
-
-        # Prepare headers for providers requiring Basic Auth (e.g., Notion)
-        if use_basic_auth:
-            credentials = f"{self.config.client_id}:{self.config.client_secret}"
-            encoded_credentials = base64.b64encode(credentials.encode()).decode()
-            headers["Authorization"] = f"Basic {encoded_credentials}"
-
-            # Add Notion-specific version header if present
-            if "notion_version" in self.config.additional_params:
-                headers["Notion-Version"] = self.config.additional_params["notion_version"]
-
-        # Prepare POST request kwargs (JSON or form-encoded)
-        post_kwargs = {"headers": headers}
-        if use_json_body:
-            headers["Content-Type"] = "application/json"
-            post_kwargs["json"] = data
-        else:
-            post_kwargs["data"] = data
-
-        # Make token refresh request
-        async with session.post(self.config.token_url, **post_kwargs) as response:
-            if response.status == HttpStatusCode.FORBIDDEN.value:
-                # Log additional details for 403 errors (common with expired/invalid refresh tokens)
-                error_text = await response.text()
-                raise Exception(f"Token refresh failed with 403 Forbidden. This usually means the refresh token has expired or is invalid. Response: {error_text}")
-            response.raise_for_status()
-            token_data = await response.json()
+        try:
+            token_data = await self._make_token_request(data)
+        except Exception as e:
+            # Enhance error message for 403 errors (common with expired/invalid refresh tokens)
+            error_str = str(e)
+            if "403" in error_str or "Forbidden" in error_str:
+                raise Exception(f"Token refresh failed with 403 Forbidden. This usually means the refresh token has expired or is invalid. {error_str}")
+            raise
 
         # Create new token with current timestamp
         token = OAuthToken.from_dict(token_data)

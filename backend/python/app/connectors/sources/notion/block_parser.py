@@ -890,25 +890,18 @@ class NotionBlockParser:
         title = type_data.get("title", "Untitled Page")
         page_id = notion_block.get("id", "")
 
-        # Structure reference data as a dictionary (for display/context)
-        reference_data = {
-            "child_external_id": page_id,
-            "child_record_type": "NOTION_PAGE",
-            "child_record_name": title,
-            "reference_type": "child_page",
-            "display_text": title
-        }
-
         return Block(
             id=str(uuid4()),
             index=block_index,
             parent_index=parent_group_index,
             type=BlockType.TEXT,
             sub_type=BlockSubType.CHILD_RECORD,
-            format=DataFormat.JSON,
-            data=reference_data,
+            format=DataFormat.TXT,
+            data=title,
             source_name=title,
-            source_id=notion_block.get("id"),
+            source_id=page_id,
+            source_type="child_page",
+            name="NOTION_PAGE",
             weburl=self._normalize_url(
                 self._construct_block_url(parent_page_url, notion_block.get("id"))
             ),
@@ -931,25 +924,18 @@ class NotionBlockParser:
         title = type_data.get("title", "Untitled Database")
         database_id = notion_block.get("id", "")
 
-        # Structure reference data as a dictionary (for display/context)
-        reference_data = {
-            "child_external_id": database_id,
-            "child_record_type": "NOTION_DATA_SOURCE",
-            "child_record_name": title,
-            "reference_type": "child_database",
-            "display_text": title
-        }
-
         return Block(
             id=str(uuid4()),
             index=block_index,
             parent_index=parent_group_index,
             type=BlockType.TEXT,
             sub_type=BlockSubType.CHILD_RECORD,
-            format=DataFormat.JSON,
-            data=reference_data,
+            format=DataFormat.TXT,
+            data=title,
             source_name=title,
-            source_id=notion_block.get("id"),
+            source_id=database_id,
+            source_type="child_database",
+            name="NOTION_DATA_SOURCE",
             weburl=self._normalize_url(
                 self._construct_block_url(parent_page_url, notion_block.get("id"))
             ),
@@ -1265,18 +1251,8 @@ class NotionBlockParser:
         # Downloadable/streamable files - create child record reference
         # This includes: files, PDFs, Notion-hosted video/audio, direct video/audio URLs
         # Generate child external ID using same format as FileRecord
-        # Format: file_{page_id}_{block_id}
+        # Format: {block_id}
         block_id = notion_block.get("id", "")
-        child_external_id = f"file_{parent_page_id}_{block_id}" if parent_page_id else f"file_{block_id}"
-
-        # Structure reference data as a dictionary (for display/context)
-        reference_data = {
-            "child_external_id": child_external_id,
-            "child_record_type": "FILE",
-            "child_record_name": file_name,
-            "reference_type": media_type,  # video, audio, file, pdf
-            "display_text": file_name
-        }
 
         # Create child record reference block
         # This will be resolved later by _resolve_child_reference_blocks
@@ -1286,10 +1262,12 @@ class NotionBlockParser:
             parent_index=parent_group_index,
             type=BlockType.TEXT,
             sub_type=BlockSubType.CHILD_RECORD,
-            format=DataFormat.JSON,
-            data=reference_data,
+            format=DataFormat.TXT,
+            data=file_name,
             source_name=file_name,
-            source_id=notion_block.get("id"),
+            source_id=block_id,
+            source_type=media_type,  # video, audio, file, pdf
+            name="FILE",
             weburl=self._normalize_url(
                 self._construct_block_url(parent_page_url, notion_block.get("id"))
             ),
@@ -1418,12 +1396,66 @@ class NotionBlockParser:
             index=block_index,
             parent_index=parent_group_index,
             type=GroupType.TEXT_SECTION,
-            group_subtype=GroupSubType.TOGGLE,
+            sub_type=GroupSubType.TOGGLE,
             source_group_id=notion_block.get("id"),
             data=text,  # Store toggle text in data field
             name=text[:50] if text else "Toggle",
             description="Toggle Block",  # Indicate this is a toggle
             format=DataFormat.MARKDOWN,
+        )
+
+    async def _parse_synced_block(
+        self,
+        notion_block: Dict[str, Any],
+        type_data: Dict[str, Any],
+        parent_group_index: Optional[int],
+        block_index: int,
+        parent_page_url: Optional[str] = None,
+        parent_page_id: Optional[str] = None,
+    ) -> BlockGroup:
+        """
+        Parse synced_block as BlockGroup.
+
+        Synced blocks in Notion allow content to be synced across multiple locations.
+        - If synced_from is null: This is the original/master synced block
+        - If synced_from has a block_id: This is a reference to the original block
+
+        The children of a synced_block reference should be fetched from the original block,
+        not the reference block itself. This is handled in the connector's _process_blocks_recursive.
+
+        Note: Synced block children are automatically fetched and processed by the connector's
+        recursive traversal logic when it detects has_children=True on the notion_block.
+        The children will be attached to this BlockGroup via the children list.
+        """
+        block_id = notion_block.get("id", "")
+        synced_from = type_data.get("synced_from")
+
+        # Determine if this is a reference or original
+        is_reference = synced_from is not None
+        original_block_id = None
+        if is_reference and isinstance(synced_from, dict):
+            # Extract the original block_id from synced_from
+            if synced_from.get("type") == "block_id":
+                original_block_id = synced_from.get("block_id")
+
+        # Store metadata about the synced block
+        synced_metadata = {
+            "is_reference": is_reference,
+            "original_block_id": original_block_id,
+            "current_block_id": block_id
+        }
+
+        return BlockGroup(
+            id=str(uuid4()),
+            index=block_index,
+            parent_index=parent_group_index,
+            type=GroupType.TEXT_SECTION,
+            sub_type=GroupSubType.SYNCED_BLOCK,
+            source_group_id=block_id,
+            data=synced_metadata,  # Store synced block metadata
+            name="Synced Block" + (" (Reference)" if is_reference else " (Original)"),
+            description=f"Synced block {'reference' if is_reference else 'original'}",
+            format=DataFormat.JSON,
         )
 
     # ============================================================================
@@ -1674,6 +1706,18 @@ class NotionBlockParser:
                     user_id = person.get("id")
                     if user_id:
                         people_user_ids.append(user_id)
+
+            elif prop_type == "created_by":
+                user = prop.get("created_by", {})
+                user_id = user.get("id") if isinstance(user, dict) else None
+                if user_id:
+                    people_user_ids.append(user_id)
+
+            elif prop_type == "last_edited_by":
+                user = prop.get("last_edited_by", {})
+                user_id = user.get("id") if isinstance(user, dict) else None
+                if user_id:
+                    people_user_ids.append(user_id)
 
             elif prop_type == "rollup":
                 rollup = prop.get("rollup", {})
@@ -1932,6 +1976,40 @@ class NotionBlockParser:
             else:
                 # Fallback to IDs
                 return ", ".join([p.get("id", "") for p in people if p.get("id")])
+
+        elif prop_type == "created_by":
+            user = prop.get("created_by", {})
+            if not user:
+                return ""
+
+            user_id = user.get("id") if isinstance(user, dict) else None
+            if not user_id:
+                return ""
+
+            if get_user_child_callback:
+                # Resolve user name from ChildRecord
+                child_record = await get_user_child_callback(user_id)
+                return child_record.child_name if child_record else user_id
+            else:
+                # Fallback to ID or name from user object
+                return user.get("name") or user_id
+
+        elif prop_type == "last_edited_by":
+            user = prop.get("last_edited_by", {})
+            if not user:
+                return ""
+
+            user_id = user.get("id") if isinstance(user, dict) else None
+            if not user_id:
+                return ""
+
+            if get_user_child_callback:
+                # Resolve user name from ChildRecord
+                child_record = await get_user_child_callback(user_id)
+                return child_record.child_name if child_record else user_id
+            else:
+                # Fallback to ID or name from user object
+                return user.get("name") or user_id
 
         elif prop_type == "rollup":
             rollup = prop.get("rollup", {})
@@ -2252,25 +2330,18 @@ class NotionBlockParser:
         # Use a placeholder title - will be resolved when child record is fetched
         placeholder_title = f"{'Page' if record_type == 'NOTION_PAGE' else 'Database'} {target_id[:8] if target_id else 'Unknown'}"
 
-        # Structure reference data as a dictionary (for display/context)
-        reference_data = {
-            "child_external_id": target_id,
-            "child_record_type": record_type,
-            "child_record_name": placeholder_title,
-            "reference_type": reference_type,
-            "display_text": placeholder_title
-        }
-
         return Block(
             id=str(uuid4()),
             index=block_index,
             parent_index=parent_group_index,
             type=BlockType.TEXT,
             sub_type=BlockSubType.CHILD_RECORD,
-            format=DataFormat.JSON,
-            data=reference_data,
+            format=DataFormat.TXT,
+            data=placeholder_title,
             source_name=placeholder_title,
-            source_id=notion_block.get("id"),
+            source_id=target_id,  # Important: source_id should be the target (page_id or database_id), not the block id
+            source_type=reference_type,
+            name=record_type,
             weburl=self._normalize_url(
                 self._construct_block_url(parent_page_url, notion_block.get("id"))
             ),
@@ -2694,32 +2765,32 @@ class NotionBlockParser:
             self.logger.warning(f"Failed to parse Notion comment: {e}")
             return None
 
-    def create_comment_block(
+    def create_comment_group(
         self,
         block_comment: BlockComment,
-        block_index: int,
+        group_index: int,
         parent_group_index: Optional[int],
-        source_id: str
-    ) -> Block:
+        source_id: str,
+        attachment_block_indices: Optional[List[BlockContainerIndex]] = None
+    ) -> BlockGroup:
         """
-        Create a COMMENT Block from a BlockComment object.
+        Create a COMMENT BlockGroup from a BlockComment object.
 
-        Uses BlockType.TEXT with BlockSubType.COMMENT to represent comments,
-        as BlockType doesn't have a dedicated COMMENT type.
-
-        The BlockComment data is stored in the block's `data` field as a dict
-        to preserve all comment metadata (author info, attachments, thread_id, etc.).
+        Uses GroupType.TEXT_SECTION with GroupSubType.COMMENT.
+        Stores comment data in the group's data field.
+        Can contain CHILD_RECORD blocks for attachments as children.
 
         Args:
             block_comment: BlockComment object with comment data
-            block_index: Index for the new block
+            group_index: Index for the new BlockGroup
             parent_group_index: Index of parent BlockGroup (COMMENT_THREAD)
             source_id: Notion comment ID
+            attachment_block_indices: Optional list of BlockContainerIndex for attachment blocks
 
         Returns:
-            Block object with type TEXT and sub_type COMMENT
+            BlockGroup object with type TEXT_SECTION and sub_type COMMENT
         """
-        # Store full BlockComment data in the data field to preserve all metadata
+        # Store full BlockComment data in the data field
         comment_data = {
             "text": block_comment.text,
             "format": block_comment.format.value if block_comment.format else DataFormat.TXT.value,
@@ -2734,49 +2805,47 @@ class NotionBlockParser:
             "quoted_text": block_comment.quoted_text,
         }
 
-        return Block(
+        return BlockGroup(
             id=str(uuid4()),
-            index=block_index,
+            index=group_index,
             parent_index=parent_group_index,
-            type=BlockType.TEXT,
-            sub_type=BlockSubType.COMMENT,
-            format=DataFormat.JSON,  # Data is JSON-structured
+            type=GroupType.TEXT_SECTION,
+            sub_type=GroupSubType.COMMENT,
+            source_group_id=source_id,
+            name=block_comment.author_name or "Comment",  # Store author name in name field
             data=comment_data,
-            source_id=source_id,
-            source_name=block_comment.author_name,  # Store author name in source_name
-            source_creation_date=block_comment.created_at,
-            source_update_date=block_comment.updated_at,
+            format=DataFormat.JSON,  # Data is JSON-structured
+            description=f"Comment by {block_comment.author_name or 'Unknown'}",
+            children=attachment_block_indices if attachment_block_indices else [],
             weburl=block_comment.weburl,
-            comments=[]  # COMMENT blocks themselves don't have nested comments
         )
 
     def create_comment_thread_group(
         self,
         discussion_id: str,
         group_index: int,
-        comment_block_indices: List[BlockContainerIndex]
+        comment_group_indices: List[BlockContainerIndex]
     ) -> BlockGroup:
         """
         Create a COMMENT_THREAD BlockGroup for page-level comments.
 
-        Uses GroupType.TEXT_SECTION with GroupSubType.COMMENT_THREAD,
-        as GroupType doesn't have a dedicated COMMENT_THREAD type.
+        Uses GroupType.TEXT_SECTION with GroupSubType.COMMENT_THREAD.
 
         Args:
             discussion_id: Notion discussion_id (thread identifier)
             group_index: Index for the new BlockGroup
-            comment_block_indices: List of BlockContainerIndex for comment blocks in this thread
+            comment_group_indices: List of BlockContainerIndex for comment BlockGroups in this thread
 
         Returns:
-            BlockGroup object with type TEXT_SECTION and group_subtype COMMENT_THREAD
+            BlockGroup object with type TEXT_SECTION and sub_type COMMENT_THREAD
         """
         return BlockGroup(
             id=str(uuid4()),
             index=group_index,
             type=GroupType.TEXT_SECTION,
-            group_subtype=GroupSubType.COMMENT_THREAD,
+            sub_type=GroupSubType.COMMENT_THREAD,
             source_group_id=discussion_id,
-            description=f"Comment thread ({len(comment_block_indices)} comments)",
-            children=comment_block_indices
+            description=f"Comment thread ({len(comment_group_indices)} comments)",
+            children=comment_group_indices
         )
 
