@@ -852,7 +852,20 @@ class GCSConnector(BaseConnector):
     async def _process_gcs_object(
         self, obj: Dict, bucket_name: str
     ) -> Tuple[Optional[FileRecord], List[Permission]]:
-        """Process a single GCS object and convert it to a FileRecord."""
+        """Process a single GCS object and convert it to a FileRecord.
+
+        Logic mirrors S3:
+        1. Extract path and revision fingerprint
+        2. Try lookup by path (externalRecordId) - PRIMARY
+           ├─ Found → Compare revisions
+           │   ├─ Different → Content change → Update record
+           │   └─ Same → Skip (no changes)
+           └─ Not Found → Try lookup by revision (externalRevisionId) - FALLBACK
+               ├─ Found → Move/rename detected
+               │   ├─ Remove old parent relationship
+               │   └─ Update record
+               └─ Not Found → New file → Create new record
+        """
         try:
             key = obj.get("Key", "")
             if not key:
@@ -888,12 +901,21 @@ class GCSConnector(BaseConnector):
                 created_timestamp_ms = timestamp_ms
 
             external_record_id = f"{bucket_name}/{normalized_key}"
-            # Use generation + metageneration as revision ID (similar to etag for S3)
+
+            # Use a stable "content fingerprint" first (similar to S3 ETag usage).
+            # - `Md5Hash` changes when content changes and is stable across renames/copies when content is identical
+            # - fall back to generation/metageneration when no md5 is available (e.g., composite objects)
             generation = obj.get("Generation")
             metageneration = obj.get("Metageneration")
-            current_revision_id = f"{generation}:{metageneration}" if generation else obj.get("Md5Hash", "")
+            md5_hash = obj.get("Md5Hash") or ""
+            if md5_hash:
+                current_revision_id = md5_hash
+            elif generation:
+                current_revision_id = f"{generation}:{metageneration}" if metageneration else str(generation)
+            else:
+                current_revision_id = ""
 
-            # Check for existing record
+            # PRIMARY: Try lookup by path (externalRecordId)
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
                     connector_id=self.connector_id, external_id=external_record_id
@@ -905,16 +927,26 @@ class GCSConnector(BaseConnector):
                 stored_revision = existing_record.external_revision_id or ""
                 if current_revision_id and stored_revision and current_revision_id == stored_revision:
                     self.logger.debug(
-                        f"Skipping {normalized_key}: revision unchanged"
+                        f"Skipping {normalized_key}: externalRecordId and externalRevisionId unchanged"
                     )
                     return None, []
 
-                if current_revision_id != stored_revision:
+                # Content changed or missing revision - sync properly from GCS
+                if current_revision_id and stored_revision and current_revision_id != stored_revision:
                     self.logger.info(
-                        f"Content change detected: {normalized_key}"
+                        f"Content change detected: {normalized_key} - externalRevisionId changed from {stored_revision} to {current_revision_id}"
                     )
+                elif not current_revision_id or not stored_revision:
+                    if not current_revision_id:
+                        self.logger.warning(
+                            f"Current revision missing for {normalized_key}, processing record"
+                        )
+                    if not stored_revision:
+                        self.logger.debug(
+                            f"Stored revision missing for {normalized_key}, processing record"
+                        )
             elif current_revision_id:
-                # Try lookup by revision ID for move detection
+                # Not found by path - FALLBACK: try revision-based lookup (for move/rename detection)
                 async with self.data_store_provider.transaction() as tx_store:
                     existing_record = await tx_store.get_record_by_external_revision_id(
                         connector_id=self.connector_id, external_revision_id=current_revision_id
@@ -923,12 +955,12 @@ class GCSConnector(BaseConnector):
                 if existing_record:
                     is_move = True
                     self.logger.info(
-                        f"Move/rename detected: {normalized_key}"
+                        f"Move/rename detected: {normalized_key} - file moved from {existing_record.external_record_id} to {external_record_id}"
                     )
                 else:
                     self.logger.debug(f"New document: {normalized_key}")
             else:
-                self.logger.debug(f"New document: {normalized_key}")
+                self.logger.debug(f"New document: {normalized_key} (no revision available)")
 
             # Prepare record data
             record_type = RecordType.FOLDER if is_folder else RecordType.FILE
