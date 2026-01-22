@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import os
+import re
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -189,7 +190,8 @@ class OAuthProvider:
 
         # Make token request
         async with session.post(self.config.token_url, **post_kwargs) as response:
-            if response.status != HttpStatusCode.SUCCESS.value:
+            # Check for error status codes (4xx and 5xx)
+            if response.status >= HttpStatusCode.BAD_REQUEST.value:
                 # Get detailed error info for debugging
                 error_text = await response.text()
                 # Log detailed error but mask sensitive data
@@ -236,7 +238,9 @@ class OAuthProvider:
         except Exception as e:
             # Enhance error message for 403 errors (common with expired/invalid refresh tokens)
             error_str = str(e)
-            if "403" in error_str or "Forbidden" in error_str:
+            # Extract status code from error message using regex for more reliable matching
+            status_match = re.search(r"status (\d+)", error_str)
+            if status_match and int(status_match.group(1)) == HttpStatusCode.FORBIDDEN.value:
                 raise Exception(f"Token refresh failed with 403 Forbidden. This usually means the refresh token has expired or is invalid. {error_str}")
             raise
 

@@ -681,20 +681,36 @@ class Processor:
                                         else:
                                             row_dicts.append({})
 
-                    # Generate LLM row descriptions (skip header row)
-                    if row_dicts and len(row_dicts) > 1:
+                    # Generate LLM row descriptions (skip header rows)
+                    # Filter out header rows using is_header flag from table_row_metadata
+                    non_header_row_dicts = []
+                    non_header_row_indices = []  # Track original indices for updating blocks
+
+                    for i, (row_dict, row_block) in enumerate(zip(row_dicts, row_blocks)):
+                        # Check if this row is a header using the is_header flag from table_row_metadata
+                        is_header = (
+                            row_block
+                            and row_block.table_row_metadata
+                            and row_block.table_row_metadata.is_header
+                        )
+
+                        if not is_header:
+                            non_header_row_dicts.append(row_dict)
+                            non_header_row_indices.append(i)
+
+                    if non_header_row_dicts:
                         try:
-                            table_data = {"grid": [[row] for row in row_dicts[1:]]}  # Skip header
+                            table_data = {"grid": [[row] for row in non_header_row_dicts]}
                             row_descriptions, _ = await get_rows_text(
                                 self.config_service, table_data, table_summary, column_headers
                             )
 
-                            # Update row blocks with LLM descriptions (skip header row)
-                            for i, description in enumerate(row_descriptions):
-                                if i + 1 < len(row_blocks):  # +1 to skip header
-                                    row_block = row_blocks[i + 1]
+                            # Update row blocks with LLM descriptions (only non-header rows)
+                            for description_idx, original_idx in enumerate(non_header_row_indices):
+                                if description_idx < len(row_descriptions) and original_idx < len(row_blocks):
+                                    row_block = row_blocks[original_idx]
                                     if row_block.data:
-                                        row_block.data["row_natural_language_text"] = description
+                                        row_block.data["row_natural_language_text"] = row_descriptions[description_idx]
 
                             self.logger.debug(f"Enhanced {len(row_descriptions)} rows with LLM descriptions")
                         except Exception as e:
