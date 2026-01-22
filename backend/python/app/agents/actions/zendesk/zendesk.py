@@ -1,13 +1,11 @@
-import asyncio
-import concurrent.futures
 import json
 import logging
 from typing import Optional, Tuple
 
+from app.agents.actions.utils import run_async
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
-from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.zendesk.zendesk import ZendeskClient
 from app.sources.external.zendesk.zendesk import ZendeskDataSource
 
@@ -26,21 +24,6 @@ class Zendesk:
         """
         self.client = ZendeskDataSource(client)
 
-    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
-        """Helper method to run async operations in sync context"""
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # If we're already in an async context, we need to use a thread pool
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, coro)
-                    return future.result()
-            else:
-                return loop.run_until_complete(coro)
-        except Exception as e:
-            logger.error(f"Error running async operation: {e}")
-            raise
-
     @tool(
         app_name="zendesk",
         tool_name="get_current_user",
@@ -55,7 +38,7 @@ class Zendesk:
         """
         try:
             # Use ZendeskDataSource method
-            response = self._run_async(self.client.show_current_user())
+            response = run_async(self.client.show_current_user())
 
             if response.success:
                 return True, response.to_json()
@@ -115,7 +98,7 @@ class Zendesk:
         """
         try:
             # Use ZendeskDataSource method
-            response = self._run_async(self.client.list_tickets(
+            response = run_async(self.client.list_tickets(
                 sort_by=sort_by,
                 sort_order=sort_order,
                 per_page=per_page,
@@ -154,7 +137,7 @@ class Zendesk:
         try:
             # Use ZendeskDataSource method (coerce ID to int)
             tid = int(ticket_id)
-            response = self._run_async(self.client.show_ticket(ticket_id=tid))
+            response = run_async(self.client.show_ticket(ticket_id=tid))
 
             if response.success:
                 return True, response.to_json()
@@ -230,7 +213,7 @@ class Zendesk:
         """
         try:
             # Map to data source flat params; description -> comment body
-            response = self._run_async(self.client.create_ticket(
+            response = run_async(self.client.create_ticket(
                 subject=subject,
                 comment={"body": description},
                 requester_id=int(requester_id) if requester_id is not None else None,
@@ -314,7 +297,7 @@ class Zendesk:
         try:
             # Use ZendeskDataSource method with flat params; description -> comment body
             tid = int(ticket_id)
-            response = self._run_async(self.client.update_ticket(
+            response = run_async(self.client.update_ticket(
                 ticket_id=tid,
                 subject=subject,
                 comment={"body": description} if description is not None else None,
@@ -355,7 +338,7 @@ class Zendesk:
         try:
             # Use ZendeskDataSource method (coerce ID to int)
             tid = int(ticket_id)
-            response = self._run_async(self.client.delete_ticket(ticket_id=tid))
+            response = run_async(self.client.delete_ticket(ticket_id=tid))
 
             if response.success:
                 return True, response.to_json()
@@ -399,7 +382,7 @@ class Zendesk:
         """
         try:
             # Use ZendeskDataSource method (supports role/include among others)
-            response = self._run_async(self.client.list_users(
+            response = run_async(self.client.list_users(
                 role=role,
                 include=include
             ))
@@ -436,7 +419,7 @@ class Zendesk:
         try:
             # Use ZendeskDataSource method (coerce ID to int)
             uid = int(user_id)
-            response = self._run_async(self.client.show_user(user_id=uid))
+            response = run_async(self.client.show_user(user_id=uid))
 
             if response.success:
                 return True, response.to_json()
@@ -502,7 +485,7 @@ class Zendesk:
         """
         try:
             # Use ZendeskDataSource method (generic search)
-            response = self._run_async(self.client.search(
+            response = run_async(self.client.search(
                 query=query,
                 sort_by=sort_by,
                 sort_order=sort_order
