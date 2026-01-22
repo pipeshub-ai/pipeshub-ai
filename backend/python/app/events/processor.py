@@ -676,27 +676,29 @@ class Processor:
             self.logger.error(f"❌ Error processing XLS document: {str(e)}")
             raise
 
-    async def process_csv_document(
-        self, recordName, recordId, version, source, orgId, csv_binary, virtual_record_id, origin
+    async def process_delimited_document(
+        self, recordName, recordId, file_binary, virtual_record_id, extension = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Process CSV document, yielding phase completion events.
+        """Process delimited document (CSV/TSV), yielding phase completion events.
 
         Args:
             recordName (str): Name of the record
             recordId (str): ID of the record
-            version (str): Version of the record
-            source (str): Source of the document
-            orgId (str): Organization ID
-            csv_binary (bytes): Binary content of the CSV file
+            file_binary (bytes): Binary content of the delimited file (CSV/TSV)
+            virtual_record_id (str): Virtual record ID
+            extension (str): File extension type (defaults to CSV if None)
         """
         self.logger.info(
-            f"🚀 Starting CSV document processing for record: {recordName}"
+            f"🚀 Starting delimited document processing for record: {recordName}"
         )
 
         try:
-            # Initialize CSV parser
-            self.logger.debug("📊 Processing CSV content")
-            parser = self.parsers[ExtensionTypes.CSV.value]
+            # Initialize parser
+            self.logger.debug("📊 Processing delimited file content")
+            if extension is None:
+                parser = self.parsers[ExtensionTypes.CSV.value]
+            else:
+                parser = self.parsers[extension]
 
             llm, _ = await get_llm(self.config_service)
 
@@ -707,10 +709,10 @@ class Processor:
             for encoding in encodings:
                 try:
                     self.logger.debug(
-                        f"Attempting to decode CSV with {encoding} encoding"
+                        f"Attempting to decode delimited file with {encoding} encoding"
                     )
                     # Decode binary data to string
-                    csv_text = csv_binary.decode(encoding)
+                    csv_text = file_binary.decode(encoding)
 
                     # Create string stream from decoded text
                     csv_stream = io.StringIO(csv_text)
@@ -719,19 +721,19 @@ class Processor:
                     csv_result, line_numbers = parser.read_stream(csv_stream)
 
                     self.logger.info(
-                        f"✅ Successfully parsed CSV with {encoding} encoding. Rows: {len(csv_result):,}"
+                        f"✅ Successfully parsed delimited file with {encoding} encoding. Rows: {len(csv_result):,}"
                     )
                     break
                 except UnicodeDecodeError:
                     self.logger.debug(f"Failed to decode with {encoding} encoding")
                     continue
                 except Exception as e:
-                    self.logger.debug(f"Failed to process CSV with {encoding} encoding: {str(e)}")
+                    self.logger.debug(f"Failed to process delimited file with {encoding} encoding: {str(e)}")
                     continue
 
 
             if csv_result is None or not csv_result:
-                self.logger.info(f"Unable to decode CSV file with any supported encoding or it is empty for record: {recordName}. Setting indexing status to EMPTY.")
+                self.logger.info(f"Unable to decode delimited file with any supported encoding or it is empty for record: {recordName}. Setting indexing status to EMPTY.")
 
                 yield {"event": "parsing_complete", "data": {"record_id": recordId}}
                 yield {"event": "indexing_complete", "data": {"record_id": recordId}}
@@ -739,8 +741,10 @@ class Processor:
 
                 return
 
-            self.logger.debug("📑 CSV result processed")
+            self.logger.debug("📑 Delimited file result processed")
 
+            # Extract domain metadata from delimited file content
+            self.logger.info("🎯 Extracting domain metadata")
             if csv_result:
                 record = await self.arango_service.get_document(
                     recordId, CollectionNames.RECORDS.value
@@ -753,7 +757,7 @@ class Processor:
                 record = convert_record_dict_to_record(record)
                 record.virtual_record_id = virtual_record_id
 
-                # Signal parsing complete after CSV is parsed (before LLM block creation)
+                # Signal parsing complete after delimited file is parsed (before LLM block creation)
                 yield {"event": "parsing_complete", "data": {"record_id": recordId}}
 
                 # Create blocks (involves LLM calls for row descriptions and summaries)
@@ -767,10 +771,10 @@ class Processor:
                 # Signal indexing complete
                 yield {"event": "indexing_complete", "data": {"record_id": recordId}}
 
-            self.logger.info("✅ CSV processing completed successfully")
+            self.logger.info("✅ Delimited file processing completed successfully")
 
         except Exception as e:
-            self.logger.error(f"❌ Error processing CSV document: {str(e)}")
+            self.logger.error(f"❌ Error processing delimited document: {str(e)}")
             raise
 
 
