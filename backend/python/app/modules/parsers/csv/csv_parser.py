@@ -256,6 +256,10 @@ class CSVParser:
         # Return as string if no other type matches
         return value
 
+    def _count_empty_values(self, row: Dict[str, Any]) -> int:
+        """Count the number of empty/None values in a row"""
+        return sum(1 for value in row.values() if value is None or value == "")
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
@@ -464,8 +468,37 @@ class CSVParser:
         current_headers = list(csv_result[0].keys())
         first_rows = [current_headers]
         
-        first_rows.extend([list(row.values()) for row in csv_result[:5]])
+        # Select up to 5 rows with the least number of empty values
+        # Stop early if we find 5 perfect rows (zero empty values)
+        selected_rows = []
+        fallback_rows = []  # Track best rows in case we don't find 5 perfect ones
 
+        for idx, row in enumerate(csv_result):
+            empty_count = self._count_empty_values(row)
+            
+            if empty_count == 0:
+                # Perfect row with no empty values
+                selected_rows.append((idx, row, empty_count))
+                if len(selected_rows) >= 5:
+                    break  # Early stop - found 5 perfect rows
+            else:
+                # Keep track of best non-perfect rows as fallback
+                fallback_rows.append((idx, row, empty_count))
+
+        # If we didn't find 5 perfect rows, supplement with the best fallback rows
+        if len(selected_rows) < 5:
+            # Sort fallback rows by empty count (ascending)
+            fallback_rows.sort(key=lambda x: (x[2], x[0]))
+            # Add the best fallback rows to reach 5 total
+            needed = 5 - len(selected_rows)
+            selected_rows.extend(fallback_rows[:needed])
+
+        # Sort by original index to maintain logical order for the LLM
+        selected_rows.sort(key=lambda x: x[0])
+
+        # Extract row values
+        first_rows.extend([list(row[1].values()) for row in selected_rows])
+        
         has_valid_headers = await self.detect_headers_with_llm(first_rows, llm)
 
         # Phase 2: Generate headers if needed
@@ -482,7 +515,7 @@ class CSVParser:
             )
             # Reconstruct csv_result with new headers and all rows as data
             # First row gets line number 1 (original header line)
-            csv_result = [{new_headers[i]: current_headers[i] for i in range(len(new_headers))}]
+            csv_result = [{new_headers[i]:"null" if current_headers[i].startswith("Column_") else current_headers[i] for i in range(len(new_headers))}]
             # Reconstruct line_numbers: first row is line 1, then use existing line_numbers
             line_numbers = [1] + line_numbers
 
