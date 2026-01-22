@@ -107,24 +107,40 @@ class CSVParser:
             - data: List of dictionaries where keys are column headers and values are row values
             - line_numbers: List of actual line numbers from the CSV file, where line_numbers[i] corresponds to data[i]
         """
-        reader = csv.DictReader(
+        reader = csv.reader(
             file_stream, delimiter=self.delimiter, quotechar=self.quotechar
         )
 
-        # Convert all rows to dictionaries and store them
+        # Read all rows as lists first
+        all_rows = list(reader)
+
+        if not all_rows:
+            raise ValueError("CSV file is empty or has no valid rows")
+
+        # Use first row as headers, generating placeholder names for empty values
+        first_row = all_rows[0]
+        headers = [
+            str(col).strip() if col and str(col).strip() else f"Column_{i}"
+            for i, col in enumerate(first_row, start=1)
+        ]
+
+        # Convert remaining rows to dictionaries
         data = []
         line_numbers = []
-        row_number = 2
-        for row in reader:
-            # Clean up the row data
+        row_number = 2  # First data row starts at line 2 (line 1 is headers)
+
+        for row in all_rows[1:]:
+            # Pad row if it's shorter than headers, or truncate if longer
+            padded_row = row + [""] * (len(headers) - len(row)) if len(row) < len(headers) else row[:len(headers)]
+
+            # Create dictionary with parsed values
             cleaned_row = {
-                key: self._parse_value(value)
-                for key, value in row.items()
-                if key is not None  # Skip None keys that might appear in malformed CSVs
+                headers[i]: self._parse_value(padded_row[i])
+                for i in range(len(headers))
             }
+
             # Skip rows where all values are None
             if not all(value is None for value in cleaned_row.values()):
-                # Store the actual line number from the CSV file
                 line_numbers.append(row_number)
                 data.append(cleaned_row)
 
@@ -447,6 +463,7 @@ class CSVParser:
         # Phase 1: Detect if headers are valid
         current_headers = list(csv_result[0].keys())
         first_rows = [current_headers]
+        
         first_rows.extend([list(row.values()) for row in csv_result[:5]])
 
         has_valid_headers = await self.detect_headers_with_llm(first_rows, llm)
