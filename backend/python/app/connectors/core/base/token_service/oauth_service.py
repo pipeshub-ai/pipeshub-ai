@@ -154,7 +154,6 @@ class OAuthProvider:
         params.update(self.config.additional_params)
         params.update(kwargs)
 
-
         return f"{self.config.authorize_url}?{urlencode(params)}"
 
     async def exchange_code_for_token(self, code: str, state: Optional[str] = None, code_verifier: Optional[str] = None) -> OAuthToken:
@@ -303,6 +302,8 @@ class OAuthProvider:
         # Replace entire oauth session data - this clears any old state, codes, etc.
         # This is important for re-authentication to ensure fresh start
         config['oauth'] = session_data
+
+        print(f"!!!!!!!!! Config: {config}")
         await self.key_value_store.create_key(self.credentials_path, config)
         return self._get_authorization_url(state=state, **extra)
 
