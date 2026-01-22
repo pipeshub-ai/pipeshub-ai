@@ -421,8 +421,16 @@ class NotionBlockParser:
             if isinstance(result, tuple) and len(result) == self.PARSE_RESULT_TUPLE_LENGTH:
                 return result
             elif isinstance(result, Block):
+                # Skip blocks with empty string data
+                if result.data == "":
+                    self.logger.debug(f"Skipping block {block_id} of type {block_type} with empty data")
+                    return None, None, []
                 return result, None, []
             elif isinstance(result, BlockGroup):
+                # Skip BlockGroups with empty string data (but allow None, dict, list, etc.)
+                if result.data == "":
+                    self.logger.debug(f"Skipping BlockGroup {block_id} of type {block_type} with empty data")
+                    return None, None, []
                 return None, result, []
             else:
                 return None, None, []
