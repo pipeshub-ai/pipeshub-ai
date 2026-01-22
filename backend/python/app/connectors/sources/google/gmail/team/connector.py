@@ -1264,7 +1264,8 @@ class GoogleGmailTeamConnector(BaseConnector):
                         user_gmail_client,
                         thread_id,
                         message_id,
-                        full_message.get("internalDate")
+                        full_message.get("internalDate"),
+                        batch_records
                     )
 
                     # Process message using existing function
@@ -1278,6 +1279,9 @@ class GoogleGmailTeamConnector(BaseConnector):
                     if mail_update and mail_update.record:
                         mail_record = mail_update.record
                         permissions = mail_update.new_permissions or []
+
+                        if not self.indexing_filters.is_enabled(IndexingFilterKey.MAILS, default=True):
+                            mail_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
                         # Create SIBLING relation if there was a previous message
                         if previous_message_record_id:
@@ -1401,7 +1405,8 @@ class GoogleGmailTeamConnector(BaseConnector):
         user_gmail_client: GoogleGmailDataSource,
         thread_id: str,
         current_message_id: str,
-        current_internal_date: Optional[str]
+        current_internal_date: Optional[str],
+        batch_records: Optional[List[Tuple[Record, List[Permission]]]] = None
     ) -> Optional[str]:
         """
         Find the previous message in a thread to create sibling relation.
@@ -1412,6 +1417,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             thread_id: Thread ID
             current_message_id: Current message ID
             current_internal_date: Current message internal date (epoch milliseconds)
+            batch_records: Optional list of records already processed in current batch
 
         Returns:
             Previous message's record ID if found, None otherwise
@@ -1451,7 +1457,13 @@ class GoogleGmailTeamConnector(BaseConnector):
             previous_messages.sort(key=lambda x: x[1], reverse=True)
             previous_message_id = previous_messages[0][0]
 
-            # Find the record for the previous message
+            # First check batch_records for messages processed in current batch
+            if batch_records:
+                for record, _ in batch_records:
+                    if hasattr(record, 'external_record_id') and record.external_record_id == previous_message_id:
+                        return record.id
+
+            # Then check the database for existing records
             previous_record = await self._get_existing_record(previous_message_id)
             if previous_record:
                 return previous_record.id
