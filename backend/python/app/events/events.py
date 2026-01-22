@@ -443,19 +443,19 @@ class EventProcessor:
                     yield event
 
             elif extension == ExtensionTypes.CSV.value or mime_type == MimeTypes.CSV.value:
-                async for event in self.processor.process_csv_document(
+                async for event in self.processor.process_delimited_document(
                     recordName=record_name,
                     recordId=record_id,
-                    csv_binary=file_content,
+                    file_binary=file_content,
                     virtual_record_id=virtual_record_id,
                 ):
                     yield event
 
             elif extension == ExtensionTypes.TSV.value or mime_type == MimeTypes.TSV.value:
-                async for event in self.processor.process_csv_document(
+                async for event in self.processor.process_delimited_document(
                     recordName=record_name,
                     recordId=record_id,
-                    csv_binary=file_content,
+                    file_binary=file_content,
                     virtual_record_id=virtual_record_id,
                     extension=ExtensionTypes.TSV.value
                 ):
