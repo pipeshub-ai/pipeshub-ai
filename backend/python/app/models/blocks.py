@@ -21,13 +21,15 @@ class CommentFormat(str, Enum):
 
 class BlockType(str, Enum):
     TEXT = "text"
+    IMAGE = "image"
+    TABLE_ROW = "table_row"
+
+    # Do not use these types as currently not supported
     PARAGRAPH = "paragraph"
     TEXTSECTION = "textsection"
     TABLE = "table"
-    TABLE_ROW = "table_row"
     TABLE_CELL = "table_cell"
     FILE = "file"
-    IMAGE = "image"
     VIDEO = "video"
     AUDIO = "audio"
     LINK = "link"
@@ -41,6 +43,14 @@ class BlockType(str, Enum):
 class BlockSubType(str, Enum):
     CHILD_RECORD = "child_record"
     COMMENT = "comment"
+    PARAGRAPH = "paragraph"
+    HEADING = "heading"
+    QUOTE = "quote"
+    LIST_ITEM = "list_item"
+    CODE = "code"
+    EQUATION = "equation"
+    DIVIDER = "divider"
+    LINK = "link"
 
 class DataFormat(str, Enum):
     TXT = "txt"
@@ -209,8 +219,6 @@ class GroupType(str, Enum):
     TEXT_SECTION = "text_section"
     LIST = "list"
     TABLE = "table"
-    CODE = "code"
-    MEDIA = "media"
     SHEET = "sheet"
     FORM_AREA = "form_area"
     INLINE = "inline"
@@ -218,6 +226,10 @@ class GroupType(str, Enum):
     ORDERED_LIST = "ordered_list"
     COLUMN = "column"
     COLUMN_LIST = "column_list"
+
+    # Do not use these types as currently not supported
+    CODE = "code"
+    MEDIA = "media"
 
 class GroupSubType(str, Enum):
     MILESTONE = "milestone"
@@ -227,6 +239,11 @@ class GroupSubType(str, Enum):
     ISSUE_CONTENT = "issue_content"
     COMMENT_THREAD = "comment_thread"
     COMMENT = "comment"
+    TOGGLE = "toggle"
+    CALLOUT = "callout"
+    QUOTE = "quote"
+    SYNCED_BLOCK = "synced_block"
+    NESTED_BLOCK = "nested_block"  # Generic wrapper for blocks with children
 
 class SemanticMetadata(BaseModel):
     entities: Optional[List[Dict[str, Any]]] = None
