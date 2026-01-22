@@ -946,9 +946,11 @@ export const useConnectorConfig = ({
         return `${field.displayName} must be at least ${minLength} characters`;
       }
 
-      if (maxLength && value && value.length > maxLength) {
+   // Skip maxLength validation for serviceAccountJson to allow larger JSON files
+    if (maxLength && value && value.length > maxLength && field.name !== 'serviceAccountJson') {
         return `${field.displayName} must be no more than ${maxLength} characters`;
-      }
+     }
+  
 
       if (format && value) {
         switch (format) {
