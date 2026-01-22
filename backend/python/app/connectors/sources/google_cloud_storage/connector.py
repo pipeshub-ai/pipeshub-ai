@@ -849,6 +849,31 @@ class GCSConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"Error in _remove_old_parent_relationship: {e}")
 
+    def _get_gcs_revision_id(self, obj: Dict) -> str:
+        """
+        Determines a stable revision ID for a GCS object.
+
+        It prioritizes the MD5 hash as a content fingerprint, which is stable
+        across renames/copies. If not available, it falls back to the
+        generation/metageneration numbers.
+
+        Args:
+            obj: GCS object metadata dictionary
+
+        Returns:
+            Revision ID string (Md5Hash, "generation:metageneration", or "")
+        """
+        md5_hash = obj.get("Md5Hash")
+        if md5_hash:
+            return md5_hash
+
+        generation = obj.get("Generation")
+        if generation:
+            metageneration = obj.get("Metageneration")
+            return f"{generation}:{metageneration}" if metageneration else str(generation)
+
+        return ""
+
     async def _process_gcs_object(
         self, obj: Dict, bucket_name: str
     ) -> Tuple[Optional[FileRecord], List[Permission]]:
@@ -905,15 +930,7 @@ class GCSConnector(BaseConnector):
             # Use a stable "content fingerprint" first (similar to S3 ETag usage).
             # - `Md5Hash` changes when content changes and is stable across renames/copies when content is identical
             # - fall back to generation/metageneration when no md5 is available (e.g., composite objects)
-            generation = obj.get("Generation")
-            metageneration = obj.get("Metageneration")
-            md5_hash = obj.get("Md5Hash") or ""
-            if md5_hash:
-                current_revision_id = md5_hash
-            elif generation:
-                current_revision_id = f"{generation}:{metageneration}" if metageneration else str(generation)
-            else:
-                current_revision_id = ""
+            current_revision_id = self._get_gcs_revision_id(obj)
 
             # PRIMARY: Try lookup by path (externalRecordId)
             async with self.data_store_provider.transaction() as tx_store:
@@ -1346,9 +1363,7 @@ class GCSConnector(BaseConnector):
                 return None
 
             # Check revision ID
-            generation = obj_metadata.get("Generation")
-            metageneration = obj_metadata.get("Metageneration")
-            current_revision_id = f"{generation}:{metageneration}" if generation else obj_metadata.get("Md5Hash", "")
+            current_revision_id = self._get_gcs_revision_id(obj_metadata)
             stored_revision = record.external_revision_id
 
             if current_revision_id == stored_revision:
