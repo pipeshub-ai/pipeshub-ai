@@ -465,56 +465,6 @@ class GoogleSheetsParser:
             raise
 
     @exponential_backoff()
-    async def process_sheet_with_summaries(
-        self, llm, sheet_name: str, spreadsheet_id: str
-    ) -> Dict[str, Any]:
-        """Process a sheet and generate all summaries and row texts"""
-        try:
-            self.llm = llm
-            # Get tables in the sheet
-            tables = await self.get_tables_in_sheet(sheet_name, spreadsheet_id)
-            # Process each table
-            processed_tables = []
-            for table in tables:
-                # Get table summary
-                table_summary = await self.get_table_summary(table)
-                # Process rows in batches of 20
-                processed_rows = []
-                batch_size = 20
-                for i in range(0, len(table["data"]), batch_size):
-                    batch = table["data"][i : i + batch_size]
-                    row_texts = await self.get_rows_text(batch, table_summary)
-                    # Add processed rows to results
-                    for row, row_text in zip(batch, row_texts):
-                        processed_rows.append(
-                            {
-                                "raw_data": {
-                                    cell["header"]: cell["value"] for cell in row
-                                },
-                                "natural_language_text": row_text,
-                                "row_num": row[0]["row"],
-                            }
-                        )
-                processed_tables.append(
-                    {
-                        "headers": table["headers"],
-                        "summary": table_summary,
-                        "rows": processed_rows,
-                        "location": {
-                            "start_row": table["start_row"],
-                            "start_col": table["start_col"],
-                            "end_row": table["end_row"],
-                            "end_col": table["end_col"],
-                        },
-                    }
-                )
-            return {"sheet_name": sheet_name, "tables": processed_tables}
-
-        except Exception as e:
-            self.logger.error(f"❌ Error processing sheet with summaries: {str(e)}")
-            raise
-
-    @exponential_backoff()
     async def get_table_summary(self, table: Dict[str, Any]) -> str:
         """Get a natural language summary of a specific table"""
         try:

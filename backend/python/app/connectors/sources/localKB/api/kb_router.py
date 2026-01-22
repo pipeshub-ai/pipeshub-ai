@@ -1256,3 +1256,68 @@ async def list_all_records(
         sort_order=sort_order,
         source=source,
     )
+
+
+# ========================================================================
+# Move Record API
+# ========================================================================
+
+@kb_router.put(
+    "/{kb_id}/record/{record_id}/move",
+    response_model=SuccessResponse,
+    responses={
+        400: {"model": ErrorResponse},
+        403: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        500: {"model": ErrorResponse},
+    },
+)
+@inject
+async def move_record(
+    kb_id: str,
+    record_id: str,
+    request: Request,
+    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+) -> SuccessResponse:
+    """
+    Move a record (file or folder) to a different location within the same KB.
+
+    Request body:
+        - newParentId: Target folder ID, or null to move to KB root
+    """
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid request body"
+            )
+
+        user_id = request.state.user.get("userId")
+        new_parent_id = body.get("newParentId")  # None for KB root, folder_id for folder
+
+        result = await kb_service.move_record(
+            kb_id=kb_id,
+            record_id=record_id,
+            new_parent_id=new_parent_id,
+            user_id=user_id,
+        )
+
+        if not result or result.get("success") is False:
+            error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
+            error_reason = result.get("reason", "Unknown error")
+            raise HTTPException(
+                status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
+                detail=error_reason
+            )
+
+        return SuccessResponse(message="Record moved successfully")
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error: {str(e)}"
+        )

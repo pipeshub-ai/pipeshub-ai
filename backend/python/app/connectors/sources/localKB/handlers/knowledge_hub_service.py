@@ -13,6 +13,7 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     CurrentNode,
     FilterOption,
     FiltersInfo,
+    IndexingStatusFilter,
     ItemPermission,
     KnowledgeHubNodesResponse,
     NodeItem,
@@ -20,6 +21,7 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     OriginType,
     PaginationInfo,
     PermissionsInfo,
+    RecordTypeFilter,
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -63,6 +65,22 @@ class KnowledgeHubService:
         return any([q, node_types, record_types, origins, connector_ids, kb_ids,
                     indexing_status, created_at, updated_at, size])
 
+    def _has_flattening_filters(self, q: Optional[str], node_types: Optional[List[str]],
+                                 record_types: Optional[List[str]], origins: Optional[List[str]],
+                                 connector_ids: Optional[List[str]], kb_ids: Optional[List[str]],
+                                 indexing_status: Optional[List[str]],
+                                 created_at: Optional[Dict], updated_at: Optional[Dict],
+                                 size: Optional[Dict]) -> bool:
+        """Check if any filters that should trigger flattened/recursive search are provided.
+
+        These filters should return flattened results (all nested children):
+        - q, nodeTypes, recordTypes, origins, connectorIds, kbIds,
+          createdAt, updatedAt, size, indexingStatus
+        Note: sortBy and sortOrder are NOT included as they don't trigger flattening.
+        """
+        return any([q, node_types, record_types, origins, connector_ids, kb_ids,
+                    indexing_status, created_at, updated_at, size])
+
     async def get_nodes(
         self,
         user_id: str,
@@ -72,8 +90,8 @@ class KnowledgeHubService:
         only_containers: bool = False,
         page: int = 1,
         limit: int = 50,
-        sort_by: str = "name",
-        sort_order: str = "asc",
+        sort_by: str = "updatedAt",
+        sort_order: str = "desc",
         q: Optional[str] = None,
         node_types: Optional[List[str]] = None,
         record_types: Optional[List[str]] = None,
@@ -84,6 +102,7 @@ class KnowledgeHubService:
         created_at: Optional[Dict[str, Optional[int]]] = None,
         updated_at: Optional[Dict[str, Optional[int]]] = None,
         size: Optional[Dict[str, Optional[int]]] = None,
+        flattened: bool = False,
         include: Optional[List[str]] = None,
     ) -> KnowledgeHubNodesResponse:
         """
@@ -118,8 +137,47 @@ class KnowledgeHubService:
             user_key = user.get('_key')
 
             # Get nodes based on request type
-            if is_search:
-                # Global search across all nodes
+            # If parent_id is provided with flattening filters or flattened=true, do recursive search
+            # If parent_id is provided without filters, browse direct children only
+            # If no parent_id with search filters, do global search
+
+            # Check if flattening filters are applied (these should return flattened results)
+            has_flattening_filters = self._has_flattening_filters(
+                q, node_types, record_types, origins, connector_ids, kb_ids,
+                indexing_status, created_at, updated_at, size
+            )
+
+            # Initialize available_filters
+            available_filters = None
+
+            if parent_id and (has_flattening_filters or flattened):
+                # Recursive search within parent and all its descendants (flattened view)
+                items, total_count, _ = await self._get_recursive_search_nodes(
+                    user_key=user_key,
+                    org_id=org_id,
+                    parent_id=parent_id,
+                    parent_type=parent_type,
+                    skip=skip,
+                    limit=limit,
+                    sort_by=sort_by,
+                    sort_order=sort_order,
+                    q=q,
+                    node_types=node_types,
+                    record_types=record_types,
+                    origins=origins,
+                    connector_ids=connector_ids,
+                    kb_ids=kb_ids,
+                    indexing_status=indexing_status,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                    size=size,
+                    only_containers=only_containers,
+                )
+                # Fetch available filters if requested
+                if include and 'availableFilters' in include:
+                    available_filters = await self._get_available_filters(user_key, org_id)
+            elif is_search and parent_id is None:
+                # Global search across all nodes (only when no parent_id)
                 items, total_count, available_filters = await self._get_search_nodes(
                     user_key=user_key,
                     org_id=org_id,
@@ -140,16 +198,17 @@ class KnowledgeHubService:
                     only_containers=only_containers,
                 )
             else:
-                # Browse mode - get children of parent
+                # Browse mode - get direct children of parent only
                 items, total_count, _ = await self._get_children_nodes(
                     user_key=user_key,
                     org_id=org_id,
                     parent_id=parent_id,
-                    parent_type=parent_type,  # Now passed directly!
+                    parent_type=parent_type,
                     skip=skip,
                     limit=limit,
                     sort_by=sort_by,
                     sort_order=sort_order,
+                    q=None,  # No search query for browse mode
                     node_types=node_types,
                     record_types=record_types,
                     origins=origins,
@@ -162,7 +221,6 @@ class KnowledgeHubService:
                     only_containers=only_containers,
                 )
                 # In browse mode, fetch available filters only if requested
-                available_filters = None
                 if include and 'availableFilters' in include:
                     available_filters = await self._get_available_filters(user_key, org_id)
 
@@ -312,6 +370,7 @@ class KnowledgeHubService:
         limit: int,
         sort_by: str,
         sort_order: str,
+        q: Optional[str],  # Search query to filter within children
         node_types: Optional[List[str]],
         record_types: Optional[List[str]],
         origins: Optional[List[str]],
@@ -350,6 +409,11 @@ class KnowledgeHubService:
         # Build filter conditions manually for unified query (uses 'node' variable)
         filter_conditions = []
         bind_vars = {}
+
+        # Search query filter (search within children by name)
+        if q:
+            bind_vars["search_query"] = q.lower()
+            filter_conditions.append("LOWER(node.name) LIKE CONCAT('%', @search_query, '%')")
 
         # Node type filter (folder vs record)
         if node_types:
@@ -400,11 +464,16 @@ class KnowledgeHubService:
             bind_vars["origins"] = origins
             filter_conditions.append("node.source IN @origins")
 
-        if connector_ids:
+        # Handle connector_ids and kb_ids with OR logic when both are provided
+        # This ensures we get results from both connectors AND knowledge bases (union)
+        if connector_ids and kb_ids:
+            bind_vars["connector_ids"] = connector_ids
+            bind_vars["kb_ids"] = kb_ids
+            filter_conditions.append("(node.appId IN @connector_ids OR node.kbId IN @kb_ids)")
+        elif connector_ids:
             bind_vars["connector_ids"] = connector_ids
             filter_conditions.append("node.appId IN @connector_ids")
-
-        if kb_ids:
+        elif kb_ids:
             bind_vars["kb_ids"] = kb_ids
             filter_conditions.append("node.kbId IN @kb_ids")
 
@@ -456,14 +525,14 @@ class KnowledgeHubService:
             include_kbs = True
             include_apps = True
 
-            # Filter by kb_ids if provided
-            if kb_ids and len(kb_ids) > 0:
-                # If specifically asking for KBs, we should include them
-                include_kbs = True
-                # But if searching for explicit Apps (connector_ids), we might exclude KBs unless origins say otherwise
-                if connector_ids and not origins:
-                    pass # Keep both included and let ID intersection handle it?
-                         # Actually KBs don't have connector_ids, Apps don't have kb_ids.
+            # Handle connector_ids and kb_ids filters:
+            # - If only connector_ids provided: exclude KBs (show filtered apps only)
+            # - If only kb_ids provided: exclude apps (show filtered KBs only)
+            # - If both provided: include both, filter each appropriately
+            if connector_ids and not kb_ids:
+                include_kbs = False  # Only show apps matching connector_ids
+            elif kb_ids and not connector_ids:
+                include_apps = False  # Only show KBs matching kb_ids
 
             if node_types:
                 if 'kb' not in node_types and 'recordGroup' not in node_types:
@@ -512,7 +581,7 @@ class KnowledgeHubService:
             nodes_data = result.get('nodes', [])
             total_count = result.get('total', 0)
 
-            # Filter KBs if kb_ids provided
+            # Filter KBs by kb_ids if provided (keeps apps as-is, filters KBs to match kb_ids)
             if kb_ids:
                 nodes_data = [
                     n for n in nodes_data
@@ -532,6 +601,35 @@ class KnowledgeHubService:
 
 
 
+    def _get_record_type_label(self, record_type: str) -> str:
+        """Convert record type enum value to human-readable label"""
+        label_map = {
+            "FILE": "File",
+            "WEBPAGE": "Webpage",
+            "MESSAGE": "Message",
+            "EMAIL": "Email",
+            "TICKET": "Ticket",
+            "COMMENT": "Comment",
+            "MAIL": "Mail",
+            "OTHERS": "Others",
+        }
+        return label_map.get(record_type, record_type.replace("_", " ").title())
+
+    def _get_indexing_status_label(self, status: str) -> str:
+        """Convert indexing status enum value to human-readable label"""
+        label_map = {
+            "NOT_STARTED": "Not Started",
+            "IN_PROGRESS": "In Progress",
+            "COMPLETED": "Completed",
+            "FAILED": "Failed",
+            "QUEUED": "Queued",
+            "PAUSED": "Paused",
+            "FILE_TYPE_NOT_SUPPORTED": "File Type Not Supported",
+            "AUTO_INDEX_OFF": "Auto-Index Off",
+            "EMPTY": "Empty",
+        }
+        return label_map.get(status, status.replace("_", " ").title())
+
     async def _get_available_filters(self, user_key: str, org_id: str) -> AvailableFilters:
         """Get filter options (dynamic KBs/Apps + static others)"""
         try:
@@ -540,7 +638,7 @@ class KnowledgeHubService:
             apps_data = options.get('apps', [])
 
             kb_options = [FilterOption(id=k['id'], label=k['name']) for k in kbs_data]
-            app_options = [FilterOption(id=a['id'], label=a['name']) for a in apps_data]
+            app_options = [FilterOption(id=a['id'], label=a['name'], type=a.get('type')) for a in apps_data]
 
             return AvailableFilters(
                 nodeTypes=[
@@ -551,11 +649,8 @@ class KnowledgeHubService:
                     FilterOption(id="kb", label="Knowledge Base"),
                 ],
                 recordTypes=[
-                    FilterOption(id="FILE", label="File"),
-                    FilterOption(id="WEBPAGE", label="Webpage"),
-                    FilterOption(id="MESSAGE", label="Message"),
-                    FilterOption(id="EMAIL", label="Email"),
-                    FilterOption(id="TICKET", label="Ticket"),
+                    FilterOption(id=rt.value, label=self._get_record_type_label(rt.value))
+                    for rt in RecordTypeFilter
                 ],
                 origins=[
                     FilterOption(id="KB", label="Knowledge Base"),
@@ -564,15 +659,162 @@ class KnowledgeHubService:
                 connectors=app_options,
                 kbs=kb_options,
                 indexingStatus=[
-                    FilterOption(id="COMPLETED", label="Completed"),
-                    FilterOption(id="IN_PROGRESS", label="In Progress"),
-                    FilterOption(id="FAILED", label="Failed"),
+                    FilterOption(id=status.value, label=self._get_indexing_status_label(status.value))
+                    for status in IndexingStatusFilter
+                ],
+                sortBy=[
+                    FilterOption(id="name", label="Name"),
+                    FilterOption(id="createdAt", label="Created Date"),
+                    FilterOption(id="updatedAt", label="Modified Date"),
+                    FilterOption(id="size", label="Size"),
+                    FilterOption(id="type", label="Type"),
+                ],
+                sortOrder=[
+                    FilterOption(id="asc", label="Ascending"),
+                    FilterOption(id="desc", label="Descending"),
                 ]
             )
         except Exception as e:
             self.logger.error(f"Failed to get available filters: {e}")
             return AvailableFilters()
 
+
+    async def _get_recursive_search_nodes(
+        self,
+        user_key: str,  # Currently unused but kept for potential future permission checks
+        org_id: str,
+        parent_id: str,
+        parent_type: str,
+        skip: int,
+        limit: int,
+        sort_by: str,
+        sort_order: str,
+        q: Optional[str],
+        node_types: Optional[List[str]],
+        record_types: Optional[List[str]],
+        origins: Optional[List[str]],
+        connector_ids: Optional[List[str]],
+        kb_ids: Optional[List[str]],
+        indexing_status: Optional[List[str]],
+        created_at: Optional[Dict[str, Optional[int]]],
+        updated_at: Optional[Dict[str, Optional[int]]],
+        size: Optional[Dict[str, Optional[int]]],
+        only_containers: bool,
+    ) -> Tuple[List[NodeItem], int, Optional[AvailableFilters]]:
+        """Search recursively within a parent node and all its descendants."""
+        try:
+            # Build sort clause
+            sort_field_map = {
+                "name": "name",
+                "createdAt": "createdAt",
+                "updatedAt": "updatedAt",
+                "size": "sizeInBytes",
+                "type": "nodeType",
+            }
+            sort_field = sort_field_map.get(sort_by, "name")
+            sort_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
+
+            # Build filter conditions
+            filter_conditions = []
+            bind_vars = {}
+
+            if node_types:
+                type_conditions = []
+                for nt in node_types:
+                    if nt == "folder":
+                        type_conditions.append('node.nodeType == "folder"')
+                    elif nt == "record":
+                        type_conditions.append('node.nodeType == "record"')
+                    elif nt == "recordGroup":
+                        type_conditions.append('node.nodeType == "recordGroup"')
+                if type_conditions:
+                    filter_conditions.append(f"({' OR '.join(type_conditions)})")
+
+            if record_types:
+                bind_vars["record_types"] = record_types
+                filter_conditions.append("(node.recordType == null OR node.recordType IN @record_types)")
+
+            if indexing_status:
+                bind_vars["indexing_status"] = indexing_status
+                filter_conditions.append("(node.indexingStatus == null OR node.indexingStatus IN @indexing_status)")
+
+            if created_at:
+                if created_at.get("gte"):
+                    bind_vars["created_at_gte"] = created_at["gte"]
+                    filter_conditions.append("node.createdAt >= @created_at_gte")
+                if created_at.get("lte"):
+                    bind_vars["created_at_lte"] = created_at["lte"]
+                    filter_conditions.append("node.createdAt <= @created_at_lte")
+
+            if updated_at:
+                if updated_at.get("gte"):
+                    bind_vars["updated_at_gte"] = updated_at["gte"]
+                    filter_conditions.append("node.updatedAt >= @updated_at_gte")
+                if updated_at.get("lte"):
+                    bind_vars["updated_at_lte"] = updated_at["lte"]
+                    filter_conditions.append("node.updatedAt <= @updated_at_lte")
+
+            if size:
+                if size.get("gte"):
+                    bind_vars["size_gte"] = size["gte"]
+                    filter_conditions.append("(node.sizeInBytes == null OR node.sizeInBytes >= @size_gte)")
+                if size.get("lte"):
+                    bind_vars["size_lte"] = size["lte"]
+                    filter_conditions.append("(node.sizeInBytes == null OR node.sizeInBytes <= @size_lte)")
+
+            if origins:
+                bind_vars["origins"] = origins
+                filter_conditions.append("node.source IN @origins")
+
+            # Handle connector_ids and kb_ids with OR logic when both are provided
+            # This ensures we get results from both connectors AND knowledge bases (union)
+            if connector_ids and kb_ids:
+                bind_vars["connector_ids"] = connector_ids
+                bind_vars["kb_ids"] = kb_ids
+                # Match App/KB nodes by ID or records/recordGroups by connectorId/kbId
+                filter_conditions.append(
+                    "((node.nodeType == 'app' AND node.id IN @connector_ids) OR (node.connectorId IN @connector_ids) OR "
+                    "(node.nodeType == 'kb' AND node.id IN @kb_ids) OR (node.kbId IN @kb_ids))"
+                )
+            elif connector_ids:
+                bind_vars["connector_ids"] = connector_ids
+                # Match App nodes by ID or records/recordGroups by connectorId
+                filter_conditions.append("(node.nodeType == 'app' AND node.id IN @connector_ids) OR (node.connectorId IN @connector_ids)")
+            elif kb_ids:
+                bind_vars["kb_ids"] = kb_ids
+                # Match KB nodes by ID or records/recordGroups by kbId
+                filter_conditions.append("(node.nodeType == 'kb' AND node.id IN @kb_ids) OR (node.kbId IN @kb_ids)")
+
+            filter_clause = " AND ".join(filter_conditions) if filter_conditions else "true"
+
+            # Use the provider method for recursive search
+            result = await self.graph_provider.get_knowledge_hub_recursive_search(
+                parent_id=parent_id,
+                parent_type=parent_type,
+                org_id=org_id,
+                skip=skip,
+                limit=limit,
+                sort_field=sort_field,
+                sort_dir=sort_dir,
+                search_query=q,
+                filter_clause=filter_clause,
+                bind_vars=bind_vars,
+                only_containers=only_containers,
+            )
+
+            nodes_data = result.get('nodes', [])
+            total_count = result.get('total', 0)
+
+            # Convert to NodeItem objects
+            items = [self._doc_to_node_item(node_doc) for node_doc in nodes_data]
+
+            return items, total_count, None
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get recursive search nodes: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            raise
 
     async def _get_search_nodes(
         self,
@@ -682,7 +924,7 @@ class KnowledgeHubService:
         # Validate type matches
         if actual_type != expected_type:
             raise ValueError(
-                f"Node type mismatch: expected '{expected_type}' but found '{actual_type}' for node ID '{node_id}'"
+                f"Node type mismatch: node '{node_id}' is not '{expected_type}', it is '{actual_type}'. Use /nodes/{actual_type}/{node_id} instead."
             )
 
         # Validate user has access (check permissions)
@@ -790,6 +1032,7 @@ class KnowledgeHubService:
             origin=origin,
             connector=doc.get('connector'),
             recordType=doc.get('recordType'),
+            recordGroupType=doc.get('recordGroupType'),
             indexingStatus=doc.get('indexingStatus'),
             createdAt=doc.get('createdAt', 0),
             updatedAt=doc.get('updatedAt', 0),
@@ -798,6 +1041,7 @@ class KnowledgeHubService:
             extension=doc.get('extension'),
             webUrl=doc.get('webUrl'),
             hasChildren=doc.get('hasChildren', False),
+            previewRenderable=doc.get('previewRenderable'),
         )
 
         return item

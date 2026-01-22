@@ -80,6 +80,7 @@ export interface Record {
   isVLMOcrProcessed?: boolean;
   indexingStatus: string;
   version: number;
+  sizeInBytes?: number;
   fileRecord: FileRecord | null;
   mailRecord: MailRecord | null;
   ticketRecord: TicketRecord | null;
@@ -93,6 +94,7 @@ export interface Record {
   reason:string
   mimeType?: string;
   previewRenderable?: boolean;
+  hideWeburl?: boolean;
 }
 
 export interface FileRecord {
@@ -138,11 +140,14 @@ export interface TicketRecord {
   description: string | null;
   status: string;
   priority: string;
+  type: string;
+  deliveryStatus: string;
   assignee: string | null;
   reporterEmail: string | null;
   assigneeEmail: string | null;
   creatorEmail: string;
   creatorName: string;
+  reporterName: string | null;
 }
 
 export interface Permissions {

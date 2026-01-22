@@ -37,7 +37,6 @@
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-prettier": "^5.2.1",
     "mocha": "^12.0.0-beta-2",
-    "multer": "^2.0.0",
     "nodemon": "^3.1.11",
     "prettier": "^3.4.2",
     "sinon": "^19.0.2",
@@ -87,6 +86,7 @@
     "mongoose": "^8.9.2",
     "morgan": "^1.10.1",
     "msal-node": "^0.0.1-security",
+    "multer": "^2.0.0",
     "nodemailer": "^7.0.11",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
@@ -98,6 +98,7 @@
     "swagger-ui-express": "^5.0.1",
     "uuid": "^11.0.3",
     "winston": "^3.17.0",
+    "xss": "^1.0.15",
     "zod": "^3.24.1"
   },
   "overrides": {

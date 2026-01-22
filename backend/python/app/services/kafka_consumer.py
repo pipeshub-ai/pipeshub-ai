@@ -222,6 +222,13 @@ class KafkaConsumerManager:
                 return True
 
             if event_type == EventTypes.UPDATE_RECORD.value:
+                content_changed = payload_data.get("contentChanged", True)
+
+                if not content_changed:
+                    # Only metadata (like name) changed, no need to reindex
+                    self.logger.info(f"📝 Metadata-only update for record {record_id}, skipping reindex")
+                    return True
+
                 await self.redis_scheduler.schedule_update(data)
                 self.logger.info(f"Scheduled update for record {record_id}")
                 record = await self.event_processor.arango_service.get_document(
@@ -349,7 +356,7 @@ class KafkaConsumerManager:
                     return True
                 except Exception as e:
                     error_occurred = True
-                    error_msg = f"Failed to process signed URL route: {str(e)}"
+                    error_msg = str(e)
                     raise
             elif payload_data and payload_data.get("signedUrl"):
                 try:
@@ -368,7 +375,7 @@ class KafkaConsumerManager:
                     return True
                 except Exception as e:
                     error_occurred = True
-                    error_msg = f"Failed to process signed URL: {str(e)}"
+                    error_msg = str(e)
                     raise
             else:
                 try:
@@ -402,7 +409,7 @@ class KafkaConsumerManager:
                     return True
                 except Exception as e:
                     error_occurred = True
-                    error_msg = f"Failed to process signed URL route: {str(e)}"
+                    error_msg = str(e)
                     raise
 
         except IndexingError as e:

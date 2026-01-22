@@ -251,6 +251,45 @@ class BoxDataSource:
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
+    async def downloads_get_download_file_url(self, file_id: str, version: Optional[str] = None, access_token: Optional[str] = None, **kwargs) -> BoxResponse:
+        """Get download URL for a file (creates shared link if needed, expires in ~24 hours)
+
+        Note: Box's get_download_file_url() creates a temporary shared link visible in Box UI
+        with an expiration badge (~24 hours). If the file already has a shared link, returns
+        that existing link instead. Similar to Dropbox's get_temporary_link but with different
+        expiration time (24 hours vs 4 hours).
+
+        API Endpoint: GET /files/:id/content (returns 302 redirect with download URL)
+        Namespace: downloads
+
+        Args:
+            file_id (str, required): The ID of the file
+            version (str, optional): The file version to download
+            access_token (str, optional): Optional pre-auth token for sharing the URL
+
+        Returns:
+            BoxResponse: SDK response with download URL (string)
+        """
+        client = await self._get_client()
+        manager = getattr(client, 'downloads', None)
+        if manager is None:
+            return BoxResponse(success=False, error="Manager 'downloads' not found")
+
+        try:
+            loop = asyncio.get_running_loop()
+            # Get download URL (creates shared link if needed, expires ~24 hours)
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.get_download_file_url(
+                    file_id=file_id,
+                    version=version,
+                    access_token=access_token
+                )
+            )
+            return BoxResponse(success=True, data=response)
+        except Exception as e:
+            return BoxResponse(success=False, error=str(e))
+
     async def files_get_file_content(self, file_id: str, **kwargs) -> BoxResponse:
         """Get file content/download file
 

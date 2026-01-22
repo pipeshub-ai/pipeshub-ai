@@ -72,6 +72,7 @@ export interface Metadata {
   _collection_name: string;
   webUrl?:string;
   previewRenderable?: boolean;
+  hideWeburl?: boolean;
 }
 
 // The Citation interface as specified

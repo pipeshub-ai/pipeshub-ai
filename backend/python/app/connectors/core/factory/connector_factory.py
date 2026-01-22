@@ -10,14 +10,12 @@ from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.registry.connector import (
     AirtableConnector,
-    AzureBlobConnector,
     CalendarConnector,
     DocsConnector,
     FormsConnector,
     LinearConnector,
     MeetConnector,
     NotionConnector,
-    S3Connector,
     SlackConnector,
     SlidesConnector,
     ZendeskConnector,
@@ -26,17 +24,30 @@ from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
+
+# from app.connectors.sources.azure_blob.connector import AzureBlobConnector
+# from app.connectors.sources.azure_files.connector import AzureFilesConnector
 from app.connectors.sources.bookstack.connector import BookStackConnector
 from app.connectors.sources.box.connector import BoxConnector
 from app.connectors.sources.dropbox.connector import DropboxConnector
 from app.connectors.sources.dropbox_individual.connector import (
     DropboxIndividualConnector,
 )
+from app.connectors.sources.google.drive.individual.connector import (
+    GoogleDriveIndividualConnector,
+)
+from app.connectors.sources.google.drive.team.connector import (
+    GoogleDriveTeamConnector,
+)
+from app.connectors.sources.google_cloud_storage.connector import GCSConnector
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
+from app.connectors.sources.minio.connector import MinIOConnector
+from app.connectors.sources.nextcloud.connector import NextcloudConnector
+from app.connectors.sources.s3.connector import S3Connector
 from app.connectors.sources.servicenow.servicenow.connector import (
     ServiceNowConnector,
 )
@@ -54,11 +65,19 @@ class ConnectorFactory:
         "confluence": ConfluenceConnector,
         "jira": JiraConnector,
         "box": BoxConnector,
+        "drive": GoogleDriveIndividualConnector,
+        "driveworkspace": GoogleDriveTeamConnector,
         "dropbox": DropboxConnector,
         "dropboxpersonal": DropboxIndividualConnector,
+        "nextcloud": NextcloudConnector,
         "servicenow": ServiceNowConnector,
         "web": WebConnector,
         "bookstack": BookStackConnector,
+        "s3": S3Connector,
+        "minio": MinIOConnector,
+        "gcs": GCSConnector,
+        #"azureblob": AzureBlobConnector,
+        # "azurefiles": AzureFilesConnector,
     }
 
     # Beta connector definitions - single source of truth
@@ -72,10 +91,8 @@ class ConnectorFactory:
         'docs': DocsConnector,
         'zendesk': ZendeskConnector,
         'linear': LinearConnector,
-        's3': S3Connector,
         'notion': NotionConnector,
         'airtable': AirtableConnector,
-        'azureblob': AzureBlobConnector,
     }
 
 

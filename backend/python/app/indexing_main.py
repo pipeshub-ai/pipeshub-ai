@@ -21,7 +21,6 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.containers.indexing import IndexingAppContainer, initialize_container
 from app.services.messaging.kafka.handlers.record import RecordEventHandler
-from app.services.messaging.kafka.rate_limiter.rate_limiter import RateLimiter
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -37,8 +36,6 @@ signal.signal(signal.SIGINT, handle_sigterm)
 container = IndexingAppContainer.init("indexing_service")
 container_lock = asyncio.Lock()
 
-MAX_CONCURRENT_TASKS = 5  # Maximum number of messages to process concurrently
-RATE_LIMIT_PER_SECOND = 2  # Maximum number of new tasks to start per second
 
 async def get_initialized_container() -> IndexingAppContainer:
     """Dependency provider for initialized container"""
@@ -70,23 +67,32 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
             CollectionNames.RECORDS.value,
             ProgressStatus.IN_PROGRESS.value
         )
+        queued_records = await arango_service.get_documents_by_status(
+                CollectionNames.RECORDS.value,
+                ProgressStatus.QUEUED.value
+            )
+        # Create combined list and store length for clarity and efficiency
+        all_records_to_recover = in_progress_records + queued_records
+        total_records = len(all_records_to_recover)
 
-        if not in_progress_records:
-            logger.info("✅ No in-progress records found. Starting fresh.")
+        if not total_records:
+            logger.info("✅ No in-progress or queued records found. Starting fresh.")
             return
 
-        logger.info(f"📋 Found {len(in_progress_records)} in-progress records to recover")
+        logger.info(f"📋 Found {total_records} in-progress or queued records to recover")
         # Create the message handler that will process these records
         record_message_handler: RecordEventHandler = await KafkaUtils.create_record_message_handler(app_container)
 
-        # Process each in-progress record
-        for idx, record in enumerate(in_progress_records, 1):
+        # Process each record
+        for idx, record in enumerate(all_records_to_recover, 1):
             try:
                 record_id = record.get("_key")
                 record_name = record.get("recordName", "Unknown")
                 logger.info(
-                    f"🔄 [{idx}/{len(in_progress_records)}] Recovering record: {record_name} (ID: {record_id})"
+                    f"🔄 [{idx}/{total_records}] Recovering record: {record_name} (ID: {record_id})"
                 )
+
+                # Todo: Ignore record if Connector is disabled or deleted
 
                 # Reconstruct the payload from the record data
                 payload = {
@@ -116,18 +122,37 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
                     logger.info(f"   Treating as NEW_RECORD (version={version}, virtualRecordId={virtual_record_id})")
 
                 # Process the record using the same handler that processes Kafka messages
-                success = await record_message_handler({
+                # record_message_handler returns an async generator, so we need to consume it
+                # Track whether we received the indexing_complete event to verify full recovery
+                parsing_complete = False
+                indexing_complete = False
+
+                async for event in record_message_handler({
                     "eventType": event_type,
                     "payload": payload
-                })
+                }):
+                    event_name = event.get("event", "unknown")
+                    logger.debug(f"   Recovery event: {event_name}")
 
-                if success:
+                    if event_name == "parsing_complete":
+                        parsing_complete = True
+                    elif event_name == "indexing_complete":
+                        indexing_complete = True
+
+                # Only report success if indexing actually completed
+                if indexing_complete:
                     logger.info(
-                        f"✅ [{idx}/{len(in_progress_records)}] Successfully recovered record: {record_name}"
+                        f"✅ [{idx}/{total_records}] Successfully recovered record: {record_name}"
+                    )
+                elif parsing_complete:
+                    logger.warning(
+                        f"⚠️ [{idx}/{total_records}] Partial recovery for record: {record_name} "
+                        f"(parsing completed but indexing did not complete)"
                     )
                 else:
                     logger.warning(
-                        f"⚠️ [{idx}/{len(in_progress_records)}] Failed to recover record: {record_name}"
+                        f"⚠️ [{idx}/{total_records}] Recovery incomplete for record: {record_name} "
+                        f"(no completion events received)"
                     )
 
             except Exception as e:
@@ -138,7 +163,7 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
                 continue
 
         logger.info(
-            f"✅ Recovery complete. Processed {len(in_progress_records)} in-progress records"
+            f"✅ Recovery complete. Processed {total_records} records"
         )
 
     except Exception as e:
@@ -156,13 +181,11 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
         logger.info("🚀 Starting Entity Kafka Consumer...")
         record_kafka_consumer_config = await KafkaUtils.create_record_kafka_consumer_config(app_container)
 
-        rate_limiter = RateLimiter(RATE_LIMIT_PER_SECOND)
-
         record_kafka_consumer = MessagingFactory.create_consumer(
             broker_type="kafka",
             logger=logger,
             config=record_kafka_consumer_config,
-            rate_limiter=rate_limiter
+            consumer_type="indexing"
         )
         record_message_handler = await KafkaUtils.create_record_message_handler(app_container)
         await record_kafka_consumer.start(record_message_handler)
@@ -170,7 +193,6 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
         logger.info("✅ Record Kafka consumer started")
 
         return consumers
-
     except Exception as e:
         logger.error(f"❌ Error starting Kafka consumers: {str(e)}")
         # Cleanup any started consumers
@@ -181,7 +203,6 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
             except Exception as cleanup_error:
                 logger.error(f"Error stopping {name} consumer during cleanup: {cleanup_error}")
         raise
-
 
 async def stop_kafka_consumers(container) -> None:
     """Stop all Kafka consumers"""

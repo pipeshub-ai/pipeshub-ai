@@ -369,6 +369,7 @@ class RetrievalService:
                         result["metadata"]["webUrl"] = weburl
                         result["metadata"]["recordName"] = record.get("recordName")
                         result["metadata"]["previewRenderable"] = record.get("previewRenderable", True)
+                        result["metadata"]["hideWeburl"] = record.get("hideWeburl", False)
 
                         mime_type = record.get("mimeType")
                         if not mime_type:

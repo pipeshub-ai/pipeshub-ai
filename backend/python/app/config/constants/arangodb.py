@@ -30,6 +30,7 @@ class DepartmentNames(Enum):
 
 class Connectors(Enum):
     GOOGLE_DRIVE = "DRIVE"
+    GOOGLE_DRIVE_WORKSPACE = "DRIVE WORKSPACE"
     GOOGLE_MAIL = "GMAIL"
     GOOGLE_CALENDAR = "CALENDAR"
 
@@ -47,12 +48,18 @@ class Connectors(Enum):
     CONFLUENCE = "CONFLUENCE"
     JIRA = "JIRA"
     BOX = "BOX"
+    NEXTCLOUD = "NEXTCLOUD"
     DROPBOX = "DROPBOX"
     DROPBOX_PERSONAL = "DROPBOX PERSONAL"
     WEB = "WEB"
     BOOKSTACK = "BOOKSTACK"
 
     SERVICENOW = "SERVICENOW"
+    S3 = "S3"
+    MINIO = "MINIO"
+    GCS = "GCS"
+    AZURE_BLOB = "AZURE BLOB"
+    AZURE_FILES = "AZURE FILES"
 
     UNKNOWN = "UNKNOWN"
 
@@ -64,8 +71,13 @@ class AppGroups(Enum):
     DROPBOX = "Dropbox"
     BOX = "Box"
     SERVICENOW = "Servicenow"
+    NEXTCLOUD = "Nextcloud"
     WEB = "Web"
     BOOKSTACK = "BookStack"
+    S3 = "S3"
+    MINIO = "MinIO"
+    GOOGLE_CLOUD = "Google Cloud"
+    AZURE = "Azure"
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
@@ -109,6 +121,7 @@ class CollectionNames(Enum):
     WEBPAGES = "webpages"
     COMMENTS = "comments"
     TICKETS = "tickets"
+    TICKET_RELATIONS = "ticketRelations"  # Standard ticket relationship edges
 
     # Users and groups
     PEOPLE = "people"
@@ -235,6 +248,7 @@ class ProgressStatus(Enum):
     EMPTY = "EMPTY"
     ENABLE_MULTIMODAL_MODELS = "ENABLE_MULTIMODAL_MODELS"
     QUEUED = "QUEUED"
+    CONNECTOR_DISABLED = "CONNECTOR_DISABLED"
 
 
 class RecordTypes(Enum):
@@ -242,6 +256,7 @@ class RecordTypes(Enum):
     ATTACHMENT = "ATTACHMENT"
     LINK = "LINK"
     MAIL = "MAIL"
+    GROUP_MAIL = "GROUP_MAIL"
     DRIVE = "DRIVE"
     WEBPAGE = "WEBPAGE"
     COMMENT = "COMMENT"
@@ -257,6 +272,35 @@ class RecordRelations(Enum):
     PARENT_CHILD = "PARENT_CHILD"
     SIBLING = "SIBLING"
     ATTACHMENT = "ATTACHMENT"
+    DUPLICATE = "DUPLICATE"
+    OTHERS = "OTHERS"
+    LINKED_TO = "LINKED_TO"  # For ticket linking relationships
+
+
+class LinkRelationshipTag(str, Enum):
+    """Standard relationship tags for LINKED_TO edges in ticket relationships"""
+    RELATES_TO = "RELATES_TO"
+    BLOCKS = "BLOCKS"
+    BLOCKED_BY = "BLOCKED_BY"
+    DUPLICATES = "DUPLICATES"
+    DUPLICATED_BY = "DUPLICATED_BY"
+    DEPENDS_ON = "DEPENDS_ON"
+    REQUIRED_BY = "REQUIRED_BY"
+    CLONES = "CLONES"
+    CLONED_FROM = "CLONED_FROM"
+    PARENT = "PARENT"
+    CHILD = "CHILD"
+    RELATED = "RELATED"
+    SPLIT_FROM = "SPLIT_FROM"
+    MERGED_INTO = "MERGED_INTO"
+    UNKNOWN = "UNKNOWN"
+
+
+class TicketEdgeTypes(Enum):
+    """Standard edge types for ticket relationships"""
+    ASSIGNED_TO = "ASSIGNED_TO"  # Ticket -> User (assignee)
+    REPORTED_BY = "REPORTED_BY"  # Ticket -> User (reporter)
+    CREATED_BY = "CREATED_BY"  # Ticket -> User (creator)
 
 class EventTypes(Enum):
     NEW_RECORD = "newRecord"
@@ -278,6 +322,7 @@ class ConnectorScopes(Enum):
 RECORD_TYPE_COLLECTION_MAPPING = {
     "FILE": CollectionNames.FILES.value,
     "MAIL": CollectionNames.MAILS.value,
+    "GROUP_MAIL": CollectionNames.MAILS.value,
     "WEBPAGE": CollectionNames.WEBPAGES.value,
     "SHAREPOINT_PAGE": CollectionNames.WEBPAGES.value,
     "CONFLUENCE_PAGE": CollectionNames.WEBPAGES.value,

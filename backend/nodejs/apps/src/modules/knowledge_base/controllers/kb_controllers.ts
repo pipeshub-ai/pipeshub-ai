@@ -36,6 +36,7 @@ import {
   safeParsePagination,
 } from '../../../utils/safe-integer';
 import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
+import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
 const logger = Logger.getInstance({
   service: 'Knowledge Base Controller',
 });
@@ -77,7 +78,7 @@ export const getKnowledgeHubNodes =
         q: 'q',
         nodeTypes: 'node_types',
         recordTypes: 'record_types',
-        sources: 'sources',
+        origins: 'origins',
         connectorIds: 'connector_ids',
         kbIds: 'kb_ids',
         indexingStatus: 'indexing_status',
@@ -189,6 +190,12 @@ export const createKnowledgeBase =
 
       if (!userId || !orgId) {
         throw new UnauthorizedError('User authentication required');
+      }
+
+      // Validate kbName for XSS and format specifiers
+      if (kbName) {
+        validateNoXSS(kbName, 'Knowledge base name');
+        validateNoFormatSpecifiers(kbName, 'Knowledge base name');
       }
 
       logger.info(`Creating knowledge base '${kbName}' for user ${userId}`);
@@ -392,7 +399,7 @@ export const listKnowledgeBases =
       );
 
       // Log successful retrieval
-      logger.info('Knowledge bases retrieved successfully');
+      logger.debug('Knowledge bases retrieved successfully');
     } catch (error: any) {
       logger.error('Error listing knowledge bases', {
         error: error.message,
@@ -418,6 +425,12 @@ export const updateKnowledgeBase =
 
       if (!userId) {
         throw new UnauthorizedError('User authentication required');
+      }
+
+      // Validate kbName for XSS and format specifiers
+      if (kbName) {
+        validateNoXSS(kbName, 'Knowledge base name');
+        validateNoFormatSpecifiers(kbName, 'Knowledge base name');
       }
 
       logger.info(`Updating knowledge base ${kbId}`);
@@ -495,6 +508,12 @@ export const createRootFolder =
         throw new UnauthorizedError('User authentication required');
       }
 
+      // Validate folderName for XSS and format specifiers
+      if (folderName) {
+        validateNoXSS(folderName, 'Folder name');
+        validateNoFormatSpecifiers(folderName, 'Folder name');
+      }
+
       logger.info(`Creating folder '${folderName}' in KB ${kbId}`);
 
       const response = await executeConnectorCommand(
@@ -541,6 +560,12 @@ export const createNestedFolder =
         throw new UnauthorizedError('User authentication required');
       }
 
+      // Validate folderName for XSS and format specifiers
+      if (folderName) {
+        validateNoXSS(folderName, 'Folder name');
+        validateNoFormatSpecifiers(folderName, 'Folder name');
+      }
+
       logger.info(`Creating folder '${folderName}' in folder ${folderId}`);
 
       const response = await executeConnectorCommand(
@@ -584,6 +609,12 @@ export const updateFolder =
       const { folderName } = req.body;
       if (!userId) {
         throw new UnauthorizedError('User authentication required');
+      }
+
+      // Validate folderName for XSS and format specifiers
+      if (folderName) {
+        validateNoXSS(folderName, 'Folder name');
+        validateNoFormatSpecifiers(folderName, 'Folder name');
       }
 
       logger.info(`Updating folder ${folderId} in KB ${kbId}`);
@@ -657,7 +688,11 @@ export const deleteFolder =
     }
   };
 
-//  Upload records in KB along with folder creation and folder record creation new controller
+/**
+ * Upload records to Knowledge Base.
+ * Files are processed by file processor middleware which attaches
+ * filePath and lastModified to each file buffer.
+ */
 export const uploadRecordsToKB =
   (
     recordRelationService: RecordRelationService,
@@ -670,13 +705,11 @@ export const uploadRecordsToKB =
     next: NextFunction,
   ): Promise<void> => {
     try {
-      const files = req.body.fileBuffers;
+      const fileBuffers: FileBufferInfo[] = req.body.fileBuffers || [];
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
-      const { kbId } = req.params; // should be sent in params instead of req.body
-      const filePaths = req.body.file_paths || [];
-      const lastModifiedTimes = req.body.last_modified || [];
-      const isVersioned = req.body?.isVersioned || true;
+      const { kbId } = req.params;
+      const isVersioned = req.body?.isVersioned ?? true;
 
       // Validation
       if (!userId || !orgId) {
@@ -685,37 +718,22 @@ export const uploadRecordsToKB =
         );
       }
 
-      if (!kbId || !files || files.length === 0) {
+      if (!kbId || fileBuffers.length === 0) {
         throw new BadRequestError('Knowledge Base ID and files are required');
       }
 
-      if (
-        files.length !== filePaths.length ||
-        files.length !== lastModifiedTimes.length
-      ) {
-        throw new BadRequestError(
-          'Files, paths, and timestamps arrays must have the same length',
-        );
-      }
-
-      console.log('📦 Processing optimized upload:', {
-        totalFiles: files.length,
+      logger.info('Processing file upload to KB', {
+        totalFiles: fileBuffers.length,
         kbId,
         userId,
-        samplePaths: filePaths.slice(0, 3),
+        samplePaths: fileBuffers.slice(0, 3).map((f) => f.filePath),
       });
 
       const currentTime = Date.now();
-
-      // Process files and create records (storage operations)
       const processedFiles = [];
 
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const filePath = filePaths[i];
-        const lastModified = parseInt(lastModifiedTimes[i]) || currentTime;
-
-        const { originalname, mimetype, size } = file;
+      for (const file of fileBuffers) {
+        const { originalname, mimetype, size, filePath, lastModified } = file;
 
         // Extract filename from path
         const fileName = filePath.includes('/')
@@ -729,6 +747,7 @@ export const uploadRecordsToKB =
         // Use correct MIME type mapping instead of browser detection
         const correctMimeType =
           (extension && getMimeType(extension)) || mimetype;
+
         // Generate unique ID for the record
         const key: string = uuidv4();
         const webUrl = `/record/${key}`;
@@ -752,7 +771,7 @@ export const uploadRecordsToKB =
           sourceLastModifiedTimestamp: validLastModified,
           isDeleted: false,
           isArchived: false,
-          indexingStatus: INDEXING_STATUS.NOT_STARTED,
+          indexingStatus: INDEXING_STATUS.QUEUED,
           version: 1,
           webUrl: webUrl,
           mimeType: correctMimeType,
@@ -769,7 +788,6 @@ export const uploadRecordsToKB =
           mimeType: correctMimeType,
           sizeInBytes: size,
           webUrl: webUrl,
-          // path: filePath,
         };
 
         // Save file to storage and get document ID
@@ -799,7 +817,9 @@ export const uploadRecordsToKB =
         });
       }
 
-      console.log('✅ Files processed, calling Python service');
+      logger.info('Files processed, sending to Python service', {
+        count: processedFiles.length,
+      });
 
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/kb/${kbId}/upload`,
@@ -822,16 +842,21 @@ export const uploadRecordsToKB =
         'Failed to process upload',
       );
     } catch (error: any) {
-      console.error('❌ Record upload failed:', {
+      logger.error('Record upload failed', {
         error: error.message,
         userId: req.user?.userId,
-        kbId: req.body.kb_id,
+        kbId: req.params.kbId,
       });
       const backendError = handleBackendError(error, 'Record upload api');
       next(backendError);
     }
   };
 
+/**
+ * Upload records to a specific folder within a Knowledge Base.
+ * Files are processed by file processor middleware which attaches
+ * filePath and lastModified to each file buffer.
+ */
 export const uploadRecordsToFolder =
   (
     recordRelationService: RecordRelationService,
@@ -844,13 +869,11 @@ export const uploadRecordsToFolder =
     next: NextFunction,
   ): Promise<void> => {
     try {
-      const files = req.body.fileBuffers;
+      const fileBuffers: FileBufferInfo[] = req.body.fileBuffers || [];
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
       const { kbId, folderId } = req.params;
-      const filePaths = req.body.file_paths || [];
-      const lastModifiedTimes = req.body.last_modified || [];
-      const isVersioned = req.body?.isVersioned || true;
+      const isVersioned = req.body?.isVersioned ?? true;
 
       // Validation
       if (!userId || !orgId) {
@@ -859,40 +882,25 @@ export const uploadRecordsToFolder =
         );
       }
 
-      if (!kbId || !folderId || !files || files.length === 0) {
+      if (!kbId || !folderId || fileBuffers.length === 0) {
         throw new BadRequestError(
           'Knowledge Base ID, Folder ID, and files are required',
         );
       }
 
-      if (
-        files.length !== filePaths.length ||
-        files.length !== lastModifiedTimes.length
-      ) {
-        throw new BadRequestError(
-          'Files, paths, and timestamps arrays must have the same length',
-        );
-      }
-
-      console.log('📦 Processing folder upload:', {
-        totalFiles: files.length,
+      logger.info('Processing file upload to folder', {
+        totalFiles: fileBuffers.length,
         kbId,
         folderId,
         userId,
-        samplePaths: filePaths.slice(0, 3),
+        samplePaths: fileBuffers.slice(0, 3).map((f) => f.filePath),
       });
 
       const currentTime = Date.now();
-
-      // Process files and create records (storage operations)
       const processedFiles = [];
 
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const filePath = filePaths[i];
-        const lastModified = parseInt(lastModifiedTimes[i]) || currentTime;
-
-        const { originalname, mimetype, size } = file;
+      for (const file of fileBuffers) {
+        const { originalname, mimetype, size, filePath, lastModified } = file;
 
         // Extract filename from path
         const fileName = filePath.includes('/')
@@ -904,7 +912,8 @@ export const uploadRecordsToFolder =
           : null;
 
         // Use correct MIME type mapping instead of browser detection
-        const correctMimeType = extension ? getMimeType(extension) : mimetype;
+        const correctMimeType =
+          (extension && getMimeType(extension)) || mimetype;
 
         // Generate unique ID for the record
         const key: string = uuidv4();
@@ -929,11 +938,11 @@ export const uploadRecordsToFolder =
           sourceLastModifiedTimestamp: validLastModified,
           isDeleted: false,
           isArchived: false,
-          indexingStatus: INDEXING_STATUS.NOT_STARTED,
+          indexingStatus: INDEXING_STATUS.QUEUED,
           version: 1,
           webUrl: webUrl,
           mimeType: correctMimeType,
-          connectorId: kbId
+          connectorId: kbId,
         };
 
         const fileRecord: IFileRecordDocument = {
@@ -945,7 +954,6 @@ export const uploadRecordsToFolder =
           mimeType: correctMimeType,
           sizeInBytes: size,
           webUrl: webUrl,
-          // path: filePath,
         };
 
         // Save file to storage and get document ID
@@ -975,9 +983,10 @@ export const uploadRecordsToFolder =
         });
       }
 
-      console.log(
-        '✅ Files processed, calling Python service for folder upload',
-      );
+      logger.info('Files processed, sending to Python service for folder upload', {
+        count: processedFiles.length,
+        folderId,
+      });
 
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/upload`,
@@ -996,11 +1005,11 @@ export const uploadRecordsToFolder =
       handleConnectorResponse(
         response,
         res,
-        'Uploading records to KB',
+        'Uploading records to folder',
         'Records not found',
       );
     } catch (error: any) {
-      console.error('❌ Folder record upload failed:', {
+      logger.error('Folder record upload failed', {
         error: error.message,
         userId: req.user?.userId,
         kbId: req.params.kbId,
@@ -1053,6 +1062,13 @@ export const updateRecord =
         logger.info('No custom name provided');
       }
 
+      // Validate recordName for XSS and format specifiers
+      // This validation happens after we've determined the final recordName value
+      if (recordName) {
+        validateNoXSS(recordName, 'Record name');
+        validateNoFormatSpecifiers(recordName, 'Record name');
+      }
+
       // Prepare update data with timestamp
       const updatedData = {
         recordName,
@@ -1074,7 +1090,11 @@ export const updateRecord =
         if (originalname && originalname.includes('.')) {
           const lastDotIndex = originalname.lastIndexOf('.');
           if (lastDotIndex > 0) {
-            updatedData.recordName = originalname.substring(0, lastDotIndex);
+            const fileNameWithoutExt = originalname.substring(0, lastDotIndex);
+            // Validate the filename (without extension) for XSS
+            validateNoXSS(fileNameWithoutExt, 'Record name');
+            validateNoFormatSpecifiers(fileNameWithoutExt, 'Record name');
+            updatedData.recordName = fileNameWithoutExt;
             logger.info('Setting record name from file', {
               recordName: updatedData.recordName,
               originalFileName: originalname,
@@ -1121,15 +1141,15 @@ export const updateRecord =
       let fileUploaded = false;
       let storageDocumentId = null;
 
-      if (hasFileBuffer && updateResult?.record) {
+      if (hasFileBuffer && updateResult) {
         // Use the externalRecordId as the storageDocumentId
-        storageDocumentId = updateResult.record.externalRecordId;
+        storageDocumentId = updateResult.externalRecordId;
 
         // Check if we have a valid externalRecordId to use
         if (!storageDocumentId) {
           logger.error('No external record ID found after database update', {
             recordId,
-            updatedRecord: updateResult?.record._key,
+            updatedRecord: updateResult?._key,
           });
           throw new BadRequestError(
             'Cannot update file: No external record ID found for this record',
@@ -1144,7 +1164,7 @@ export const updateRecord =
           mimeType: mimetype,
           extension,
           storageDocumentId: storageDocumentId,
-          version: updateResult?.record.version,
+          version: updateResult?.version,
         });
 
         try {
@@ -1161,18 +1181,21 @@ export const updateRecord =
           logger.info('File uploaded to storage successfully', {
             recordId,
             storageDocumentId,
-            version: updateResult?.record.version,
+            version: updateResult?.version,
           });
 
           fileUploaded = true;
         } catch (storageError: any) {
+          const is404 = storageError?.response?.status === 404;
+          
           logger.error(
             'Failed to upload file to storage after database update',
             {
               recordId,
               storageDocumentId: storageDocumentId,
               error: storageError.message,
-              version: updateResult.record.version,
+              version: updateResult.version,
+              is404,
             },
           );
 
@@ -1183,9 +1206,17 @@ export const updateRecord =
             {
               recordId,
               storageDocumentId,
-              databaseVersion: updateResult.record.version,
+              databaseVersion: updateResult.version,
             },
           );
+
+          // Provide specific error message for 404 (file not found in storage)
+          if (is404) {
+            throw new InternalServerError(
+              `File storage document not found. The original file may have been deleted` +
+              `Please delete this record and re-upload the file.`,
+            );
+          }
 
           throw new InternalServerError(
             `Record updated but file upload failed: ${storageError.message}. Please retry the file upload.`,
@@ -1201,7 +1232,7 @@ export const updateRecord =
         fileUploaded,
         newFileName: fileUploaded ? originalname : undefined,
         updatedFields: Object.keys(updatedData),
-        version: updateResult.record?.version,
+        version: updateResult?.version,
         requestId: req.context?.requestId,
       });
 
@@ -1210,7 +1241,7 @@ export const updateRecord =
         message: fileUploaded
           ? 'Record updated with new file version'
           : 'Record updated successfully',
-        record: updateResult.record,
+        record: updateResult,
         fileUploaded,
         meta: {
           requestId: req.context?.requestId,
@@ -1718,7 +1749,7 @@ export const getAllRecords =
         throw new BadRequestError('Limit must be between 1 and 100');
       }
 
-      logger.info('Getting all records for user', {
+      logger.debug('Getting all records for user', {
         userId,
         orgId,
         page,
@@ -1794,7 +1825,7 @@ export const getAllRecords =
       const result = response.data as any;
 
       // Log successful retrieval
-      logger.info('All records retrieved successfully', {
+      logger.debug('All records retrieved successfully', {
         totalRecords: result.pagination?.totalCount || 0,
         page: result.pagination?.page || page,
         userId,
@@ -2675,5 +2706,55 @@ export const resyncConnectorRecords =
       });
       next(error);
       return; // Added return statement
+    }
+  };
+
+/**
+ * Move a record (file or folder) to a different location within the same KB.
+ */
+export const moveRecord =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { userId } = req.user || {};
+      const { kbId, recordId } = req.params;
+      const { newParentId } = req.body;
+
+      if (!userId) {
+        throw new UnauthorizedError('User authentication required');
+      }
+
+      logger.info(
+        `Moving record ${recordId} to ${newParentId ? `folder ${newParentId}` : 'KB root'} in KB ${kbId}`,
+      );
+
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/record/${recordId}/move`,
+        HttpMethod.PUT,
+        req.headers as Record<string, string>,
+        { newParentId },
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Moving record',
+        'Record not found',
+      );
+    } catch (error: any) {
+      logger.error('Error moving record', {
+        error: error.message,
+        kbId: req.params.kbId,
+        recordId: req.params.recordId,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handleError = handleBackendError(error, 'move record');
+      next(handleError);
     }
   };

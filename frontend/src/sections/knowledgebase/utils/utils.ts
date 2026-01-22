@@ -37,6 +37,8 @@ export const getIndexingStatusColor = (
       return 'info';
     case 'ENABLE_MULTIMODAL_MODELS':
       return 'info';
+    case 'CONNECTOR_DISABLED':
+      return 'warning';
     default:
       return 'warning';
   }
@@ -289,26 +291,30 @@ export const getExtensionFromMimeType = (mimeType: string): string =>
  * @returns URL with text fragment, or null if URL not available
  */
 export const getWebUrlWithFragment = (
-  citationOrRecord?: { metadata?: { webUrl?: string; origin?: string; blockText?: string } } | { webUrl?: string; origin?: string },
-  recordCitation?: { metadata?: { blockText?: string; webUrl?: string }; content?: string } | { content?: string }
+  citationOrRecord?: { metadata?: { webUrl?: string; origin?: string; blockText?: string; hideWeburl?: boolean } } | { webUrl?: string; origin?: string; hideWeburl?: boolean },
+  recordCitation?: { metadata?: { blockText?: string; webUrl?: string; hideWeburl?: boolean }; content?: string } | { content?: string }
 ): string | null => {
   let webUrl: string | undefined;
   let origin: string | undefined;
   let blockText: string | undefined;
   let content: string | undefined;
+  let hideWeburl: boolean | undefined;
 
   // Handle CustomCitation type (has metadata property)
   if (citationOrRecord && 'metadata' in citationOrRecord) {
-    const citation = citationOrRecord as { metadata?: { webUrl?: string; origin?: string; blockText?: string } };
+    const citation = citationOrRecord as { metadata?: { webUrl?: string; origin?: string; blockText?: string; hideWeburl?: boolean } };
     webUrl = citation.metadata?.webUrl;
     origin = citation.metadata?.origin;
     blockText = citation.metadata?.blockText;
+    hideWeburl = citation.metadata?.hideWeburl;
   } 
   // Handle PipesHub.Record type (has webUrl directly)
   else if (citationOrRecord && 'webUrl' in citationOrRecord) {
-    const record = citationOrRecord as { webUrl?: string; origin?: string };
+    const record = citationOrRecord as { webUrl?: string; origin?: string; hideWeburl?: boolean; };
     webUrl = record.webUrl;
     origin = record.origin;
+    // Handle both hideWeburl
+    hideWeburl = record.hideWeburl;
     
     // Get blockText from recordCitation if provided
     if (recordCitation) {
@@ -322,10 +328,19 @@ export const getWebUrlWithFragment = (
         if (!webUrl) {
           webUrl = recordCitation.metadata?.webUrl;
         }
+        // Check hideWeburl in recordCitation metadata as well
+        if (hideWeburl === undefined) {
+          hideWeburl = recordCitation.metadata?.hideWeburl;
+        }
       } else if ('content' in recordCitation) {
         content = recordCitation.content;
       }
     }
+  }
+
+  // Return null early if hideWeburl is true
+  if (hideWeburl === true) {
+    return null;
   }
 
   if (!webUrl) {

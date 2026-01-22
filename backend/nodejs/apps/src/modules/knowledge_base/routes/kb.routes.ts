@@ -30,6 +30,7 @@ import {
   createRootFolder,
   uploadRecordsToKB,
   getKnowledgeHubNodes,
+  moveRecord,
 } from '../controllers/kb_controllers';
 import { ArangoService } from '../../../libs/services/arango.service';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
@@ -60,6 +61,7 @@ import {
   listKnowledgeBasesSchema,
   reindexRecordSchema,
   getConnectorStatsSchema,
+  moveRecordSchema,
 } from '../validators/validators';
 // Clean up unused commented import
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
@@ -75,6 +77,7 @@ import { getPlatformSettingsFromStore } from '../../configuration_manager/utils/
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { RequestHandler, Response, NextFunction } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
+import { validateNoXSS, validateNoFormatSpecifiers } from '../../../utils/xss-sanitization';
 
 const logger = Logger.getInstance({
   service: 'KnowledgeBaseRoutes',
@@ -109,6 +112,38 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     } catch (_e) {
       // Fallback to default if utility fails
       return KB_UPLOAD_LIMITS.defaultMaxFileSizeBytes;
+    }
+  };
+
+  // Middleware to validate multipart form data fields for XSS
+  // This runs after multer processes the multipart data
+  const validateMultipartFormData: RequestHandler = (
+    req: AuthenticatedUserRequest,
+    _res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      // Validate recordName if present in body
+      if (req.body.recordName && typeof req.body.recordName === 'string') {
+        validateNoXSS(req.body.recordName, 'Record name');
+        validateNoFormatSpecifiers(req.body.recordName, 'Record name');
+      }
+
+      // Validate folderName if present in body
+      if (req.body.folderName && typeof req.body.folderName === 'string') {
+        validateNoXSS(req.body.folderName, 'Folder name');
+        validateNoFormatSpecifiers(req.body.folderName, 'Folder name');
+      }
+
+      // Validate kbName if present in body
+      if (req.body.kbName && typeof req.body.kbName === 'string') {
+        validateNoXSS(req.body.kbName, 'Knowledge base name');
+        validateNoFormatSpecifiers(req.body.kbName, 'Knowledge base name');
+      }
+
+      next();
+    } catch (error) {
+      next(error);
     }
   };
 
@@ -214,6 +249,8 @@ export function createKnowledgeBaseRouter(container: Container): Router {
       isMultipleFilesAllowed: false,
       strictFileUpload: false,
     }),
+    // Validate multipart form data after file processing
+    validateMultipartFormData,
     ValidationMiddleware.validate(updateRecordSchema),
     updateRecord(keyValueStoreService, appConfig),
   );
@@ -355,7 +392,8 @@ export function createKnowledgeBaseRouter(container: Container): Router {
       isMultipleFilesAllowed: true,
       strictFileUpload: true,
     }),
-
+    // Validate multipart form data after file processing
+    validateMultipartFormData,
     // Validation middleware
     ValidationMiddleware.validate(uploadRecordsSchema),
 
@@ -376,7 +414,8 @@ export function createKnowledgeBaseRouter(container: Container): Router {
       isMultipleFilesAllowed: true,
       strictFileUpload: true,
     }),
-
+    // Validate multipart form data after file processing
+    validateMultipartFormData,
     // Validation middleware
     ValidationMiddleware.validate(uploadRecordsToFolderSchema),
 
@@ -466,6 +505,15 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(deletePermissionsSchema),
     removeKBPermission(appConfig),
+  );
+
+  // Move record (file or folder) to another location
+  router.put(
+    '/:kbId/record/:recordId/move',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(moveRecordSchema),
+    moveRecord(appConfig),
   );
 
   return router;

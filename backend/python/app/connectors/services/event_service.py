@@ -148,6 +148,7 @@ class EventService:
         3. Status-based: statusFilters - reindex records by indexing status (e.g., FAILED)
         """
         try:
+
             org_id = payload.get("orgId")
             record_id = payload.get("recordId")
             record_group_id = payload.get("recordGroupId")

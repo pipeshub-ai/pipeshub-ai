@@ -677,6 +677,7 @@ export const updateConnectorInstanceFiltersSyncConfig = (appConfig: AppConfig) =
     (body) => ({
       sync: body.sync,
       filters: body.filters,
+      baseUrl: body.baseUrl,
     }),
     'Updating connector instance filters-sync config',
   );

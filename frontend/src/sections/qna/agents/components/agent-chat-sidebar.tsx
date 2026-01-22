@@ -42,6 +42,7 @@ import {
 } from '@mui/material';
 
 import axiosInstance from 'src/utils/axios';
+import { useWhiteLabel } from 'src/context/WhiteLabelContext';
 
 import { Agent } from 'src/types/agent';
 import ArchivedChatsDialog from 'src/sections/qna/chatbot/components/dialogs/archieve-chat-dialog';
@@ -90,6 +91,7 @@ const AgentChatSidebar = ({
   const [archiveDialogOpen, setArchiveDialogOpen] = useState<boolean>(false);
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
+  const { displayName } = useWhiteLabel();
   const scrollableStyles = createScrollableContainerStyle(theme);
 
   // Memoize fetch function to prevent recreation on each render
@@ -457,7 +459,7 @@ const AgentChatSidebar = ({
           }}
         >
           {activeTab === 'my'
-            ? 'Start a new conversation to begin chatting with PipesHub Agent'
+            ? `Start a new conversation to begin chatting with ${displayName} Agent`
             : 'When someone shares a conversation with you, it will appear here'}
         </Typography>
         {activeTab === 'my' && (

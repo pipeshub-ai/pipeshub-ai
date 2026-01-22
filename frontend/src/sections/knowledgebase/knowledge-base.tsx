@@ -721,20 +721,21 @@ export default function KnowledgeBaseComponent() {
       const response = await KnowledgeBaseAPI.reindexRecord(recordId);
       if (response.success) {
         setSuccess('File indexing started successfully');
+        await loadKBContents(currentKB.id, stableRoute.folderId, true, true);
       } else {
-        setError('Failed to start reindexing');
+        setError(response.reason || 'Failed to start reindexing');
       }
       handleMenuClose();
-
-      await loadKBContents(currentKB.id, stableRoute.folderId, true, true);
     } catch (err: any) {
       console.error('Failed to reindexing document', err);
+      setError(err.response?.data?.reason || err.message || 'Failed to start reindexing');
+      handleMenuClose();
     }
   };
 
-  const handleDownload = async (externalRecordId: string, recordName: string) => {
+  const handleDownload = async (recordId: string, recordName: string) => {
     try {
-      await KnowledgeBaseAPI.handleDownloadDocument(externalRecordId, recordName, ORIGIN.UPLOAD);
+      await KnowledgeBaseAPI.handleDownloadDocument(recordId, recordName);
       setSuccess('Download started successfully');
     } catch (err: any) {
       console.error('Failed to download document', err);
@@ -761,24 +762,24 @@ export default function KnowledgeBaseComponent() {
       },
       ...(canModify
         ? [
-            {
-              key: 'edit',
-              label: 'Edit',
-              icon: editIcon,
-              onClick: handleEditMenuAction,
-            },
-          ]
+          {
+            key: 'edit',
+            label: 'Edit',
+            icon: editIcon,
+            onClick: handleEditMenuAction,
+          },
+        ]
         : []),
       ...(canModify
         ? [
-            {
-              key: 'delete',
-              label: 'Delete',
-              icon: deleteIcon,
-              onClick: handleDeleteMenuAction,
-              isDanger: true,
-            },
-          ]
+          {
+            key: 'delete',
+            label: 'Delete',
+            icon: deleteIcon,
+            onClick: handleDeleteMenuAction,
+            isDanger: true,
+          },
+        ]
         : []),
     ];
 
@@ -797,33 +798,33 @@ export default function KnowledgeBaseComponent() {
         label: 'Download',
         icon: downloadIcon,
         onClick: () => {
-          handleDownload(contextItem.externalRecordId, contextItem.name);
+          handleDownload(contextItem.id, contextItem.name);
           handleMenuClose();
         },
       },
       ...(canReindex
         ? [
-            {
-              key: 'reindex',
-              label: 'Reindex',
-              icon: refreshIcon,
-              onClick: () => {
-                handleRetryIndexing(contextItem.id);
-                handleMenuClose();
-              },
+          {
+            key: 'reindex',
+            label: 'Reindex',
+            icon: refreshIcon,
+            onClick: () => {
+              handleRetryIndexing(contextItem.id);
+              handleMenuClose();
             },
-          ]
+          },
+        ]
         : []),
       ...(canModify
         ? [
-            {
-              key: 'delete',
-              label: 'Delete',
-              icon: deleteIcon,
-              onClick: handleDeleteMenuAction,
-              isDanger: true,
-            },
-          ]
+          {
+            key: 'delete',
+            label: 'Delete',
+            icon: deleteIcon,
+            onClick: handleDeleteMenuAction,
+            isDanger: true,
+          },
+        ]
         : []),
     ];
 
@@ -876,21 +877,21 @@ export default function KnowledgeBaseComponent() {
                   transition: 'all 0.15s ease',
                   ...(isDangerItem
                     ? {
-                        color: 'error.main',
-                        '&:hover': {
-                          bgcolor: 'error.lighter',
-                          transform: 'translateX(2px)',
-                        },
-                      }
+                      color: 'error.main',
+                      '&:hover': {
+                        bgcolor: 'error.lighter',
+                        transform: 'translateX(2px)',
+                      },
+                    }
                     : {
-                        '&:hover': {
-                          bgcolor: (themeVal) =>
-                            themeVal.palette.mode === 'dark'
-                              ? alpha('#fff', 0.06)
-                              : alpha('#000', 0.04),
-                          transform: 'translateX(2px)',
-                        },
-                      }),
+                      '&:hover': {
+                        bgcolor: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? alpha('#fff', 0.06)
+                            : alpha('#000', 0.04),
+                        transform: 'translateX(2px)',
+                      },
+                    }),
                 }}
               >
                 <ListItemIcon

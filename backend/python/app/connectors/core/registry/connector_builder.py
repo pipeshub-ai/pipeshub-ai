@@ -16,6 +16,7 @@ from app.connectors.core.registry.filters import (
     FilterField,
     FilterOption,
     FilterType,
+    MultiselectOperator,
     OptionSourceType,
 )
 from app.connectors.core.registry.oauth_config_registry import get_oauth_config_registry
@@ -312,6 +313,7 @@ class ConnectorBuilder:
         self.config_builder = ConnectorConfigBuilder()
         self.connector_scopes: List[ConnectorScope] = []
         self._oauth_configs: Dict[str, OAuthConfig] = {}  # Store OAuth configs for auto-registration
+        self.connector_info: Optional[str] = None
 
     def in_group(self, app_group: str) -> 'ConnectorBuilder':
         """Set the app group"""
@@ -396,6 +398,11 @@ class ConnectorBuilder:
         self.app_categories = categories
         return self
 
+    def with_info(self, info: str) -> 'ConnectorBuilder':
+        """Set connector info that will be displayed on the frontend connector page"""
+        self.connector_info = info
+        return self
+
     def configure(self, config_func: Callable[[ConnectorConfigBuilder], ConnectorConfigBuilder]) -> 'ConnectorBuilder':
         """Configure the connector using a configuration function"""
         self.config_builder = config_func(self.config_builder)
@@ -466,7 +473,8 @@ class ConnectorBuilder:
             app_description=self.app_description,
             app_categories=self.app_categories,
             config=config,
-            connector_scopes=self.connector_scopes
+            connector_scopes=self.connector_scopes,
+            connector_info=self.connector_info
         )
 
     def _validate_required_auth_fields(self, config: Dict[str, Any]) -> None:
@@ -652,15 +660,25 @@ class CommonFields:
         )
 
     @staticmethod
-    def file_extension_filter(options_endpoint: Optional[str] = None) -> FilterField:
-        """Standard file extension filter"""
+    def file_extension_filter(
+        description: Optional[str] = None,
+        display_name: str = "File Extensions",
+        options_endpoint: Optional[str] = None,
+    ) -> FilterField:
+        """
+        Standard file extension filter (static multiselect).
+
+        Note: options_endpoint is reserved for a future dynamic-options implementation.
+        """
         return FilterField(
             name="file_extensions",
-            display_name="Sync Files with Extensions",
+            display_name=display_name,
             filter_type=FilterType.MULTISELECT,
             category=FilterCategory.SYNC,
-            description="Sync files with specific extensions",
-            default_value=True,
+            description=description
+            or "Filter files by extension (e.g., pdf, docx, txt). Leave empty to sync all files.",
+            default_value=[],
+            default_operator=MultiselectOperator.IN.value,
             option_source_type=OptionSourceType.STATIC,
             options=[
                 FilterOption(id=ext.value, label=f".{ext.value}")

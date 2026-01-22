@@ -31,16 +31,30 @@ import {
   deleteUserLogo,
   uploadUserLogo,
   changePassword,
+  getUserLogo,
 } from './utils';
+
 
 import type { SnackbarState } from './types/organization-data';
 
 const ProfileSchema = zod.object({
-  fullName: zod.string().min(1, { message: 'Full Name is required' }),
-  firstName: zod.string().optional(),
-  lastName: zod.string().optional(),
+  fullName: zod
+    .string()
+    .min(1, { message: 'Full Name is required' })
+    .refine((val) => !val || !/[<>]/.test(val), 'Full name cannot contain HTML tags'),
+  firstName: zod
+    .string()
+    .optional()
+    .refine((val) => !val || !/[<>]/.test(val), 'First name cannot contain HTML tags'),
+  lastName: zod
+    .string()
+    .optional()
+    .refine((val) => !val || !/[<>]/.test(val), 'Last name cannot contain HTML tags'),
   email: zod.string().email({ message: 'Invalid email' }).min(1, { message: 'Email is required' }),
-  designation: zod.string().optional(),
+  designation: zod
+    .string()
+    .optional()
+    .refine((val) => !val || !/[<>]/.test(val), 'Designation cannot contain HTML tags'),
 });
 
 const PasswordSchema = zod
@@ -216,9 +230,23 @@ export default function UserProfile() {
       setUploading(true);
 
       await uploadUserLogo(userId, formData);
-      setSnackbar({ open: true, message: 'Photo updated successfully', severity: 'success' });
+      
+      // Fetch the processed logo from server (with EXIF metadata stripped) instead of using original file
+      try {
+        const processedLogoUrl = await getUserLogo(userId);
+        setLogo(processedLogoUrl);
+        setSnackbar({ open: true, message: 'Photo updated successfully', severity: 'success' });
+      } catch (fetchErr) {
+        // Upload succeeded but fetching failed - show warning but don't fail completely
+        setSnackbar({
+          open: true,
+          message: 'Photo uploaded successfully, but failed to refresh. Please refresh the page.',
+          severity: 'warning',
+        });
+        // Fallback to original file preview (user can refresh to see processed version)
+        setLogo(URL.createObjectURL(file));
+      }
       setUploading(false);
-      setLogo(URL.createObjectURL(file));
     } catch (err) {
       setError('Failed to upload photo');
       // setSnackbar({ open: true, message: 'Failed to upload photo', severity: 'error' });

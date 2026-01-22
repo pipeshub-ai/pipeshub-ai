@@ -1046,8 +1046,8 @@ const AuthSection: React.FC<AuthSectionProps> = ({
               </Box>
             )}
 
-            {/* OAuth App Selector - Show when OAuth is selected and OAuth configs exist (or in edit mode with existing config) */}
-            {isOAuthSelected && (oauthApps.length > 0 || (!isCreateMode && selectedOAuthConfigId)) && (
+            {/* OAuth App Selector - Show when OAuth is selected and OAuth configs exist (or in edit mode with existing config) or when loading */}
+            {isOAuthSelected && (loadingOAuthApps || oauthApps.length > 0 || (!isCreateMode && selectedOAuthConfigId)) && (
               <Box sx={{ mb: 2.5 }}>
                 <Grid container spacing={2}>
                   <Grid item xs={12}>

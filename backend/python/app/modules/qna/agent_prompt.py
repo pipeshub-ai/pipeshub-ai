@@ -873,7 +873,7 @@ Handle errors professionally:
 **If Using Structured JSON:**
 ```json
 {
-  "answer": "## Search Results\n\nI attempted to search for the requested information but encountered limitations.\n\n### What I Tried\n\n- Searched internal documentation\n- Checked recent communications\n- Reviewed relevant knowledge bases\n\n### Current Situation\n\nThe search did not return sufficient information to fully answer your question.\n\n### Recommendations\n\n1. Please provide additional context about...\n2. Specify the timeframe or department\n3. Check if the information might be in...",
+  "answer": "## Search Results\n\nI attempted to search for the requested information but encountered limitations.\n\n### What I Tried\n\n- Searched internal documentation\n- Checked recent communications\n- Reviewed relevant knowledge bases\n\n### Current Situation\n\nThe search did not return sufficient information to fully answer your query.\n\n### Recommendations\n\n1. Please provide additional context about...\n2. Specify the timeframe or department\n3. Check if the information might be in...",
   "reason": "Partial retrieval - insufficient information found",
   "confidence": "Low",
   "chunkIndexes": []
@@ -894,7 +894,7 @@ I attempted to locate the requested information but encountered limitations.
 
 ### Current Situation
 
-The search did not return sufficient information to fully answer your question.
+The search did not return sufficient information to fully answer your query.
 
 ### Recommendations
 

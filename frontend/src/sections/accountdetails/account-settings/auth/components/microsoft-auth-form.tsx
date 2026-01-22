@@ -72,7 +72,7 @@ const MicrosoftAuthForm = forwardRef<MicrosoftAuthFormRef, MicrosoftAuthFormProp
     } | null>(null);
     const [formData, setFormData] = useState({
       clientId: '',
-      tenantId: 'common',
+      tenantId: '',
       redirectUri:
         redirectUris?.recommendedRedirectUri || `${window.location.origin}/auth/microsoft/callback`,
     });
@@ -121,26 +121,26 @@ const MicrosoftAuthForm = forwardRef<MicrosoftAuthFormRef, MicrosoftAuthFormProp
       const fetchConfig = async () => {
         setIsLoading(true);
         try {
-          const uris = await getRedirectUris();
+          // Parallelize API calls for better performance
+          const [uris, config] = await Promise.all([
+            getRedirectUris(),
+            getMicrosoftAuthConfig(),
+          ]);
+
           setRedirectUris(uris);
 
           // Set default redirectUri from uris immediately (not from state)
           const recommendedUri =
             uris?.recommendedRedirectUri || `${window.location.origin}/auth/microsoft/callback`;
 
-          setFormData((prevFormData) => ({
-            ...prevFormData,
+          // Consolidate all form data updates into a single atomic update
+          setFormData({
             redirectUri: recommendedUri,
-          }));
-
-          const config = await getMicrosoftAuthConfig();
-
-          setFormData((prev) => ({
-            ...prev,
             clientId: config?.clientId || '',
-            tenantId: config?.tenantId || 'common',
-          }));
+            tenantId: config?.tenantId || '',
+          });
         } catch (error) {
+          console.error('Failed to load Microsoft authentication configuration:', error);
           // showErrorSnackbar('Failed to load Microsoft authentication configuration');
         } finally {
           setIsLoading(false);

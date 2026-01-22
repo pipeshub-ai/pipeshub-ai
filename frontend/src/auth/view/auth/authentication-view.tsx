@@ -5,6 +5,7 @@ import { z as zod } from 'zod';
 import PropTypes from 'prop-types';
 import { useForm } from 'react-hook-form';
 import { useNavigate } from 'react-router';
+import { useSearchParams } from 'src/routes/hooks';
 // Import specific icons
 import emailIcon from '@iconify-icons/mdi/email';
 import googleIcon from '@iconify-icons/mdi/google';
@@ -210,6 +211,9 @@ export const AuthenticationView = () => {
   const emailFromStore = useSelector((state: RootState) => state.auth.email);
   const { checkUserSession } = useAuthContext();
   const navigate = useNavigate();
+  const searchParams = useSearchParams();
+  const returnTo = searchParams.get('returnTo');
+
   const [snackbar, setSnackbar] = useState({
     open: false,
     message: '',
@@ -283,10 +287,13 @@ export const AuthenticationView = () => {
   };
 
   // Handle successful authentication
-  const handleAuthComplete = () => {
-    checkUserSession?.();
-    // router.push('/');
-    navigate('/');
+  const handleAuthComplete = async () => {
+    if (checkUserSession) {
+      await checkUserSession();
+    }
+    // Navigate to returnTo URL if present (e.g., OAuth consent page), otherwise go to home
+    const targetUrl = returnTo || '/';
+    navigate(targetUrl);
   };
 
   // Handle Google login success
@@ -302,7 +309,7 @@ export const AuthenticationView = () => {
 
       // Check if this is the final step
       if (authResponse.accessToken && authResponse.refreshToken) {
-        handleAuthComplete();
+        await handleAuthComplete();
       } else if (authResponse.nextStep !== undefined) {
         handleNextAuthStep(authResponse);
       }
@@ -334,7 +341,7 @@ export const AuthenticationView = () => {
 
       // Check if this is the final step
       if (authResponse.accessToken && authResponse.refreshToken) {
-        handleAuthComplete();
+        await handleAuthComplete();
       } else if (authResponse.nextStep !== undefined) {
         handleNextAuthStep(authResponse);
       }
@@ -358,7 +365,7 @@ export const AuthenticationView = () => {
 
       // Check if this is the final step
       if (authResponse.accessToken && authResponse.refreshToken) {
-        handleAuthComplete();
+        await handleAuthComplete();
       } else if (authResponse.nextStep !== undefined) {
         handleNextAuthStep(authResponse);
       }
@@ -388,7 +395,7 @@ export const AuthenticationView = () => {
     componentMountRef.current = false;
   };
 
-  const handleForgotPassword = () => {
+  const handleForgotPassword = (turnstileToken?: string | null) => {
     // Make sure we have an email address
     if (!emailFromStore) {
       setError('Email address is required to reset password.');
@@ -401,7 +408,7 @@ export const AuthenticationView = () => {
     // Use the withErrorHandling wrapper for consistent error processing
     withErrorHandling(
       async () => {
-        await forgotPassword({ email: emailFromStore });
+        await forgotPassword({ email: emailFromStore, turnstileToken });
 
         // Show success message
         setSnackbar({
@@ -443,15 +450,14 @@ export const AuthenticationView = () => {
     const checkOrgExists = async () => {
       try {
         const response = await OrgExists();
+        // Preserve query params when navigating
+        const queryString = searchParams.toString();
+        const suffix = queryString ? `?${queryString}` : '';
+
         if (response.exists === false) {
-          // setSnackbar({
-          //   open: true,
-          //   message: `Set up account to continue`,
-          //   severity: 'error',
-          // });
-          navigate('/auth/sign-up');
+          navigate(`/auth/sign-up${suffix}`);
         } else {
-          navigate('/auth/sign-in');
+          navigate(`/auth/sign-in${suffix}`);
         }
       } catch (err) {
         console.error('Error checking if organization exists:', err);

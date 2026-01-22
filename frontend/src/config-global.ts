@@ -18,6 +18,7 @@ export type ConfigValue = {
     redirectPath: string;
   };
   aiBackend: string;
+  turnstileSiteKey: string;
 };
 
 // ----------------------------------------------------------------------
@@ -31,6 +32,7 @@ export const CONFIG: ConfigValue = {
   assetsDir: import.meta.env.VITE_ASSETS_DIR ?? '',
   iamUrl: import.meta.env.VITE_IAM_URL ?? '',
   aiBackend: import.meta.env.VITE_AI_BACKEND ?? '',
+  turnstileSiteKey: import.meta.env.VITE_TURNSTILE_SITE_KEY ?? '',
   /**
    * Auth
    * @method jwt

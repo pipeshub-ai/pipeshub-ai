@@ -1,6 +1,7 @@
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Optional, Tuple
 
 from app.agents.actions.utils import run_async
@@ -158,6 +159,12 @@ class S3:
                 type=ParameterType.STRING,
                 description="Marker for pagination",
                 required=False
+            ),
+            ToolParameter(
+                name="timestamp",
+                type=ParameterType.STRING,
+                description="ISO format timestamp (e.g., '2024-01-01T00:00:00Z'). If provided, only objects modified after this timestamp will be returned. If null, all objects are returned.",
+                required=False
             )
         ]
     )
@@ -166,7 +173,8 @@ class S3:
         bucket_name: str,
         prefix: Optional[str] = None,
         max_keys: Optional[int] = None,
-        marker: Optional[str] = None
+        marker: Optional[str] = None,
+        timestamp: Optional[str] = None
     ) -> Tuple[bool, str]:
         """List objects in an S3 bucket"""
         """
@@ -175,6 +183,7 @@ class S3:
             prefix: Prefix to filter objects
             max_keys: Maximum number of objects to return
             marker: Marker for pagination
+            timestamp: ISO format timestamp. If provided, only objects modified after this timestamp will be returned
         Returns:
             Tuple[bool, str]: True if successful, False otherwise
         """
@@ -188,6 +197,58 @@ class S3:
             ))
 
             if response.success:
+                # Filter by timestamp if provided
+                if timestamp is not None:
+                    try:
+                        # Parse the timestamp string to datetime
+                        # Handle both 'Z' and timezone offset formats
+                        timestamp_clean = timestamp.replace('Z', '+00:00') if timestamp.endswith('Z') else timestamp
+                        filter_timestamp = datetime.fromisoformat(timestamp_clean)
+
+                        # Make filter_timestamp timezone-aware if it's naive (S3 LastModified is always UTC-aware)
+                        # If the user provides a timestamp without timezone info, assume UTC
+                        if filter_timestamp.tzinfo is None:
+                            filter_timestamp = filter_timestamp.replace(tzinfo=timezone.utc)
+
+                        # Work directly with response.data dictionary (no need to serialize/deserialize)
+                        response_data_dict = response.data
+
+                        # Filter objects based on LastModified
+                        if response_data_dict and 'Contents' in response_data_dict:
+                            filtered_contents = []
+                            for obj in response_data_dict['Contents']:
+                                # LastModified is already a datetime object in response.data
+                                last_modified = obj.get('LastModified')
+                                if last_modified:
+                                    try:
+                                        # LastModified is already a datetime object, no parsing needed
+                                        if isinstance(last_modified, datetime):
+                                            # Only include objects modified after the timestamp
+                                            if last_modified > filter_timestamp:
+                                                filtered_contents.append(obj)
+                                        else:
+                                            # Fallback: if it's not a datetime (unlikely), skip it
+                                            logger.warning(f"Skipping object {obj.get('Key', 'unknown')} due to invalid LastModified type: {type(last_modified)}")
+                                    except (ValueError, AttributeError, TypeError) as e:
+                                        # Skip objects with invalid LastModified timestamps or comparison errors
+                                        logger.warning(f"Skipping object {obj.get('Key', 'unknown')} due to invalid LastModified: {e}")
+                                        continue
+
+                            # Update the response data with filtered contents
+                            response_data_dict['Contents'] = filtered_contents
+                            # Update KeyCount if it exists
+                            if 'KeyCount' in response_data_dict:
+                                response_data_dict['KeyCount'] = len(filtered_contents)
+
+                            # Return the filtered response
+                            return True, response.to_json()
+                        else:
+                            # No Contents in response, return as is
+                            return True, response.to_json()
+                    except ValueError as e:
+                        logger.error(f"Error parsing timestamp: {e}")
+                        return False, json.dumps({"error": f"Invalid timestamp format: {str(e)}"})
+
                 return True, response.to_json()
             else:
                 return False, response.to_json()

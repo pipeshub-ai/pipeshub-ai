@@ -362,6 +362,10 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
             if preview_renderable is None:
                 preview_renderable = record.get("preview_renderable", True)
 
+            hide_weburl = meta.get("hideWeburl")
+            if hide_weburl is None:
+                hide_weburl = record.get("hide_weburl", False)
+
             enhanced_metadata = {
                         "orgId": meta.get("orgId") or record.get("org_id", ""),
                         "recordId": meta.get("recordId") or record.get("id", ""),
@@ -380,6 +384,7 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
                         "blockNum":block_num,
                         "webUrl": meta.get("webUrl") or record.get("weburl", ""),
                         "previewRenderable": preview_renderable,
+                        "hideWeburl": hide_weburl,
                     }
             if extension == "xlsx" or meta.get("sheetName"):
                 if isinstance(data, dict):
@@ -430,6 +435,7 @@ async def get_record(meta: Dict[str, Any],virtual_record_id: str,virtual_record_
                 record["connector_name"] = arango_record.get("connectorName")
                 record["weburl"] = arango_record.get("webUrl")
                 record["preview_renderable"] = arango_record.get("previewRenderable", True)
+                record["hide_weburl"] = arango_record.get("hideWeburl", False)
 
             virtual_record_id_to_result[virtual_record_id] = record
         else:

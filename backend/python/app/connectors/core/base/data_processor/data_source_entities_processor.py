@@ -23,6 +23,7 @@ from app.models.entities import (
     FileRecord,
     IndexingStatus,
     MailRecord,
+    Person,
     Record,
     RecordGroup,
     RecordType,
@@ -64,6 +65,7 @@ class UserGroupWithMembers:
 class DataSourceEntitiesProcessor:
     ATTACHMENT_CONTAINER_TYPES = [
         RecordType.MAIL,
+        RecordType.GROUP_MAIL,
         RecordType.WEBPAGE,
         RecordType.CONFLUENCE_PAGE,
         RecordType.CONFLUENCE_BLOGPOST,
@@ -130,6 +132,8 @@ class DataSourceEntitiesProcessor:
             "record_group_type": record.record_group_type,
             "version": 0,
             "mime_type": MimeTypes.UNKNOWN.value,
+            "source_created_at": 0,  # Will be updated when real parent is synced
+            "source_updated_at": 0,  # Will be updated when real parent is synced
         }
 
         # Map RecordType to appropriate Record class
@@ -137,15 +141,19 @@ class DataSourceEntitiesProcessor:
             file_params = {k: v for k, v in base_params.items() if k != "mime_type"}
             return FileRecord(
                 **file_params,
+                external_record_group_id=record.external_record_group_id,
                 is_file=False,
                 extension=None,
                 mime_type=MimeTypes.FOLDER.value,
+                size_in_bytes=0,  # Folders have 0 size
+                weburl="",  # Will be updated when real directory is synced
+                path=None,  # Will be updated when real directory is synced
             )
         elif parent_record_type in [RecordType.WEBPAGE, RecordType.CONFLUENCE_PAGE,
                                      RecordType.CONFLUENCE_BLOGPOST, RecordType.SHAREPOINT_PAGE]:
             # All webpage-like types use WebpageRecord
             return WebpageRecord(**base_params)
-        elif parent_record_type == RecordType.MAIL:
+        elif parent_record_type in [RecordType.MAIL, RecordType.GROUP_MAIL]:
             return MailRecord(**base_params)
         elif parent_record_type == RecordType.TICKET:
             return TicketRecord(**base_params)
@@ -173,6 +181,7 @@ class DataSourceEntitiesProcessor:
                     parent_record_type=record.parent_record_type,
                     record=record,
                 )
+                self.logger.debug(f"parent_record: {parent_record}")
                 await tx_store.batch_upsert_records([parent_record])
 
             if parent_record and isinstance(parent_record, Record):
@@ -183,7 +192,17 @@ class DataSourceEntitiesProcessor:
                     relation_type = RecordRelations.PARENT_CHILD.value
                 await tx_store.create_record_relation(parent_record.id, record.id, relation_type)
 
-    async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> None:
+    async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> Optional[str]:
+        """
+        Prepare record group by looking up or creating it, and set record_group_id on the record.
+        This should be called BEFORE saving the record so record_group_id is included in the first save.
+
+        Returns:
+            record_group_id if record group was found/created, None otherwise
+        """
+        if record.external_record_group_id is None:
+            return None
+
         record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id,
                                                                       external_id=record.external_record_group_id)
 
@@ -200,11 +219,25 @@ class DataSourceEntitiesProcessor:
             # Todo: Create a edge between the record group and the App
 
         if record_group:
-            # Create a edge between the record and the record group if it doesn't exist
-            await tx_store.create_record_group_relation(record.id, record_group.id)
+            # Set the record_group_id on the record BEFORE saving
+            record.record_group_id = record_group.id
+            return record_group.id
 
-            if record.inherit_permissions:
-                await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group.id)
+        return None
+
+    async def _link_record_to_group(self, record: Record, record_group_id: str, tx_store: TransactionStore) -> None:
+        """
+        Create edges between record and record group.
+        This should be called AFTER saving the record (when record.id is available).
+        """
+        if not record.id or not record_group_id:
+            return
+
+        # Create a edge between the record and the record group if it doesn't exist
+        await tx_store.create_record_group_relation(record.id, record_group_id)
+
+        if record.inherit_permissions:
+            await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group_id)
 
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
         # Set org_id for the record
@@ -216,7 +249,7 @@ class DataSourceEntitiesProcessor:
         # Set org_id for the record
         record.org_id = self.org_id
         self.logger.info("Updating existing record: %s, version %d -> %d",
-                         record.record_name, existing_record.version, record.version)
+        record.record_name, existing_record.version, record.version)
         await tx_store.batch_upsert_records([record])
 
     async def _handle_record_permissions(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> None:
@@ -235,9 +268,14 @@ class DataSourceEntitiesProcessor:
                     if permission.email:
                         user = await tx_store.get_user_by_email(permission.email)
 
-                        # If user doesn't exist (external user), create them as inactive
+                        # If user doesn't exist (external user), use PEOPLE collection
                         if not user and permission.email:
-                            user = await self._create_external_user(permission.email, record.connector_id, record.connector_name, tx_store)
+                            self.logger.warning(f"Skipping user/person creation for external user {permission.email}")
+                            # TODO : Handle extenal user/person creation
+                            # person_id = await self._upsert_external_person(permission.email, tx_store)
+                            # if person_id:
+                            #     from_id = person_id
+                            #     from_collection = CollectionNames.PEOPLE.value
 
                     if user:
                         from_id = user.id
@@ -296,28 +334,29 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self.logger.error("Failed to create permission edge: %s", e)
 
-    async def _create_external_user(self, email: str, connector_id: str, connector_name: str, tx_store) -> AppUser:
-        """Create an external user record."""
-        external_source_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, email))
+    async def _upsert_external_person(self, email: str, tx_store) -> Optional[str]:
+        """
+        Upsert person record for external email address.
+        Uses deterministic UUID based on email to ensure only one Person record per email.
+        Returns person_id for creating permission edge.
+        """
+        try:
+            # Use deterministic UUID based on email to ensure consistent ID for same email
+            # This ensures upsert works correctly and only one Person record exists per email
+            person_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, email.lower()))
+            person = Person(email=email.lower(), id=person_id)
 
-        # Create external user record
-        external_user = AppUser(
-            app_name=connector_name,
-            connector_id=connector_id,
-            source_user_id=external_source_id,
-            email=email,
-            full_name=email.split('@')[0],
-            is_active=False
-        )
+            # Upsert to PEOPLE collection (handles both create and update)
+            await tx_store.batch_upsert_people([person])
 
-        # Save the external user
-        await tx_store.batch_upsert_app_users([external_user])
+            self.logger.debug(f"Upserted person record for external email: {email}")
 
-        # Fetch the created user to get the ID
-        user = await tx_store.get_user_by_email(email)
+            # Return the person ID for permission edge
+            return person.id
 
-        self.logger.info(f"Created external user record for: {email}")
-        return user
+        except Exception as e:
+            self.logger.error(f"Error upserting person for {email}: {e}")
+            return None
 
     async def on_updated_record_permissions(self, record: Record, permissions: List[Permission]) -> None:
         self.logger.info(f"Starting permission update for record: {record.record_name} ({record.id})")
@@ -371,6 +410,9 @@ class DataSourceEntitiesProcessor:
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
 
+        # Prepare record group BEFORE saving (so record_group_id is included in first save)
+        record_group_id = await self._handle_record_group(record, tx_store)
+
         if existing_record is None:
             self.logger.info("New record: %s", record)
             await self._handle_new_record(record, tx_store)
@@ -381,11 +423,12 @@ class DataSourceEntitiesProcessor:
             if record.external_revision_id != existing_record.external_revision_id:
                 await self._handle_updated_record(record, existing_record, tx_store)
 
+        # Link record to group AFTER saving (when record.id is available for edges)
+        if record_group_id:
+            await self._link_record_to_group(record, record_group_id, tx_store)
+
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
         await self._handle_parent_record(record, tx_store)
-
-        # Create a edge between the record and the record group if it doesn't exist and if record_group_id is provided
-        await self._handle_record_group(record, tx_store)
 
         # Create a edge between the base record and the specific record if it doesn't exist - isOfType - File, Mail, Message
 
@@ -401,6 +444,37 @@ class DataSourceEntitiesProcessor:
             return record
 
         return record
+
+    async def _reset_indexing_status_to_queued(self, record_id: str, tx_store: TransactionStore) -> None:
+        """
+        Reset indexing status to QUEUED before sending update/reindex events.
+        Only resets if status is not already QUEUED or EMPTY.
+        """
+        try:
+            # Get the record
+            record = await tx_store.get_record_by_key(record_id)
+            if not record:
+                self.logger.warning(f"Record {record_id} not found for status reset")
+                return
+
+            current_status = record.indexing_status
+
+            # Only reset if not already QUEUED or EMPTY
+            if current_status in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
+                self.logger.debug(f"Record {record_id} already has status {current_status}, skipping reset")
+                return
+
+            # Update indexing status to QUEUED
+            status_doc = {
+                "_key": record_id,
+                "indexingStatus": IndexingStatus.QUEUED.value,
+            }
+
+            await tx_store.batch_upsert_nodes([status_doc], CollectionNames.RECORDS.value)
+            self.logger.debug(f"✅ Reset record {record_id} status from {current_status} to QUEUED")
+        except Exception as e:
+            # Log but don't fail the main operation if status update fails
+            self.logger.error(f"❌ Failed to reset record {record_id} to QUEUED: {str(e)}")
 
     async def on_new_records(self, records_with_permissions: List[Tuple[Record, List[Permission]]]) -> None:
         try:
@@ -448,6 +522,11 @@ class DataSourceEntitiesProcessor:
                 )
                 return
 
+            # Reset indexing status to QUEUED before sending update event
+            current_status = processed_record.indexing_status if hasattr(processed_record, 'indexing_status') else None
+            if current_status not in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
+                await self._reset_indexing_status_to_queued(record.id, tx_store)
+
             await self.messaging_producer.send_message(
                 "record-events",
                 {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
@@ -468,7 +547,7 @@ class DataSourceEntitiesProcessor:
         """
         Publish reindex events for existing records without DB operations.
         Used for reindexing functionality where records already exist in DB.
-        This method only publishes newRecord events to trigger re-indexing in the indexing service.
+        This method publishes reindexRecord events to trigger re-indexing in the indexing service.
 
         Args:
             records: List of properly typed Record instances (FileRecord, MailRecord, etc.)
@@ -478,13 +557,22 @@ class DataSourceEntitiesProcessor:
                 self.logger.info("No records to reindex")
                 return
 
+            # Reset status to QUEUED for all records before reindexing
+            async with self.data_store_provider.transaction() as tx_store:
+                for record in records:
+                    current_status = record.indexing_status if hasattr(record, 'indexing_status') else None
+                    # Only reset if not already QUEUED or EMPTY
+                    if current_status not in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
+                        await self._reset_indexing_status_to_queued(record.id, tx_store)
+
+            # Now send the reindex events
             for record in records:
                 payload = record.to_kafka_record()
 
                 await self.messaging_producer.send_message(
                     "record-events",
                     {
-                        "eventType": "newRecord",
+                        "eventType": "reindexRecord",
                         "timestamp": get_epoch_timestamp_in_ms(),
                         "payload": payload
                     },
@@ -1096,8 +1184,8 @@ class DataSourceEntitiesProcessor:
         group_id: str,
         user_email: str,
         connector_id: str,
-        target_collections: Optional[List[str]] = None
-    ) -> Tuple[int, int]:
+        tx_store: Optional[TransactionStore] = None
+    ) -> None:
         """
         Migrate all permissions from a group to a user.
 
@@ -1112,151 +1200,199 @@ class DataSourceEntitiesProcessor:
             group_id: The internal ID of the group to migrate permissions from
             user_email: Email of the user to migrate permissions to
             connector_id: Connector ID for logging
-            target_collections: Optional list of target collections to filter
-                          (defaults to RECORDS and RECORD_GROUPS)
-
-        Returns:
-            Tuple[int, int]: (migrated_count, skipped_count)
+            tx_store: Optional transaction store to participate in caller's transaction.
+                     If not provided, a new transaction will be created.
         """
-        if target_collections is None:
-            target_collections = [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value]
-
-        async with self.data_store_provider.transaction() as tx_store:
-            # Get the user object
-            user = await tx_store.get_user_by_email(user_email)
-            if not user:
-                self.logger.warning(
-                    f"User {user_email} not found in users collection, "
-                    f"cannot migrate permissions. Skipping."
+        # If no transaction provided, create one and recursively call with it
+        if tx_store is None:
+            async with self.data_store_provider.transaction() as tx_store:
+                return await self.migrate_group_permissions_to_user(
+                    group_id, user_email, connector_id, tx_store
                 )
-                return (0, 0)
 
-            # Get all permission edges FROM the group
-            group_node_id = f"{CollectionNames.GROUPS.value}/{group_id}"
-            permission_edges = await tx_store.get_edges_from_node(
-                from_node_id=group_node_id,
-                edge_collection=CollectionNames.PERMISSION.value
+        # Get the user object
+        user = await tx_store.get_user_by_email(user_email)
+        if not user:
+            self.logger.warning(
+                f"User {user_email} not found in users collection, "
+                f"cannot migrate permissions. Skipping."
             )
+            return
 
-            if not permission_edges:
-                self.logger.debug(f"No permissions found for group {group_id}")
-                return (0, 0)
+        # Get all permission edges FROM the group
+        group_node_id = f"{CollectionNames.GROUPS.value}/{group_id}"
+        permission_edges = await tx_store.get_edges_from_node(
+            from_node_id=group_node_id,
+            edge_collection=CollectionNames.PERMISSION.value
+        )
 
-            migrated_count = 0
-            skipped_count = 0
-            new_permission_edges = []
+        if not permission_edges:
+            self.logger.debug(f"No permissions found for group {group_id}")
+            return
 
-            # Process each permission edge
-            for edge in permission_edges:
+        migrated_count = 0
+        skipped_count = 0
+        new_permission_edges = []
+
+        # Process each permission edge
+        for edge in permission_edges:
+            try:
+                target_node_id = edge.get("_to")
+                if not target_node_id:
+                    continue
+
+                # Extract target ID and collection from _to
+                target_parts = target_node_id.split("/", 1)
+                if len(target_parts) != ARANGO_NODE_ID_PARTS:
+                    continue
+
+                target_collection, target_id = target_parts
+
+                # Get permission type from edge
+                role_str = edge.get("role", "READER")
                 try:
-                    target_node_id = edge.get("_to")
-                    if not target_node_id:
-                        continue
+                    permission_type = PermissionType(role_str)
+                except ValueError:
+                    permission_type = PermissionType.READ  # Default fallback
 
-                    # Extract target ID and collection from _to
-                    target_parts = target_node_id.split("/", 1)
-                    if len(target_parts) != ARANGO_NODE_ID_PARTS:
-                        continue
+                # Check if user already has permission to this target
+                existing_edge = await tx_store.get_edge(
+                    from_id=user.id,
+                    from_collection=CollectionNames.USERS.value,
+                    to_id=target_id,
+                    to_collection=target_collection,
+                    collection=CollectionNames.PERMISSION.value
+                )
 
-                    target_collection, target_id = target_parts
+                if existing_edge:
+                    # User already has permission, check if we need to upgrade it
+                    existing_role = existing_edge.get("role", "READER")
+                    existing_role_level = PERMISSION_HIERARCHY.get(existing_role, 0)
+                    new_role_level = PERMISSION_HIERARCHY.get(permission_type.value, 0)
 
-                    # Filter by target collections if specified
-                    if target_collection not in target_collections:
-                        continue
+                    if new_role_level > existing_role_level:
+                        # Delete old edge and create new one with upgraded permission
+                        await tx_store.delete_edge(
+                            from_id=user.id,
+                            from_collection=CollectionNames.USERS.value,
+                            to_id=target_id,
+                            to_collection=target_collection,
+                            collection=CollectionNames.PERMISSION.value
+                        )
 
-                    # Get permission type from edge
-                    role_str = edge.get("role", "READER")
-                    try:
-                        permission_type = PermissionType(role_str)
-                    except ValueError:
-                        permission_type = PermissionType.READ  # Default fallback
-
-                    # Check if user already has permission to this target
-                    existing_edge = await tx_store.get_edge(
-                        from_id=user.id,
-                        from_collection=CollectionNames.USERS.value,
-                        to_id=target_id,
-                        to_collection=target_collection,
-                        collection=CollectionNames.PERMISSION.value
-                    )
-
-                    if existing_edge:
-                        # User already has permission, check if we need to upgrade it
-                        existing_role = existing_edge.get("role", "READER")
-                        existing_role_level = PERMISSION_HIERARCHY.get(existing_role, 0)
-                        new_role_level = PERMISSION_HIERARCHY.get(permission_type.value, 0)
-
-                        if new_role_level > existing_role_level:
-                            # Delete old edge and create new one with upgraded permission
-                            await tx_store.delete_edge(
-                                from_id=user.id,
-                                from_collection=CollectionNames.USERS.value,
-                                to_id=target_id,
-                                to_collection=target_collection,
-                                collection=CollectionNames.PERMISSION.value
-                            )
-
-                            # Create new edge with upgraded permission
-                            permission = Permission(
-                                email=user_email,
-                                type=permission_type,
-                                entity_type=EntityType.USER
-                            )
-                            edge_data = permission.to_arango_permission(
-                                from_id=user.id,
-                                from_collection=CollectionNames.USERS.value,
-                                to_id=target_id,
-                                to_collection=target_collection
-                            )
-                            new_permission_edges.append(edge_data)
-                            migrated_count += 1
-                            self.logger.debug(
-                                f"Upgraded permission for user {user_email} to {target_node_id} "
-                                f"(from {existing_role} to {permission_type.value})"
-                            )
-                        else:
-                            skipped_count += 1
-                            self.logger.debug(
-                                f"User {user_email} already has permission to {target_node_id} "
-                                f"(existing: {existing_role}, group: {permission_type.value}), skipping"
-                            )
-                    else:
-                        # Create new permission edge for user (batch create later)
+                        # Create new edge with upgraded permission
                         permission = Permission(
                             email=user_email,
                             type=permission_type,
                             entity_type=EntityType.USER
                         )
-
                         edge_data = permission.to_arango_permission(
                             from_id=user.id,
                             from_collection=CollectionNames.USERS.value,
                             to_id=target_id,
                             to_collection=target_collection
                         )
-
                         new_permission_edges.append(edge_data)
                         migrated_count += 1
-
-                except Exception as e:
-                    self.logger.warning(
-                        f"Failed to process permission edge {edge.get('_key', 'unknown')} "
-                        f"for user {user_email}: {e}",
-                        exc_info=True
+                        self.logger.debug(
+                            f"Upgraded permission for user {user_email} to {target_node_id} "
+                            f"(from {existing_role} to {permission_type.value})"
+                        )
+                    else:
+                        skipped_count += 1
+                        self.logger.debug(
+                            f"User {user_email} already has permission to {target_node_id} "
+                            f"(existing: {existing_role}, group: {permission_type.value}), skipping"
+                        )
+                else:
+                    # Create new permission edge for user (batch create later)
+                    permission = Permission(
+                        email=user_email,
+                        type=permission_type,
+                        entity_type=EntityType.USER
                     )
-                    continue
 
-            # Batch create all new permission edges
-            if new_permission_edges:
-                await tx_store.batch_create_edges(
-                    new_permission_edges,
-                    collection=CollectionNames.PERMISSION.value
+                    edge_data = permission.to_arango_permission(
+                        from_id=user.id,
+                        from_collection=CollectionNames.USERS.value,
+                        to_id=target_id,
+                        to_collection=target_collection
+                    )
+
+                    new_permission_edges.append(edge_data)
+                    migrated_count += 1
+
+            except Exception as e:
+                self.logger.warning(
+                    f"Failed to process permission edge {edge.get('_key', 'unknown')} "
+                    f"for user {user_email}: {e}",
+                    exc_info=True
                 )
+                continue
+
+        # Batch create all new permission edges
+        if new_permission_edges:
+            await tx_store.batch_create_edges(
+                new_permission_edges,
+                collection=CollectionNames.PERMISSION.value
+            )
+
+        if migrated_count > 0 or skipped_count > 0:
+            self.logger.info(
+                f"✅ Permission migration complete for user {user_email}: "
+                f"migrated {migrated_count}, skipped {skipped_count} duplicates"
+            )
+
+    async def migrate_group_to_user_by_external_id(
+        self,
+        group_external_id: str,
+        user_email: str,
+        connector_id: str
+    ) -> None:
+        """
+        Migrate permissions from a group to a user and delete the group.
+        This is a convenience method that handles the entire flow atomically.
+
+        This method:
+        1. Finds the group by external ID
+        2. Migrates all permissions from group to user
+        3. Deletes the group
+        All in a single transaction.
+
+        Args:
+            group_external_id: External ID of the group to migrate from
+            user_email: Email of the user to migrate permissions to
+            connector_id: Connector ID
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            # Find the group by external ID
+            group = await tx_store.get_user_group_by_external_id(
+                connector_id=connector_id,
+                external_id=group_external_id
+            )
+
+            if not group:
                 self.logger.debug(
-                    f"Created {len(new_permission_edges)} new permission edges for user {user_email}"
+                    f"Group with external ID {group_external_id} not found for connector {connector_id}"
                 )
+                return
 
-            return (migrated_count, skipped_count)
+            self.logger.info(
+                f"Migrating group '{group.name}' ({group.id}) to user '{user_email}'"
+            )
+
+            # Migrate permissions (using the same transaction)
+            await self.migrate_group_permissions_to_user(
+                group_id=group.id,
+                user_email=user_email,
+                connector_id=connector_id,
+                tx_store=tx_store
+            )
+
+            # Delete the group (this will also delete all its edges)
+            await tx_store.delete_user_group_by_id(group.id)
+
+            self.logger.info(f"✅ Completed migration and deleted group '{group.name}'")
 
     async def on_app_role_deleted(
         self,
@@ -1383,6 +1519,34 @@ class DataSourceEntitiesProcessor:
 
         except Exception as e:
             self.logger.error(f"Error deleting organization edges for group {group_internal_id}: {e}")
+
+    async def add_permission_to_record(self, record: Record, permissions: List[Permission]) -> None:
+        """Add permissions to a record."""
+
+        async with self.data_store_provider.transaction() as tx_store:
+            await self._handle_record_permissions(record, permissions, tx_store)
+
+    async def delete_permission_from_record(self, record_id: str, user_email: str) -> None:
+        """Delete permissions from a record."""
+
+        async with self.data_store_provider.transaction() as tx_store:
+            user = await tx_store.get_user_by_email(user_email)
+            if not user:
+                self.logger.warning(f"User with email {user_email} not found in database")
+                return
+
+            success = await tx_store.delete_edge(
+                from_id=user.id,
+                from_collection=CollectionNames.USERS.value,
+                to_id=record_id,
+                to_collection=CollectionNames.RECORDS.value,
+                collection=CollectionNames.PERMISSION.value
+            )
+
+            if success:
+                self.logger.info(f"Deleted permission from record {record_id} for user {user_email}")
+            else:
+                self.logger.warning(f"Failed to delete permission from record {record_id} for user {user_email}")
 
     #IMPORTANT: DO NOT USE THIS METHOD
     #TODO: When an user is delelted from a connetor we need to delete the userAppRelation b/w the app and user

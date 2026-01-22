@@ -14,6 +14,7 @@ from typing import (
     Set,
     Tuple,
 )
+from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi.responses import StreamingResponse
@@ -651,8 +652,8 @@ async def adf_to_text_with_images(
             redirect_uri="connectors/oauth/callback/Jira",
             scopes=OAuthScopeConfig(
                 personal_sync=[],
-                team_sync=AtlassianScope.get_full_access(),
-                agent=AtlassianScope.get_full_access()
+                team_sync=AtlassianScope.get_jira_read_access(),
+                agent=AtlassianScope.get_jira_read_access()
             ),
             fields=[
                 AuthField(
@@ -668,11 +669,6 @@ async def adf_to_text_with_images(
                     description="The Client Secret from Azure AD App Registration",
                     field_type="PASSWORD",
                     is_secret=True
-                ),
-                AuthField(
-                    name="domain",
-                    display_name="Atlassian Domain",
-                    description="https://your-domain.atlassian.net"
                 )
             ],
             icon_path="/assets/icons/connectors/jira.svg",
@@ -3307,10 +3303,10 @@ class JiraConnector(BaseConnector):
                 else:
                     version = existing_record.version if existing_record else 0
 
-                # Construct web URL for attachment
+                # Construct web URL for attachment - use issue browse URL since attachments are visible there
                 weburl = None
-                if self.site_url:
-                    weburl = f"{self.site_url}/rest/api/3/attachment/content/{attachment_id}"
+                if self.site_url and issue_key:
+                    weburl = f"{self.site_url}/browse/{issue_key}"
 
                 # Determine parent: check if attachment belongs to a comment
                 filename_lower = filename.lower()
@@ -4076,6 +4072,8 @@ class JiraConnector(BaseConnector):
                 return None
 
             issue_data = response.json()
+            # Get issue key from the response (it's at the top level, not in fields)
+            issue_key = issue_data.get("key")  # Fallback to None if key not found
             fields = issue_data.get("fields", {})
             attachments = fields.get("attachment", [])
 
@@ -4114,10 +4112,10 @@ class JiraConnector(BaseConnector):
             # Increment version
             version = record.version + 1 if hasattr(record, 'version') else 1
 
-            # Construct web URL for attachment
+            # Construct web URL for attachment - use issue browse URL since attachments are visible there
             weburl = None
-            if self.site_url:
-                weburl = f"{self.site_url}/rest/api/3/attachment/content/{attachment_id}"
+            if self.site_url and issue_key:
+                weburl = f"{self.site_url}/browse/{issue_key}"
 
             # Create updated FileRecord preserving record ID
             attachment_record = FileRecord(
@@ -4228,7 +4226,6 @@ class JiraConnector(BaseConnector):
                 filename = record.record_name if hasattr(record, 'record_name') else f"attachment_{attachment_id}"
 
                 # Replace non-ASCII characters to avoid latin-1 encoding errors
-                from urllib.parse import quote
                 safe_filename = sanitize_filename_for_content_disposition(
                     filename,
                     fallback=f"attachment_{attachment_id}"

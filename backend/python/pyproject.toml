@@ -1,11 +1,13 @@
 [tool.ruff]
 line-length = 88
 target-version = "py310"
+src = ["."]
+
+[tool.ruff.lint]
 select = ["E", "F", "W", "I", "F401", "PLW0603"]
 ignore = [
     "E501",  # Line too long
 ]
-src = ["."]
 
 
 [project]
@@ -24,6 +26,8 @@ dependencies = [
     "aiolimiter==1.2.1",
     "aioredis==2.0.1",
     "azure-ai-formrecognizer==3.3.3",
+    "azure-storage-blob==12.28.0",
+    "azure-storage-file-share==12.19.0",
     "beautifulsoup4==4.12.3",
     "box-sdk-gen==1.12.0",
     "Brotli==1.2.0",
@@ -47,6 +51,7 @@ dependencies = [
     "python-gitlab==6.4.0",
     "google-api-python-client==2.161.0",
     "google-auth-oauthlib==1.2.1",
+    "google-cloud-storage==2.18.0",
     "Jinja2==3.1.6",
     "jsonschema==4.23.0",
     "langchain-anthropic==1.2.0",
@@ -69,6 +74,8 @@ dependencies = [
     "langgraph==1.0.4",
     "linkedin-api-client>=0.3.0",
     "markdown==3.8",
+    "monday-api-python-sdk>=0.1.0",
+    "snowflake-connector-python",
     "msgraph-sdk==1.16.0",
     "nats-py==2.1.0",
     "notion-client==2.2.1",

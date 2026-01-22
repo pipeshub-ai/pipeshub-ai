@@ -55,6 +55,7 @@ import {
 } from '../services/cm.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { Org } from '../../user_management/schema/org.schema';
+import { verifyTurnstileToken } from '../../../libs/utils/turnstile-verification';
 
 const {
   LOGIN,
@@ -63,6 +64,7 @@ const {
   WRONG_OTP,
   WRONG_PASSWORD,
   REFRESH_TOKEN,
+  PASSWORD_CHANGED,
 } = userActivitiesType;
 export const SALT_ROUNDS = 10;
 
@@ -111,8 +113,10 @@ export class UserAccountController {
       throw new GoneError('OTP has expired. Please request a new one.');
     }
 
+    // Ensure OTP is a string for bcrypt.compare (bcrypt requires both arguments to be strings)
+    const otpString = String(inputOTP);
     const isMatching = await bcrypt.compare(
-      inputOTP,
+      otpString,
       userCredentials.hashedOTP,
     );
     this.logger.debug('isMatching', isMatching);
@@ -207,7 +211,27 @@ export class UserAccountController {
       let result = await this.iamService.getUserByEmail(email, authToken);
 
       if (result.statusCode !== 200) {
-        throw new NotFoundError(result.data);
+        const session = await this.sessionService.createSession({
+          userId: "NOT_FOUND",
+          email: email,
+          orgId: "",
+          authConfig: {},
+          currentStep: 0,
+        });
+        if (!session) {
+          throw new InternalServerError('Failed to create session');
+        }
+        if (session.token) {
+          res.setHeader('x-session-token', session.token);
+        }
+        res.json({
+          currentStep: 0,
+          allowedMethods: ['password'],
+          message: 'Authentication initialized',
+          authProviders: {},
+        });
+        return;
+        // throw new NotFoundError(result.data);
       }
       const user = result.data;
       // const domain = getDomainFromEmail(email);
@@ -387,6 +411,14 @@ export class UserAccountController {
         userCredentialData.ipAddress = ipAddress;
       }
       await userCredentialData.save();
+
+      await UserActivities.create({
+        orgId: orgId,
+        userId: userId,
+        activityType: PASSWORD_CHANGED,
+        ipAddress: ipAddress,
+      });
+
       return { statusCode: 200, data: 'password updated' };
     } catch (error) {
       throw error;
@@ -399,10 +431,25 @@ export class UserAccountController {
     next: NextFunction,
   ): Promise<void> => {
     try {
-      const { email } = req.body;
+      const { email, 'cf-turnstile-response': turnstileToken } = req.body;
       if (!email) {
         throw new BadRequestError('Email is required');
       }
+      
+      // Verify Turnstile token
+      const turnstileSecretKey = process.env.TURNSTILE_SECRET_KEY;
+      if (turnstileSecretKey) { // Only verify if secret key is configured
+        const isValid = await verifyTurnstileToken(
+          turnstileToken,
+          turnstileSecretKey,
+          req.ip,
+          this.logger,
+        );
+        if (!isValid) {
+          throw new UnauthorizedError('Invalid CAPTCHA verification. Please try again.');
+        }
+      }
+      
       const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
       const user = await this.iamService.getUserByEmail(email, authToken);
 
@@ -613,13 +660,25 @@ export class UserAccountController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const { newPassword } = req.body;
-      const { currentPassword } = req.body;
+      const { newPassword, currentPassword, 'cf-turnstile-response': turnstileToken } = req.body;
+      
       if (!currentPassword) {
         throw new BadRequestError('currentPassword is required');
       }
       if (!newPassword) {
         throw new BadRequestError('newPassword is required');
+      }
+
+      // Verify Turnstile token if secret key is configured
+      const turnstileSecretKey = process.env.TURNSTILE_SECRET_KEY;
+      if (turnstileSecretKey) {
+        const isTurnstileValid = await verifyTurnstileToken(
+          turnstileToken,
+          turnstileSecretKey
+        );
+        if (!isTurnstileValid) {
+          throw new UnauthorizedError('Invalid CAPTCHA verification. Please try again.');
+        }
       }
 
       const userCredentialData = await UserCredentials.findOne({
@@ -648,7 +707,27 @@ export class UserAccountController {
         newPassword,
         req.ip || ' ',
       );
-      res.status(200).send({ data: 'password reset' });
+
+      const userFindResult = await this.iamService.getUserById(
+        req.user?.userId,
+        iamUserLookupJwtGenerator(
+          req.user?.userId,
+          req.user?.orgId,
+          this.config.scopedJwtSecret,
+        ),
+      );
+
+      if (userFindResult.statusCode !== 200) {
+        throw new NotFoundError(userFindResult.data);
+      }
+
+      const user = userFindResult.data;
+      const accessToken = await generateAuthToken(user, this.config.jwtSecret);
+
+      res.status(200).send({
+        data: 'password reset',
+        accessToken
+      });
       return;
     } catch (error) {
       next(error);
@@ -911,12 +990,9 @@ export class UserAccountController {
           },
         });
       }
-
       throw new BadRequestError(
-        `Password incorrect. Attempts remaining: ${
-          5 - userCredentials.wrongCredentialCount
-        }`,
-      );
+        "Incorrect password, please try again."
+      )
     } else {
       userCredentials.wrongCredentialCount = 0;
       await userCredentials.save();
@@ -936,7 +1012,7 @@ export class UserAccountController {
 
   async authenticateWithOtp(
     user: Record<string, any>,
-    otp: Number,
+    otp: string,
     ip: string,
   ) {
     const result = await this.verifyOTP(
@@ -1143,13 +1219,36 @@ export class UserAccountController {
   ): Promise<void> {
     try {
       this.logger.info('running authenticate');
-      const { method, credentials } = req.body;
+      const { method, credentials, 'cf-turnstile-response': turnstileToken } = req.body;
       const { sessionInfo } = req;
+      
+      // Verify Turnstile token for password authentication
+      if (method === AuthMethodType.PASSWORD) {
+        const turnstileSecretKey = process.env.TURNSTILE_SECRET_KEY;
+        if (turnstileSecretKey) { // Only verify if secret key is configured
+          const isValid = await verifyTurnstileToken(
+            turnstileToken,
+            turnstileSecretKey,
+            req.ip,
+            this.logger,
+          );
+          if (!isValid) {
+            throw new UnauthorizedError('Invalid CAPTCHA verification. Please try again.');
+          }
+        }
+      }
+      
       if (!method) {
         throw new BadRequestError('method is required');
       }
       if (!sessionInfo) {
         throw new NotFoundError('SessionInfo not found');
+      }
+
+      if (sessionInfo.userId === "NOT_FOUND") {
+        throw new BadRequestError(
+          "Incorrect password, please try again.",
+        );
       }
 
       const currentStepConfig = sessionInfo.authConfig[sessionInfo.currentStep];

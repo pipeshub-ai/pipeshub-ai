@@ -177,6 +177,7 @@ record_schema = {
             "externalParentId": {"type": ["string", "null"]},
             "externalRevisionId": {"type": ["string", "null"], "default": None},
             "externalRootGroupId": {"type": ["string", "null"]},
+            "recordGroupId": {"type": ["string", "null"]},
             "recordType": {
                 "type": "string",
                 "enum": [record_type.value for record_type in RecordType],
@@ -212,7 +213,8 @@ record_schema = {
                     "AUTO_INDEX_OFF",
                     "EMPTY",
                     "ENABLE_MULTIMODAL_MODELS",
-                    "QUEUED"
+                    "QUEUED",
+                    "CONNECTOR_DISABLED"
                 ],
             },
             "extractionStatus": {
@@ -239,6 +241,8 @@ record_schema = {
             "isShared": {"type": ["boolean", "null"], "default": False},
             "isDependentNode": {"type": "boolean", "default": False},
             "parentNodeId": {"type": ["string", "null"], "default": None},
+            "hideWeburl": {"type": "boolean", "default": False},
+            "isInternal": {"type": "boolean", "default": False},
             "md5Checksum": {"type": ["string", "null"]},
             "sizeInBytes": {"type": ["number", "null"]},
         },
@@ -262,13 +266,9 @@ file_record_schema = {
         "type": "object",
         "properties": {
             "orgId": {"type": "string"},
-            "recordGroupId": {"type":"string"},  # kb id
             "name": {"type": "string", "minLength": 1},
             "isFile": {"type": "boolean"},
             "extension": {"type": ["string", "null"]},
-            "mimeType": {"type": ["string", "null"]},
-            "sizeInBytes": {"type": "number"},
-            "webUrl": {"type": "string"},
             "etag": {"type": ["string", "null"]},
             "ctag": {"type": ["string", "null"]},
             "md5Checksum": {"type": ["string", "null"]},
@@ -277,6 +277,9 @@ file_record_schema = {
             "sha1Hash": {"type": ["string", "null"]},
             "sha256Hash": {"type": ["string", "null"]},
             "path": {"type": ["string", "null"]},
+            "sizeInBytes": {"type": ["number", "null"]}, # deprecated
+            "webUrl": {"type": ["string", "null"]}, # deprecated
+            "mimeType": {"type": ["string", "null"]}, # deprecated
         },
         "required": ["name"],
         "additionalProperties": False,
@@ -369,11 +372,14 @@ ticket_record_schema = {
             "description": {"type": ["string", "null"]},
             "status": {"type": ["string", "null"]},
             "priority": {"type": ["string", "null"]},
+            "type": {"type": ["string", "null"]},
+            "deliveryStatus": {"type": ["string", "null"]},
             "assignee": {"type": ["string", "null"]},
             "reporterEmail": {"type": ["string", "null"]},
             "assigneeEmail": {"type": ["string", "null"]},
             "creatorEmail": {"type": ["string", "null"]},
             "creatorName": {"type": ["string", "null"]},
+            "reporterName": {"type": ["string", "null"]},
         },
     },
 }
@@ -875,3 +881,20 @@ team_schema = {
 #     "level": "strict",
 #     "message": "Document does not match the workflow schema.",
 # }
+
+# people schema - for external email addresses (not organization members)
+people_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_key": {"type": "string"},  # deterministic UUID based on email
+            "email": {"type": "string", "format": "email"},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["email", "createdAtTimestamp", "updatedAtTimestamp"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the people schema.",
+}

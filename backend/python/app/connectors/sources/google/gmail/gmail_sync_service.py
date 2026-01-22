@@ -461,8 +461,14 @@ class BaseGmailSyncService(ABC):
                     len(emails_needing_people)
                 )
 
+                timestamp = get_epoch_timestamp_in_ms()
                 people_docs = [
-                    {"_key": str(uuid.uuid4()), "email": email}
+                    {
+                        "_key": str(uuid.uuid5(uuid.NAMESPACE_DNS, email.lower())),
+                        "email": email.lower(),
+                        "createdAtTimestamp": timestamp,
+                        "updatedAtTimestamp": timestamp,
+                    }
                     for email in emails_needing_people
                 ]
 
@@ -607,7 +613,7 @@ class BaseGmailSyncService(ABC):
                         "isArchived": False,
                         "lastIndexTimestamp": None,
                         "lastExtractionTimestamp": None,
-                        "indexingStatus": "NOT_STARTED",
+                        "indexingStatus": "QUEUED",
                         "extractionStatus": "NOT_STARTED",
                         "virtualRecordId": None,
                         "isLatestVersion": True,
@@ -693,7 +699,7 @@ class BaseGmailSyncService(ABC):
                         "isDeleted": False,
                         "isArchived": False,
                         "virtualRecordId": None,
-                        "indexingStatus": "NOT_STARTED",
+                        "indexingStatus": "QUEUED",
                         "extractionStatus": "NOT_STARTED",
                         "lastIndexTimestamp": None,
                         "lastExtractionTimestamp": None,

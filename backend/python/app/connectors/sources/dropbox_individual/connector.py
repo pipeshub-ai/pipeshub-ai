@@ -254,7 +254,6 @@ class DropboxIndividualConnector(BaseConnector):
 
         self.data_source: Optional[DropboxDataSource] = None
         self.batch_size = 100
-        self.max_concurrent_batches = 5
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
 
         self.sync_filters: FilterCollection = FilterCollection()
@@ -1036,12 +1035,9 @@ class DropboxIndividualConnector(BaseConnector):
             id=str(uuid.uuid4()),
             name=display_name,
             group_type=RecordGroupType.DRIVE.value,
-            origin=OriginTypes.CONNECTOR.value,
             connector_name=self.connector_name,
             connector_id=self.connector_id,
             external_group_id=user_id,
-            external_user_id=user_id,
-            is_active=True
         )
         # Permissions: Owner
         permissions = [Permission(external_id=user_id, email=user_email, type=PermissionType.OWNER, entity_type=EntityType.USER)]

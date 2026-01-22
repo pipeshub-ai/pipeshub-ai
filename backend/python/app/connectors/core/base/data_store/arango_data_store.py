@@ -23,6 +23,7 @@ from app.models.entities import (
     Domain,
     FileRecord,
     Org,
+    Person,
     Record,
     RecordGroup,
     RecordType,
@@ -58,6 +59,9 @@ class ArangoTransactionStore(TransactionStore):
 
     async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
         return await self.arango_service.get_record_by_external_id(connector_id, external_id, transaction=self.txn)
+
+    async def get_record_by_external_revision_id(self, connector_id: str, external_revision_id: str) -> Optional[Record]:
+        return await self.arango_service.get_record_by_external_revision_id(connector_id, external_revision_id, transaction=self.txn)
 
     async def get_record_by_issue_key(self, connector_id: str, issue_key: str) -> Optional[Record]:
         return await self.arango_service.get_record_by_issue_key(connector_id, issue_key, transaction=self.txn)
@@ -137,6 +141,10 @@ class ArangoTransactionStore(TransactionStore):
 
     async def delete_edges_to(self, to_key: str, collection: str) -> None:
         return await self.arango_service.delete_edges_to(to_key, collection, transaction=self.txn)
+
+    async def delete_parent_child_edges_to(self, to_key: str) -> int:
+        """Delete PARENT_CHILD edges pointing to a specific target record."""
+        return await self.arango_service.delete_parent_child_edges_to(to_key, transaction=self.txn)
 
     async def delete_edges_to_groups(self, from_key: str, collection: str) -> None:
         return await self.arango_service.delete_edges_to_groups(from_key, collection, transaction=self.txn)
@@ -367,6 +375,9 @@ class ArangoTransactionStore(TransactionStore):
                 collection=CollectionNames.USER_APP_RELATION.value,
                 transaction=self.txn
             )
+
+    async def batch_upsert_people(self, people: List[Person]) -> None:
+        return await self.arango_service.batch_upsert_people(people, transaction=self.txn)
 
     async def batch_upsert_orgs(self, orgs: List[Org]) -> None:
         return await self.arango_service.batch_upsert_orgs(orgs, transaction=self.txn)

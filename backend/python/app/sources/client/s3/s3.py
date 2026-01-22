@@ -152,6 +152,10 @@ class S3Client(IClient):
         """Get AWS credentials for aioboto3 session creation"""
         return self.client.get_credentials()
 
+    def get_region_name(self) -> str:
+        """Get the configured region name"""
+        return self.client.get_region_name()
+
     @classmethod
     def build_with_config(cls, config: S3AccessKeyConfig) -> "S3Client":
         """Build S3Client with configuration

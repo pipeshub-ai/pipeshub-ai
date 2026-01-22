@@ -296,6 +296,7 @@ interface Connector {
   updatedBy?: string;
   createdAtTimestamp: number;
   updatedAtTimestamp: number;
+  connectorInfo?: string;
 }
 
 /**
@@ -314,6 +315,7 @@ interface ConnectorRegistry {
   supportsSync: boolean;
   supportsAgent: boolean;
   connectorScopes?: ('personal' | 'team')[];
+  connectorInfo?: string;
   config: {
     auth: any;
     sync: any;
@@ -333,6 +335,7 @@ interface IndexingStatusStats {
   EMPTY: number;
   ENABLE_MULTIMODAL_MODELS: number;
   QUEUED: number;
+  CONNECTOR_DISABLED: number;
 }
 
 interface BasicStats {

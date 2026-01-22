@@ -2,9 +2,7 @@ from contextlib import asynccontextmanager
 from logging import Logger
 from typing import AsyncContextManager, Dict, List, Optional
 
-from app.config.constants.arangodb import (
-    CollectionNames,
-)
+from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
     TransactionStore,
@@ -19,6 +17,7 @@ from app.models.entities import (
     Domain,
     FileRecord,
     Org,
+    Person,
     Record,
     RecordGroup,
     User,
@@ -56,6 +55,9 @@ class GraphTransactionStore(TransactionStore):
 
     async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
         return await self.graph_provider.get_record_by_external_id(connector_id, external_id, transaction=self.txn)
+
+    async def get_record_by_external_revision_id(self, connector_id: str, external_revision_id: str) -> Optional[Record]:
+        return await self.graph_provider.get_record_by_external_revision_id(connector_id, external_revision_id, transaction=self.txn)
 
     async def get_records_by_status(self, org_id: str, connector_id: str, status_filters: List[str], limit: Optional[int] = None, offset: int = 0) -> List[Record]:
         """Get records by status. Returns properly typed Record instances."""
@@ -118,6 +120,10 @@ class GraphTransactionStore(TransactionStore):
     async def delete_edges_to(self, to_id: str, to_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edges_to(to_id, to_collection, collection, transaction=self.txn)
 
+    async def delete_parent_child_edges_to(self, to_key: str) -> int:
+        """Delete PARENT_CHILD edges pointing to a specific target record."""
+        return await self.graph_provider.delete_parent_child_edges_to(to_key, transaction=self.txn)
+
     async def delete_edges_to_groups(self, from_id: str, from_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edges_to_groups(from_id, from_collection, collection, transaction=self.txn)
 
@@ -146,6 +152,9 @@ class GraphTransactionStore(TransactionStore):
 
     async def get_user_groups(self, connector_id: str, org_id: str) -> List[AppUserGroup]:
         return await self.graph_provider.get_user_groups(connector_id, org_id, transaction=self.txn)
+
+    async def batch_upsert_people(self, people: List[Person]) -> None:
+        return await self.graph_provider.batch_upsert_people(people, transaction=self.txn)
 
     async def create_user_group_hierarchy(
         self,
@@ -573,12 +582,12 @@ class GraphDataStore(DataStoreProvider):
 
         """
         # Begin transaction - returns transaction ID (str) for HTTP provider
-        self.logger.info("🔄 Beginning transaction...")
+        self.logger.debug("🔄 Beginning transaction...")
         txn = await self.graph_provider.begin_transaction(
             read=read_collections,
             write=write_collections
         )
-        self.logger.info(f"✅ Transaction started with ID: {txn}")
+        self.logger.debug(f"✅ Transaction started with ID: {txn}")
 
         tx_store = GraphTransactionStore(self.graph_provider, txn)
 
@@ -587,12 +596,9 @@ class GraphDataStore(DataStoreProvider):
         except Exception as e:
             self.logger.error(f"❌ Transaction error, rolling back: {str(e)}")
             await tx_store.rollback()
-            self.logger.info(f"🔄 Transaction {txn} rolled back")
             raise
         else:
-            self.logger.info(f"💾 Committing transaction {txn}...")
             await tx_store.commit()
-            self.logger.info(f"✅ Transaction {txn} committed successfully")
 
     async def execute_in_transaction(self, func, *args, **kwargs) -> None:
         """Execute function within graph database transaction"""

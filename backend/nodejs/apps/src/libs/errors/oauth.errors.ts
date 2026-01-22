@@ -40,3 +40,39 @@ export class AuthorizationError extends OAuthError {
     super('AUTHORIZATION_ERROR', message, 403, metadata);
   }
 }
+
+export class InvalidClientError extends OAuthError {
+  constructor(message: string, metadata?: ErrorMetadata) {
+    super('INVALID_CLIENT', message, 401, metadata);
+  }
+}
+
+export class InvalidRedirectUriError extends OAuthError {
+  constructor(message: string, metadata?: ErrorMetadata) {
+    super('INVALID_REDIRECT_URI', message, 400, metadata);
+  }
+}
+
+export class UnsupportedGrantTypeError extends OAuthError {
+  constructor(message: string, metadata?: ErrorMetadata) {
+    super('UNSUPPORTED_GRANT_TYPE', message, 400, metadata);
+  }
+}
+
+export class AccessDeniedError extends OAuthError {
+  constructor(message: string, metadata?: ErrorMetadata) {
+    super('ACCESS_DENIED', message, 403, metadata);
+  }
+}
+
+export class UnauthorizedClientError extends OAuthError {
+  constructor(message: string, metadata?: ErrorMetadata) {
+    super('UNAUTHORIZED_CLIENT', message, 401, metadata);
+  }
+}
+
+export class ServerError extends OAuthError {
+  constructor(message: string, metadata?: ErrorMetadata) {
+    super('SERVER_ERROR', message, 500, metadata);
+  }
+}

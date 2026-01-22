@@ -90,7 +90,12 @@ export class FileProcessorService implements IFileUploadService {
         });
 
         // Process file metadata (including lastModified) immediately after multer processing
-        this.processFileMetadata(req, files);
+        try {
+          this.processFileMetadata(req, files);
+        } catch (metadataError) {
+          logger.error('File metadata processing failed', { error: metadataError });
+          return next(metadataError);
+        }
 
         // If strict mode and no files, throw an error
         if (files.length === 0) {
@@ -114,8 +119,9 @@ export class FileProcessorService implements IFileUploadService {
   }
 
   /**
-   * Process file metadata including lastModified
-   * This method extracts lastModified values from request body and attaches them to file objects
+   * Process file metadata from files_metadata JSON.
+   * Expected format: JSON array with { file_path, last_modified } objects
+   * Each entry corresponds to a file by index.
    */
   private processFileMetadata(
     req: Request,
@@ -125,85 +131,58 @@ export class FileProcessorService implements IFileUploadService {
       return;
     }
 
-    // Get lastModified values from request body
-    const lastModifiedValues = req.body.lastModified
-      ? Array.isArray(req.body.lastModified)
-        ? req.body.lastModified
-        : [req.body.lastModified]
-      : [];
-
-    logger.debug('File Processor Service - Request body:', {
-      lastModifiedValues,
-      bodyKeys: Object.keys(req.body),
+    logger.debug('Processing file metadata', {
       filesCount: files.length,
+      hasFilesMetadata: !!req.body.files_metadata,
     });
 
-    // Attach lastModified to each file
-    files.forEach((file, index) => {
-      const lastModifiedValue = lastModifiedValues[index];
+    // Parse files_metadata JSON
+    let filesMetadata: Array<{ file_path: string; last_modified: number }> = [];
 
-      logger.debug('File Processor Service - Processing file metadata:', {
-        fileName: file.originalname,
-        index,
-        lastModifiedValue: lastModifiedValue,
-        lastModifiedType: typeof lastModifiedValue,
-      });
-
-      let lastModified: number;
-
+    if (req.body.files_metadata) {
       try {
-        if (lastModifiedValue !== undefined && lastModifiedValue !== null) {
-          // First try parsing as a number directly
-          const timestamp = Number(lastModifiedValue);
-          if (!isNaN(timestamp) && timestamp > 0) {
-            lastModified = timestamp;
-          } else {
-            // If not a valid number, try parsing as a date string
-            const date = new Date(lastModifiedValue);
-            if (!isNaN(date.getTime())) {
-              lastModified = date.getTime();
-            } else {
-              // If parsing fails, use current time
-              lastModified = Date.now();
-              logger.error(
-                'Failed to parse lastModified, using current time:',
-                {
-                  fileName: file.originalname,
-                  lastModifiedValue,
-                  fallbackTime: lastModified,
-                },
-              );
-            }
-          }
-        } else {
-          // If no lastModified provided, use current time
-          lastModified = Date.now();
-          logger.debug('No lastModified provided, using current time:', {
-            fileName: file.originalname,
-            index,
-            fallbackTime: lastModified,
-          });
-        }
+        filesMetadata = JSON.parse(req.body.files_metadata);
       } catch (error) {
-        // If parsing fails, use current time
-        lastModified = Date.now();
-        logger.debug('Error parsing lastModified, using current time:', {
-          fileName: file.originalname,
-          lastModifiedValue,
-          error,
-          fallbackTime: lastModified,
-        });
+        logger.error('Failed to parse files_metadata JSON', { error });
+        throw new BadRequestError(
+          'Invalid files_metadata format. Expected JSON array.',
+        );
       }
 
-      logger.debug('File Processor Service - Final metadata result:', {
-        fileName: file.originalname,
-        lastModifiedValue: lastModifiedValue,
-        parsedLastModified: lastModified,
-        isValidTimestamp: lastModified > 0,
-      });
+      // Validate metadata count matches files count
+      if (filesMetadata.length !== files.length) {
+        logger.error('Metadata count mismatch', {
+          filesCount: files.length,
+          metadataCount: filesMetadata.length,
+        });
+        throw new BadRequestError(
+          `Metadata count mismatch: expected ${files.length} entries but got ${filesMetadata.length}`,
+        );
+      }
+    }
 
-      // Store the parsed timestamp on the file object
-      (file as CustomMulterFile).lastModified = lastModified;
+    // Attach metadata to each file
+    files.forEach((file, index) => {
+      const metadata = filesMetadata[index];
+      const customFile = file as CustomMulterFile;
+
+      // Set file path (from metadata or fallback to original filename)
+      customFile.filePath = metadata?.file_path || file.originalname;
+
+      // Set lastModified (from metadata or fallback to current time)
+      if (metadata?.last_modified) {
+        const timestamp = Number(metadata.last_modified);
+        customFile.lastModified =
+          !isNaN(timestamp) && timestamp > 0 ? timestamp : Date.now();
+      } else {
+        customFile.lastModified = Date.now();
+      }
+
+      logger.debug('File metadata processed', {
+        fileName: file.originalname,
+        filePath: customFile.filePath,
+        lastModified: customFile.lastModified,
+      });
     });
   }
 
@@ -291,11 +270,14 @@ export class FileProcessorService implements IFileUploadService {
         req.body.fileBuffers = files
           .map((file) => {
             if (!file) return null;
-            const lastModified = (file as CustomMulterFile).lastModified!;
+            const customFile = file as CustomMulterFile;
+            const lastModified = customFile.lastModified ?? Date.now();
+            const filePath = customFile.filePath ?? file.originalname;
+
             logger.debug('File Processor Service - Creating buffer info:', {
               fileName: file.originalname,
+              filePath,
               lastModified,
-              hasLastModified: !!(file as any).lastModified,
             });
 
             return {
@@ -304,6 +286,7 @@ export class FileProcessorService implements IFileUploadService {
               mimetype: file.mimetype,
               size: file.size,
               lastModified: lastModified,
+              filePath: filePath,
             } as FileBufferInfo;
           })
           .filter(Boolean);
@@ -313,13 +296,16 @@ export class FileProcessorService implements IFileUploadService {
       } else if (files.length === 1) {
         const file = files[0];
         if (file) {
-          const lastModified = (file as CustomMulterFile).lastModified!;
+          const customFile = file as CustomMulterFile;
+          const lastModified = customFile.lastModified ?? Date.now();
+          const filePath = customFile.filePath ?? file.originalname;
+
           logger.debug(
             'File Processor Service - Creating single buffer info:',
             {
               fileName: file.originalname,
+              filePath,
               lastModified,
-              hasLastModified: !!(file as any).lastModified,
             },
           );
 
@@ -329,6 +315,7 @@ export class FileProcessorService implements IFileUploadService {
             mimetype: file.mimetype,
             size: file.size,
             lastModified: lastModified,
+            filePath: filePath,
           } as FileBufferInfo;
           logger.debug('Processed single buffer file');
         }

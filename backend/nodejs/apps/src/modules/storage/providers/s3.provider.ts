@@ -49,15 +49,18 @@ class AmazonS3Adapter implements StorageServiceInterface {
         });
       }
 
+      // Validate and sanitize region input (defense-in-depth for AWS SDK v2 region validation advisory)
+      const sanitizedRegion = this.validateAndSanitizeRegion(region);
+
       // Initialize AWS S3 client
       this.s3 = new S3({
         accessKeyId,
         secretAccessKey,
-        region,
+        region: sanitizedRegion,
       });
 
       this.bucketName = bucket;
-      this.region = region;
+      this.region = sanitizedRegion;
       if (process.env.NODE_ENV == 'development') {
         this.logger.info('S3 adapter initialized', {
           bucket: this.bucketName,
@@ -441,6 +444,33 @@ class AmazonS3Adapter implements StorageServiceInterface {
         originalError: error instanceof Error ? error.message : 'Unknown error',
       });
     }
+  }
+
+  /**
+   * Validates and sanitizes AWS region input to prevent invalid region values.
+   * Implements defense-in-depth for AWS SDK v2 region validation advisory.
+   * @param region - The AWS region string to validate
+   * @returns The sanitized region string
+   * @throws {StorageConfigurationError} If the region format is invalid
+   */
+  private validateAndSanitizeRegion(region: string): string {
+    // Trim whitespace
+    const trimmed = region.trim();
+
+    // Validate AWS region format using a regex.
+    const awsRegionPattern = /^[a-z]{2,4}(-[a-z0-9]+)+-[0-9]+$/;
+
+    if (!awsRegionPattern.test(trimmed.toLowerCase())) {
+      throw new StorageConfigurationError(
+        'Invalid AWS region format. Region must follow pattern: {area}-{location}-{number} (e.g., us-east-1)',
+        {
+          providedRegion: region,
+          validationError: 'Region format validation failed',
+        },
+      );
+    }
+
+    return trimmed.toLowerCase();
   }
 
   /**

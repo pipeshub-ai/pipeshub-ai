@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Union
 
@@ -33,6 +34,7 @@ from app.modules.parsers.excel.prompt_template import (
     sheet_summary_prompt,
     table_summary_prompt,
 )
+from app.utils.indexing_helpers import generate_simple_row_text
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
 
@@ -52,9 +54,33 @@ class ExcelParser:
         self.min_wait = 1  # seconds
         self.max_wait = 10  # seconds
 
+    def load_workbook_from_binary(self, file_binary: bytes) -> None:
+        """Load workbook from binary (no LLM calls).
+
+        This is the first phase of Excel processing - pure parsing without LLM calls.
+        """
+        self.file_binary = file_binary
+        if self.file_binary:
+            self.workbook = load_workbook(io.BytesIO(file_binary), data_only=True)
+
+    async def create_blocks(self, llm: BaseChatModel) -> BlocksContainer:
+        """Create blocks from loaded workbook (involves LLM calls).
+
+        This is the second phase - involves LLM calls for table summaries and row descriptions.
+        Must call load_workbook_from_binary() first.
+        """
+        try:
+            return await self.get_blocks_from_workbook(llm)
+        finally:
+            if self.workbook:
+                self.workbook.close()
+
     async def parse(self, file_binary: bytes, llm: BaseChatModel) -> BlocksContainer:
         """
         Parse Excel file and extract all content including sheets, cells, formulas, etc.
+
+        For new code, prefer using load_workbook_from_binary() followed by create_blocks()
+        to allow yielding progress events between phases.
 
         Returns:
             Dict containing parsed content with structure:
@@ -68,14 +94,7 @@ class ExcelParser:
             }
         """
         try:
-            self.file_binary = file_binary
-            # Load workbook from binary or file path
-            if self.file_binary:
-
-                self.workbook = load_workbook(
-                    io.BytesIO(self.file_binary), data_only=True
-                )
-
+            self.load_workbook_from_binary(file_binary)
             return await self.get_blocks_from_workbook(llm)
 
         except Exception:
@@ -501,14 +520,22 @@ Do not include any additional explanation or text."""
             raise
 
     async def process_sheet_with_summaries(
-        self, llm, sheet_name: str
+        self, llm, sheet_name: str, cumulative_row_count: List[int]
     ) -> Dict[str, Any]:
-        """Process a sheet and generate all summaries and row texts"""
+        """Process a sheet and generate all summaries and row texts
+        Args:
+            llm: Language model instance
+            sheet_name: Name of the sheet to process
+            cumulative_row_count: List with single element [count] to track cumulative rows across all tables
+        """
         self.llm = llm
 
         if sheet_name not in self.workbook.sheetnames:
             self.logger.warning(f"Sheet '{sheet_name}' not found in workbook")
             return None
+
+        # Get threshold from environment variable (default: 1000)
+        threshold = int(os.getenv("MAX_TABLE_ROWS_FOR_LLM", "1000"))
 
         # Get tables in the sheet
         tables = await self.get_tables_in_sheet(sheet_name)
@@ -516,48 +543,71 @@ Do not include any additional explanation or text."""
         # Process each table
         processed_tables = []
         for table in tables:
-            # Get table summary
+            # Get table summary (always use LLM)
             table_summary = await self.get_table_summary(table)
 
-            # Process rows in batches of 50 in parallel
+            # Add current table rows to cumulative count
+            table_row_count = len(table["data"])
+            cumulative_row_count[0] += table_row_count
+
+            # Check if cumulative count exceeds threshold
+            use_llm_for_rows = cumulative_row_count[0] <= threshold
+
             processed_rows = []
-            batch_size = 50
 
-            # Create batches
-            batches = []
-            for i in range(0, len(table["data"]), batch_size):
-                batch = table["data"][i : i + batch_size]
-                batches.append((i, batch))  # Store start index and batch data
+            if use_llm_for_rows:
+                # Process rows in batches of 50 in parallel using LLM
+                batch_size = 50
 
-            # Limit parallel processing to at most 10 concurrent batches
-            semaphore = asyncio.Semaphore(10)
+                # Create batches
+                batches = []
+                for i in range(0, len(table["data"]), batch_size):
+                    batch = table["data"][i : i + batch_size]
+                    batches.append((i, batch))  # Store start index and batch data
 
-            async def limited_get_rows_text(batch) -> List[str]:
-                async with semaphore:
-                    return await self.get_rows_text(batch, table_summary)
+                # Limit parallel processing to at most 10 concurrent batches
+                semaphore = asyncio.Semaphore(10)
 
-            # Create throttled tasks for all batches
-            batch_tasks = []
-            for start_idx, batch in batches:
-                task = limited_get_rows_text(batch)
-                batch_tasks.append((start_idx, batch, task))
+                async def limited_get_rows_text(batch) -> List[str]:
+                    async with semaphore:
+                        return await self.get_rows_text(batch, table_summary)
 
-            # Wait for all batches to complete (max 10 running concurrently)
-            task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])
+                # Create throttled tasks for all batches
+                batch_tasks = []
+                for start_idx, batch in batches:
+                    task = limited_get_rows_text(batch)
+                    batch_tasks.append((start_idx, batch, task))
 
-            # Combine results with their metadata and process
-            for i, (start_idx, batch, _) in enumerate(batch_tasks):
-                row_texts = task_results[i]
+                # Wait for all batches to complete (max 10 running concurrently)
+                task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])
 
-                # Add processed rows to results
-                for row, row_text in zip(batch, row_texts):
-                    processed_rows.append(
-                        {
-                            "raw_data": {cell["header"]: cell["value"] for cell in row},
-                            "natural_language_text": row_text,
-                            "row_num": row[0]["row"],  # Include row number
-                        }
-                    )
+                # Combine results with their metadata and process
+                for i, (start_idx, batch, _) in enumerate(batch_tasks):
+                    row_texts = task_results[i]
+
+                    # Add processed rows to results
+                    for row, row_text in zip(batch, row_texts):
+                        if row:
+                            processed_rows.append(
+                                {
+                                    "raw_data": {cell["header"]: cell["value"] for cell in row},
+                                    "natural_language_text": row_text,
+                                    "row_num": row[0]["row"],  # Include row number
+                                }
+                            )
+            else:
+                # Use simple format for rows (skip LLM)
+                for row in table["data"]:
+                    if row:
+                        row_data = {cell["header"]: cell["value"] for cell in row}
+                        row_text = generate_simple_row_text(row_data)
+                        processed_rows.append(
+                            {
+                                "raw_data": row_data,
+                                "natural_language_text": row_text,
+                                "row_num": row[0]["row"]  # Include row number
+                            }
+                        )
 
             processed_tables.append(
                 {
@@ -583,9 +633,12 @@ Do not include any additional explanation or text."""
         blocks: List[Block] = []
         block_groups: List[BlockGroup] = []
 
+        # Initialize cumulative row count for record-level threshold checking
+        cumulative_row_count = [0]
+
         # Iterate sheets and build hierarchy
         for sheet_idx, sheet_name in enumerate(self.workbook.sheetnames, 1):
-            sheet_result = await self.process_sheet_with_summaries(llm, sheet_name)
+            sheet_result = await self.process_sheet_with_summaries(llm, sheet_name, cumulative_row_count)
             if sheet_result is None:
                 continue
 
