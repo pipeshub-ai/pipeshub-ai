@@ -1,0 +1,127 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}-etcd
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: etcd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: etcd
+  template:
+    metadata:
+      labels:
+        {{- include "pipeshub-ai.labels" . | nindent 8 }}
+        app.kubernetes.io/component: etcd
+    spec:
+      securityContext:
+        {{- toYaml .Values.etcd.podSecurityContext | nindent 8 }}
+      containers:
+        - name: etcd
+          image: "{{ .Values.etcd.image.repository }}:{{ .Values.etcd.image.tag }}"
+          imagePullPolicy: {{ .Values.etcd.image.pullPolicy }}
+          ports:
+            - name: client
+              containerPort: 2379
+              protocol: TCP
+            - name: peer
+              containerPort: 2380
+              protocol: TCP
+          command:
+            - etcd
+            - --name
+            - etcd-node
+            - --data-dir
+            - /etcd-data
+            - --listen-client-urls
+            - http://0.0.0.0:2379
+            - --advertise-client-urls
+            - http://{{ include "pipeshub-ai.fullname" . }}-etcd:2379
+            - --listen-peer-urls
+            - http://0.0.0.0:2380
+            - --initial-advertise-peer-urls
+            - http://{{ include "pipeshub-ai.fullname" . }}-etcd:2380
+            - --initial-cluster
+            - etcd-node=http://{{ include "pipeshub-ai.fullname" . }}-etcd:2380
+          livenessProbe:
+            exec:
+              command:
+                - etcdctl
+                - endpoint
+                - health
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 5
+          readinessProbe:
+            exec:
+              command:
+                - etcdctl
+                - endpoint
+                - health
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 5
+          volumeMounts:
+            - name: etcd-data
+              mountPath: /etcd-data
+          resources:
+            {{- toYaml .Values.etcd.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.etcd.securityContext | nindent 12 }}
+      volumes:
+        - name: etcd-data
+          {{- if .Values.etcd.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "pipeshub-ai.fullname" . }}-etcd
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}-etcd
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: etcd
+spec:
+  type: ClusterIP
+  ports:
+    - name: client
+      port: 2379
+      targetPort: client
+      protocol: TCP
+    - name: peer
+      port: 2380
+      targetPort: peer
+      protocol: TCP
+  selector:
+    {{- include "pipeshub-ai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: etcd
+
+---
+
+{{- if .Values.etcd.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}-etcd
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: etcd
+spec:
+  accessModes:
+    {{- toYaml .Values.etcd.persistence.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.etcd.persistence.size | quote }}
+  {{- if .Values.etcd.persistence.storageClass }}
+  storageClassName: {{ .Values.etcd.persistence.storageClass | quote }}
+  {{- end }}
+{{- end }}

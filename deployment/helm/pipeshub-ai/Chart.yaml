@@ -1,0 +1,14 @@
+apiVersion: v2
+name: pipeshub-ai
+description: PipeshubAI Helm Chart
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
+dependencies:
+  - name: mongodb
+    version: 18.1.10
+    repository: "oci://registry-1.docker.io/bitnamicharts"
+  - name: redis
+    version: 24.0.0
+    repository: "oci://registry-1.docker.io/bitnamicharts"
