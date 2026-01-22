@@ -17,6 +17,7 @@ class HttpStatusCode(Enum):
     NOT_FOUND = 404
     METHOD_NOT_ALLOWED = 405
     CONFLICT = 409
+    GONE = 410
     UNPROCESSABLE_ENTITY = 422
     TOO_MANY_REQUESTS = 429
 

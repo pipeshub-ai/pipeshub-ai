@@ -88,7 +88,6 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
     async def create_key(self, key: str, value: T, overwrite: bool = True, ttl: Optional[int] = None) -> bool:
         """Create a new key in etcd."""
         logger.debug("🔄 Creating key in ETCD: %s", key)
-        logger.debug("📋 Value: %s (type: %s)", value, type(value))
         logger.debug("📋 TTL: %s seconds", ttl if ttl else "None")
 
         try:
