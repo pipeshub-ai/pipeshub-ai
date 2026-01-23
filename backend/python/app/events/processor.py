@@ -771,7 +771,7 @@ class Processor:
                 # Multiple tables - use new multi-table processing
                 self.logger.info(f"📊 Processing {len(tables)} tables with multi-table logic")
                 block_containers = await parser.get_blocks_from_csv_with_multiple_tables(tables, llm)
-            
+
             record.block_containers = block_containers
 
             ctx = TransformContext(record=record)

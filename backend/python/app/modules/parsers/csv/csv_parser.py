@@ -40,6 +40,14 @@ from app.utils.streaming import (
 
 logger = create_logger("csv_parser")
 
+# Module-level constants for CSV processing
+NUM_SAMPLE_ROWS = 5  # Number of representative sample rows to select for header detection
+DEFAULT_BATCH_SIZE = 50  # Default batch size for processing rows
+MAX_CONCURRENT_BATCHES = 10  # Maximum number of concurrent batches for LLM calls
+MAX_HEADER_GENERATION_ROWS = 10  # Maximum number of rows to use for header generation
+MAX_SUMMARY_SAMPLE_ROWS = 10  # Maximum number of sample rows for table summary
+MIN_ROWS_FOR_HEADER_ANALYSIS = 2  # Minimum number of rows required for header analysis
+
 class CSVParser:
     def __init__(
         self, delimiter: str = ",", quotechar: str = '"', encoding: str = "utf-8"
@@ -279,10 +287,10 @@ class CSVParser:
         """
         selected_rows = []
         fallback_rows = []
-        
+
         for idx, row in enumerate(csv_result):
             empty_count = self._count_empty_values(row)
-            
+
             if empty_count == 0:
                 # Perfect row with no empty values
                 selected_rows.append((idx, row, empty_count))
@@ -291,7 +299,7 @@ class CSVParser:
             else:
                 # Keep track of best non-perfect rows as fallback
                 fallback_rows.append((idx, row, empty_count))
-        
+
         # If we didn't find enough perfect rows, supplement with the best fallback rows
         if len(selected_rows) < num_sample_rows:
             # Sort fallback rows by empty count (ascending), then by index
@@ -299,10 +307,10 @@ class CSVParser:
             # Add the best fallback rows to reach the target count
             needed = num_sample_rows - len(selected_rows)
             selected_rows.extend(fallback_rows[:needed])
-        
+
         # Sort by original index to maintain logical order
         selected_rows.sort(key=lambda x: x[0])
-        
+
         return selected_rows
 
     def _reconstruct_csv_with_new_headers(
@@ -336,16 +344,16 @@ class CSVParser:
             new_headers[i]: "null" if current_headers[i].startswith("Column_") else current_headers[i]
             for i in range(len(new_headers))
         }]
-        
+
         # Reconstruct line_numbers: first row gets specified line number, then existing
         line_numbers = [first_row_line_number] + existing_line_numbers
-        
+
         # Add remaining data rows with new headers
         csv_result.extend([
             {new_headers[i]: row[i] for i in range(len(new_headers))}
             for row in all_data_rows
         ])
-        
+
         return (csv_result, line_numbers)
 
     def read_raw_rows(self, file_stream: TextIO) -> List[List[str]]:
@@ -377,7 +385,7 @@ class CSVParser:
         """
         if not row:
             return True
-        
+
         # If range is specified, check only that range
         if start_col is not None and end_col is not None:
             values_to_check = row[start_col:end_col + 1] if start_col < len(row) else []
@@ -387,7 +395,7 @@ class CSVParser:
             values_to_check = row[:end_col + 1]
         else:
             values_to_check = row
-        
+
         return all(
             value is None or (isinstance(value, str) and value.strip() == "")
             for value in values_to_check
@@ -408,7 +416,7 @@ class CSVParser:
         """
         if not all_rows:
             return True
-        
+
         # Determine row range to check
         if start_row is not None and end_row is not None:
             rows_to_check = all_rows[start_row:end_row + 1]
@@ -418,22 +426,22 @@ class CSVParser:
             rows_to_check = all_rows[:end_row + 1]
         else:
             rows_to_check = all_rows
-        
+
         # Check all rows in the specified range
         for row in rows_to_check:
             if col_idx < len(row):
                 value = row[col_idx]
                 if value is not None and isinstance(value, str) and value.strip():
                     return False
-        
+
         return True
 
     def _extract_rectangular_table(
-        self, 
-        all_rows: List[List[Any]], 
-        start_row: int, 
-        start_col: int, 
-        end_row: int, 
+        self,
+        all_rows: List[List[Any]],
+        start_row: int,
+        start_col: int,
+        end_row: int,
         end_col: int
     ) -> Dict[str, Any]:
         """
@@ -457,10 +465,10 @@ class CSVParser:
                 "end_row": end_row + 1,
                 "column_count": 0,
             }
-        
+
         # Extract header row
         header_row = all_rows[start_row][start_col:end_col + 1] if start_row < len(all_rows) else []
-        
+
         # Extract data rows
         data_rows = []
         for row_idx in range(start_row + 1, min(end_row + 1, len(all_rows))):
@@ -472,7 +480,7 @@ class CSVParser:
                 while len(row_data) < len(header_row):
                     row_data.append("")
                 data_rows.append(row_data[:len(header_row)])
-        
+
         return {
             "headers": header_row,
             "data": data_rows,
@@ -514,11 +522,11 @@ class CSVParser:
                 "end_row": start_row + 1,
                 "column_count": 0,
             }
-        
+
         # Find the last column of the table by scanning right
         max_col = start_col
         max_row_in_file = len(all_rows) - 1
-        
+
         for col in range(start_col, max_cols):
             has_data = False
             # Check if this column has any data in the rows we've seen so far
@@ -532,7 +540,7 @@ class CSVParser:
                         break
             if not has_data:
                 break
-        
+
         # Find the last row of the table by scanning down
         max_row = start_row
         for row in range(start_row, max_row_in_file + 1):
@@ -547,11 +555,11 @@ class CSVParser:
                         break
             if not has_data:
                 break
-        
+
         # Now extract the rectangular table region
         table_data = []
         headers = []
-        
+
         # Process header row
         if start_row < len(all_rows):
             header_row = all_rows[start_row]
@@ -563,7 +571,7 @@ class CSVParser:
                     visited_cells.add((start_row, col))
                 else:
                     header_cells.append("")
-            
+
             # Only consider it a header row if at least one cell has data
             if any(
                 val is not None and (not isinstance(val, str) or val.strip())
@@ -579,7 +587,7 @@ class CSVParser:
                     "end_row": start_row + 1,
                     "column_count": 0,
                 }
-        
+
         # Process data rows within the determined boundaries
         for row_idx in range(start_row + 1, max_row + 1):
             if row_idx < len(all_rows):
@@ -594,7 +602,7 @@ class CSVParser:
                     else:
                         row_data.append("")
                 table_data.append(row_data)
-        
+
         return {
             "headers": headers,
             "data": table_data[1:] if table_data else [],  # Skip header row from data
@@ -625,27 +633,27 @@ class CSVParser:
         """
         if not all_rows:
             return []
-        
+
         tables = []
         visited_cells: set = set()  # Track already processed cells as (row, col) tuples
-        
+
         # Find maximum column count across all rows
         max_cols = max(len(row) for row in all_rows) if all_rows else 0
-        
+
         # Scan for tables: iterate through all rows and columns
         for row_idx in range(len(all_rows)):
             for col_idx in range(max_cols):
                 # Check if this cell has data and hasn't been visited
                 if (row_idx, col_idx) in visited_cells:
                     continue
-                
+
                 # Check if cell has non-empty data
                 if row_idx < len(all_rows) and col_idx < len(all_rows[row_idx]):
                     value = all_rows[row_idx][col_idx]
                     if value is not None and isinstance(value, str) and value.strip():
                         # Found a potential table start - expand to find bounds
                         table = self._get_table(all_rows, row_idx, col_idx, visited_cells, max_cols)
-                        
+
                         # Check if table has meaningful data
                         has_data = any(
                             val is not None and (not isinstance(val, str) or val.strip())
@@ -654,10 +662,10 @@ class CSVParser:
                             any(val is not None and (not isinstance(val, str) or val.strip()) for val in row)
                             for row in table["data"]
                         )
-                        
+
                         if has_data:
                             tables.append(table)
-        
+
         # If no tables detected, treat entire file as single table
         if not tables:
             max_col = max((len(row) - 1 for row in all_rows), default=0)
@@ -673,7 +681,7 @@ class CSVParser:
                 for val in table["headers"]
             ):
                 tables.append(table)
-        
+
         return tables
 
     @retry(
@@ -714,11 +722,8 @@ class CSVParser:
         Returns:
             True if valid headers detected, False otherwise
         """
-        # Constants for header detection
-        MIN_ROWS_FOR_ANALYSIS = 2
-
         try:
-            if len(first_rows) < MIN_ROWS_FOR_ANALYSIS:
+            if len(first_rows) < MIN_ROWS_FOR_HEADER_ANALYSIS:
                 # Not enough rows to analyze, assume headers exist
                 return True
 
@@ -777,7 +782,7 @@ class CSVParser:
         try:
             # Format sample data for display
             formatted_samples = []
-            for row in sample_data[:10]:  # Use first 10 rows max
+            for row in sample_data[:MAX_HEADER_GENERATION_ROWS]:
                 formatted_row = [str(v) if v is not None else "" for v in row]
                 formatted_samples.append(formatted_row)
 
@@ -824,7 +829,7 @@ class CSVParser:
                     key: (value.isoformat() if isinstance(value, datetime) else value)
                     for key, value in row.items()
                 }
-                for row in rows[:3]
+                for row in rows[:MAX_SUMMARY_SAMPLE_ROWS]
             ]
             messages = self.table_summary_prompt.format_messages(
                 sample_data=json.dumps(sample_data, indent=2),headers=headers
@@ -848,7 +853,7 @@ class CSVParser:
             raise
 
     async def get_rows_text(
-        self, llm, rows: List[Dict[str, Any]], table_summary: str, batch_size: int = 50
+        self, llm, rows: List[Dict[str, Any]], table_summary: str, batch_size: int = DEFAULT_BATCH_SIZE
     ) -> List[str]:
         """Convert multiple rows into natural language text in batches."""
         processed_texts = []
@@ -900,37 +905,37 @@ class CSVParser:
         headers = table["headers"]
         data_rows = table["data"]
         start_row = table["start_row"]
-        
+
         # Generate placeholder names for empty headers
         processed_headers = [
             stripped if col and (stripped := str(col).strip()) else f"Column_{i}"
             for i, col in enumerate(headers, start=1)
         ]
-        
+
         # Convert rows to dictionaries
         data = []
         line_numbers = []
-        
+
         for idx, row in enumerate(data_rows):
             # Pad row if shorter than headers, or truncate if longer
             padded_row = row + [""] * (len(processed_headers) - len(row)) if len(row) < len(processed_headers) else row[:len(processed_headers)]
-            
+
             # Create dictionary with parsed values
             cleaned_row = {
                 processed_headers[i]: self._parse_value(padded_row[i])
                 for i in range(len(processed_headers))
             }
-            
+
             # Skip rows where all values are None
             if not all(value is None for value in cleaned_row.values()):
                 line_numbers.append(start_row + idx + 1)  # +1 because data starts after header
                 data.append(cleaned_row)
-        
+
         return (data, line_numbers)
 
     async def get_blocks_from_csv_with_multiple_tables(
-        self, 
-        tables: List[Dict[str, Any]], 
+        self,
+        tables: List[Dict[str, Any]],
         llm: BaseChatModel
     ) -> BlocksContainer:
         """
@@ -945,43 +950,42 @@ class CSVParser:
         """
         blocks: List[Block] = []
         block_groups: List[BlockGroup] = []
-        
+
         # Get threshold from environment variable (default: 1000)
         threshold = int(os.getenv("MAX_TABLE_ROWS_FOR_LLM", "1000"))
-        
+
         # Track cumulative row count at record level
-        cumulative_row_count = [0]
-        
+        cumulative_row_count = 0
+
         # Process each table independently
         for table_idx, table in enumerate(tables):
             # Convert table to dictionary format
             csv_result, line_numbers = self.convert_table_to_dict(table)
-            
+
             if not csv_result:
                 continue
-            
+
             # Phase 1: Detect if headers are valid for this table
             current_headers = list(csv_result[0].keys())
             first_rows = [current_headers]
-            
+
             # Select representative sample rows using helper method
-            NUM_SAMPLE_ROWS = 5
             selected_rows = self._select_representative_sample_rows(csv_result, NUM_SAMPLE_ROWS)
             first_rows.extend([list(row[1].values()) for row in selected_rows])
-            
+
             has_valid_headers = await self.detect_headers_with_llm(first_rows, llm)
-            
+
             # Phase 2: Generate headers if needed
             if not has_valid_headers:
                 logger.info(f"No valid headers detected for table {table_idx + 1}, generating headers with LLM")
                 all_data_rows = [list(row.values()) for row in csv_result]
-                
+
                 new_headers = await self.generate_headers_with_llm(
-                    all_data_rows[:10],
+                    all_data_rows[:MAX_HEADER_GENERATION_ROWS],
                     len(current_headers),
                     llm
                 )
-                
+
                 # Reconstruct csv_result with new headers using helper
                 csv_result, line_numbers = self._reconstruct_csv_with_new_headers(
                     new_headers,
@@ -992,54 +996,53 @@ class CSVParser:
                 )
             else:
                 logger.info(f"Valid headers detected for table {table_idx + 1}, using existing headers")
-            
+
             # Add current table rows to cumulative count
             table_row_count = len(csv_result)
-            cumulative_row_count[0] += table_row_count
-            
+            cumulative_row_count += table_row_count
+
             # Check if cumulative count exceeds threshold
-            use_llm_for_rows = cumulative_row_count[0] <= threshold
-            
+            use_llm_for_rows = cumulative_row_count <= threshold
+
             # Get table summary (always use LLM)
             table_summary = await self.get_table_summary(llm, csv_result)
-            
+
             # Create table BlockGroup
             table_group_index = len(block_groups)
             table_group_children: List[BlockContainerIndex] = []
-            
+
             column_headers = list(csv_result[0].keys())
-            
+
             if use_llm_for_rows:
                 # Use LLM for row descriptions
-                batch_size = 50
                 batches = []
-                for i in range(0, len(csv_result), batch_size):
-                    batch = csv_result[i : i + batch_size]
+                for i in range(0, len(csv_result), DEFAULT_BATCH_SIZE):
+                    batch = csv_result[i : i + DEFAULT_BATCH_SIZE]
                     batches.append((i, batch))
-                
-                max_concurrent_batches = min(10, len(batches))
+
+                max_concurrent_batches = min(MAX_CONCURRENT_BATCHES, len(batches))
                 batch_results = []
-                
+
                 for i in range(0, len(batches), max_concurrent_batches):
                     current_batches = batches[i:i + max_concurrent_batches]
-                    
+
                     batch_tasks = []
                     for start_idx, batch in current_batches:
                         task = self.get_rows_text(llm, batch, table_summary)
                         batch_tasks.append((start_idx, batch, task))
-                    
+
                     task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])
-                    
+
                     for j, (start_idx, batch, _) in enumerate(batch_tasks):
                         row_texts = task_results[j]
                         batch_results.append((start_idx, batch, row_texts))
-                
+
                 # Create blocks for this table
                 for start_idx, batch, row_texts in batch_results:
                     for idx, (row, row_text) in enumerate(zip(batch, row_texts), start=start_idx):
                         block_index = len(blocks)
                         actual_row_number = line_numbers[idx] if idx < len(line_numbers) else idx + 1
-                        
+
                         blocks.append(
                             Block(
                                 index=block_index,
@@ -1060,7 +1063,7 @@ class CSVParser:
                     block_index = len(blocks)
                     actual_row_number = line_numbers[idx] if idx < len(line_numbers) else idx + 1
                     row_text = generate_simple_row_text(row)
-                    
+
                     blocks.append(
                         Block(
                             index=block_index,
@@ -1075,10 +1078,10 @@ class CSVParser:
                         )
                     )
                     table_group_children.append(BlockContainerIndex(block_index=block_index))
-            
+
             # Create markdown for this table
             csv_markdown = self.to_markdown(csv_result)
-            
+
             table_group = BlockGroup(
                 index=table_group_index,
                 type=GroupType.TABLE,
@@ -1095,7 +1098,7 @@ class CSVParser:
                 children=table_group_children,
             )
             block_groups.append(table_group)
-        
+
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
     #  recordName, recordId, version, source, orgId, csv_binary, virtual_record_id
@@ -1109,7 +1112,6 @@ class CSVParser:
         first_rows = [current_headers]
 
         # Select representative sample rows using helper method
-        NUM_SAMPLE_ROWS = 5
         selected_rows = self._select_representative_sample_rows(csv_result, NUM_SAMPLE_ROWS)
         first_rows.extend([list(row[1].values()) for row in selected_rows])
 
@@ -1123,11 +1125,11 @@ class CSVParser:
             all_data_rows = [list(row.values()) for row in csv_result]
 
             new_headers = await self.generate_headers_with_llm(
-                all_data_rows[:10],  # Use first 10 rows as sample
+                all_data_rows[:MAX_HEADER_GENERATION_ROWS],
                 len(current_headers),
                 llm
             )
-            
+
             # Reconstruct csv_result with new headers using helper
             csv_result, line_numbers = self._reconstruct_csv_with_new_headers(
                 new_headers,
@@ -1148,16 +1150,14 @@ class CSVParser:
 
         if use_llm_for_rows:
             # Use LLM for row descriptions
-            batch_size = 50
-
             # Create batches
             batches = []
-            for i in range(0, len(csv_result), batch_size):
-                batch = csv_result[i : i + batch_size]
+            for i in range(0, len(csv_result), DEFAULT_BATCH_SIZE):
+                batch = csv_result[i : i + DEFAULT_BATCH_SIZE]
                 batches.append((i, batch))  # Store start index and batch data
 
             # Process batches with controlled concurrency to avoid overwhelming the system
-            max_concurrent_batches = min(10, len(batches))  # Limit concurrent batches
+            max_concurrent_batches = min(MAX_CONCURRENT_BATCHES, len(batches))
             batch_results = []
 
             for i in range(0, len(batches), max_concurrent_batches):
