@@ -261,7 +261,7 @@ const StreamingContent = React.memo(
         if (citation?.metadata?.recordId) {
           try {
             const recordCitations = aggregatedCitations[citation.metadata.recordId] || [];
-            const isExcelOrCSV = ['csv', 'xlsx', 'xls'].includes(citation.metadata?.extension);
+            const isExcelOrCSV = ['csv', 'xlsx', 'xls', 'tsv'].includes(citation.metadata?.extension);
             onViewPdf('', citation, recordCitations, isExcelOrCSV);
           } catch (err) {
             console.error('Failed to fetch document:', err);

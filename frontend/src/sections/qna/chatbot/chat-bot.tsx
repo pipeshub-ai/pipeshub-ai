@@ -1806,7 +1806,7 @@ const ChatInterface = () => {
     setTransitioning(true);
     setDrawerOpen(false);
     setOpenPdfView(true);
-    const isExcelOrCSV = ['csv', 'xlsx', 'xls'].includes(citationMeta?.extension);
+    const isExcelOrCSV = ['csv', 'xlsx', 'xls', 'tsv'].includes(citationMeta?.extension);
     setIsDocx(['docx'].includes(citationMeta?.extension));
     setIsMarkdown(['mdx', 'md'].includes(citationMeta?.extension));
     setIsHtml(['html'].includes(citationMeta?.extension));
