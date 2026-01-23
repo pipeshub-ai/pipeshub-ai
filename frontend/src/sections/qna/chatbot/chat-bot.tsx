@@ -381,13 +381,13 @@ class StreamingManager {
       prev.map((msg) =>
         msg.id === messageId
           ? {
-              ...msg,
-              id: finalMessageId,
-              content: finalContent,
-              citations: finalCitations,
-              confidence: finalConfidence,
-              modelInfo: finalModelInfo || msg.modelInfo || null,
-            }
+            ...msg,
+            id: finalMessageId,
+            content: finalContent,
+            citations: finalCitations,
+            confidence: finalConfidence,
+            modelInfo: finalModelInfo || msg.modelInfo || null,
+          }
           : msg
       )
     );
@@ -732,7 +732,7 @@ const ChatInterface = () => {
       name: c.name || '',
       iconPath: c.iconPath || '/assets/icons/connectors/default.svg',
     }));
-    
+
     setAllApps(apps);
   }, [activeConnectors]);
 
@@ -774,11 +774,11 @@ const ChatInterface = () => {
     const state = streamingManager.getConversationState(currentConversationKey);
     return state
       ? {
-          messageId: state.messageId,
-          content: state.content,
-          citations: state.citations,
-          isActive: state.isActive,
-        }
+        messageId: state.messageId,
+        content: state.content,
+        citations: state.citations,
+        isActive: state.isActive,
+      }
       : { messageId: null, content: '', citations: [], isActive: false };
     // eslint-disable-next-line
   }, [streamingManager, currentConversationKey, updateTrigger]);
@@ -1058,7 +1058,7 @@ const ChatInterface = () => {
                 context.conversationIdRef.current = completedConversation._id;
               }
               streamingManager.finalizeStreaming(finalKey, context.streamingBotMessageId, data);
-              
+
               // Update selectedChat with fresh conversation data to reflect updated modelInfo
               // This ensures the model selection is updated when switching back to this conversation
               const finalConvId = finalKey === 'new' ? context.conversationIdRef.current : finalKey;
@@ -1206,14 +1206,14 @@ const ChatInterface = () => {
         }
 
         console.error('Streaming connection error:', error);
-        
+
         // If error wasn't already displayed (e.g., from response.ok check above),
         // create an error message now
         const errorMessage =
           error instanceof Error
             ? error.message
             : 'An unexpected error occurred while processing your request.';
-        
+
         if (!hasCreatedMessage.current) {
           const errorMsg: FormattedMessage = {
             type: 'bot',
@@ -1242,7 +1242,7 @@ const ChatInterface = () => {
             )
           );
         }
-        
+
         streamingManager.clearStreaming(conversationKey);
         throw error; // Re-throw non-abort errors
       }
@@ -1335,7 +1335,7 @@ const ChatInterface = () => {
           error instanceof Error
             ? error.message
             : 'An error occurred while processing your request.';
-        
+
         // Only show snackbar for non-abort errors
         if (!(error instanceof Error && error.name === 'AbortError')) {
           setSnackbar({
@@ -1433,11 +1433,11 @@ const ChatInterface = () => {
           try {
             const response = await axios.get(`/api/v1/conversations/${chat._id}`);
             const { conversation } = response.data;
-            
+
             if (conversation) {
               // Update selectedChat with fresh data
               setSelectedChat(conversation);
-              
+
               // Update messages if we don't have them or if conversation was updated
               if (!existingMessages.length || conversation.messages) {
                 const formattedMessages = (conversation.messages || [])
@@ -1454,13 +1454,13 @@ const ChatInterface = () => {
                     return formatted;
                   })
                   .filter(Boolean) as FormattedMessage[];
-                
+
                 // Only update messages if we got new data or didn't have messages
                 if (!existingMessages.length || formattedMessages.length > existingMessages.length) {
                   streamingManager.setConversationMessages(chatKey, formattedMessages);
                 }
               }
-              
+
               // Always set model from fresh conversation data
               setModelFromConversation((conversation as any).modelInfo);
             }
@@ -1528,7 +1528,7 @@ const ChatInterface = () => {
         // We have existing messages or it's streaming, but still fetch fresh data for modelInfo
         setCurrentConversationId(urlConversationId);
         setShowWelcome(false);
-        
+
         // Always fetch fresh conversation data to get latest modelInfo
         // This ensures model changes made during the conversation are reflected
         if (!isCurrentlyStreaming) {
@@ -1693,219 +1693,107 @@ const ChatInterface = () => {
       const { externalRecordId } = record;
       const fileName = record.recordName;
 
-      if (record.origin === ORIGIN.UPLOAD) {
-        try {
-          const downloadResponse = await axios.get(
-            `/api/v1/document/${externalRecordId}/download`,
-            { responseType: 'blob' }
+      try {
+        let params: any = {};
+        if (['pptx', 'ppt'].includes(citationMeta?.extension)) {
+          params = {
+            convertTo: 'application/pdf',
+          };
+          if (record.fileRecord && record.fileRecord.sizeInBytes / 1048576 > 5) {
+            console.warn('Large file size');
+          }
+        }
+
+        const streamResponse = await axios.get(
+            `${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${recordId}`,
+            {
+              responseType: 'blob',
+              params,
+            }
           );
+        
+        if (!streamResponse) return;
 
-          const reader = new FileReader();
-          const textPromise = new Promise<string>((resolve) => {
-            reader.onload = () => {
-              resolve(reader.result?.toString() || '');
-            };
-          });
-
-          reader.readAsText(downloadResponse.data);
-          const text = await textPromise;
-
-          let filename;
-          const contentDisposition = downloadResponse.headers['content-disposition'];
-          if (contentDisposition) {
-            const filenameStarMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
-            if (filenameStarMatch && filenameStarMatch[1]) {
-              try {
-                filename = decodeURIComponent(filenameStarMatch[1]);
-              } catch (e) {
-                console.error('Failed to decode UTF-8 filename', e);
-              }
-            }
-
-            if (!filename) {
-              const filenameMatch = contentDisposition.match(/filename="?([^";\n]*)"?/i);
-              if (filenameMatch && filenameMatch[1]) {
-                filename = filenameMatch[1];
-              }
+        let filename;
+        const contentDisposition = streamResponse.headers['content-disposition'];
+        if (contentDisposition) {
+          const filenameStarMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+          if (filenameStarMatch && filenameStarMatch[1]) {
+            try {
+              filename = decodeURIComponent(filenameStarMatch[1]);
+            } catch (e) {
+              console.error('Failed to decode UTF-8 filename', e);
             }
           }
 
-          if (!filename && fileName) {
-            filename = fileName;
-          }
-
-          try {
-            const jsonData = JSON.parse(text);
-            if (jsonData && jsonData.signedUrl) {
-              setPdfUrl(jsonData.signedUrl);
+          if (!filename) {
+            const filenameMatch = contentDisposition.match(/filename="?([^";\n]*)"?/i);
+            if (filenameMatch && filenameMatch[1]) {
+              filename = filenameMatch[1];
             }
-          } catch (e) {
-            const bufferReader = new FileReader();
-            const arrayBufferPromise = new Promise<ArrayBuffer>((resolve) => {
-              bufferReader.onload = () => {
-                resolve(bufferReader.result as ArrayBuffer);
-              };
-              bufferReader.readAsArrayBuffer(downloadResponse.data);
-            });
-
-            const buffer = await arrayBufferPromise;
-            setFileBuffer(buffer);
           }
-        } catch (error) {
-          console.error('Error downloading document:', error);
-          setSnackbar({
-            open: true,
-            message: 'Failed to load preview. Redirecting to the original document shortly...',
-            severity: 'info',
-          });
-          let webUrl = record.fileRecord?.webUrl || record.mailRecord?.webUrl;
+        }
 
-          if (record.origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
-            const baseUrl = `${window.location.protocol}//${window.location.host}`;
-            webUrl = baseUrl + webUrl;
-          }
+        if (!filename && record.recordName) {
+          filename = record.recordName;
+        }
 
-          setTimeout(() => {
-            onClosePdf();
-          }, 500);
+        const bufferReader = new FileReader();
+        const arrayBufferPromise = new Promise<ArrayBuffer>((resolve, reject) => {
+          bufferReader.onload = () => {
+            const originalBuffer = bufferReader.result as ArrayBuffer;
+            const bufferCopy = originalBuffer.slice(0);
+            resolve(bufferCopy);
+          };
+          bufferReader.onerror = () => {
+            reject(new Error('Failed to read blob as array buffer'));
+          };
+          bufferReader.readAsArrayBuffer(streamResponse.data);
+        });
 
-          setTimeout(() => {
-            if (webUrl) {
-              try {
-                window.open(webUrl, '_blank', 'noopener,noreferrer');
-              } catch (openError) {
-                console.error('Error opening new tab:', openError);
-                setSnackbar({
-                  open: true,
-                  message:
-                    'Failed to automatically open the document. Please check your browser pop-up settings.',
-                  severity: 'error',
-                });
-              }
-            } else {
-              console.error('Cannot redirect: No webUrl found for the record.');
+        const buffer = await arrayBufferPromise;
+        setFileBuffer(buffer);
+      } catch (err) {
+        console.error('Error downloading document:', err);
+        setSnackbar({
+          open: true,
+          message: 'Failed to load preview. Redirecting to the original document shortly...',
+          severity: 'info',
+        });
+        let webUrl = record.fileRecord?.webUrl || record.mailRecord?.webUrl;
+
+        if (record.origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
+          const baseUrl = `${window.location.protocol}//${window.location.host}`;
+          webUrl = baseUrl + webUrl;
+        }
+
+        setTimeout(() => {
+          onClosePdf();
+        }, 500);
+
+        setTimeout(() => {
+          if (webUrl) {
+            try {
+              window.open(webUrl, '_blank', 'noopener,noreferrer');
+            } catch (openError) {
+              console.error('Error opening new tab:', openError);
               setSnackbar({
                 open: true,
-                message: 'Failed to load preview and cannot redirect (document URL not found).',
+                message:
+                  'Failed to automatically open the document. Please check your browser pop-up settings.',
                 severity: 'error',
               });
             }
-          }, 2500);
-          return;
-        }
-      } else if (record.origin === ORIGIN.CONNECTOR) {
-        try {
-          let params = {};
-          if (['pptx', 'ppt'].includes(citationMeta?.extension)) {
-            params = {
-              convertTo: 'application/pdf',
-            };
-            handleLargePPTFile(record);
-          }
-
-          const publicConnectorUrlResponse = await ConnectorApiService.getConnectorPublicUrl();
-          let connectorResponse;
-          if (publicConnectorUrlResponse && publicConnectorUrlResponse.url) {
-            const CONNECTOR_URL = publicConnectorUrlResponse.url;
-            connectorResponse = await axios.get(
-              `${CONNECTOR_URL}/api/v1/stream/record/${recordId}`,
-              {
-                responseType: 'blob',
-                params,
-              }
-            );
           } else {
-            connectorResponse = await axios.get(
-              `${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${recordId}`,
-              {
-                responseType: 'blob',
-                params,
-              }
-            );
+            console.error('Cannot redirect: No webUrl found for the record.');
+            setSnackbar({
+              open: true,
+              message: 'Failed to load preview and cannot redirect (document URL not found).',
+              severity: 'error',
+            });
           }
-          if (!connectorResponse) return;
-
-          let filename;
-          const contentDisposition = connectorResponse.headers['content-disposition'];
-          if (contentDisposition) {
-            const filenameStarMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
-            if (filenameStarMatch && filenameStarMatch[1]) {
-              try {
-                filename = decodeURIComponent(filenameStarMatch[1]);
-              } catch (e) {
-                console.error('Failed to decode UTF-8 filename', e);
-              }
-            }
-
-            if (!filename) {
-              const filenameMatch = contentDisposition.match(/filename="?([^";\n]*)"?/i);
-              if (filenameMatch && filenameMatch[1]) {
-                filename = filenameMatch[1];
-              }
-            }
-          }
-
-          if (!filename && record.recordName) {
-            filename = record.recordName;
-          }
-
-          const bufferReader = new FileReader();
-          const arrayBufferPromise = new Promise<ArrayBuffer>((resolve, reject) => {
-            bufferReader.onload = () => {
-              const originalBuffer = bufferReader.result as ArrayBuffer;
-              const bufferCopy = originalBuffer.slice(0);
-              resolve(bufferCopy);
-            };
-            bufferReader.onerror = () => {
-              reject(new Error('Failed to read blob as array buffer'));
-            };
-            bufferReader.readAsArrayBuffer(connectorResponse.data);
-          });
-
-          const buffer = await arrayBufferPromise;
-          setFileBuffer(buffer);
-        } catch (err) {
-          console.error('Error downloading document:', err);
-          setSnackbar({
-            open: true,
-            message: 'Failed to load preview. Redirecting to the original document shortly...',
-            severity: 'info',
-          });
-          let webUrl = record.fileRecord?.webUrl || record.mailRecord?.webUrl;
-
-          if (record.origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
-            const baseUrl = `${window.location.protocol}//${window.location.host}`;
-            webUrl = baseUrl + webUrl;
-          }
-
-          setTimeout(() => {
-            onClosePdf();
-          }, 500);
-
-          setTimeout(() => {
-            if (webUrl) {
-              try {
-                window.open(webUrl, '_blank', 'noopener,noreferrer');
-              } catch (openError) {
-                console.error('Error opening new tab:', openError);
-                setSnackbar({
-                  open: true,
-                  message:
-                    'Failed to automatically open the document. Please check your browser pop-up settings.',
-                  severity: 'error',
-                });
-              }
-            } else {
-              console.error('Cannot redirect: No webUrl found for the record.');
-              setSnackbar({
-                open: true,
-                message: 'Failed to load preview and cannot redirect (document URL not found).',
-                severity: 'error',
-              });
-            }
-          }, 2500);
-          return;
-        }
+        }, 2500);
+        return;
       }
     } catch (err) {
       console.error('Failed to fetch document:', err);

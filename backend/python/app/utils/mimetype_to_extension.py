@@ -74,6 +74,13 @@ mime_to_extension = {
     "text/csv; charset=utf-8": "csv",
     "text/csv; charset=us-ascii": "csv",
 
+    # TSV
+    "text/tab-separated-values": "tsv",
+    "text/tsv": "tsv",
+    "application/tsv": "tsv",
+    "text/tab-separated-values; charset=utf-8": "tsv",
+    "text/tsv; charset=utf-8": "tsv",
+
     # PPTX
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation+xml": "pptx",

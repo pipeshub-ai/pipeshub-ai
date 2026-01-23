@@ -1,0 +1,284 @@
+replicaCount: 1
+
+# If the startup fails due to permissions of "/app/process_monitor.log", build the image with LOG_FILE="/data/pipeshub/process_monitor.log"
+image:
+  repository: pipeshubai/pipeshub-ai
+  pullPolicy: Always
+  tag: latest
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsUser: 1000
+  fsGroup: 1000
+  fsGroupChangePolicy: "OnRootMismatch"
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+
+ingress:
+  enabled: false
+  className: "" # Fill
+  annotations: [] # Fill
+  hosts: [] # Fill
+    # - host: pipeshub.example.com
+    #   paths:
+    #     - path: /
+    #       pathType: ImplementationSpecific
+    #       port: 3000
+    #       serviceName: pipeshub-ai
+    # - host: pipeshub-connector.example.com
+    #   paths:
+    #     - path: /
+    #       pathType: ImplementationSpecific
+    #       port: 8088
+    #       serviceName: pipeshub-ai
+  tls: [] # Fill
+    # - secretName: pipeshub-example-com-tls
+    #   hosts:
+    #     - pipeshub.example.com
+    # - secretName: pipeshub-connector-example-com-tls
+    #   hosts:
+    #     - pipeshub-connector.example.com
+resources:
+  limits:
+    cpu: 8
+    memory: 8Gi
+  requests:
+    cpu: 4
+    memory: 4Gi
+
+volumes: {}
+
+volumeMounts: {}
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+persistence:
+  enabled: true
+  storageClass: "" # Fill
+  accessModes:
+    - ReadWriteOnce
+  size: 10Gi
+
+config:
+  nodeEnv: "production"
+  logLevel: "debug"
+  allowedOrigins: "*"
+  connectorPublicBackend: "" # Fill
+  # connectorPublicBackend: "https://pipeshub-connector.example.com"
+  frontendPublicUrl: "" # Fill
+  # frontendPublicUrl: "https://pipeshub.dyn.example.com"
+
+secretKey: "" # Fill
+
+mongodb:
+  replicaCount: 1
+  tls:
+    enabled: false
+    securityContext:
+      enabled: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+  auth:
+    enabled: false
+  persistence:
+    enabled: true
+    storageClass: "" # Fill
+  arbiter:
+    enabled: false
+  podSecurityContext:
+    enabled: true
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    enabled: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - ALL
+
+redis:
+  auth:
+    enabled: false
+  persistence:
+    enabled: true
+    storageClass: "" # Fill
+
+arango:
+  image:
+    repository: arangodb
+    tag: 3.12.4
+    pullPolicy: IfNotPresent
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+  persistence:
+    enabled: true
+    size: 10Gi
+    accessModes:
+      - ReadWriteOnce
+    storageClass: "" # Fill
+  auth:
+    enabled: true
+    rootPassword: "root"
+  podSecurityContext:
+    runAsUser: 1000
+    fsGroup: 1000
+    fsGroupChangePolicy: OnRootMismatch
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - ALL
+
+etcd:
+  image:
+    repository: quay.io/coreos/etcd
+    tag: v3.5.17
+    pullPolicy: IfNotPresent
+  persistence:
+    enabled: true
+    accessModes:
+      - ReadWriteOnce
+    size: 1Gi
+    storageClass: "" # Fill
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  podSecurityContext:
+    runAsUser: 1000
+    fsGroup: 1000
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - ALL
+
+zookeeper:
+  image:
+    repository: confluentinc/cp-zookeeper
+    tag: 7.9.0
+    pullPolicy: IfNotPresent
+  config:
+    tickTime: "2000"
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+  podSecurityContext:
+    runAsUser: 1000
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - ALL
+
+kafka:
+  replicaCount: 1
+  image:
+    repository: confluentinc/cp-kafka
+    tag: 7.9.0
+    pullPolicy: IfNotPresent
+  config:
+    brokerId: "1"
+    offsetsTopicReplicationFactor: "1"
+    transactionStateLogMinIsr: "1"
+    transactionStateLogReplicationFactor: "1"
+    groupInitialRebalanceDelayMs: "0"
+    logRetentionHours: "24"
+    numNetworkThreads: "3"
+    numIoThreads: "8"
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  podSecurityContext:
+    runAsUser: 1000
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - ALL
+
+qdrant:
+  image:
+    repository: qdrant/qdrant
+    tag: v1.15
+    pullPolicy: IfNotPresent
+  persistence:
+    enabled: true
+    accessModes:
+      - ReadWriteOnce
+    size: 10Gi
+    storageClass: "" # Fill
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+  podSecurityContext:
+    runAsUser: 1000
+    fsGroup: 1000
+    fsGroupChangePolicy: OnRootMismatch
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - ALL 
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  apiKey: "api_key"

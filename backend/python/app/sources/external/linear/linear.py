@@ -1073,11 +1073,11 @@ class LinearDataSource:
 
         try:
             response = await self._linear_client.get_client().execute(
-                query=query, variables=variables, operation_name="issueCreate"
+                query=query, variables=variables, operation_name="IssueCreate"
             )
             return response
         except Exception as e:
-            return GraphQLResponse(success=False, message=f"Failed to execute mutation issueCreate: {str(e)}")
+            return GraphQLResponse(success=False, message=f"Failed to execute mutation IssueCreate: {str(e)}")
 
     async def issueUpdate(
         self,
@@ -1090,11 +1090,11 @@ class LinearDataSource:
 
         try:
             response = await self._linear_client.get_client().execute(
-                query=query, variables=variables, operation_name="issueUpdate"
+                query=query, variables=variables, operation_name="IssueUpdate"
             )
             return response
         except Exception as e:
-            return GraphQLResponse(success=False, message=f"Failed to execute mutation issueUpdate: {str(e)}")
+            return GraphQLResponse(success=False, message=f"Failed to execute mutation IssueUpdate: {str(e)}")
 
     async def issueDelete(
         self,
@@ -1106,11 +1106,11 @@ class LinearDataSource:
 
         try:
             response = await self._linear_client.get_client().execute(
-                query=query, variables=variables, operation_name="issueDelete"
+                query=query, variables=variables, operation_name="IssueDelete"
             )
             return response
         except Exception as e:
-            return GraphQLResponse(success=False, message=f"Failed to execute mutation issueDelete: {str(e)}")
+            return GraphQLResponse(success=False, message=f"Failed to execute mutation IssueDelete: {str(e)}")
 
     async def issueArchive(
         self,

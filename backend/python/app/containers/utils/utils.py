@@ -129,6 +129,7 @@ class ContainerUtils:
             ExtensionTypes.MD.value: MarkdownParser(),
             ExtensionTypes.MDX.value: MDXParser(),
             ExtensionTypes.CSV.value: CSVParser(),
+            ExtensionTypes.TSV.value: CSVParser(delimiter="\t"),
             ExtensionTypes.XLSX.value: ExcelParser(logger),
             ExtensionTypes.XLS.value: XLSParser(),
             ExtensionTypes.PNG.value: image_parser,

@@ -193,7 +193,7 @@ class AirtableRESTClientViaOAuth(HTTPClient):
 
         # Check response status before parsing JSON
         if response.status >= HttpStatusCode.BAD_REQUEST.value:
-            raise Exception(f"Token request failed with status {response.status}: {response.text}")
+            raise Exception(f"Token request failed with status {response.status}: {response.text()}")
 
         token_data = response.json()
 

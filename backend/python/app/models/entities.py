@@ -329,6 +329,13 @@ class FileRecord(Record):
 
     @staticmethod
     def from_arango_record(arango_base_file_record: Dict, arango_base_record: Dict) -> "FileRecord":
+        # Handle connectorName which might be missing for KB uploaded files
+        conn_name_value = arango_base_record.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+
         return FileRecord(
             id=arango_base_record.get("id", arango_base_record.get("_key")),
             org_id=arango_base_record["orgId"],
@@ -338,7 +345,7 @@ class FileRecord(Record):
             external_record_id=arango_base_record["externalRecordId"],
             version=arango_base_record["version"],
             origin=OriginTypes(arango_base_record["origin"]),
-            connector_name=Connectors(arango_base_record["connectorName"]),
+            connector_name=connector_name,
             connector_id=arango_base_record.get("connectorId"),
             mime_type=arango_base_record.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=arango_base_record["webUrl"],
@@ -351,7 +358,7 @@ class FileRecord(Record):
             source_updated_at=arango_base_record["sourceLastModifiedTimestamp"],
             is_dependent_node=arango_base_record.get("isDependentNode", False),
             parent_node_id=arango_base_record.get("parentNodeId", None),
-            is_file=arango_base_file_record["isFile"],
+            is_file=arango_base_file_record.get("isFile", True),
             size_in_bytes=size if (size := arango_base_record.get("sizeInBytes")) is not None else arango_base_file_record.get("sizeInBytes", None),
             extension=arango_base_file_record["extension"],
             path=arango_base_file_record["path"],

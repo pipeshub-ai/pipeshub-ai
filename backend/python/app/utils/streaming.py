@@ -28,6 +28,7 @@ from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from pydantic import BaseModel
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.modules.parsers.excel.prompt_template import RowDescriptions
 from app.modules.qna.prompt_templates import (
     AnswerWithMetadataDict,
     AnswerWithMetadataJSON,
@@ -656,6 +657,7 @@ async def stream_llm_response(
     logger,
     target_words_per_chunk: int = 1,
     mode: Optional[str] = "json",
+    virtual_record_id_to_result: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Incrementally stream the answer portion of an LLM response.
@@ -700,7 +702,7 @@ async def stream_llm_response(
                     reason = None
                     confidence = None
 
-                    normalized, cites = normalize_citations_and_chunks_for_agent(final_answer, final_results)
+                    normalized, cites = normalize_citations_and_chunks_for_agent(final_answer, final_results, virtual_record_id_to_result)
 
                 words = re.findall(r'\S+', normalized)
                 for i in range(0, len(words), target_words_per_chunk):
@@ -772,7 +774,7 @@ async def stream_llm_response(
                                 continue
 
                             normalized, cites = normalize_citations_and_chunks_for_agent(
-                                current_raw, final_results
+                                current_raw, final_results, virtual_record_id_to_result
                             )
 
                             chunk_text = normalized[prev_norm_len:]
@@ -792,7 +794,7 @@ async def stream_llm_response(
                 parsed = json.loads(escape_ctl(full_json_buf))
                 final_answer = parsed.get("answer", answer_buf)
 
-                normalized, c = normalize_citations_and_chunks_for_agent(final_answer, final_results)
+                normalized, c = normalize_citations_and_chunks_for_agent(final_answer, final_results, virtual_record_id_to_result)
                 yield {
                     "event": "complete",
                     "data": {
@@ -804,7 +806,7 @@ async def stream_llm_response(
                 }
             except Exception:
                 # Fallback if JSON parsing fails
-                normalized, c = normalize_citations_and_chunks_for_agent(answer_buf, final_results)
+                normalized, c = normalize_citations_and_chunks_for_agent(answer_buf, final_results, virtual_record_id_to_result)
                 yield {
                     "event": "complete",
                     "data": {
@@ -897,7 +899,7 @@ async def stream_llm_response(
                             continue
 
                         normalized, cites = normalize_citations_and_chunks_for_agent(
-                            current_raw, final_results
+                            current_raw, final_results, None  # virtual_record_id_to_result not available in simple mode
                         )
 
                         chunk_text = normalized[prev_norm_len:]
@@ -913,7 +915,7 @@ async def stream_llm_response(
                         }
 
             # Final normalization and emit complete
-            normalized, cites = normalize_citations_and_chunks_for_agent(content_buf, final_results)
+            normalized, cites = normalize_citations_and_chunks_for_agent(content_buf, final_results, None)  # virtual_record_id_to_result not available in simple mode
             yield {
                 "event": "complete",
                 "data": {
@@ -1146,7 +1148,7 @@ async def handle_simple_mode(
                         }
 
             # Final normalization and emit complete
-            normalized, cites = normalize_citations_and_chunks_for_agent(content_buf, final_results)
+            normalized, cites = normalize_citations_and_chunks_for_agent(content_buf, final_results, None)  # virtual_record_id_to_result not available in simple mode
             yield {
                 "event": "complete",
                 "data": {
@@ -1732,4 +1734,101 @@ Respond only with valid JSON that matches the schema."""
                     reflection_messages.append(HumanMessage(content=f"Still incorrect. Error: {str(reflection_error)}. Please try again."))
 
         logger.error("All reflection attempts failed")
+        return None
+
+
+async def invoke_with_row_descriptions_and_reflection(
+    llm: BaseChatModel,
+    messages: List,
+    expected_count: int,
+    max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
+) -> Optional[RowDescriptions]:
+    """
+    Invoke LLM with row description output and validate count matches expected.
+
+    If the LLM returns an incorrect number of descriptions, performs reflection
+    to give it one chance to correct the count mismatch.
+
+    Args:
+        llm: The LangChain chat model to use
+        messages: List of messages to send to the LLM
+        expected_count: Expected number of row descriptions
+        max_retries: Maximum number of reflection retries on parse failure (default: 2)
+
+    Returns:
+        Validated RowDescriptions instance with correct count, or None if validation fails
+    """
+    # First, try to get a parsed response using the standard reflection function
+    parsed_response = await invoke_with_structured_output_and_reflection(
+        llm, messages, RowDescriptions, max_retries
+    )
+
+    if parsed_response is None:
+        logger.warning("Failed to parse RowDescriptions after initial attempts")
+        return None
+
+    # Validate the count matches expected
+    actual_count = len(parsed_response.descriptions)
+
+    if actual_count == expected_count:
+        logger.debug(f"Row count validation passed: {actual_count} descriptions")
+        return parsed_response
+
+    # Count mismatch detected - perform reflection to correct it
+    logger.warning(
+        f"Row count mismatch: LLM returned {actual_count} descriptions "
+        f"but {expected_count} were expected. Attempting reflection..."
+    )
+
+    # Build reflection messages
+    reflection_messages = list(messages)
+    reflection_messages.append(
+        AIMessage(content=json.dumps(parsed_response.model_dump()))
+    )
+
+    reflection_prompt = f"""Your previous response contained {actual_count} descriptions, but exactly {expected_count} descriptions are required.
+
+CRITICAL: You must provide EXACTLY {expected_count} descriptions - one for each row, in the same order they were provided.
+
+Please correct your response to include exactly {expected_count} descriptions. Do not skip any rows, do not combine rows, and do not split rows.
+
+Respond with a valid JSON object:
+{{
+    "descriptions": [
+        "Description for row 1",
+        "Description for row 2",
+        ...
+        "Description for row {expected_count}"
+    ]
+}}"""
+
+    reflection_messages.append(HumanMessage(content=reflection_prompt))
+
+    # Try reflection once (per user preference: 1 reflection attempt for count mismatches)
+    try:
+        reflection_response = await invoke_with_structured_output_and_reflection(
+            llm, reflection_messages, RowDescriptions, max_retries=1
+        )
+
+        if reflection_response is None:
+            logger.error("Reflection failed to parse response")
+            return None
+
+        # Validate the count again
+        reflection_count = len(reflection_response.descriptions)
+
+        if reflection_count == expected_count:
+            logger.info(
+                f"Reflection successful: corrected from {actual_count} to {reflection_count} descriptions"
+            )
+            return reflection_response
+        else:
+            logger.error(
+                f"Reflection failed: still have {reflection_count} descriptions "
+                f"instead of {expected_count}"
+            )
+            return None
+
+    except Exception as e:
+        logger.error(f"Reflection attempt failed with error: {e}")
         return None

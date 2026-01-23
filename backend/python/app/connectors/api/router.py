@@ -977,6 +977,16 @@ async def stream_record(
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
+        # Permission check: Verify user has access to this record
+        # This handles both KB-level and direct record permissions
+        access_check = await arango_service.check_record_access_with_details(user_id, org_id, record_id)
+        if not access_check:
+            logger.warning(f"User {user_id} does not have access to record {record_id}")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="You do not have permission to access this record"
+            )
+
         external_record_id = record.external_record_id
         connector = record.connector_name.value
         connector_id = record.connector_id
@@ -1403,22 +1413,43 @@ async def stream_record(
                             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                             detail="Failed to download file from both Gmail and Drive",
                         )
+            # Handle KB records by streaming from storage service
+            elif connector.lower() == Connectors.KNOWLEDGE_BASE.value.lower() or connector_id is None:
+                logger.info(f"Streaming KB record {record_id} from storage service")
+                endpoints = await config_service.get_config(config_node_constants.ENDPOINTS.value)
+                storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+                buffer_url = f"{storage_url}/api/v1/document/internal/{external_record_id}/buffer"
+                jwt_payload = {
+                    "orgId": org_id,
+                    "scopes": ["storage:token"],
+                }
+                token = await generate_jwt(config_service, jwt_payload)
+                response = await make_api_call(route=buffer_url, token=token)
+
+                if isinstance(response["data"], dict):
+                    data = response['data'].get('data')
+                    buffer = bytes(data) if isinstance(data, list) else data
+                else:
+                    buffer = response['data']
+
+                return Response(content=buffer or b'', media_type="application/octet-stream")
             else:
                 container: ConnectorAppContainer = request.app.container
-                connector: BaseConnector = container.connectors_map[connector_id]
-                if not connector:
+                connector_instance: BaseConnector = container.connectors_map.get(connector_id)
+                if not connector_instance:
                     raise HTTPException(
                         status_code=HttpStatusCode.NOT_FOUND.value,
                         detail=f"Connector '{connector_id}' not found"
                     )
 
                 # Pass user_id for google drive
-                if connector.get_app_name() == Connectors.GOOGLE_DRIVE:
-                    buffer = await connector.stream_record(record, user_id)
+                if connector_instance.get_app_name() == Connectors.GOOGLE_DRIVE:
+                    buffer = await connector_instance.stream_record(record, user_id)
                 else:
-                    buffer = await connector.stream_record(record)
+                    buffer = await connector_instance.stream_record(record)
 
                 return buffer
+
         except Exception as e:
             logger.error(f"Error downloading file: {str(e)}", exc_info=True)
             raise HTTPException(
@@ -5984,7 +6015,7 @@ async def toggle_connector_instance(
             org_account_type = str(org.get("accountType", "")).lower()
             custom_google_business_logic = (
                 org_account_type == "enterprise" and
-                connector_type in ["GMAIL", "DRIVE", "DRIVE WORKSPACE"] and
+                connector_type in ["GMAIL", "DRIVE", "DRIVE WORKSPACE", "GCS"] and
                 instance.get("scope") == ConnectorScope.TEAM.value
             )
 
