@@ -56,7 +56,7 @@ import {
 import { AppConfig } from '../../tokens_manager/config/config';
 import { Org } from '../../user_management/schema/org.schema';
 import { verifyTurnstileToken } from '../../../libs/utils/turnstile-verification';
-import { UserController } from '../../user_management/controller/users.controller';
+import { JitProvisioningService } from '../services/jit-provisioning.service';
 
 const {
   LOGIN,
@@ -71,8 +71,6 @@ export const SALT_ROUNDS = 10;
 
 @injectable()
 export class UserAccountController {
-  private userController: UserController | null = null;
-
   constructor(
     @inject('AppConfig') private config: AppConfig,
     @inject('IamService') private iamService: IamService,
@@ -81,15 +79,8 @@ export class UserAccountController {
     @inject('ConfigurationManagerService')
     private configurationManagerService: ConfigurationManagerService,
     @inject('Logger') private logger: Logger,
+    @inject('JitProvisioningService') private jitProvisioningService: JitProvisioningService,
   ) {}
-
-  /**
-   * Set the UserController for JIT provisioning
-   * This is set externally to avoid circular dependencies
-   */
-  setUserController(userController: UserController) {
-    this.userController = userController;
-  }
   async generateHashedOTP() {
     const otp = generateOtp();
     const hashedOTP = await bcrypt.hash(otp, SALT_ROUNDS);
@@ -225,15 +216,11 @@ export class UserAccountController {
         // User not found - check if JIT provisioning is available for this email domain
         const domain = this.getDomainFromEmail(email);
         let org: InstanceType<typeof Org> | null = null;
-        if (process.env.STRICT_MODE === 'true') {
-          org = domain ? await Org.findOne({
-            domain,
-            isDeleted: false,
-          }) : null;
-        }
-        org = org || (await Org.findOne({
+        org = domain ? await Org.findOne({
+          domain,
           isDeleted: false,
-        }));
+        }) : null;
+        
 
         const orgAuthConfig = domain ? await OrgAuthConfig.findOne({
           orgId: org?._id,
@@ -327,13 +314,21 @@ export class UserAccountController {
         }
 
         // Create session with JIT info if available
+        // Always provide a valid authConfig structure - use org's authSteps if JIT is enabled,
+        // otherwise create a default structure with password method (for consistent error handling)
+        const defaultAuthSteps = [
+          {
+            order: 1,
+            allowedMethods: [{ type: 'password' }],
+          },
+        ];
         const session = await this.sessionService.createSession({
           userId: "NOT_FOUND",
           email: email,
           orgId: orgAuthConfig ? orgAuthConfig.orgId.toString() : "",
           authConfig: orgAuthConfig && jitEnabledMethods.length > 0 
             ? orgAuthConfig.authSteps 
-            : {},
+            : defaultAuthSteps,
           currentStep: 0,
           jitConfig: jitEnabledMethods.length > 0 ? jitConfig : undefined,
         });
@@ -1265,22 +1260,21 @@ export class UserAccountController {
     const { 
       userInfoEndpoint
     } = configManagerResponse.data;
-    const { accessToken, idToken } = credentials;
+    const { accessToken } = credentials;
 
-    if (!accessToken && !idToken) {
-      throw new BadRequestError('Access token or ID token is required for OAuth authentication');
+    if (!accessToken) {
+      throw new BadRequestError('Access token is required for OAuth authentication');
+    }
+
+    if (!userInfoEndpoint) {
+      throw new BadRequestError('User info endpoint is required for OAuth authentication');
     }
 
     try {
       // Verify token and get user info from OAuth provider
       let userInfo;
       
-      if (idToken) {
-        // For ID tokens, we need proper JWT verification
-        // Since this is a generic OAuth implementation, we'll use the userInfo endpoint approach
-        // ID token verification requires provider-specific JWKS endpoints and is complex for generic OAuth
-        throw new BadRequestError('ID token verification not supported for generic OAuth. Please use access token flow.');
-      } else if (accessToken && userInfoEndpoint) {
+      if (accessToken && userInfoEndpoint) {
         // If access token is provided, fetch user info from the provider
         const userInfoResponse = await fetch(userInfoEndpoint, {
           headers: {
@@ -1299,7 +1293,7 @@ export class UserAccountController {
 
         userInfo = await userInfoResponse.json();
       } else {
-        throw new BadRequestError('Cannot verify user information: missing user info endpoint or ID token');
+        throw new BadRequestError('Cannot verify user information: missing user info endpoint or access token');
       }
 
       // Verify email matches
@@ -1413,7 +1407,7 @@ export class UserAccountController {
             if (payload.email?.toLowerCase() !== sessionInfo.email?.toLowerCase()) {
               throw new BadRequestError('Email mismatch: Token email does not match session email.');
             }
-            userDetails = this.userController?.extractGoogleUserDetails(payload, sessionInfo.email) || { fullName: '' };
+            userDetails = this.jitProvisioningService.extractGoogleUserDetails(payload, sessionInfo.email);
             break;
           }
 
@@ -1426,7 +1420,7 @@ export class UserAccountController {
             );
             const { tenantId } = configManagerResponse.data;
             const decodedToken = await validateAzureAdUser(credentials, tenantId);
-            userDetails = this.userController?.extractMicrosoftUserDetails(decodedToken, sessionInfo.email) || { fullName: '' };
+            userDetails = this.jitProvisioningService.extractMicrosoftUserDetails(decodedToken, sessionInfo.email);
             break;
           }
 
@@ -1439,7 +1433,7 @@ export class UserAccountController {
             );
             const { tenantId } = configManagerResponse.data;
             const decodedToken = await validateAzureAdUser(credentials, tenantId);
-            userDetails = this.userController?.extractMicrosoftUserDetails(decodedToken, sessionInfo.email) || { fullName: '' };
+            userDetails = this.jitProvisioningService.extractMicrosoftUserDetails(decodedToken, sessionInfo.email);
             break;
           }
 
@@ -1451,10 +1445,10 @@ export class UserAccountController {
               this.config.scopedJwtSecret,
             );
             const { userInfoEndpoint } = configManagerResponse.data;
-            const { accessToken, idToken } = credentials;
+            const { accessToken } = credentials;
 
-            if (!accessToken && !idToken) {
-              throw new BadRequestError('Access token or ID token is required for OAuth authentication');
+            if (!accessToken) {
+              throw new BadRequestError('Access token is required for OAuth authentication');
             }
 
             let userInfo;
@@ -1477,7 +1471,7 @@ export class UserAccountController {
             if (providerEmail?.toLowerCase() !== sessionInfo.email?.toLowerCase()) {
               throw new BadRequestError('Email mismatch: OAuth provider email does not match session email.');
             }
-            userDetails = this.userController?.extractOAuthUserDetails(userInfo, sessionInfo.email) || { fullName: '' };
+            userDetails = this.jitProvisioningService.extractOAuthUserDetails(userInfo, sessionInfo.email);
             break;
           }
 
@@ -1485,16 +1479,12 @@ export class UserAccountController {
             throw new BadRequestError('Unsupported authentication method for JIT provisioning');
         }
 
-        // Provision the user
-        if (!this.userController) {
-          throw new BadRequestError('User controller not available for JIT provisioning');
-        }
-        user = await this.userController.provisionJitUser(
+        // Provision the user using the JIT provisioning service
+        user = await this.jitProvisioningService.provisionUser(
           sessionInfo.email,
           userDetails,
           orgId,
           method === AuthMethodType.AZURE_AD ? 'azureAd' : method as 'google' | 'microsoft' | 'oauth',
-          this.logger,
         );
 
         // Log the login activity - map JIT method to valid loginMode enum

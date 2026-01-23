@@ -13,7 +13,6 @@ import { UserAccountController } from '../controller/userAccount.controller';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
-import { UserController } from '../../user_management/controller/users.controller';
 
 const otpGenerationBody = z.object({
   email: z.string().email('Invalid email'),
@@ -42,18 +41,11 @@ const initAuthValidationSchema = z.object({
   headers: z.object({}),
 });
 
-export function createUserAccountRouter(container: Container, entityManagerContainer?: Container) {
+export function createUserAccountRouter(container: Container) {
   const router = Router();
 
   router.use(attachContainerMiddleware(container));
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
-
-  // Wire up UserController for JIT provisioning if entityManagerContainer is provided
-  if (entityManagerContainer && entityManagerContainer.isBound('UserController')) {
-    const userController = entityManagerContainer.get<UserController>('UserController');
-    const userAccountController = container.get<UserAccountController>('UserAccountController');
-    userAccountController.setUserController(userController);
-  }
 
   router.post(
     '/initAuth',

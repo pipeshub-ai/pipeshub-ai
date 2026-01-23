@@ -167,6 +167,7 @@ set -e
 
 LOG_FILE="/app/process_monitor.log"
 CHECK_INTERVAL=${CHECK_INTERVAL:-20}
+NODEJS_PORT=${NODEJS_PORT:-3000}
 
 # PIDs of child processes
 NODEJS_PID=""
@@ -189,7 +190,7 @@ start_nodejs() {
     log "Waiting for Node.js health check..."
     local MAX_RETRIES=30
     local RETRY_COUNT=0
-    local HEALTH_CHECK_URL="http://localhost:3000/api/v1/health"
+    local HEALTH_CHECK_URL="http://localhost:${NODEJS_PORT}/api/v1/health"
     
     while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
         if curl -s -f "$HEALTH_CHECK_URL" > /dev/null 2>&1; then

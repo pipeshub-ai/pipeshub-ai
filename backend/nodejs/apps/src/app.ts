@@ -228,7 +228,6 @@ export class Application {
   private configureMiddleware(appConfig: AppConfig): void {
     const isStrictMode = process.env.STRICT_MODE === 'true';
     if (isStrictMode) {
-      const isDev = process.env.NODE_ENV !== 'production';
       // Security middleware - configure helmet once with all options
       const envConnectSrcs = process.env.CSP_CONNECT_SRCS?.split(',').filter(Boolean) ?? [];
       const connectSrc = [
@@ -262,7 +261,6 @@ export class Application {
                 "https://api.iconify.design",
                 "https://api.simplesvg.com"
               ]),
-              ...(isDev ? ["'unsafe-inline'", "'unsafe-eval'"] : [])
             ],
             connectSrc: connectSrc,
             objectSrc: ["'self'", "data:", "blob:"], // PDF rendering
@@ -334,11 +332,11 @@ export class Application {
     );
     this.app.use('/api/v1/org', createOrgRouter(this.entityManagerContainer));
 
-    this.app.use('/api/v1/saml', createSamlRouter(this.authServiceContainer, this.entityManagerContainer));
+    this.app.use('/api/v1/saml', createSamlRouter(this.authServiceContainer));
 
     this.app.use(
       '/api/v1/userAccount',
-      createUserAccountRouter(this.authServiceContainer, this.entityManagerContainer),
+      createUserAccountRouter(this.authServiceContainer),
     );
     this.app.use(
       '/api/v1/orgAuthConfig',
