@@ -197,14 +197,10 @@ class AzureBlobDataSource:
 
                     containers.append(container_dict)
                 except Exception:
-                    # Log but continue processing other containers
-                    try:
-                        container_name = getattr(container, 'name', 'unknown')
-                        # At minimum, include the name so sync can proceed
+                    # Best-effort: include the container name so sync can proceed
+                    container_name = getattr(container, "name", None)
+                    if container_name:
                         containers.append({"name": container_name})
-                    except Exception:
-                        # If we can't even get the name, skip this container
-                        pass
 
             return AzureBlobResponse(success=True, data=containers)
         except Exception as e:

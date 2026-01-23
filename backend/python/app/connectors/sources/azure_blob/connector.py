@@ -10,7 +10,7 @@ import mimetypes
 import uuid
 from datetime import datetime, timedelta, timezone
 from logging import Logger
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote
 
 from aiolimiter import AsyncLimiter
@@ -417,6 +417,30 @@ class AzureBlobConnector(BaseConnector):
         """Generate the web URL for an Azure Blob parent folder/directory."""
         return get_parent_weburl_for_azure_blob(parent_external_id, self.account_name or "")
 
+    def _extract_container_names(self, containers_data: Optional[Iterable[Any]]) -> List[str]:
+        """Extract container names from list_containers response data.
+
+        Handles both dict-based and ContainerProperties-like objects.
+        """
+        container_names: List[str] = []
+        if not containers_data:
+            return container_names
+
+        for container in containers_data:
+            container_name: Optional[str] = None
+
+            # Handle both dict and object formats for robustness
+            if isinstance(container, dict):
+                container_name = container.get("name")
+            else:
+                # Fallback for ContainerProperties objects
+                container_name = getattr(container, "name", None)
+
+            if container_name:
+                container_names.append(container_name)
+
+        return container_names
+
     async def run_sync(self) -> None:
         """Runs a full synchronization from containers."""
         try:
@@ -458,17 +482,7 @@ class AzureBlobConnector(BaseConnector):
 
                 containers_data = containers_response.data
                 if containers_data:
-                    containers_to_sync = []
-                    for container in containers_data:
-                        # Handle both dict and object formats for robustness
-                        if isinstance(container, dict):
-                            container_name = container.get("name")
-                        else:
-                            # Fallback for ContainerProperties objects
-                            container_name = getattr(container, "name", None)
-
-                        if container_name:
-                            containers_to_sync.append(container_name)
+                    containers_to_sync = self._extract_container_names(containers_data)
 
                     if containers_to_sync:
                         self.logger.info(f"Found {len(containers_to_sync)} container(s) to sync: {containers_to_sync}")
@@ -1512,18 +1526,7 @@ class AzureBlobConnector(BaseConnector):
             else:
                 containers_response = await self.data_source.list_containers()
                 if containers_response.success and containers_response.data:
-                    containers_data = containers_response.data
-                    containers_to_sync = []
-                    for container in containers_data:
-                        # Handle both dict and object formats for robustness
-                        if isinstance(container, dict):
-                            container_name = container.get("name")
-                        else:
-                            # Fallback for ContainerProperties objects
-                            container_name = getattr(container, "name", None)
-
-                        if container_name:
-                            containers_to_sync.append(container_name)
+                    containers_to_sync = self._extract_container_names(containers_response.data)
 
                     if not containers_to_sync:
                         self.logger.warning("No valid container names found in response")
