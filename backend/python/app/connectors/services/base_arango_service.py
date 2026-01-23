@@ -3251,12 +3251,15 @@ class BaseArangoService:
             ]
 
             # Start transaction
+            # Note: lock_timeout is set to 60 seconds (60000ms).
+            # For very large connector instances with millions of records, this may need to be increased.
+            # Consider implementing a more granular deletion strategy for extremely large datasets if timeouts occur.
             transaction = self.db.begin_transaction(
                 read=edge_collections + node_collections,
                 write=edge_collections + node_collections,
                 exclusive=[],
                 allow_implicit=True,
-                lock_timeout=60000,
+                lock_timeout=60000,  # 60 seconds - may need adjustment for very large deletions
             )
 
             try:
@@ -3348,8 +3351,11 @@ class BaseArangoService:
             except Exception as tx_error:
                 try:
                     transaction.abort_transaction()
-                except Exception:
-                    pass
+                except Exception as abort_error:
+                    self.logger.error(
+                        f"❌ Failed to abort transaction during connector deletion: {abort_error}. "
+                        f"Original error: {tx_error}"
+                    )
                 raise tx_error
 
         except Exception as e:
@@ -3568,7 +3574,7 @@ class BaseArangoService:
             query = """
             FOR doc IN @@collection
                 FILTER doc._key IN @keys
-                REMOVE doc IN @@collection OPTIONS { ignoreErrors: true }
+                REMOVE doc IN @@collection
                 RETURN 1
             """
 
@@ -3618,7 +3624,7 @@ class BaseArangoService:
         query = """
         FOR doc IN @@collection
             FILTER doc._key IN @virtual_record_ids
-            REMOVE doc IN @@collection OPTIONS { ignoreErrors: true }
+            REMOVE doc IN @@collection
             RETURN 1
         """
 

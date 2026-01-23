@@ -746,8 +746,12 @@ class IndexingPipeline:
                 )
                 self.logger.info(f"✅ Deleted {len(virtual_record_ids)} entries from virtualRecordToDocIdMapping")
             except Exception as e:
-                # Log but continue - the primary goal is Qdrant cleanup
-                self.logger.warning(f"Failed to delete from virtualRecordToDocIdMapping: {e}")
+                # This is critical for data consistency - log as error
+                self.logger.error(
+                    f"❌ Failed to delete from virtualRecordToDocIdMapping: {e}. "
+                    f"This may lead to orphaned entries in ArangoDB."
+                )
+                # Continue with Qdrant cleanup as primary goal, but error is logged
 
             # Initialize embedding model to set up vector store
             try:
@@ -769,32 +773,61 @@ class IndexingPipeline:
                         should={"virtualRecordId": batch}
                     )
 
-                    # Scroll to get all point IDs matching the filter
-                    # Using a reasonable limit to avoid memory exhaustion for very large datasets
-                    # If more than QDRANT_SCROLL_LIMIT points exist, they will be processed in subsequent batches
-                    result = await self.vector_db_service.scroll(
-                        collection_name=self.collection_name,
-                        scroll_filter=filter_dict,
-                        limit=QDRANT_SCROLL_LIMIT,
-                    )
+                    # Scroll and delete all points matching the filter
+                    # Continue scrolling until no more points are returned to ensure complete deletion
+                    batch_deleted = 0
+                    scroll_iteration = 0
+                    max_iterations = 1000  # Safety limit to prevent infinite loops
 
-                    if result and result[0]:
+                    while scroll_iteration < max_iterations:
+                        scroll_iteration += 1
+                        # Scroll to get point IDs matching the filter
+                        result = await self.vector_db_service.scroll(
+                            collection_name=self.collection_name,
+                            scroll_filter=filter_dict,
+                            limit=QDRANT_SCROLL_LIMIT,
+                        )
+
+                        if not result or not result[0]:
+                            # No more points to delete
+                            break
+
                         ids = [point.id for point in result[0]]
-                        if ids:
-                            await self.vector_store.adelete(ids=ids)
-                            total_deleted += len(ids)
-                            self.logger.info(f"✅ Deleted {len(ids)} embeddings in batch {i // QDRANT_BULK_DELETE_BATCH_SIZE + 1}")
+                        if not ids:
+                            # Empty result - no more points
+                            break
 
-                            # If we got the full limit, log a warning that there might be more
-                            if len(ids) == QDRANT_SCROLL_LIMIT:
-                                self.logger.warning(
-                                    f"Batch {i // QDRANT_BULK_DELETE_BATCH_SIZE + 1} reached scroll limit "
-                                    f"({QDRANT_SCROLL_LIMIT}). Some embeddings may remain. "
-                                    f"Consider processing in smaller virtualRecordId batches."
-                                )
+                        # Delete the points
+                        await self.vector_store.adelete(ids=ids)
+                        batch_deleted += len(ids)
+                        total_deleted += len(ids)
+                        self.logger.debug(
+                            f"Deleted {len(ids)} embeddings in batch {i // QDRANT_BULK_DELETE_BATCH_SIZE + 1}, "
+                            f"scroll iteration {scroll_iteration}"
+                        )
+
+                        # If we got fewer than the limit, we've reached the end
+                        if len(ids) < QDRANT_SCROLL_LIMIT:
+                            break
+
+                        # If we got exactly the limit, there might be more points
+                        # Continue scrolling to check for additional points
+                    else:
+                        # Reached max_iterations - log warning
+                        self.logger.warning(
+                            f"Reached maximum scroll iterations ({max_iterations}) for batch "
+                            f"{i // QDRANT_BULK_DELETE_BATCH_SIZE + 1}. Some embeddings may remain."
+                        )
+
+                    if batch_deleted > 0:
+                        self.logger.info(
+                            f"✅ Deleted {batch_deleted} embeddings for batch {i // QDRANT_BULK_DELETE_BATCH_SIZE + 1} "
+                            f"(across {scroll_iteration} scroll iteration{'s' if scroll_iteration > 1 else ''})"
+                        )
 
                 except Exception as e:
-                    self.logger.warning(f"Failed to delete batch {i // QDRANT_BULK_DELETE_BATCH_SIZE + 1}: {e}")
+                    self.logger.error(f"❌ Failed to delete batch {i // QDRANT_BULK_DELETE_BATCH_SIZE + 1}: {e}")
+                    # Continue with next batch even if one fails
                     continue
 
             self.logger.info(f"✅ Bulk deletion complete: {total_deleted} embeddings deleted for {len(virtual_record_ids)} virtual record IDs")

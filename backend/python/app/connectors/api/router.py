@@ -6173,7 +6173,13 @@ async def delete_connector_instance(
             await producer.send_message(topic="entity-events", message=disable_message)
             logger.info(f"✅ Sent appDisabled event for connector {connector_id}")
         except Exception as e:
-            logger.warning(f"Failed to send appDisabled event: {e}")
+            logger.error(
+                f"❌ Failed to send appDisabled event for connector {connector_id}: {e}. "
+                f"This is critical - sync services may continue running. Manual intervention may be required. "
+                f"Continuing with data deletion..."
+            )
+            # Continue with deletion - data cleanup is more important than event publishing
+            # Manual cleanup of sync services may be needed if this event fails
 
         # 5. Delete from ArangoDB (returns records for Qdrant cleanup)
         deletion_result = await arango_service.delete_connector_instance(
@@ -6208,7 +6214,13 @@ async def delete_connector_instance(
                 await producer.send_message(topic="record-events", message=bulk_delete_message)
                 logger.info(f"✅ Published bulk delete event for {len(virtual_record_ids)} records")
             except Exception as e:
-                logger.warning(f"Failed to publish bulk delete event: {e}")
+                logger.error(
+                    f"❌ Failed to publish bulk delete event for connector {connector_id}: {e}. "
+                    f"This is critical - embeddings may persist in Qdrant. Manual cleanup may be required. "
+                    f"Continuing with deletion completion..."
+                )
+                # Continue with deletion - ArangoDB cleanup is complete
+                # Qdrant cleanup can be triggered manually if needed
 
         # 7. Clean up connector credentials from etcd/config store
         try:
@@ -6217,7 +6229,11 @@ async def delete_connector_instance(
             await config_service.delete_config(config_path)
             logger.info(f"✅ Deleted config for connector {connector_id}")
         except Exception as e:
-            logger.warning(f"Failed to delete config for connector {connector_id}: {e}")
+            logger.error(
+                f"❌ Failed to delete config for connector {connector_id}: {e}. "
+                f"Orphaned configuration may remain in etcd."
+            )
+            # Don't re-raise - config cleanup failure is less critical than data deletion
 
         logger.info(
             f"✅ Successfully deleted connector instance {connector_id}. "
