@@ -52,7 +52,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
-from app.connectors.sources.google.common.apps import GmailApp
+from app.connectors.sources.google.common.apps import GmailIndividualApp
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -160,7 +160,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
         connector_id: str
     ) -> None:
         super().__init__(
-            GmailApp(connector_id),
+            GmailIndividualApp(connector_id),
             logger,
             data_entities_processor,
             data_store_provider,

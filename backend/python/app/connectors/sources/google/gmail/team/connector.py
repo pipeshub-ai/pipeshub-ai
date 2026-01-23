@@ -34,7 +34,10 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncPoint,
     generate_record_sync_point_key,
 )
-from app.connectors.core.registry.auth_builder import AuthType, OAuthScopeConfig
+from app.connectors.core.registry.auth_builder import (
+    AuthType,
+    OAuthScopeConfig,
+)
 from app.connectors.core.registry.connector_builder import (
     AuthBuilder,
     CommonFields,
@@ -53,7 +56,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
-from app.connectors.sources.google.common.apps import GmailApp
+from app.connectors.sources.google.common.apps import GmailTeamApp
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -165,7 +168,7 @@ class GoogleGmailTeamConnector(BaseConnector):
         connector_id: str
     ) -> None:
         super().__init__(
-            GmailApp(connector_id),
+            GmailTeamApp(connector_id),
             logger,
             data_entities_processor,
             data_store_provider,

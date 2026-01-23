@@ -1563,11 +1563,16 @@ export const useConnectorConfig = ({
         }
 
         // For business OAuth, merge JSON data and admin email
+        // Also set oauthInstanceName to connector instance name for Google Workspace business OAuth
         if (isCustomGoogleBusinessOAuth && jsonData) {
+          // Use connector.name in edit mode, instanceName in create mode
+          const connectorInstanceName = isCreateMode ? instanceName : (connector.name || instanceName);
           authToSave = {
             ...authToSave,
             ...jsonData,
             adminEmail,
+            // Set oauthInstanceName to connector instance name for Google Workspace business OAuth
+            oauthInstanceName: connectorInstanceName || authToSave.oauthInstanceName,
           };
         }
 
@@ -1758,11 +1763,16 @@ export const useConnectorConfig = ({
         }
 
         // For business OAuth, merge JSON data and admin email
+        // Also set oauthInstanceName to connector instance name for Google Workspace business OAuth
         if (isCustomGoogleBusinessOAuth && jsonData) {
+          // Use connector.name in edit mode, instanceName in create mode
+          const connectorInstanceName = isCreateMode ? instanceName : (connector.name || instanceName);
           authToSave = {
             ...authToSave,
             ...jsonData,
             adminEmail,
+            // Set oauthInstanceName to connector instance name for Google Workspace business OAuth
+            oauthInstanceName: connectorInstanceName || authToSave.oauthInstanceName,
           };
         }
 
@@ -1925,11 +1935,16 @@ export const useConnectorConfig = ({
         }
 
         // For business OAuth, merge JSON data and admin email
+        // Also set oauthInstanceName to connector instance name for Google Workspace business OAuth
         if (isCustomGoogleBusinessOAuth && jsonData) {
+          // Use connector.name in edit mode, instanceName in create mode
+          const connectorInstanceName = isCreateMode ? instanceName : (connector.name || instanceName);
           authToSave = {
             ...authToSave,
             ...jsonData,
             adminEmail,
+            // Set oauthInstanceName to connector instance name for Google Workspace business OAuth
+            oauthInstanceName: connectorInstanceName || authToSave.oauthInstanceName,
           };
         }
 
