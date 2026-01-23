@@ -451,6 +451,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 source_created_at=source_created_at,
                 source_updated_at=source_created_at,
                 mime_type=MimeTypes.GMAIL.value,
+                weburl=f"https://mail.google.com/mail?authuser={user_email}#all/{message_id}",
                 subject=subject,
                 from_email=from_email,
                 to_emails=to_emails,
@@ -473,7 +474,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                     # User is the sender - create owner permission
                     permissions.append(Permission(
                         email=user_email,
-                        type=PermissionType.READ,
+                        type=PermissionType.OWNER,
                         entity_type=EntityType.USER
                     ))
                 else:
@@ -653,9 +654,11 @@ class GoogleGmailTeamConnector(BaseConnector):
                 source_created_at=get_epoch_timestamp_in_ms(),
                 source_updated_at=get_epoch_timestamp_in_ms(),
                 mime_type=mime_type,
+                weburl=f"https://mail.google.com/mail?authuser={user_email}#all/{message_id}",
                 size_in_bytes=size,
                 extension=extension,
                 is_file=True,
+                is_dependent_node=True,
             )
 
             # Check indexing filter for attachments
@@ -748,7 +751,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             if history_id:
                 self.logger.info(f"History ID found for user {user_email}, performing incremental sync")
                 try:
-                    await self._run_incremental_sync(user_email, user_gmail_client, history_id, sync_point_key)
+                    await self._run_sync_with_history_id(user_email, user_gmail_client, history_id, sync_point_key)
                 except HttpError as http_error:
                     # Handle 404 error - history_id expired, fallback to full sync
                     if hasattr(http_error, 'resp') and http_error.resp.status == HttpStatusCode.NOT_FOUND.value:
@@ -957,7 +960,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             self.logger.error(f"❌ Error in full sync for user {user_email}: {ex}")
             raise
 
-    async def _run_incremental_sync(
+    async def _run_sync_with_history_id(
         self,
         user_email: str,
         user_gmail_client: GoogleGmailDataSource,
