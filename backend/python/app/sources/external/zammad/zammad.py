@@ -1868,16 +1868,13 @@ class ZammadDataSource:
             ZammadResponse
         """
         url = f"{self.base_url}/api/v1/tickets"
-        params = {}
+        query_params = {}
         if page is not None:
-            params["page"] = page
+            query_params["page"] = str(page)
         if per_page is not None:
-            params["per_page"] = per_page
+            query_params["per_page"] = str(per_page)
         if expand is not None:
-            params["expand"] = expand
-        if params:
-            from urllib.parse import urlencode
-            url += "?" + urlencode(params)
+            query_params["expand"] = str(expand).lower()
         request_body = None
 
         try:
@@ -1885,7 +1882,8 @@ class ZammadDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
+                query=query_params
             )
             response = await self.http_client.execute(request)
 
@@ -2214,24 +2212,21 @@ class ZammadDataSource:
             ZammadResponse
         """
         url = f"{self.base_url}/api/v1/tickets/search"
-        params = {}
+        query_params = {}
         if query is not None:
-            params["query"] = query
+            query_params["query"] = query
         if limit is not None:
-            params["limit"] = limit
+            query_params["limit"] = str(limit)
         if page is not None:
-            params["page"] = page
+            query_params["page"] = str(page)
         if per_page is not None:
-            params["per_page"] = per_page
+            query_params["per_page"] = str(per_page)
         if expand is not None:
-            params["expand"] = expand
+            query_params["expand"] = str(expand).lower()
         if with_total_count is not None:
-            params["with_total_count"] = with_total_count
+            query_params["with_total_count"] = str(with_total_count).lower()
         if only_total_count is not None:
-            params["only_total_count"] = only_total_count
-        if params:
-            from urllib.parse import urlencode
-            url += "?" + urlencode(params)
+            query_params["only_total_count"] = str(only_total_count).lower()
         request_body = None
 
         try:
@@ -2239,7 +2234,8 @@ class ZammadDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
+                query=query_params
             )
             response = await self.http_client.execute(request)
 
@@ -2599,14 +2595,11 @@ class ZammadDataSource:
             ZammadResponse
         """
         url = f"{self.base_url}/api/v1/users"
-        params = {}
+        query_params = {}
         if page is not None:
-            params["page"] = page
+            query_params["page"] = str(page)
         if per_page is not None:
-            params["per_page"] = per_page
-        if params:
-            from urllib.parse import urlencode
-            url += "?" + urlencode(params)
+            query_params["per_page"] = str(per_page)
         request_body = None
 
         try:
@@ -2614,7 +2607,8 @@ class ZammadDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
+                query=query_params
             )
             response = await self.http_client.execute(request)
 
@@ -2961,14 +2955,25 @@ class ZammadDataSource:
             )
 
     async def list_groups(
-        self
+        self,
+        page: Optional[int] = None,
+        per_page: Optional[int] = None
     ) -> ZammadResponse:
         """List groups
+
+        Args:
+            page: Optional[int] (optional)
+            per_page: Optional[int] (optional)
 
         Returns:
             ZammadResponse
         """
         url = f"{self.base_url}/api/v1/groups"
+        query_params = {}
+        if page is not None:
+            query_params["page"] = str(page)
+        if per_page is not None:
+            query_params["per_page"] = str(per_page)
         request_body = None
 
         try:
@@ -2976,7 +2981,8 @@ class ZammadDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
+                query=query_params
             )
             response = await self.http_client.execute(request)
 
@@ -3223,14 +3229,11 @@ class ZammadDataSource:
             ZammadResponse
         """
         url = f"{self.base_url}/api/v1/organizations"
-        params = {}
+        query_params = {}
         if page is not None:
-            params["page"] = page
+            query_params["page"] = str(page)
         if per_page is not None:
-            params["per_page"] = per_page
-        if params:
-            from urllib.parse import urlencode
-            url += "?" + urlencode(params)
+            query_params["per_page"] = str(per_page)
         request_body = None
 
         try:
@@ -3238,7 +3241,8 @@ class ZammadDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
+                query=query_params
             )
             response = await self.http_client.execute(request)
 
@@ -3503,14 +3507,25 @@ class ZammadDataSource:
             )
 
     async def list_roles(
-        self
+        self,
+        page: Optional[int] = None,
+        per_page: Optional[int] = None
     ) -> ZammadResponse:
         """List roles
+
+        Args:
+            page: Optional[int] (optional)
+            per_page: Optional[int] (optional)
 
         Returns:
             ZammadResponse
         """
         url = f"{self.base_url}/api/v1/roles"
+        query_params = {}
+        if page is not None:
+            query_params["page"] = str(page)
+        if per_page is not None:
+            query_params["per_page"] = str(per_page)
         request_body = None
 
         try:
@@ -3518,7 +3533,8 @@ class ZammadDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
+                query=query_params
             )
             response = await self.http_client.execute(request)
 

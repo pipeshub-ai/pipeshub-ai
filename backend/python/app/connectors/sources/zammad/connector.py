@@ -51,7 +51,6 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.zammad.common.apps import ZammadApp
-from app.connectors.utils.value_mapper import ValueMapper
 from app.models.blocks import (
     Block,
     BlockContainerIndex,
@@ -192,9 +191,6 @@ class ZammadConnector(BaseConnector):
         self.connector_id = connector_id
         self.connector_name = Connectors.ZAMMAD
 
-        # Initialize value mapper (for state/priority mappings)
-        self.value_mapper = ValueMapper()
-
         # Initialize sync points
         org_id = self.data_entities_processor.org_id
 
@@ -214,9 +210,7 @@ class ZammadConnector(BaseConnector):
         # Cache for lookups
         self._state_map: Dict[int, str] = {}  # state_id -> state_name
         self._priority_map: Dict[int, str] = {}  # priority_id -> priority_name
-        self._user_map: Dict[int, Dict[str, Any]] = {}  # user_id -> user_data
-        self._group_map: Dict[int, Dict[str, Any]] = {}  # group_id -> group_data
-        self._role_map: Dict[int, Dict[str, Any]] = {}  # role_id -> role_data
+        self._user_id_to_data: Dict[int, Dict[str, Any]] = {}  # user_id -> {"email": str, "role_ids": List[int]} (lightweight mapping)
         self._organization_map: Dict[int, Dict[str, Any]] = {}  # organization_id -> organization_data
 
         # Filter collections (initialized in run_sync)
@@ -289,7 +283,8 @@ class ZammadConnector(BaseConnector):
         auth_type = auth_config.get("authType", "API_TOKEN")
 
         # Only support API_TOKEN authentication
-        if auth_type != "API_TOKEN" and auth_type != "TOKEN":
+        # Check against AuthType enum for type safety, but also allow "TOKEN" for backward compatibility
+        if auth_type != AuthType.API_TOKEN and auth_type != "TOKEN":
             raise ValueError(f"Unsupported auth type: {auth_type}. Only API_TOKEN is supported.")
 
         fresh_token = auth_config.get("token", "")
@@ -334,7 +329,8 @@ class ZammadConnector(BaseConnector):
                 for state in states_response.data:
                     state_id = state.get("id")
                     state_name = state.get("name", "")
-                    if state_id:
+                    # Only cache if both ID and name are present
+                    if state_id is not None and state_name:
                         self._state_map[state_id] = state_name.lower()
                 self.logger.info(f"📊 Loaded {len(self._state_map)} ticket states")
         except Exception as e:
@@ -347,7 +343,8 @@ class ZammadConnector(BaseConnector):
                 for priority in priorities_response.data:
                     priority_id = priority.get("id")
                     priority_name = priority.get("name", "")
-                    if priority_id:
+                    # Only cache if both ID and name are present
+                    if priority_id is not None and priority_name:
                         self._priority_map[priority_id] = priority_name.lower()
                 self.logger.info(f"📊 Loaded {len(self._priority_map)} ticket priorities")
         except Exception as e:
@@ -392,17 +389,37 @@ class ZammadConnector(BaseConnector):
             self.logger.info("🎭 Step 3: Syncing roles...")
             await self._sync_roles(users, user_email_map)
 
-            # Step 4: Fetch and sync organizations
-            self.logger.info("🏢 Step 4: Syncing organizations...")
-            await self._sync_organizations()
+            # Step 4: Get organization_ids filter and fetch organizations
+            organization_ids = None
+            organization_ids_operator = None
+            organization_ids_filter = self.sync_filters.get(SyncFilterKey.ORGANIZATION_IDS) if self.sync_filters else None
 
-            # Step 5: Sync tickets (always fetch based on sync filters, indexing filters control indexing_status)
-            # organization_ids sync filter is applied at API level in _fetch_tickets_batch
-            self.logger.info("🎫 Step 5: Syncing tickets...")
+            if organization_ids_filter:
+                organization_ids = organization_ids_filter.get_value(default=[])
+                organization_ids_operator = organization_ids_filter.get_operator()
+                if organization_ids:
+                    # Extract operator value string (handles both enum and string)
+                    operator_value = organization_ids_operator.value if hasattr(organization_ids_operator, 'value') else str(organization_ids_operator) if organization_ids_operator else "in"
+                    action = "Excluding" if operator_value == "not_in" else "Including"
+                    self.logger.info(f"📋 Filter: {action} organizations by IDs: {organization_ids}")
+                else:
+                    self.logger.info("📋 Organization filter is empty, will fetch no organizations")
+            else:
+                self.logger.info("📋 No organization filter set - will fetch all organizations")
+
+            # Step 5: Fetch and sync organizations (filtered by organization_ids if specified)
+            self.logger.info("🏢 Step 5: Syncing organizations...")
+            await self._sync_organizations(
+                organization_ids=organization_ids,
+                organization_ids_operator=organization_ids_operator
+            )
+
+            # Step 6: Sync tickets (organization_ids sync filter is applied at API level in _fetch_tickets_batch)
+            self.logger.info("🎫 Step 6: Syncing tickets...")
             await self._sync_tickets_for_organizations()
 
-            # Step 6: Sync knowledge base (always fetch, indexing filters control indexing_status)
-            self.logger.info("📚 Step 6: Syncing knowledge base...")
+            # Step 7: Sync knowledge base (always fetch, indexing filters control indexing_status)
+            self.logger.info("📚 Step 7: Syncing knowledge base...")
             await self._sync_knowledge_bases()
 
             self.logger.info(f"✅ Zammad sync completed for connector {self.connector_id}")
@@ -446,12 +463,25 @@ class ZammadConnector(BaseConnector):
                 email = user_data.get("email", "")
                 active = user_data.get("active", True)
 
-                # Skip inactive users or users without email
-                if not active or not email:
+                # Skip inactive users, users without email, or users without ID
+                if not active or not email or not user_id:
                     continue
 
-                # Cache user data for lookups
-                self._user_map[user_id] = user_data
+                # Store lightweight mapping: user_id -> {email, role_ids} (instead of full user data)
+                role_ids = user_data.get("role_ids", [])
+                role_ids_int = []
+                if role_ids:
+                    # Convert to list of integers
+                    for role_id in role_ids:
+                        if isinstance(role_id, int):
+                            role_ids_int.append(role_id)
+                        elif isinstance(role_id, str) and role_id.isdigit():
+                            role_ids_int.append(int(role_id))
+
+                self._user_id_to_data[user_id] = {
+                    "email": email.lower(),
+                    "role_ids": role_ids_int
+                }
 
                 # Build full name
                 firstname = user_data.get("firstname", "") or ""
@@ -499,52 +529,77 @@ class ZammadConnector(BaseConnector):
         user_groups: List[Tuple[AppUserGroup, List[AppUser]]] = []
 
         datasource = await self._get_fresh_datasource()
-        response = await datasource.list_groups()
+        page = 1
+        per_page = 100
 
-        if not response.success or not response.data:
-            self.logger.warning("Failed to fetch groups from Zammad")
-            return user_groups
+        while True:
+            response = await datasource.list_groups(page=page, per_page=per_page)
 
-        groups_data = response.data
-        if not isinstance(groups_data, list):
-            groups_data = [groups_data]
+            if not response.success or not response.data:
+                if page == 1:
+                    self.logger.warning("Failed to fetch groups from Zammad")
+                break
 
-        for group_data in groups_data:
-            group_id = group_data.get("id")
-            group_name = group_data.get("name", "")
-            active = group_data.get("active", True)
+            groups_data = response.data
+            if not isinstance(groups_data, list):
+                groups_data = [groups_data]
 
-            if not active or not group_id or not group_name:
-                continue
+            if not groups_data:
+                break
 
-            # Cache group data
-            self._group_map[group_id] = group_data
+            for group_data in groups_data:
+                group_id = group_data.get("id")
+                group_name = group_data.get("name", "")
+                active = group_data.get("active", True)
 
-            # 1. Create AppUserGroup for membership tracking
-            user_group = AppUserGroup(
-                id=str(uuid4()),
-                org_id=self.data_entities_processor.org_id,
-                source_user_group_id=str(group_id),
-                connector_id=self.connector_id,
-                app_name=Connectors.ZAMMAD,
-                name=group_name,
-                description=group_data.get("note", ""),
-            )
+                if not active or not group_id or not group_name:
+                    continue
 
-            # Get users assigned to this group
-            member_app_users: List[AppUser] = []
-            for user_id, user_data in self._user_map.items():
-                user_group_ids = user_data.get("group_ids", {})
-                # group_ids is a dict like {"1": ["full"], "2": ["read"]}
-                if str(group_id) in user_group_ids:
-                    email = user_data.get("email", "").lower()
-                    if email and email in user_email_map:
-                        member_app_users.append(user_email_map[email])
 
-            user_groups.append((user_group, member_app_users))
+                # 1. Create AppUserGroup for membership tracking
+                user_group = AppUserGroup(
+                    id=str(uuid4()),
+                    org_id=self.data_entities_processor.org_id,
+                    source_user_group_id=str(group_id),
+                    connector_id=self.connector_id,
+                    app_name=Connectors.ZAMMAD,
+                    name=group_name,
+                    description=group_data.get("note", ""),
+                )
+
+                # Get users assigned to this group by calling get_group API
+                member_app_users: List[AppUser] = []
+                try:
+                    group_detail_response = await datasource.get_group(group_id)
+                    if group_detail_response.success and group_detail_response.data:
+                        group_detail = group_detail_response.data
+                        # Zammad API returns user_ids or member_ids in group detail
+                        member_user_ids = group_detail.get("user_ids", [])
+
+                        for member_user_id in member_user_ids:
+                            # Convert to int if needed
+                            if isinstance(member_user_id, str) and member_user_id.isdigit():
+                                member_user_id = int(member_user_id)
+
+                            # Get email from lightweight mapping
+                            user_data = self._user_id_to_data.get(member_user_id)
+                            if user_data:
+                                email = user_data.get("email")
+                                if email and email in user_email_map:
+                                    member_app_users.append(user_email_map[email])
+                except Exception as e:
+                    self.logger.warning(f"Failed to fetch group members for group {group_id}: {e}")
+
+                user_groups.append((user_group, member_app_users))
+
+            # Check if we got less than per_page, meaning we're done
+            if len(groups_data) < per_page:
+                break
+
+            page += 1
 
         self.logger.info(
-            f"📥 Fetched {len(groups_data)} groups, "
+            f"📥 Fetched {len(user_groups)} groups, "
             f"created {len(user_groups)} UserGroups (groups are not used as RecordGroups)"
         )
         return user_groups
@@ -557,95 +612,98 @@ class ZammadConnector(BaseConnector):
         """Fetch and sync roles from Zammad as AppRoles with user mappings."""
         try:
             datasource = await self._get_fresh_datasource()
-            response = await datasource.list_roles()
-
-            if not response.success:
-                self.logger.warning(f"Failed to fetch roles: {response.message if hasattr(response, 'message') else 'Unknown error'}")
-                return
-
-            roles_data = response.data
-            if not roles_data:
-                self.logger.info("No roles found")
-                return
-
-            if not isinstance(roles_data, list):
-                roles_data = [roles_data]
-
-            # Cache roles for lookups
-            for role_data in roles_data:
-                role_id = role_data.get("id")
-                if role_id:
-                    self._role_map[role_id] = role_data
-
-            # Build role -> users mapping from user data
-            role_users_map: Dict[int, List[AppUser]] = defaultdict(list)
-
-            # Iterate through all users to find their role assignments
-            for user_data in self._user_map.values():
-                user_data.get("id")
-                role_ids = user_data.get("role_ids", [])
-                email = user_data.get("email", "")
-
-                if not email or not role_ids:
-                    continue
-
-                # Find the AppUser for this email
-                app_user = user_email_map.get(email.lower())
-                if not app_user:
-                    continue
-
-                # Map user to each role
-                for role_id in role_ids:
-                    if isinstance(role_id, int) or (isinstance(role_id, str) and role_id.isdigit()):
-                        role_id_int = int(role_id)
-                        role_users_map[role_id_int].append(app_user)
-
-            # Create AppRoles with user mappings
+            page = 1
+            per_page = 100
             app_roles: List[Tuple[AppRole, List[AppUser]]] = []
 
-            for role_data in roles_data:
-                role_id = role_data.get("id")
-                if not role_id:
-                    continue
+            while True:
+                response = await datasource.list_roles(page=page, per_page=per_page)
 
-                role_name = role_data.get("name", f"Role {role_id}")
-                active = role_data.get("active", True)
+                if not response.success:
+                    if page == 1:
+                        self.logger.warning(f"Failed to fetch roles: {response.message if hasattr(response, 'message') else 'Unknown error'}")
+                    break
 
-                if not active:
-                    continue
+                if not response.data:
+                    break
 
-                # Parse timestamps
-                created_at = self._parse_zammad_datetime(role_data.get("created_at", ""))
-                updated_at = self._parse_zammad_datetime(role_data.get("updated_at", ""))
+                roles_data = response.data
+                if not isinstance(roles_data, list):
+                    roles_data = [roles_data]
 
-                # Create AppRole
-                app_role = AppRole(
-                    id=str(uuid4()),
-                    org_id=self.data_entities_processor.org_id,
-                    source_role_id=str(role_id),
-                    connector_id=self.connector_id,
-                    app_name=Connectors.ZAMMAD,
-                    name=role_name,
-                    source_created_at=get_epoch_timestamp_in_ms() if created_at else None,
-                    source_updated_at=get_epoch_timestamp_in_ms() if updated_at else None,
-                )
+                if not roles_data:
+                    break
 
-                # Get users assigned to this role
-                role_users = role_users_map.get(int(role_id), [])
+                # Process each role directly in the loop (like groups)
+                for role_data in roles_data:
+                    role_id = role_data.get("id")
+                    if not role_id:
+                        continue
 
-                app_roles.append((app_role, role_users))
+                    role_name = role_data.get("name", f"Role {role_id}")
+                    active = role_data.get("active", True)
+
+                    if not active:
+                        continue
+
+
+                    # Parse timestamps
+                    created_at = self._parse_zammad_datetime(role_data.get("created_at", ""))
+                    updated_at = self._parse_zammad_datetime(role_data.get("updated_at", ""))
+
+                    # Get users assigned to this role by checking user_id_to_data mapping
+                    role_users: List[AppUser] = []
+                    for user_id, user_data in self._user_id_to_data.items():
+                        user_role_ids = user_data.get("role_ids", [])
+                        if role_id in user_role_ids:
+                            # Get email from lightweight mapping
+                            email = user_data.get("email")
+                            if email and email in user_email_map:
+                                role_users.append(user_email_map[email])
+
+                    # Create AppRole
+                    app_role = AppRole(
+                        id=str(uuid4()),
+                        org_id=self.data_entities_processor.org_id,
+                        source_role_id=str(role_id),
+                        connector_id=self.connector_id,
+                        app_name=Connectors.ZAMMAD,
+                        name=role_name,
+                        source_created_at=created_at if created_at else None,
+                        source_updated_at=updated_at if updated_at else None,
+                    )
+
+                    app_roles.append((app_role, role_users))
+
+                # Check if we got less than per_page, meaning we're done
+                if len(roles_data) < per_page:
+                    break
+
+                page += 1
 
             # Sync roles
             if app_roles:
                 await self.data_entities_processor.on_new_app_roles(app_roles)
                 self.logger.info(f"✅ Synced {len(app_roles)} roles")
+            else:
+                self.logger.info("No roles found")
 
         except Exception as e:
             self.logger.error(f"❌ Error syncing roles: {e}", exc_info=True)
             raise
 
-    async def _sync_organizations(self) -> None:
-        """Fetch and sync organizations from Zammad as RecordGroups."""
+    async def _sync_organizations(
+        self,
+        organization_ids: Optional[List[str]] = None,
+        organization_ids_operator: Optional[Any] = None
+    ) -> None:
+        """
+        Fetch and sync organizations from Zammad as RecordGroups.
+
+        Args:
+            organization_ids: Optional list of organization IDs to include/exclude
+            organization_ids_operator: Optional filter operator (IN or NOT_IN)
+        """
         try:
             datasource = await self._get_fresh_datasource()
             page = 1
@@ -684,6 +742,36 @@ class ZammadConnector(BaseConnector):
                 self.logger.info("No organizations found")
                 return
 
+            # Apply organization_ids filter if specified
+            if organization_ids:
+                # Check operator: "in" (include) or "not_in" (exclude)
+                if organization_ids_operator:
+                    operator_value = organization_ids_operator.value if hasattr(organization_ids_operator, 'value') else str(organization_ids_operator)
+                else:
+                    operator_value = "in"
+
+                is_exclude = operator_value == "not_in"
+
+                # Convert organization_ids to integers for comparison
+                org_id_set = {int(oid) for oid in organization_ids if oid}
+
+                # Filter organizations based on operator
+                if is_exclude:
+                    # Exclude organizations in the list
+                    filtered_organizations = [
+                        org for org in all_organizations
+                        if org.get("id") not in org_id_set
+                    ]
+                else:
+                    # Include only organizations in the list
+                    filtered_organizations = [
+                        org for org in all_organizations
+                        if org.get("id") in org_id_set
+                    ]
+
+                all_organizations = filtered_organizations
+                self.logger.info(f"📋 Filtered to {len(all_organizations)} organizations (operator: {operator_value})")
+
             # Cache organizations for lookups
             for org_data in all_organizations:
                 org_id = org_data.get("id")
@@ -717,15 +805,15 @@ class ZammadConnector(BaseConnector):
                 record_group = RecordGroup(
                     id=str(uuid4()),
                     org_id=self.data_entities_processor.org_id,
-                    external_group_id=str(org_id),
+                    external_group_id=f"org_{org_id}",  # Consistent format: "org_{id}"
                     connector_id=self.connector_id,
-                    connector_name=Connectors.ZAMMAD,
+                    connector_name=self.connector_name,
                     name=org_name,
                     short_name=str(org_id),
-                    group_type=RecordGroupType.PROJECT,  # Using PROJECT as closest match
+                    group_type=RecordGroupType.PROJECT,
                     web_url=web_url,
-                    source_created_at=get_epoch_timestamp_in_ms() if created_at else None,
-                    source_updated_at=get_epoch_timestamp_in_ms() if updated_at else None,
+                    source_created_at=created_at if created_at else None,
+                    source_updated_at=updated_at if updated_at else None,
                 )
 
                 # ORG-level permissions - all org members can access
@@ -817,10 +905,12 @@ class ZammadConnector(BaseConnector):
 
         # Get organization_ids from sync filter to filter at API level (for efficiency)
         selected_organization_ids = []
+        organization_ids_operator = None
         if self.sync_filters:
             organization_ids_filter = self.sync_filters.get(SyncFilterKey.ORGANIZATION_IDS)
             if organization_ids_filter:
                 selected_organization_ids = organization_ids_filter.get_value(default=[])
+                organization_ids_operator = organization_ids_filter.get_operator()
 
         # Build query for filtering
         query_parts = []
@@ -836,8 +926,24 @@ class ZammadConnector(BaseConnector):
 
         # Apply organization_ids filter at API level if specified
         if selected_organization_ids:
-            org_ids_str = " OR ".join([f"organization_id:{oid}" for oid in selected_organization_ids])
-            query_parts.append(f"({org_ids_str})")
+            # Check operator: "in" (include) or "not_in" (exclude)
+            if organization_ids_operator:
+                operator_value = organization_ids_operator.value if hasattr(organization_ids_operator, 'value') else str(organization_ids_operator)
+            else:
+                operator_value = "in"
+
+            is_exclude = operator_value == "not_in"
+
+            if is_exclude:
+                # For NOT_IN, we need to exclude these organization IDs
+                # Zammad search syntax: NOT organization_id:4 AND NOT organization_id:5
+                org_exclude_parts = [f"NOT organization_id:{oid}" for oid in selected_organization_ids]
+                query_parts.append(f"({' AND '.join(org_exclude_parts)})")
+            else:
+                # For IN, include only these organization IDs
+                # Zammad search syntax: (organization_id:4 OR organization_id:5)
+                org_ids_str = " OR ".join([f"organization_id:{oid}" for oid in selected_organization_ids])
+                query_parts.append(f"({org_ids_str})")
 
         while True:
             # Fetch tickets with pagination and expand for resolved names
@@ -961,7 +1067,6 @@ class ZammadConnector(BaseConnector):
 
         # Get organization ID (tickets are organized by organizations, not groups)
         organization_id = ticket_data.get("organization_id")
-        
         # Determine record_group_type based on external_record_group_id format
         # Organizations use "org_{id}" format and are RecordGroupType.PROJECT
         record_group_type = None
@@ -981,17 +1086,55 @@ class ZammadConnector(BaseConnector):
         priority_name = self._priority_map.get(priority_id, "")
         priority = self._map_priority_to_priority(priority_name)
 
-        # Get customer (creator) info
+        # Get customer (creator) and owner (assignee) info - fetch on-demand
         customer_id = ticket_data.get("customer_id")
-        customer_data = self._user_map.get(customer_id, {})
-        creator_email = customer_data.get("email", "")
-        creator_name = f"{customer_data.get('firstname', '')} {customer_data.get('lastname', '')}".strip()
-
-        # Get owner (assignee) info
         owner_id = ticket_data.get("owner_id")
-        owner_data = self._user_map.get(owner_id, {})
-        assignee_email = owner_data.get("email", "")
-        assignee_name = f"{owner_data.get('firstname', '')} {owner_data.get('lastname', '')}".strip()
+        creator_email = ""
+        creator_name = ""
+        assignee_email = ""
+        assignee_name = ""
+
+        # Fetch datasource once if we need to get user details
+        datasource = None
+        if customer_id or owner_id:
+            try:
+                datasource = await self._get_fresh_datasource()
+            except Exception as e:
+                self.logger.debug(f"Failed to get datasource for ticket user lookups: {e}")
+
+        # Get customer (creator) info
+        if customer_id:
+            # Get email from lightweight mapping
+            customer_user_data = self._user_id_to_data.get(customer_id, {})
+            creator_email = customer_user_data.get("email", "")
+            # Fetch user details on-demand if needed for name
+            if creator_email and datasource:
+                try:
+                    user_response = await datasource.get_user(customer_id)
+                    if user_response.success and user_response.data:
+                        customer_detail = user_response.data
+                        firstname = customer_detail.get("firstname", "") or ""
+                        lastname = customer_detail.get("lastname", "") or ""
+                        creator_name = f"{firstname} {lastname}".strip() or creator_email
+                except Exception as e:
+                    self.logger.debug(f"Failed to fetch user {customer_id} for ticket: {e}")
+
+        # Get owner (assignee) info - reuse datasource
+        if owner_id:
+            # Get email from lightweight mapping
+            owner_user_data = self._user_id_to_data.get(owner_id, {})
+            assignee_email = owner_user_data.get("email", "")
+            # Fetch user details on-demand if needed for name
+            if assignee_email and datasource:
+                try:
+                    user_response = await datasource.get_user(owner_id)
+                    if user_response.success and user_response.data:
+                        owner_detail = user_response.data
+                        firstname = owner_detail.get("firstname", "") or ""
+                        lastname = owner_detail.get("lastname", "") or ""
+                        assignee_name = f"{firstname} {lastname}".strip() or assignee_email
+                except Exception as e:
+                    self.logger.debug(f"Failed to fetch user {owner_id} for ticket: {e}")
 
         # Parse timestamps
         created_at = self._parse_zammad_datetime(ticket_data.get("created_at", ""))
@@ -1161,7 +1304,7 @@ class ZammadConnector(BaseConnector):
         content_type = attachment_data.get("preferences", {}).get("Content-Type", "application/octet-stream")
 
         # Build download URL
-        weburl = f"{self.base_url}/api/v1/ticket_attachment/{ticket_id}/{article_id}/{attachment_id}"
+        weburl = f"{self.base_url}/api/v1/ticket_attachment/{ticket_id}/{article_id}/{attachment_id}" if self.base_url else ""
 
         # Check for existing record
         external_record_id = f"{ticket_id}_{article_id}_{attachment_id}"
@@ -1278,7 +1421,7 @@ class ZammadConnector(BaseConnector):
                 org_id=self.data_entities_processor.org_id,
                 external_group_id=f"kb_{kb_id}",
                 connector_id=self.connector_id,
-                connector_name=Connectors.KNOWLEDGE_BASE,
+                connector_name=self.connector_name,
                 name=kb_name,
                 short_name=f"KB-{kb_id}",
                 group_type=RecordGroupType.KB,
@@ -1334,7 +1477,7 @@ class ZammadConnector(BaseConnector):
                 org_id=self.data_entities_processor.org_id,
                 external_group_id=f"cat_{cat_id}",
                 connector_id=self.connector_id,
-                connector_name=Connectors.KNOWLEDGE_BASE,
+                connector_name=self.connector_name,
                 name=cat_name,
                 short_name=f"CAT-{cat_id}",
                 group_type=RecordGroupType.KB,
@@ -1445,15 +1588,23 @@ class ZammadConnector(BaseConnector):
         # Get title and content from translations
         translations = answer_data.get("translations", [])
         title = "KB Answer"
+        content_body = None
 
         for trans in translations:
-            if trans.get("title"):
-                title = trans.get("title")
-            content_body = trans.get("content", {}).get("body")
-            if content_body:
-                # Store body content for later use (if needed)
-                pass
-            break
+            trans_title = trans.get("title")
+            trans_content_body = trans.get("content", {}).get("body")
+
+            # Update title if found
+            if trans_title:
+                title = trans_title
+
+            # Update content_body if found
+            if trans_content_body:
+                content_body = trans_content_body
+
+            # Break early if we found both title and content_body
+            if title and title != "KB Answer" and content_body:
+                break
 
         # Parse timestamps
         created_at = self._parse_zammad_datetime(answer_data.get("created_at", ""))
@@ -1483,7 +1634,7 @@ class ZammadConnector(BaseConnector):
             indexing_status=IndexingStatus.NOT_STARTED,
             version=version,
             origin=OriginTypes.CONNECTOR.value,
-            connector_name=Connectors.KNOWLEDGE_BASE,
+            connector_name=self.connector_name,
             connector_id=self.connector_id,
             mime_type=MimeTypes.BLOCKS.value,
             weburl=f"{self.base_url}/help/kb_answers/{answer_id}" if self.base_url else "",
@@ -1604,7 +1755,7 @@ class ZammadConnector(BaseConnector):
                 description=f"Description for ticket #{ticket_number}",
                 source_group_id=f"{ticket_id}_description",
                 data=description_data,
-                format=DataFormat.HTML,
+                format=DataFormat.MARKDOWN,  # Using markdown format since we're using markdown syntax (# heading)
                 weburl=record.weburl,
                 requires_processing=True,
                 children_records=description_children_records if description_children_records else None,
@@ -1673,7 +1824,7 @@ class ZammadConnector(BaseConnector):
                 description=f"Description for ticket #{ticket_number}",
                 source_group_id=f"{ticket_id}_description",
                 data=f"# {ticket_title}",
-                format=DataFormat.HTML,
+                format=DataFormat.MARKDOWN,  # Using markdown format since we're using markdown syntax (# heading)
                 weburl=record.weburl,
                 requires_processing=True,
             )
