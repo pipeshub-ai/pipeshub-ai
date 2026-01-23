@@ -4786,8 +4786,11 @@ async def get_oauth_authorization_url(
         # 4. Generate Authorization URL
         # ============================================================
         oauth_config = get_oauth_config(oauth_flow_config)
+        # Fallback: if scope is empty, use scopes from instance document
         if not oauth_config.scope:
-            oauth_config.scope = instance.get("scopes",[])
+            scopes_list = instance.get("scopes", [])
+            if scopes_list and isinstance(scopes_list, list):
+                oauth_config.scope = ' '.join(scopes_list)
         logger.info(f"Using {connector_scope} with scopes: {oauth_config.scope}")
 
 
