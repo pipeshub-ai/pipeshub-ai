@@ -498,7 +498,7 @@ export const setAzureAdAuthConfig =
       const encryptedAuthConfig = EncryptionService.getInstance(
         configManagerConfig.algorithm,
         configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ clientId, tenantId, authority, enableJit: enableJit || false }));
+      ).encrypt(JSON.stringify({ clientId, tenantId, authority, enableJit: enableJit ?? true }));
 
       await keyValueStoreService.set<string>(
         configPaths.auth.azureAD,
@@ -554,7 +554,7 @@ export const setMicrosoftAuthConfig =
       const encryptedAuthConfig = EncryptionService.getInstance(
         configManagerConfig.algorithm,
         configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ clientId, tenantId, authority, enableJit: enableJit || false }));
+      ).encrypt(JSON.stringify({ clientId, tenantId, authority, enableJit: enableJit ?? true }));
 
       await keyValueStoreService.set<string>(
         configPaths.auth.microsoft,
@@ -609,7 +609,7 @@ export const setGoogleAuthConfig =
       const encryptedAuthConfig = EncryptionService.getInstance(
         configManagerConfig.algorithm,
         configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ clientId, enableJit: enableJit || false }));
+      ).encrypt(JSON.stringify({ clientId, enableJit: enableJit ?? true }));
 
       await keyValueStoreService.set<string>(
         configPaths.auth.google,
@@ -680,7 +680,7 @@ export const setOAuthConfig =
         ...(userInfoEndpoint && { userInfoEndpoint }),
         ...(scope && { scope }),
         ...(redirectUri && { redirectUri }),
-        enableJit: enableJit || false,
+        enableJit: enableJit ?? true,
       };
 
       const encryptedAuthConfig = EncryptionService.getInstance(
@@ -1746,7 +1746,7 @@ export const setSsoAuthConfig =
       const encryptedSsoConfig = EncryptionService.getInstance(
         configManagerConfig.algorithm,
         configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ certificate, entryPoint, emailKey, enableJit: enableJit || false }));
+      ).encrypt(JSON.stringify({ certificate, entryPoint, emailKey, enableJit: enableJit ?? true }));
       await keyValueStoreService.set<string>(
         configPaths.auth.sso,
         encryptedSsoConfig,

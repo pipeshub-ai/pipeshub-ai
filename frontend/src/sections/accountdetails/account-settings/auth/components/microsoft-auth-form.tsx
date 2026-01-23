@@ -141,7 +141,7 @@ const MicrosoftAuthForm = forwardRef<MicrosoftAuthFormRef, MicrosoftAuthFormProp
             redirectUri: recommendedUri,
             clientId: config?.clientId || '',
             tenantId: config?.tenantId || '',
-            enableJit: config?.enableJit || false,
+            enableJit: config?.enableJit ?? true,
           });
         } catch (error) {
           console.error('Failed to load Microsoft authentication configuration:', error);

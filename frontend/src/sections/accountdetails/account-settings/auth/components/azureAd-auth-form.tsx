@@ -139,7 +139,7 @@ const AzureAdAuthForm = forwardRef<AzureAdAuthFormRef, AzureAdAuthFormProps>(
             redirectUri: recommendedUri,
             clientId: config?.clientId || '',
             tenantId: config?.tenantId || '',
-            enableJit: config?.enableJit || false,
+            enableJit: config?.enableJit ?? true,
           });
         } catch (error) {
           console.error('Failed to load Azure AD auth config:', error);

@@ -549,7 +549,7 @@ ${Array.from({ length: Math.ceil(certContent.length / 64) })
                   <FormControlLabel
                     control={
                       <Switch
-                        checked={configuration.enableJit || false}
+                        checked={configuration.enableJit ?? true}
                         onChange={(e) =>
                           setConfiguration((prev) => ({ ...prev, enableJit: e.target.checked }))
                         }

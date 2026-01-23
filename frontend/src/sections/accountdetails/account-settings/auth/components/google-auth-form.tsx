@@ -144,7 +144,7 @@ const GoogleAuthForm = forwardRef<GoogleAuthFormRef, GoogleAuthFormProps>(
             setFormData((prev) => ({
               ...prev,
               clientId: config?.clientId || '',
-              enableJit: config?.enableJit || false,
+              enableJit: config?.enableJit ?? true,
             }));
           }
         } catch (error) {

@@ -166,8 +166,8 @@ export default function OAuthAuthForm({ open, onClose, onSuccess }: OAuthAuthFor
             setValue('userInfoEndpoint', config.userInfoEndpoint || '');
             setValue('scope', config.scope || 'openid email profile');
             setValue('redirectUri', config.redirectUri || recommendedUri);
-            setValue('enableJit', config.enableJit || false);
-            setEnableJit(config.enableJit || false);
+            setValue('enableJit', config.enableJit ?? true);
+            setEnableJit(config.enableJit ?? true);
           } else {
             setValue('redirectUri', recommendedUri);
           }
