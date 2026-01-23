@@ -501,13 +501,13 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 source_updated_at=source_created_at,
                 mime_type=MimeTypes.GMAIL.value,
                 weburl=f"https://mail.google.com/mail?authuser={user_email}#all/{message_id}",
+                preview_renderable=False,
                 subject=subject,
                 from_email=from_email,
                 to_emails=to_emails,
                 cc_emails=cc_emails,
                 bcc_emails=bcc_emails,
                 internet_message_id=internet_message_id,
-
             )
 
             # Extract sender email from "from" header (may contain name)
@@ -856,35 +856,33 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
     def _extract_body_from_payload(self, payload: dict) -> str:
         """
-        Extract body content from Gmail message payload.
-
-        Args:
-            payload: Gmail message payload dictionary
-
-        Returns:
-            Base64-encoded body content string
+        Recursively search for body content in a nested Gmail payload.
         """
-        # If there are no parts, return the direct body data
-        if "parts" not in payload:
-            return payload.get("body", {}).get("data", "")
+        mime_type = payload.get("mimeType")
+        body_data = payload.get("body", {}).get("data", "")
 
-        # Search for a text/html part that isn't an attachment (empty filename)
-        for part in payload.get("parts", []):
-            if (
-                part.get("mimeType") == "text/html"
-                and part.get("filename", "") == ""
-            ):
-                content = part.get("body", {}).get("data", "")
-                return content
+        # Base Case: Found the content
+        # You can prioritize 'text/html' by checking for it first in the parts loop
+        if mime_type in ["text/html", "text/plain"] and body_data:
+            return body_data
 
-        # Fallback: if no html text, try to use text/plain
-        for part in payload.get("parts", []):
-            if (
-                part.get("mimeType") == "text/plain"
-                and part.get("filename", "") == ""
-            ):
-                content = part.get("body", {}).get("data", "")
-                return content
+        # Recursive Step: Look into parts
+        if "parts" in payload:
+            parts = payload.get("parts", [])
+
+            # Strategy: Try to find HTML first for better formatting
+            for part in parts:
+                if part.get("mimeType") == "text/html":
+                    content = self._extract_body_from_payload(part)
+                    if content:
+                        return content
+
+            # Fallback: Find anything else (like text/plain)
+            for part in parts:
+                content = self._extract_body_from_payload(part)
+                if content:
+                    return content
+
         return ""
 
     async def _convert_to_pdf(self, file_path: str, temp_dir: str) -> str:
