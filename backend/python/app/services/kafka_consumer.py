@@ -221,19 +221,6 @@ class KafkaConsumerManager:
                 await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
                 return True
 
-            # Handle bulk delete event - for connector instance deletion
-            if event_type == EventTypes.BULK_DELETE_RECORDS.value:
-                virtual_record_ids = payload_data.get("virtualRecordIds", [])
-                self.logger.info(f"🗑️ Bulk deleting embeddings for {len(virtual_record_ids)} records")
-                result = await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
-                    virtual_record_ids
-                )
-                self.logger.info(
-                    f"✅ Bulk deletion complete: {result.get('deleted_count', 0)} embeddings deleted "
-                    f"for {result.get('virtual_record_ids_processed', 0)} virtual record IDs"
-                )
-                return True
-
             if event_type == EventTypes.UPDATE_RECORD.value:
                 content_changed = payload_data.get("contentChanged", True)
 
