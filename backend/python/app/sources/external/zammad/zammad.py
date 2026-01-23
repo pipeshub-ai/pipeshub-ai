@@ -2459,6 +2459,59 @@ class ZammadDataSource:
                 message="get_ticket_article failed: " + str(e)
             )
 
+    async def get_ticket_attachment(
+        self,
+        ticket_id: int,
+        article_id: int,
+        id: int
+    ) -> ZammadResponse:
+        """Get ticket attachment
+
+        Args:
+            ticket_id: int (required)
+            article_id: int (required)
+            id: int (required) - attachment ID
+
+        Returns:
+            ZammadResponse with attachment content (bytes or str)
+        """
+        url = f"{self.base_url}/api/v1/ticket_attachment/{ticket_id}/{article_id}/{id}"
+        request_body = None
+
+        try:
+            request = HTTPRequest(
+                url=url,
+                method="GET",
+                headers={"Content-Type": "application/json"},
+                body=request_body
+            )
+            response = await self.http_client.execute(request)
+
+            response_text = response.text()
+            status_ok = response.status < SUCCESS_CODE_IS_LESS_THAN
+
+            # For binary attachments, return bytes
+            if status_ok:
+                # Get raw bytes for attachment content
+                content_bytes = response.bytes()
+                return ZammadResponse(
+                    success=True,
+                    data=content_bytes,
+                    message="get_ticket_attachment succeeded"
+                )
+            else:
+                return ZammadResponse(
+                    success=False,
+                    data=response.json() if response_text else None,
+                    message="get_ticket_attachment failed"
+                )
+        except Exception as e:
+            return ZammadResponse(
+                success=False,
+                error=str(e),
+                message="get_ticket_attachment failed: " + str(e)
+            )
+
     async def create_ticket_article(
         self,
         ticket_id: int,
