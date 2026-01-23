@@ -24,7 +24,7 @@ from app.connectors.sources.atlassian.confluence_cloud.connector import (
 )
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 
-# from app.connectors.sources.azure_blob.connector import AzureBlobConnector
+from app.connectors.sources.azure_blob.connector import AzureBlobConnector
 # from app.connectors.sources.azure_files.connector import AzureFilesConnector
 from app.connectors.sources.bookstack.connector import BookStackConnector
 from app.connectors.sources.box.connector import BoxConnector
@@ -76,7 +76,7 @@ class ConnectorFactory:
         "s3": S3Connector,
         "minio": MinIOConnector,
         "gcs": GCSConnector,
-        #"azureblob": AzureBlobConnector,
+        "azureblob": AzureBlobConnector,
         # "azurefiles": AzureFilesConnector,
         "linear": LinearConnector,
     }

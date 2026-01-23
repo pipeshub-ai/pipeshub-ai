@@ -168,10 +168,43 @@ class AzureBlobDataSource:
                 headers=request_headers
             )
 
-            # Convert AsyncItemPaged to list
+            # Convert AsyncItemPaged to list of dictionaries
             containers = []
             async for container in result:
-                containers.append(container)
+                try:
+                    # Convert ContainerProperties object to dictionary
+                    # Use getattr with defaults to handle missing attributes gracefully
+                    container_dict = {
+                        "name": getattr(container, 'name', ''),
+                        "last_modified": container.last_modified.isoformat() if hasattr(container, 'last_modified') and container.last_modified else None,
+                        "etag": getattr(container, 'etag', None),
+                    }
+                    # Add optional fields if they exist
+                    if hasattr(container, 'metadata') and container.metadata:
+                        container_dict["metadata"] = container.metadata
+                    if hasattr(container, 'public_access') and container.public_access:
+                        container_dict["public_access"] = container.public_access
+                    if hasattr(container, 'lease_status') and container.lease_status:
+                        container_dict["lease_status"] = container.lease_status
+                    if hasattr(container, 'lease_state') and container.lease_state:
+                        container_dict["lease_state"] = container.lease_state
+                    if hasattr(container, 'lease_duration') and container.lease_duration:
+                        container_dict["lease_duration"] = container.lease_duration
+                    if hasattr(container, 'has_immutability_policy'):
+                        container_dict["has_immutability_policy"] = container.has_immutability_policy
+                    if hasattr(container, 'has_legal_hold'):
+                        container_dict["has_legal_hold"] = container.has_legal_hold
+                    
+                    containers.append(container_dict)
+                except Exception as container_error:
+                    # Log but continue processing other containers
+                    try:
+                        container_name = getattr(container, 'name', 'unknown')
+                        # At minimum, include the name so sync can proceed
+                        containers.append({"name": container_name})
+                    except Exception:
+                        # If we can't even get the name, skip this container
+                        pass
 
             return AzureBlobResponse(success=True, data=containers)
         except Exception as e:
@@ -729,8 +762,9 @@ class AzureBlobDataSource:
             client = await self._get_async_blob_service_client()
             container_client = client.get_container_client(container_name)
             request_headers = self._build_headers(headers, **kwargs)
-            result = await container_client.list_blobs(
-                prefix=prefix,
+            # list_blobs returns AsyncItemPaged, not awaitable - return it directly
+            result = container_client.list_blobs(
+                name_starts_with=prefix,
                 marker=marker,
                 maxresults=maxresults,
                 include=include,
