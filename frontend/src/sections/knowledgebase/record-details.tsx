@@ -849,7 +849,7 @@ export default function RecordDetails() {
                               Summary
                             </Typography>
                             <Typography variant="body2">
-                              {record.ticketRecord?.summary || record.ticketRecord?.name || 'N/A'}
+                              {record.ticketRecord?.name || record.recordName || 'N/A'}
                             </Typography>
                           </Box>
                         )}
@@ -1238,37 +1238,9 @@ export default function RecordDetails() {
                       </Box>
                     )}
 
-                    {isTicketRecord && record.ticketRecord && record.ticketRecord.description && (
-                      <Box>
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          gutterBottom
-                          sx={{
-                            textTransform: 'uppercase',
-                            fontWeight: 600,
-                            letterSpacing: '0.8px',
-                            fontSize: '0.6875rem',
-                            display: 'block',
-                            mb: 1.25,
-                            opacity: 0.85,
-                          }}
-                        >
-                          Description
-                        </Typography>
-                        <Typography
-                          variant="body2"
-                          sx={{
-                            fontWeight: 400,
-                            color: 'text.primary',
-                            whiteSpace: 'pre-wrap',
-                            wordBreak: 'break-word',
-                          }}
-                        >
-                          {record.ticketRecord.description}
-                        </Typography>
-                      </Box>
-                    )}
+                    {/* Note: Description field has been removed from TicketRecord.
+                        Content is now stored in block_containers in the base Record class.
+                        If description display is needed, it should be extracted from block_containers. */}
 
                     {/* Departments */}
                     {metadata?.departments &&

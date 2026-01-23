@@ -13,7 +13,6 @@ from app.connectors.core.registry.connector import (
     CalendarConnector,
     DocsConnector,
     FormsConnector,
-    LinearConnector,
     MeetConnector,
     NotionConnector,
     SlackConnector,
@@ -40,6 +39,7 @@ from app.connectors.sources.google.drive.team.connector import (
     GoogleDriveTeamConnector,
 )
 from app.connectors.sources.google_cloud_storage.connector import GCSConnector
+from app.connectors.sources.linear.connector import LinearConnector
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
@@ -78,6 +78,7 @@ class ConnectorFactory:
         "gcs": GCSConnector,
         #"azureblob": AzureBlobConnector,
         # "azurefiles": AzureFilesConnector,
+        "linear": LinearConnector,
     }
 
     # Beta connector definitions - single source of truth
@@ -90,7 +91,6 @@ class ConnectorFactory:
         'slides': SlidesConnector,
         'docs': DocsConnector,
         'zendesk': ZendeskConnector,
-        'linear': LinearConnector,
         'notion': NotionConnector,
         'airtable': AirtableConnector,
     }

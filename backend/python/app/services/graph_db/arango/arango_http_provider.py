@@ -25,8 +25,10 @@ from app.models.entities import (
     AppUserGroup,
     CommentRecord,
     FileRecord,
+    LinkRecord,
     MailRecord,
     Person,
+    ProjectRecord,
     Record,
     RecordGroup,
     RecordType,
@@ -546,6 +548,63 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Batch edge creation failed: {str(e)}")
             raise
 
+    async def batch_create_entity_relations(
+        self,
+        edges: List[Dict],
+        transaction: Optional[str] = None
+    ) -> bool:
+        """
+        Batch create entity relation edges - FULLY ASYNC.
+
+        Uses UPSERT to avoid duplicates - matches on _from, _to, and edgeType.
+        This is specialized for entityRelations collection where multiple edges
+        can exist between the same entities with different edgeType values (e.g., ASSIGNED_TO, CREATED_BY, REPORTED_BY).
+
+        Args:
+            edges: List of edge documents with _from, _to, and edgeType
+            transaction: Optional transaction ID
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            if not edges:
+                return True
+
+            self.logger.info("🚀 Batch creating entity relation edges")
+
+            # Translate edges from generic format to ArangoDB format
+            arango_edges = self._translate_edges_to_arango(edges)
+
+            # For entity relations, include edgeType in the UPSERT match condition
+            batch_query = """
+            FOR edge IN @edges
+                UPSERT { _from: edge._from, _to: edge._to, edgeType: edge.edgeType }
+                INSERT edge
+                UPDATE edge
+                IN @@collection
+                RETURN NEW
+            """
+            bind_vars = {
+                "edges": arango_edges,
+                "@collection": CollectionNames.ENTITY_RELATIONS.value
+            }
+
+            results = await self.http_client.execute_aql(
+                batch_query,
+                bind_vars,
+                txn_id=transaction
+            )
+
+            self.logger.info(
+                f"✅ Successfully created {len(results)} entity relation edges."
+            )
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Batch entity relation creation failed: {str(e)}")
+            raise
+
     async def get_edge(
         self,
         from_id: str,
@@ -663,6 +722,56 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return len(results)
         except Exception as e:
             self.logger.error(f"❌ Delete edges from failed: {str(e)}")
+            raise
+
+    async def delete_edges_by_relationship_types(
+        self,
+        from_id: str,
+        from_collection: str,
+        collection: str,
+        relationship_types: List[str],
+        transaction: Optional[str] = None
+    ) -> int:
+        """
+        Delete edges by relationship types from a node - FULLY ASYNC.
+
+        Args:
+            from_id: Source node ID
+            from_collection: Source node collection name
+            collection: Edge collection name
+            relationship_types: List of relationship type values to delete
+            transaction: Optional transaction ID
+
+        Returns:
+            int: Number of edges deleted
+        """
+        if not relationship_types:
+            return 0
+
+        from_node = f"{from_collection}/{from_id}"
+
+        query = f"""
+        FOR edge IN {collection}
+            FILTER edge._from == @from_node
+            FILTER edge.relationshipType IN @relationship_types
+            REMOVE edge IN {collection}
+            RETURN OLD
+        """
+
+        try:
+            results = await self.http_client.execute_aql(
+                query,
+                {
+                    "from_node": from_node,
+                    "relationship_types": relationship_types
+                },
+                txn_id=transaction
+            )
+            return len(results)
+        except Exception as e:
+            self.logger.error(
+                f"❌ Delete edges by relationship types failed: {str(e)}"
+            )
             raise
 
     async def delete_edges_to(
@@ -1305,8 +1414,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return WebpageRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.TICKETS.value:
                 return TicketRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.PROJECTS.value:
+                return ProjectRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.COMMENTS.value:
                 return CommentRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.LINKS.value:
+                return LinkRecord.from_arango_record(type_doc_data, record_data)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_data)
@@ -1372,6 +1485,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> Optional[Record]:
         """
         Get Jira issue record by issue key (e.g., PROJ-123) by searching weburl pattern.
+        Returns a TicketRecord with the type field populated for proper Epic detection.
 
         Args:
             connector_id: Connector ID
@@ -1379,7 +1493,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             transaction: Optional transaction ID
 
         Returns:
-            Optional[Record]: Record if found, None otherwise
+            Optional[Record]: TicketRecord if found, None otherwise
         """
         try:
             self.logger.info(
@@ -1387,14 +1501,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             # Search for record where weburl contains "/browse/{issue_key}" and record_type is TICKET
+            # Also join with tickets collection to get the type field (for Epic detection)
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
                 FILTER record.connectorId == @connector_id
                     AND record.recordType == @record_type
                     AND record.webUrl != null
                     AND CONTAINS(record.webUrl, @browse_pattern)
+                LET ticket = DOCUMENT({CollectionNames.TICKETS.value}, record._key)
                 LIMIT 1
-                RETURN record
+                RETURN {{ record: record, ticket: ticket }}
             """
 
             browse_pattern = f"/browse/{issue_key}"
@@ -1406,12 +1522,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             results = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
 
-            if results:
+            if results and results[0]:
+                result = results[0]
+                record_dict = result.get("record")
+                ticket_doc = result.get("ticket")
+
                 self.logger.info(
                     "✅ Successfully retrieved record for Jira issue key %s %s", connector_id, issue_key
                 )
-                record_data = self._translate_node_from_arango(results[0])
-                return Record.from_arango_base_record(record_data)
+
+                # Use the typed record factory to get a TicketRecord with the type field
+                return self._create_typed_record_from_arango(record_dict, ticket_doc)
             else:
                 self.logger.warning(
                     "⚠️ No record found for Jira issue key %s %s", connector_id, issue_key
@@ -1422,6 +1543,66 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(
                 "❌ Failed to retrieve record for Jira issue key %s %s: %s", connector_id, issue_key, str(e)
             )
+            return None
+
+    async def get_record_by_weburl(
+        self,
+        weburl: str,
+        org_id: Optional[str] = None,
+        transaction: Optional[str] = None
+    ) -> Optional[Record]:
+        """
+        Get record by weburl (exact match).
+        Skips LinkRecords and returns the first non-LinkRecord found.
+
+        Args:
+            weburl: Web URL to search for
+            org_id: Optional organization ID to filter by
+            transaction: Optional transaction ID
+
+        Returns:
+            Optional[Record]: First non-LinkRecord found, None otherwise
+        """
+        try:
+            self.logger.info("🚀 Retrieving record by weburl: %s", weburl)
+
+            # Get all records with this weburl (not just one)
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.webUrl == @weburl
+                {"AND record.orgId == @org_id" if org_id else ""}
+                RETURN record
+            """
+
+            bind_vars = {"weburl": weburl}
+            if org_id:
+                bind_vars["org_id"] = org_id
+
+            results = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
+
+            if results:
+                # Skip LinkRecords and return the first non-LinkRecord found
+                for record_dict in results:
+                    record_data = self._translate_node_from_arango(record_dict)
+                    record_type = record_data.get("recordType")
+
+                    # Skip LinkRecords
+                    if record_type == "LINK":
+                        continue
+
+                    # Return first non-LinkRecord found
+                    self.logger.info("✅ Successfully retrieved record by weburl: %s", weburl)
+                    return Record.from_arango_base_record(record_data)
+
+                # All records were LinkRecords
+                self.logger.debug("⚠️ Only LinkRecords found for weburl: %s", weburl)
+                return None
+            else:
+                self.logger.warning("⚠️ No record found for weburl: %s", weburl)
+                return None
+
+        except Exception as e:
+            self.logger.error("❌ Failed to retrieve record by weburl %s: %s", weburl, str(e))
             return None
 
     async def get_records_by_parent(
@@ -2131,6 +2312,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Create a relation edge between two records.
 
         Generic implementation that creates RECORD_RELATIONS edge.
+
+        Args:
+            from_record_id: Source record ID
+            to_record_id: Target record ID
+            relation_type: Type of relation (e.g., "BLOCKS", "CLONES", "LINKED_TO", etc.)
+            transaction: Optional transaction ID
         """
         record_edge = {
             "_from": f"{CollectionNames.RECORDS.value}/{from_record_id}",

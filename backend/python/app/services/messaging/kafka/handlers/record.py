@@ -206,6 +206,7 @@ class RecordEventHandler(BaseEventService):
                 MimeTypes.HTML.value,
                 MimeTypes.PLAIN_TEXT.value,
                 MimeTypes.MARKDOWN.value,
+                MimeTypes.BLOCKS.value,
                 MimeTypes.PNG.value,
                 MimeTypes.JPG.value,
                 MimeTypes.JPEG.value,
