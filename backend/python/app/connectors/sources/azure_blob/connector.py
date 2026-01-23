@@ -59,7 +59,6 @@ from app.connectors.core.registry.filters import (
     FilterOptionsResponse,
     FilterType,
     IndexingFilterKey,
-    ListOperator,
     MultiselectOperator,
     OptionSourceType,
     SyncFilterKey,
@@ -357,7 +356,7 @@ class AzureBlobConnector(BaseConnector):
         if not connection_string:
             self.logger.error("Azure Blob connection string not found in configuration.")
             return False
-        
+
         # Container name is no longer stored in config - it's determined at sync time
         self.container_name = None
 
@@ -467,10 +466,10 @@ class AzureBlobConnector(BaseConnector):
                         else:
                             # Fallback for ContainerProperties objects
                             container_name = getattr(container, "name", None)
-                        
+
                         if container_name:
                             containers_to_sync.append(container_name)
-                    
+
                     if containers_to_sync:
                         self.logger.info(f"Found {len(containers_to_sync)} container(s) to sync: {containers_to_sync}")
                     else:
@@ -1522,10 +1521,10 @@ class AzureBlobConnector(BaseConnector):
                         else:
                             # Fallback for ContainerProperties objects
                             container_name = getattr(container, "name", None)
-                        
+
                         if container_name:
                             containers_to_sync.append(container_name)
-                    
+
                     if not containers_to_sync:
                         self.logger.warning("No valid container names found in response")
                         return

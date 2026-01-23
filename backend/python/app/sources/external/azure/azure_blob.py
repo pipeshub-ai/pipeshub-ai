@@ -194,9 +194,9 @@ class AzureBlobDataSource:
                         container_dict["has_immutability_policy"] = container.has_immutability_policy
                     if hasattr(container, 'has_legal_hold'):
                         container_dict["has_legal_hold"] = container.has_legal_hold
-                    
+
                     containers.append(container_dict)
-                except Exception as container_error:
+                except Exception:
                     # Log but continue processing other containers
                     try:
                         container_name = getattr(container, 'name', 'unknown')
