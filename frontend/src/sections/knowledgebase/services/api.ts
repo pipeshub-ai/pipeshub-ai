@@ -85,8 +85,6 @@ export class KnowledgeBaseAPI {
 
       // Clean up the blob URL
       window.URL.revokeObjectURL(url);
-
-      console.log(`File "${filename}" downloaded successfully`);
     } catch (err) {
       console.error('Error downloading document:', err);
       throw new Error('Failed to download document');

@@ -63,6 +63,8 @@ export interface AuthInitResponse {
   allowedMethods: string[];
   message: string;
   authProviders: Record<string, any>;
+  isJitProvisioning?: boolean;
+  jitEnabledMethods?: string[];
 }
 
 export interface AuthResponse {

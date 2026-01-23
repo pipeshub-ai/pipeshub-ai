@@ -8,11 +8,13 @@ import {
   Grid,
   Link,
   Alert,
+  Switch,
   Snackbar,
   TextField,
   Typography,
   InputAdornment,
   CircularProgress,
+  FormControlLabel,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
@@ -84,6 +86,7 @@ const GoogleAuthForm = forwardRef<GoogleAuthFormRef, GoogleAuthFormProps>(
       clientId: '',
       redirectUri:
         redirectUris?.recommendedRedirectUri || `${window.location.origin}/auth/google/callback`,
+      enableJit: true,
     });
 
     const [errors, setErrors] = useState({
@@ -141,7 +144,7 @@ const GoogleAuthForm = forwardRef<GoogleAuthFormRef, GoogleAuthFormProps>(
             setFormData((prev) => ({
               ...prev,
               clientId: config?.clientId || '',
-              // Add other fields you need from config
+              enableJit: config?.enableJit ?? true,
             }));
           }
         } catch (error) {
@@ -199,6 +202,7 @@ const GoogleAuthForm = forwardRef<GoogleAuthFormRef, GoogleAuthFormProps>(
         // Use the utility function to update Google configuration
         await updateGoogleAuthConfig({
           clientId: formData.clientId,
+          enableJit: formData.enableJit,
         });
 
         showSuccessSnackbar('Google authentication configuration saved successfully');
@@ -352,6 +356,41 @@ const GoogleAuthForm = forwardRef<GoogleAuthFormRef, GoogleAuthFormProps>(
                     },
                   }}
                 />
+              </Grid>
+
+              <Grid item xs={12}>
+                <Box
+                  sx={{
+                    p: 2,
+                    borderRadius: 1,
+                    bgcolor: alpha(theme.palette.primary.main, 0.04),
+                    border: `1px solid ${alpha(theme.palette.primary.main, 0.15)}`,
+                  }}
+                >
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={formData.enableJit}
+                        onChange={(e) =>
+                          setFormData((prev) => ({ ...prev, enableJit: e.target.checked }))
+                        }
+                        color="primary"
+                      />
+                    }
+                    label={
+                      <Box>
+                        <Typography variant="subtitle2">
+                          Enable Just-In-Time (JIT) Provisioning
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          Automatically create user accounts when they sign in with Google for the
+                          first time
+                        </Typography>
+                      </Box>
+                    }
+                    sx={{ alignItems: 'flex-start', ml: 0 }}
+                  />
+                </Box>
               </Grid>
             </Grid>
 

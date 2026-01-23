@@ -763,7 +763,6 @@ export const useConnectorConfig = ({
       try {
         setLoading(true);
         let mergedConfig: any = null;
-        console.log('create mode', isCreateMode);
 
         if (isCreateMode) {
           // Create mode: load schema only

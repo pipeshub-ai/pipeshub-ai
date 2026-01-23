@@ -226,49 +226,54 @@ export class Application {
   }
 
   private configureMiddleware(appConfig: AppConfig): void {
-    const isDev = process.env.NODE_ENV !== 'production';
-    // Security middleware - configure helmet once with all options
-    const envConnectSrcs = process.env.CSP_CONNECT_SRCS?.split(',').filter(Boolean) ?? [];
-    const connectSrc = [
-      ...new Set([
-        "'self'",
-        "https://static.cloudflareinsights.com",
-        // Login with google urls
-        'https://accounts.google.com',
-        'https://www.googleapis.com',
-        // Login with microsoft urls
-        'https://login.microsoftonline.com',
-        'https://graph.microsoft.com',
-        ...envConnectSrcs,
-        appConfig.connectorPublicUrl,
-      ]),
-    ].filter(Boolean);
+    const isStrictMode = process.env.STRICT_MODE === 'true';
+    if (isStrictMode) {
+      // Security middleware - configure helmet once with all options
+      const envConnectSrcs = process.env.CSP_CONNECT_SRCS?.split(',').filter(Boolean) ?? [];
+      const connectSrc = [
+        ...new Set([
+          "'self'",
+          "https://static.cloudflareinsights.com",
+          // Login with google urls
+          'https://accounts.google.com',
+          'https://www.googleapis.com',
+          // Login with microsoft urls
+          'https://login.microsoftonline.com',
+          'https://graph.microsoft.com',
+          ...envConnectSrcs,
+          appConfig.connectorPublicUrl,
+        ]),
+      ].filter(Boolean);
 
-    this.app.use(helmet({
-      crossOriginOpenerPolicy: { policy: "unsafe-none" }, // Required for MSAL popup
-      contentSecurityPolicy: {
-        directives: {
-          defaultSrc: ["'self'"],
-          scriptSrc: [
-            "'self'",
-            ...(process.env.CSP_SCRIPT_SRCS?.split(',') ?? [
-              "https://cdnjs.cloudflare.com",
-              "https://login.microsoftonline.com",
-              "https://graph.microsoft.com",
-            ]),
-            ...(isDev ? ["'unsafe-inline'", "'unsafe-eval'"] : [])
-          ],
-          connectSrc: connectSrc,
-          objectSrc: ["'self'", "data:", "blob:"], // PDF rendering
-          frameSrc: ["'self'", "blob:"], // PDF rendering in frames
-          workerSrc: ["'self'", "blob:"], // PDF.js workers
-          childSrc: ["'self'", "blob:"], // PDF rendering
-          imgSrc: ["'self'", "data:", "blob:", "https:"], // Images in PDFs
-          fontSrc: ["'self'", "data:", "https:"], // Fonts in PDFs
-          mediaSrc: ["'self'", "blob:", "data:"] // Media in PDFs
+      this.app.use(helmet({
+        crossOriginOpenerPolicy: { policy: "unsafe-none" }, // Required for MSAL popup
+        contentSecurityPolicy: {
+          directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: [
+              "'self'",
+              ...(process.env.CSP_SCRIPT_SRCS?.split(',') ?? [
+                "https://cdnjs.cloudflare.com",
+                "https://login.microsoftonline.com",
+                "https://graph.microsoft.com",
+                "https://accounts.google.com",
+                "https://challenges.cloudflare.com",
+                "https://api.iconify.design",
+                "https://api.simplesvg.com"
+              ]),
+            ],
+            connectSrc: connectSrc,
+            objectSrc: ["'self'", "data:", "blob:"], // PDF rendering
+            frameSrc: ["'self'", "blob:"], // PDF rendering in frames
+            workerSrc: ["'self'", "blob:"], // PDF.js workers
+            childSrc: ["'self'", "blob:"], // PDF rendering
+            imgSrc: ["'self'", "data:", "blob:", "https:"], // Images in PDFs
+            fontSrc: ["'self'", "data:", "https:"], // Fonts in PDFs
+            mediaSrc: ["'self'", "blob:", "data:"] // Media in PDFs
+          }
         }
-      }
-    }));
+      }));
+    }
 
     // Request context middleware
     this.app.use(requestContextMiddleware);
@@ -327,7 +332,7 @@ export class Application {
     );
     this.app.use('/api/v1/org', createOrgRouter(this.entityManagerContainer));
 
-    this.app.use('/api/v1/saml', createSamlRouter(this.authServiceContainer, this.entityManagerContainer));
+    this.app.use('/api/v1/saml', createSamlRouter(this.authServiceContainer));
 
     this.app.use(
       '/api/v1/userAccount',
