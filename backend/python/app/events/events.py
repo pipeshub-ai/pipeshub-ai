@@ -310,7 +310,7 @@ class EventProcessor:
                 ):
                     yield event
                 return
-            
+
             if mime_type == MimeTypes.GMAIL.value:
                 async for event in self.processor.process_gmail_message(
                     recordName=record_name,
