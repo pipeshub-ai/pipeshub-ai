@@ -3193,14 +3193,18 @@ class BaseArangoService:
 
     async def delete_connector_instance(self, connector_id: str, org_id: str) -> Dict:
         """
-        Delete a connector instance and ALL its related data in a single transaction.
+        Delete a connector instance and ALL its related data using a generic graph-based approach.
 
-        This method performs a comprehensive cleanup of:
-        - All records with this connectorId
-        - All type-specific records (files, mails, webpages, comments, tickets)
-        - All record groups, roles, groups, drives, syncPoints
-        - All edges (permissions, relations, classifications)
-        - The connector app document itself
+        This method dynamically discovers and deletes all edges connected to nodes,
+        making it future-proof when new collections/edges are added.
+
+        Flow:
+        1. Collect all node IDs (records, record groups, roles, groups, drives, app)
+        2. Get all edge collections from the graph definition
+        3. Delete all edges connected to these nodes (dynamically)
+        4. Delete isOfType target nodes (files, mails, etc.) dynamically
+        5. Delete the nodes themselves
+        6. Return virtualRecordIds for Qdrant cleanup
 
         Classification nodes (departments, categories, topics, languages) are NOT deleted
         as they are shared resources.
@@ -3211,16 +3215,12 @@ class BaseArangoService:
             org_id: The organization ID for validation
 
         Returns:
-            Dict with:
-                - success: bool
-                - deleted_records_count: int
-                - virtual_record_ids: List[str] - for Qdrant cleanup
-                - error: str (if failed)
+            Dict with success status, deletion counts, and virtualRecordIds for Qdrant
         """
         try:
             self.logger.info(f"🗑️ Starting connector instance deletion for {connector_id}")
 
-            # Verify connector exists
+            # Step 1: Verify connector exists
             connector = await self.get_document(connector_id, CollectionNames.APPS.value)
             if not connector:
                 return {
@@ -3228,483 +3228,124 @@ class BaseArangoService:
                     "error": f"Connector instance {connector_id} not found"
                 }
 
-            # Define all collections that need write access
-            write_collections = [
-                # Node collections
-                CollectionNames.APPS.value,
+            # Step 2: Collect all entities for this connector
+            collected = await self._collect_connector_entities(connector_id)
+
+            # Step 3: Get all edge collections from graph definition
+            edge_collections = await self._get_all_edge_collections()
+
+            # Step 4: Define all node collections that might have documents to delete
+            node_collections = [
                 CollectionNames.RECORDS.value,
+                CollectionNames.RECORD_GROUPS.value,
+                CollectionNames.ROLES.value,
+                CollectionNames.GROUPS.value,
+                CollectionNames.SYNC_POINTS.value,
                 CollectionNames.FILES.value,
                 CollectionNames.MAILS.value,
                 CollectionNames.WEBPAGES.value,
                 CollectionNames.COMMENTS.value,
                 CollectionNames.TICKETS.value,
-                CollectionNames.RECORD_GROUPS.value,
-                CollectionNames.ROLES.value,
-                CollectionNames.GROUPS.value,
-                CollectionNames.DRIVES.value,
-                CollectionNames.SYNC_POINTS.value,
-                CollectionNames.BLOCKS.value,
+                CollectionNames.APPS.value,
                 CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
-                # Edge collections
-                CollectionNames.BELONGS_TO.value,
-                CollectionNames.INHERIT_PERMISSIONS.value,
-                CollectionNames.IS_OF_TYPE.value,
-                CollectionNames.RECORD_RELATIONS.value,
-                CollectionNames.TICKET_RELATIONS.value,
-                CollectionNames.PERMISSION.value,
-                CollectionNames.USER_APP_RELATION.value,
-                CollectionNames.ORG_APP_RELATION.value,
-                CollectionNames.USER_DRIVE_RELATION.value,
-                CollectionNames.BELONGS_TO_RECORD_GROUP.value,
-                CollectionNames.BELONGS_TO_DEPARTMENT.value,
-                CollectionNames.BELONGS_TO_CATEGORY.value,
-                CollectionNames.BELONGS_TO_TOPIC.value,
-                CollectionNames.BELONGS_TO_LANGUAGE.value,
             ]
 
-            # Build the comprehensive deletion AQL query
-            deletion_query = """
-            // Step 1: Collect all records for this connector
-            LET connector_records = (
-                FOR r IN @@records
-                    FILTER r.connectorId == @connector_id
-                    RETURN { _key: r._key, virtualRecordId: r.virtualRecordId }
-            )
-
-            // Step 2: Collect all record groups for this connector
-            LET connector_record_groups = (
-                FOR rg IN @@recordGroups
-                    FILTER rg.connectorId == @connector_id
-                    RETURN rg._key
-            )
-
-            // Step 3: Collect roles and groups for this connector
-            LET connector_roles = (
-                FOR role IN @@roles
-                    FILTER role.connectorId == @connector_id
-                    RETURN role._key
-            )
-
-            LET connector_groups = (
-                FOR grp IN @@groups
-                    FILTER grp.connectorId == @connector_id
-                    RETURN grp._key
-            )
-
-            // Step 4: Collect drives for this connector
-            LET connector_drives = (
-                FOR drive IN @@drives
-                    FILTER drive.connectorId == @connector_id
-                    RETURN drive._key
-            )
-
-            // Step 5: Delete classification edges (NOT the nodes - they are shared)
-            LET deleted_dept_edges = (
-                FOR rec IN connector_records
-                    FOR edge IN @@belongsToDepartment
-                        FILTER edge._from == CONCAT('records/', rec._key)
-                        REMOVE edge IN @@belongsToDepartment
-                        RETURN 1
-            )
-
-            LET deleted_cat_edges = (
-                FOR rec IN connector_records
-                    FOR edge IN @@belongsToCategory
-                        FILTER edge._from == CONCAT('records/', rec._key)
-                        REMOVE edge IN @@belongsToCategory
-                        RETURN 1
-            )
-
-            LET deleted_topic_edges = (
-                FOR rec IN connector_records
-                    FOR edge IN @@belongsToTopic
-                        FILTER edge._from == CONCAT('records/', rec._key)
-                        REMOVE edge IN @@belongsToTopic
-                        RETURN 1
-            )
-
-            LET deleted_lang_edges = (
-                FOR rec IN connector_records
-                    FOR edge IN @@belongsToLanguage
-                        FILTER edge._from == CONCAT('records/', rec._key)
-                        REMOVE edge IN @@belongsToLanguage
-                        RETURN 1
-            )
-
-            // Step 6: Delete isOfType edges and type-specific documents
-            // First, collect all type-specific document keys by collection type
-            LET file_keys = (
-                FOR rec IN connector_records
-                    FOR edge IN @@isOfType
-                        FILTER edge._from == CONCAT('records/', rec._key)
-                        LET target = PARSE_IDENTIFIER(edge._to)
-                        FILTER target.collection == 'files'
-                        RETURN target.key
-            )
-
-            LET mail_keys = (
-                FOR rec IN connector_records
-                    FOR edge IN @@isOfType
-                        FILTER edge._from == CONCAT('records/', rec._key)
-                        LET target = PARSE_IDENTIFIER(edge._to)
-                        FILTER target.collection == 'mails'
-                        RETURN target.key
-            )
-
-            LET webpage_keys = (
-                FOR rec IN connector_records
-                    FOR edge IN @@isOfType
-                        FILTER edge._from == CONCAT('records/', rec._key)
-                        LET target = PARSE_IDENTIFIER(edge._to)
-                        FILTER target.collection == 'webpages'
-                        RETURN target.key
-            )
-
-            LET comment_keys = (
-                FOR rec IN connector_records
-                    FOR edge IN @@isOfType
-                        FILTER edge._from == CONCAT('records/', rec._key)
-                        LET target = PARSE_IDENTIFIER(edge._to)
-                        FILTER target.collection == 'comments'
-                        RETURN target.key
-            )
-
-            LET ticket_keys = (
-                FOR rec IN connector_records
-                    FOR edge IN @@isOfType
-                        FILTER edge._from == CONCAT('records/', rec._key)
-                        LET target = PARSE_IDENTIFIER(edge._to)
-                        FILTER target.collection == 'tickets'
-                        RETURN target.key
-            )
-
-            // Delete type-specific documents
-            LET deleted_files = (
-                FOR key IN file_keys
-                    REMOVE key IN @@files OPTIONS { ignoreErrors: true }
-                    RETURN 1
-            )
-
-            LET deleted_mails = (
-                FOR key IN mail_keys
-                    REMOVE key IN @@mails OPTIONS { ignoreErrors: true }
-                    RETURN 1
-            )
-
-            LET deleted_webpages = (
-                FOR key IN webpage_keys
-                    REMOVE key IN @@webpages OPTIONS { ignoreErrors: true }
-                    RETURN 1
-            )
-
-            LET deleted_comments = (
-                FOR key IN comment_keys
-                    REMOVE key IN @@comments OPTIONS { ignoreErrors: true }
-                    RETURN 1
-            )
-
-            LET deleted_tickets = (
-                FOR key IN ticket_keys
-                    REMOVE key IN @@tickets OPTIONS { ignoreErrors: true }
-                    RETURN 1
-            )
-
-            // Delete isOfType edges
-            LET deleted_type_edges = (
-                FOR rec IN connector_records
-                    FOR edge IN @@isOfType
-                        FILTER edge._from == CONCAT('records/', rec._key)
-                        REMOVE edge IN @@isOfType
-                        RETURN 1
-            )
-
-            // Step 7-10: Build record source list first (used by multiple steps)
-            LET record_sources = (
-                FOR rec IN connector_records
-                    RETURN CONCAT('records/', rec._key)
-            )
-
-            // Step 7: Delete record relations (parent-child, attachments, etc.) in one pass
-            LET deleted_record_relations = (
-                FOR edge IN @@recordRelations
-                    FILTER edge._from IN record_sources OR edge._to IN record_sources
-                    REMOVE edge IN @@recordRelations
-                    RETURN 1
-            )
-
-            // Step 8: Delete ticket relations in one pass
-            LET deleted_ticket_relations = (
-                FOR edge IN @@ticketRelations
-                    FILTER edge._from IN record_sources OR edge._to IN record_sources
-                    REMOVE edge IN @@ticketRelations
-                    RETURN 1
-            )
-
-            // Step 9-10: Build all target/source lists needed for edge deletions
-            LET record_targets = (
-                FOR rec IN connector_records
-                    RETURN CONCAT('records/', rec._key)
-            )
-
-            LET record_group_targets = (
-                FOR rg_key IN connector_record_groups
-                    RETURN CONCAT('recordGroups/', rg_key)
-            )
-
-            LET role_sources = (
-                FOR role_key IN connector_roles
-                    RETURN CONCAT('roles/', role_key)
-            )
-
-            LET group_sources = (
-                FOR grp_key IN connector_groups
-                    RETURN CONCAT('groups/', grp_key)
-            )
-
-            LET group_targets = (
-                FOR grp_key IN connector_groups
-                    RETURN CONCAT('groups/', grp_key)
-            )
-
-            LET rg_sources_belongs_to = (
-                FOR rg_key IN connector_record_groups
-                    RETURN CONCAT('recordGroups/', rg_key)
-            )
-
-            // Step 9: Delete ALL belongsTo edges in a single step (FROM records, TO groups, FROM record groups)
-            LET deleted_belongs_to = (
-                FOR edge IN @@belongsTo
-                    FILTER edge._from IN record_sources OR
-                           edge._to IN group_targets OR
-                           edge._from IN rg_sources_belongs_to
-                    REMOVE edge IN @@belongsTo
-                    RETURN 1
-            )
-
-            // Delete all belongsToRecordGroup edges FROM records in one pass
-            LET deleted_belongs_to_rg = (
-                FOR edge IN @@belongsToRecordGroup
-                    FILTER edge._from IN record_sources
-                    REMOVE edge IN @@belongsToRecordGroup
-                    RETURN 1
-            )
-
-            // Step 11-15: Delete ALL permission edges in a single step to avoid "access after data-modification" error
-
-            // Delete all permission edges matching any condition in one pass
-            LET deleted_all_perms = (
-                FOR edge IN @@permission
-                    FILTER edge._to IN record_targets OR
-                           edge._to IN record_group_targets OR
-                           edge._from IN role_sources OR
-                           edge._from IN group_sources
-                    REMOVE edge IN @@permission
-                    RETURN 1
-            )
-
-            // Step 13: Delete ALL inheritPermissions edges in a single step
-            // Build source/target lists for record groups
-            LET rg_sources_targets = (
-                FOR rg_key IN connector_record_groups
-                    RETURN CONCAT('recordGroups/', rg_key)
-            )
-
-            // Delete all inheritPermissions edges in one pass
-            LET deleted_inherit_perms = (
-                FOR edge IN @@inheritPermissions
-                    FILTER edge._from IN rg_sources_targets OR edge._to IN rg_sources_targets OR
-                           edge._from IN record_sources OR edge._to IN record_sources
-                    REMOVE edge IN @@inheritPermissions
-                    RETURN 1
-            )
-
-            // Step 14: Delete roles (permission edges already deleted above)
-            LET deleted_roles = (
-                FOR role_key IN connector_roles
-                    REMOVE role_key IN @@roles
-                    RETURN 1
-            )
-
-            // Step 15: Delete groups (belongsTo and permission edges already deleted above)
-            LET deleted_groups = (
-                FOR grp_key IN connector_groups
-                    REMOVE grp_key IN @@groups
-                    RETURN 1
-            )
-
-            // Step 16: Delete userAppRelation edges (DON'T delete users)
-            LET deleted_user_app = (
-                FOR edge IN @@userAppRelation
-                    FILTER edge._to == CONCAT('apps/', @connector_id)
-                    REMOVE edge IN @@userAppRelation
-                    RETURN 1
-            )
-
-            // Step 17: Delete orgAppRelation edge
-            LET deleted_org_app = (
-                FOR edge IN @@orgAppRelation
-                    FILTER edge._to == CONCAT('apps/', @connector_id)
-                    REMOVE edge IN @@orgAppRelation
-                    RETURN 1
-            )
-
-            // Step 18: Delete userDriveRelation edges and drives
-            LET deleted_drive_edges = (
-                FOR drive_key IN connector_drives
-                    FOR edge IN @@userDriveRelation
-                        FILTER edge._to == CONCAT('drives/', drive_key)
-                        REMOVE edge IN @@userDriveRelation
-                        RETURN 1
-            )
-
-            LET deleted_drives = (
-                FOR drive_key IN connector_drives
-                    REMOVE drive_key IN @@drives
-                    RETURN 1
-            )
-
-            // Step 19: Delete syncPoints for this connector
-            LET deleted_sync_points = (
-                FOR sp IN @@syncPoints
-                    FILTER sp.connectorId == @connector_id
-                    REMOVE sp IN @@syncPoints
-                    RETURN 1
-            )
-
-            // Step 20: Delete blocks for this connector
-            LET deleted_blocks = (
-                FOR block IN @@blocks
-                    FILTER block.connectorId == @connector_id
-                    REMOVE block IN @@blocks
-                    RETURN 1
-            )
-
-            // Step 22: Delete record groups
-            LET deleted_record_groups = (
-                FOR rg_key IN connector_record_groups
-                    REMOVE rg_key IN @@recordGroups
-                    RETURN 1
-            )
-
-            // Step 23: Delete records
-            LET deleted_records = (
-                FOR rec IN connector_records
-                    REMOVE rec._key IN @@records
-                    RETURN 1
-            )
-
-            // Step 24: Delete virtualRecordToDocIdMapping entries
-            LET deleted_mappings = (
-                FOR rec IN connector_records
-                    FILTER rec.virtualRecordId != null
-                    REMOVE rec.virtualRecordId IN @@virtualRecordMapping OPTIONS { ignoreErrors: true }
-                    RETURN 1
-            )
-
-            // Step 25: Delete the app itself
-            LET deleted_app = (
-                REMOVE @connector_id IN @@apps
-                RETURN 1
-            )
-
-            // Return statistics and virtualRecordIds for Qdrant cleanup
-            RETURN {
-                deleted_record_count: LENGTH(connector_records),
-                deleted_record_group_count: LENGTH(connector_record_groups),
-                deleted_role_count: LENGTH(connector_roles),
-                deleted_group_count: LENGTH(connector_groups),
-                deleted_drive_count: LENGTH(connector_drives),
-                virtual_record_ids: connector_records[* FILTER CURRENT.virtualRecordId != null RETURN CURRENT.virtualRecordId]
-            }
-            """
-
-            bind_vars = {
-                "connector_id": connector_id,
-                "@records": CollectionNames.RECORDS.value,
-                "@recordGroups": CollectionNames.RECORD_GROUPS.value,
-                "@roles": CollectionNames.ROLES.value,
-                "@groups": CollectionNames.GROUPS.value,
-                "@drives": CollectionNames.DRIVES.value,
-                "@files": CollectionNames.FILES.value,
-                "@mails": CollectionNames.MAILS.value,
-                "@webpages": CollectionNames.WEBPAGES.value,
-                "@comments": CollectionNames.COMMENTS.value,
-                "@tickets": CollectionNames.TICKETS.value,
-                "@syncPoints": CollectionNames.SYNC_POINTS.value,
-                "@blocks": CollectionNames.BLOCKS.value,
-                "@apps": CollectionNames.APPS.value,
-                "@virtualRecordMapping": CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
-                "@belongsTo": CollectionNames.BELONGS_TO.value,
-                "@belongsToRecordGroup": CollectionNames.BELONGS_TO_RECORD_GROUP.value,
-                "@belongsToDepartment": CollectionNames.BELONGS_TO_DEPARTMENT.value,
-                "@belongsToCategory": CollectionNames.BELONGS_TO_CATEGORY.value,
-                "@belongsToTopic": CollectionNames.BELONGS_TO_TOPIC.value,
-                "@belongsToLanguage": CollectionNames.BELONGS_TO_LANGUAGE.value,
-                "@isOfType": CollectionNames.IS_OF_TYPE.value,
-                "@recordRelations": CollectionNames.RECORD_RELATIONS.value,
-                "@ticketRelations": CollectionNames.TICKET_RELATIONS.value,
-                "@permission": CollectionNames.PERMISSION.value,
-                "@inheritPermissions": CollectionNames.INHERIT_PERMISSIONS.value,
-                "@userAppRelation": CollectionNames.USER_APP_RELATION.value,
-                "@orgAppRelation": CollectionNames.ORG_APP_RELATION.value,
-                "@userDriveRelation": CollectionNames.USER_DRIVE_RELATION.value,
-            }
-
-            # Execute the deletion query in a transaction
+            # Start transaction
             transaction = self.db.begin_transaction(
-                read=write_collections,
-                write=write_collections,
+                read=edge_collections + node_collections,
+                write=edge_collections + node_collections,
                 exclusive=[],
                 allow_implicit=True,
-                lock_timeout=60000,  # 60 seconds timeout for large deletions
+                lock_timeout=60000,
             )
 
             try:
-                cursor = transaction.aql.execute(deletion_query, bind_vars=bind_vars)
-                result = next(cursor, None)
+                # Step 5: Delete all edges connected to our nodes
+                await self._delete_all_edges_for_nodes(
+                    transaction,
+                    collected["all_node_ids"],
+                    edge_collections
+                )
+
+                # Step 6: Delete isOfType target nodes (files, mails, etc.)
+                await self._delete_isoftype_targets(
+                    transaction,
+                    collected["record_ids"],
+                    edge_collections
+                )
+
+                # Step 7: Delete records
+                await self._delete_nodes_by_keys(
+                    transaction,
+                    collected["record_keys"],
+                    CollectionNames.RECORDS.value
+                )
+
+                # Step 8: Delete record groups
+                await self._delete_nodes_by_keys(
+                    transaction,
+                    collected["record_group_keys"],
+                    CollectionNames.RECORD_GROUPS.value
+                )
+
+                # Step 9: Delete roles
+                await self._delete_nodes_by_keys(
+                    transaction,
+                    collected["role_keys"],
+                    CollectionNames.ROLES.value
+                )
+
+                # Step 10: Delete groups
+                await self._delete_nodes_by_keys(
+                    transaction,
+                    collected["group_keys"],
+                    CollectionNames.GROUPS.value
+                )
+
+                # Step 11: Delete syncPoints and blocks
+                await self._delete_nodes_by_connector_id(
+                    transaction,
+                    connector_id,
+                    CollectionNames.SYNC_POINTS.value
+                )
+
+                # Step 12: Delete virtualRecordToDocIdMapping entries
+                await self._delete_virtual_record_mappings(
+                    transaction,
+                    collected["virtual_record_ids"]
+                )
+
+                # Step 13: Delete the app itself
+                await self._delete_nodes_by_keys(
+                    transaction,
+                    [connector_id],
+                    CollectionNames.APPS.value
+                )
 
                 # Commit the transaction
                 transaction.commit_transaction()
 
-                if result:
-                    self.logger.info(
-                        f"✅ Connector instance {connector_id} deleted successfully. "
-                        f"Records: {result.get('deleted_record_count', 0)}, "
-                        f"RecordGroups: {result.get('deleted_record_group_count', 0)}, "
-                        f"Roles: {result.get('deleted_role_count', 0)}, "
-                        f"Groups: {result.get('deleted_group_count', 0)}, "
-                        f"Drives: {result.get('deleted_drive_count', 0)}"
-                    )
+                self.logger.info(
+                    f"✅ Connector instance {connector_id} deleted successfully. "
+                    f"Records: {len(collected['record_keys'])}, "
+                    f"RecordGroups: {len(collected['record_group_keys'])}, "
+                    f"Roles: {len(collected['role_keys'])}, "
+                    f"Groups: {len(collected['group_keys'])}, "
+                    f"Drives: {len(collected['drive_keys'])}"
+                )
 
-                    return {
-                        "success": True,
-                        "deleted_records_count": result.get("deleted_record_count", 0),
-                        "deleted_record_groups_count": result.get("deleted_record_group_count", 0),
-                        "deleted_roles_count": result.get("deleted_role_count", 0),
-                        "deleted_groups_count": result.get("deleted_group_count", 0),
-                        "deleted_drives_count": result.get("deleted_drive_count", 0),
-                        "virtual_record_ids": result.get("virtual_record_ids", []),
-                        "connector_id": connector_id
-                    }
-                else:
-                    # No records found to delete - this is valid if connector had no data
-                    self.logger.info(
-                        f"Connector instance {connector_id} had no records to delete. "
-                        f"This is normal if the connector was empty."
-                    )
-                    return {
-                        "success": True,
-                        "deleted_records_count": 0,
-                        "deleted_record_groups_count": 0,
-                        "deleted_roles_count": 0,
-                        "deleted_groups_count": 0,
-                        "deleted_drives_count": 0,
-                        "virtual_record_ids": [],
-                        "connector_id": connector_id
-                    }
+                return {
+                    "success": True,
+                    "deleted_records_count": len(collected["record_keys"]),
+                    "deleted_record_groups_count": len(collected["record_group_keys"]),
+                    "deleted_roles_count": len(collected["role_keys"]),
+                    "deleted_groups_count": len(collected["group_keys"]),
+                    "deleted_drives_count": len(collected["drive_keys"]),
+                    "virtual_record_ids": collected["virtual_record_ids"],
+                    "connector_id": connector_id
+                }
 
             except Exception as tx_error:
-                # Abort the transaction on error
                 try:
                     transaction.abort_transaction()
                 except Exception:
@@ -3717,6 +3358,283 @@ class BaseArangoService:
                 "success": False,
                 "error": f"Failed to delete connector instance: {str(e)}"
             }
+
+    async def _collect_connector_entities(self, connector_id: str) -> Dict:
+        """
+        Collect all entity IDs for a connector in a single pass.
+        Returns record keys, virtual record IDs, and full node IDs for edge deletion.
+        """
+        result = {
+            "record_keys": [],
+            "record_ids": [],
+            "virtual_record_ids": [],
+            "record_group_keys": [],
+            "role_keys": [],
+            "group_keys": [],
+            "drive_keys": [],
+            "all_node_ids": []
+        }
+
+        # Collect records
+        query = """
+        FOR r IN @@collection FILTER r.connectorId == @connector_id
+        RETURN { _key: r._key, virtualRecordId: r.virtualRecordId }
+        """
+        cursor = self.db.aql.execute(query, bind_vars={
+            "@collection": CollectionNames.RECORDS.value,
+            "connector_id": connector_id
+        })
+        for doc in cursor:
+            result["record_keys"].append(doc["_key"])
+            result["record_ids"].append(f"records/{doc['_key']}")
+            if doc.get("virtualRecordId"):
+                result["virtual_record_ids"].append(doc["virtualRecordId"])
+
+        # Collect record groups
+        query = "FOR rg IN @@collection FILTER rg.connectorId == @connector_id RETURN rg._key"
+        cursor = self.db.aql.execute(query, bind_vars={
+            "@collection": CollectionNames.RECORD_GROUPS.value,
+            "connector_id": connector_id
+        })
+        for key in cursor:
+            result["record_group_keys"].append(key)
+
+        # Collect roles
+        query = "FOR role IN @@collection FILTER role.connectorId == @connector_id RETURN role._key"
+        cursor = self.db.aql.execute(query, bind_vars={
+            "@collection": CollectionNames.ROLES.value,
+            "connector_id": connector_id
+        })
+        for key in cursor:
+            result["role_keys"].append(key)
+
+        # Collect groups
+        query = "FOR grp IN @@collection FILTER grp.connectorId == @connector_id RETURN grp._key"
+        cursor = self.db.aql.execute(query, bind_vars={
+            "@collection": CollectionNames.GROUPS.value,
+            "connector_id": connector_id
+        })
+        for key in cursor:
+            result["group_keys"].append(key)
+
+        # Collect drives
+        query = "FOR drive IN @@collection FILTER drive.connectorId == @connector_id RETURN drive._key"
+        cursor = self.db.aql.execute(query, bind_vars={
+            "@collection": CollectionNames.DRIVES.value,
+            "connector_id": connector_id
+        })
+        for key in cursor:
+            result["drive_keys"].append(key)
+
+        # Build all_node_ids list for edge deletion
+        result["all_node_ids"].extend(result["record_ids"])
+        result["all_node_ids"].extend([f"recordGroups/{k}" for k in result["record_group_keys"]])
+        result["all_node_ids"].extend([f"roles/{k}" for k in result["role_keys"]])
+        result["all_node_ids"].extend([f"groups/{k}" for k in result["group_keys"]])
+        result["all_node_ids"].extend([f"drives/{k}" for k in result["drive_keys"]])
+        result["all_node_ids"].append(f"apps/{connector_id}")
+
+        self.logger.info(
+            f"📊 Collected entities for connector {connector_id}: "
+            f"records={len(result['record_keys'])}, "
+            f"recordGroups={len(result['record_group_keys'])}, "
+            f"roles={len(result['role_keys'])}, "
+            f"groups={len(result['group_keys'])}, "
+            f"drives={len(result['drive_keys'])}"
+        )
+
+        return result
+
+    async def _get_all_edge_collections(self) -> List[str]:
+        """
+        Get all edge collection names from the graph definition.
+        This makes the deletion future-proof when new edge types are added.
+
+        Raises:
+            Exception: If the graph or edge definitions cannot be retrieved.
+        """
+        graph = self.db.graph(GraphNames.KNOWLEDGE_GRAPH.value)
+        edge_definitions = graph.edge_definitions()
+        edge_collections = [ed['edge_collection'] for ed in edge_definitions]
+        self.logger.debug(f"📊 Found {len(edge_collections)} edge collections from graph")
+        return edge_collections
+
+    async def _delete_all_edges_for_nodes(
+        self,
+        transaction,
+        node_ids: List[str],
+        edge_collections: List[str]
+    ) -> int:
+        """
+        Delete all edges where _from or _to matches any of the node_ids.
+        Iterates through each edge collection dynamically.
+        """
+        if not node_ids:
+            return 0
+
+        total_deleted = 0
+
+        deletion_query = """
+        FOR edge IN @@edge_collection
+            FILTER edge._from IN @node_ids OR edge._to IN @node_ids
+            REMOVE edge IN @@edge_collection
+            RETURN 1
+        """
+
+        for edge_collection in edge_collections:
+            try:
+                cursor = transaction.aql.execute(deletion_query, bind_vars={
+                    "@edge_collection": edge_collection,
+                    "node_ids": node_ids
+                })
+                deleted_count = len(list(cursor))
+                total_deleted += deleted_count
+
+                if deleted_count > 0:
+                    self.logger.debug(f"🗑️ Deleted {deleted_count} edges from {edge_collection}")
+
+            except Exception as e:
+                self.logger.warning(f"⚠️ Error deleting from {edge_collection}: {e}")
+                # Continue with other collections
+
+        self.logger.info(f"✅ Deleted {total_deleted} total edges across all collections")
+        return total_deleted
+
+    async def _delete_isoftype_targets(self, transaction, record_ids: List[str], edge_collections: List[str]) -> int:
+        """
+        Delete nodes that records point to via isOfType edges (files, mails, etc.).
+        Dynamically discovers target collection from edge._to.
+        Also deletes any edges connected to these type nodes first.
+        """
+        if not record_ids:
+            return 0
+
+        # First, collect all targets from isOfType edges
+        collect_query = """
+        FOR edge IN @@isOfType
+            FILTER edge._from IN @record_ids
+            LET target = PARSE_IDENTIFIER(edge._to)
+            RETURN DISTINCT { collection: target.collection, key: target.key, full_id: edge._to }
+        """
+
+        try:
+            cursor = transaction.aql.execute(collect_query, bind_vars={
+                "@isOfType": CollectionNames.IS_OF_TYPE.value,
+                "record_ids": record_ids
+            })
+            targets = list(cursor)
+        except Exception as e:
+            self.logger.warning(f"⚠️ Error collecting isOfType targets: {e}")
+            return 0
+
+        if not targets:
+            return 0
+
+        # Build list of type node IDs for edge cleanup
+        type_node_ids = [target["full_id"] for target in targets]
+
+        # Step 6.5: Delete edges connected to type nodes BEFORE deleting the nodes
+        await self._delete_all_edges_for_nodes(transaction, type_node_ids, edge_collections)
+
+        # Group targets by collection
+        targets_by_collection: Dict[str, List[str]] = {}
+        for target in targets:
+            coll = target["collection"]
+            key = target["key"]
+            if coll not in targets_by_collection:
+                targets_by_collection[coll] = []
+            targets_by_collection[coll].append(key)
+
+        # Delete from each collection
+        total_deleted = 0
+        for collection, keys in targets_by_collection.items():
+            deleted = await self._delete_nodes_by_keys(transaction, keys, collection)
+            total_deleted += deleted
+
+        self.logger.info(f"✅ Deleted {total_deleted} isOfType target documents")
+        return total_deleted
+
+    async def _delete_nodes_by_keys(self, transaction, keys: List[str], collection: str, batch_size: int = 1000) -> int:
+        """Delete documents by their _key values using batching."""
+        if not keys:
+            return 0
+
+        total_deleted = 0
+
+        # Process in batches to avoid query size limits
+        for i in range(0, len(keys), batch_size):
+            batch_keys = keys[i:i + batch_size]
+
+            query = """
+            FOR doc IN @@collection
+                FILTER doc._key IN @keys
+                REMOVE doc IN @@collection OPTIONS { ignoreErrors: true }
+                RETURN 1
+            """
+
+            try:
+                cursor = transaction.aql.execute(query, bind_vars={
+                    "@collection": collection,
+                    "keys": batch_keys
+                })
+                deleted = len(list(cursor))
+                total_deleted += deleted
+            except Exception as e:
+                self.logger.warning(f"⚠️ Error deleting batch from {collection}: {e}")
+                # Continue with next batch even if one fails
+
+        if total_deleted > 0:
+            self.logger.debug(f"🗑️ Deleted {total_deleted} documents from {collection}")
+
+        return total_deleted
+
+    async def _delete_nodes_by_connector_id(self, transaction, connector_id: str, collection: str) -> int:
+        """Delete all documents with matching connectorId."""
+        query = """
+        FOR doc IN @@collection
+            FILTER doc.connectorId == @connector_id
+            REMOVE doc IN @@collection
+            RETURN 1
+        """
+
+        try:
+            cursor = transaction.aql.execute(query, bind_vars={
+                "@collection": collection,
+                "connector_id": connector_id
+            })
+            deleted = len(list(cursor))
+            if deleted > 0:
+                self.logger.debug(f"🗑️ Deleted {deleted} documents from {collection}")
+            return deleted
+        except Exception as e:
+            self.logger.warning(f"⚠️ Error deleting from {collection}: {e}")
+            return 0
+
+    async def _delete_virtual_record_mappings(self, transaction, virtual_record_ids: List[str]) -> int:
+        """Delete virtualRecordToDocIdMapping entries."""
+        if not virtual_record_ids:
+            return 0
+
+        query = """
+        FOR doc IN @@collection
+            FILTER doc._key IN @virtual_record_ids
+            REMOVE doc IN @@collection OPTIONS { ignoreErrors: true }
+            RETURN 1
+        """
+
+        try:
+            cursor = transaction.aql.execute(query, bind_vars={
+                "@collection": CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
+                "virtual_record_ids": virtual_record_ids
+            })
+            deleted = len(list(cursor))
+            if deleted > 0:
+                self.logger.debug(f"🗑️ Deleted {deleted} virtual record mappings")
+            return deleted
+        except Exception as e:
+            self.logger.warning(f"⚠️ Error deleting virtual record mappings: {e}")
+            return 0
+
 
     async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:
         """
@@ -10530,10 +10448,18 @@ class BaseArangoService:
         kb_id: str,
         folder_name: str,
         parent_folder_id: Optional[str] = None,
+        exclude_folder_id: Optional[str] = None,
         transaction: Optional[TransactionDatabase] = None
     ) -> Optional[Dict]:
         """
         Find a folder by name within a specific parent (KB root or folder)
+
+        Args:
+            kb_id: Knowledge base ID
+            folder_name: Name of the folder to find
+            parent_folder_id: Parent folder ID (None for KB root)
+            exclude_folder_id: Optional folder ID to exclude from search (useful for rename operations)
+            transaction: Optional transaction
         """
         try:
             db = transaction if transaction else self.db
@@ -10547,39 +10473,71 @@ class BaseArangoService:
             parent_from = f"records/{parent_folder_id}" if parent_folder_id else f"recordGroups/{kb_id}"
 
             # Single query for both cases (parent folder or KB root)
-            query = """
-            FOR edge IN @@record_relations
-                FILTER edge._from == @parent_from
-                FILTER edge.relationshipType == "PARENT_CHILD"
-                LET folder_record = DOCUMENT(edge._to)
-                FILTER folder_record != null
-                FILTER folder_record.connectorId == @kb_id
-                // Verify it's a folder by checking associated FILES document via IS_OF_TYPE edge
-                LET folder_file = FIRST(
-                    FOR isEdge IN @@is_of_type
-                        FILTER isEdge._from == folder_record._id
-                        LET f = DOCUMENT(isEdge._to)
-                        FILTER f != null AND f.isFile == false
-                        RETURN f
-                )
-                FILTER folder_file != null
-                LET folder_name_l = LOWER(folder_record.recordName)
-                FILTER folder_name_l IN @name_variants
-                RETURN {
-                    _key: folder_record._key,
-                    name: folder_record.recordName,
-                    recordGroupId: folder_record.connectorId,
-                    orgId: folder_record.orgId
-                }
-            """
-
-            cursor = db.aql.execute(query, bind_vars={
+            # Conditionally exclude folder if exclude_folder_id is provided
+            bind_vars = {
                 "parent_from": parent_from,
                 "name_variants": name_variants,
                 "kb_id": kb_id,
                 "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
-            })
+            }
+
+            if exclude_folder_id:
+                bind_vars["exclude_folder_id"] = exclude_folder_id
+                query = """
+                FOR edge IN @@record_relations
+                    FILTER edge._from == @parent_from
+                    FILTER edge.relationshipType == "PARENT_CHILD"
+                    LET folder_record = DOCUMENT(edge._to)
+                    FILTER folder_record != null
+                    FILTER folder_record.connectorId == @kb_id
+                    FILTER folder_record._key != @exclude_folder_id
+                    // Verify it's a folder by checking associated FILES document via IS_OF_TYPE edge
+                    LET folder_file = FIRST(
+                        FOR isEdge IN @@is_of_type
+                            FILTER isEdge._from == folder_record._id
+                            LET f = DOCUMENT(isEdge._to)
+                            FILTER f != null AND f.isFile == false
+                            RETURN f
+                    )
+                    FILTER folder_file != null
+                    LET folder_name_l = LOWER(folder_record.recordName)
+                    FILTER folder_name_l IN @name_variants
+                    RETURN {
+                        _key: folder_record._key,
+                        name: folder_record.recordName,
+                        recordGroupId: folder_record.connectorId,
+                        orgId: folder_record.orgId
+                    }
+                """
+            else:
+                query = """
+                FOR edge IN @@record_relations
+                    FILTER edge._from == @parent_from
+                    FILTER edge.relationshipType == "PARENT_CHILD"
+                    LET folder_record = DOCUMENT(edge._to)
+                    FILTER folder_record != null
+                    FILTER folder_record.connectorId == @kb_id
+                    // Verify it's a folder by checking associated FILES document via IS_OF_TYPE edge
+                    LET folder_file = FIRST(
+                        FOR isEdge IN @@is_of_type
+                            FILTER isEdge._from == folder_record._id
+                            LET f = DOCUMENT(isEdge._to)
+                            FILTER f != null AND f.isFile == false
+                            RETURN f
+                    )
+                    FILTER folder_file != null
+                    LET folder_name_l = LOWER(folder_record.recordName)
+                    FILTER folder_name_l IN @name_variants
+                    RETURN {
+                        _key: folder_record._key,
+                        name: folder_record.recordName,
+                        recordGroupId: folder_record.connectorId,
+                        orgId: folder_record.orgId
+                    }
+                """
+
+            cursor = db.aql.execute(query, bind_vars=bind_vars)
 
             result = next(cursor, None)
 
