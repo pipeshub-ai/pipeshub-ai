@@ -303,7 +303,6 @@ class OAuthProvider:
         # This is important for re-authentication to ensure fresh start
         config['oauth'] = session_data
 
-        print(f"!!!!!!!!! Config: {config}")
         await self.key_value_store.create_key(self.credentials_path, config)
         return self._get_authorization_url(state=state, **extra)
 
