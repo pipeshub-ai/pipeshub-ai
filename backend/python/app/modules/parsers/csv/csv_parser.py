@@ -260,6 +260,332 @@ class CSVParser:
         """Count the number of empty/None values in a row"""
         return sum(1 for value in row.values() if value is None or value == "")
 
+    def read_raw_rows(self, file_stream: TextIO) -> List[List[str]]:
+        """
+        Read CSV as raw list of lists without any processing.
+        
+        Args:
+            file_stream: An opened file stream containing CSV data
+            
+        Returns:
+            List of rows, where each row is a list of string values
+        """
+        reader = csv.reader(
+            file_stream, delimiter=self.delimiter, quotechar=self.quotechar
+        )
+        return list(reader)
+
+    def _is_empty_row(self, row: List[Any], start_col: Optional[int] = None, end_col: Optional[int] = None) -> bool:
+        """
+        Check if all values in a row (or a range within the row) are None/empty.
+        
+        Args:
+            row: List of values (can be strings or None)
+            start_col: Optional starting column index (inclusive, 0-based)
+            end_col: Optional ending column index (inclusive, 0-based)
+            
+        Returns:
+            True if all values in the row (or specified range) are empty/None, False otherwise
+        """
+        if not row:
+            return True
+        
+        # If range is specified, check only that range
+        if start_col is not None and end_col is not None:
+            values_to_check = row[start_col:end_col + 1] if start_col < len(row) else []
+        elif start_col is not None:
+            values_to_check = row[start_col:] if start_col < len(row) else []
+        elif end_col is not None:
+            values_to_check = row[:end_col + 1]
+        else:
+            values_to_check = row
+        
+        return all(
+            value is None or (isinstance(value, str) and value.strip() == "")
+            for value in values_to_check
+        )
+
+    def _is_empty_column(self, all_rows: List[List[Any]], col_idx: int, start_row: Optional[int] = None, end_row: Optional[int] = None) -> bool:
+        """
+        Check if a column is empty within a specific row range.
+        
+        Args:
+            all_rows: List of all rows
+            col_idx: Column index to check
+            start_row: Optional starting row index (inclusive, 0-based)
+            end_row: Optional ending row index (inclusive, 0-based)
+            
+        Returns:
+            True if all values in the column (within specified range) are empty/None, False otherwise
+        """
+        if not all_rows:
+            return True
+        
+        # Determine row range to check
+        if start_row is not None and end_row is not None:
+            rows_to_check = all_rows[start_row:end_row + 1]
+        elif start_row is not None:
+            rows_to_check = all_rows[start_row:]
+        elif end_row is not None:
+            rows_to_check = all_rows[:end_row + 1]
+        else:
+            rows_to_check = all_rows
+        
+        # Check all rows in the specified range
+        for row in rows_to_check:
+            if col_idx < len(row):
+                value = row[col_idx]
+                if value is not None and isinstance(value, str) and value.strip():
+                    return False
+        
+        return True
+
+    def _extract_rectangular_table(
+        self, 
+        all_rows: List[List[Any]], 
+        start_row: int, 
+        start_col: int, 
+        end_row: int, 
+        end_col: int
+    ) -> Dict[str, Any]:
+        """
+        Extract a table from a bounded rectangular region.
+        
+        Args:
+            all_rows: All rows from the CSV
+            start_row: Starting row index (0-based)
+            start_col: Starting column index (0-based)
+            end_row: Ending row index (inclusive, 0-based)
+            end_col: Ending column index (inclusive, 0-based)
+            
+        Returns:
+            Dictionary with headers, data, and metadata
+        """
+        if start_row > end_row or start_col > end_col:
+            return {
+                "headers": [],
+                "data": [],
+                "start_row": start_row + 1,  # Convert to 1-based line numbers
+                "end_row": end_row + 1,
+                "column_count": 0,
+            }
+        
+        # Extract header row
+        header_row = all_rows[start_row][start_col:end_col + 1] if start_row < len(all_rows) else []
+        
+        # Extract data rows
+        data_rows = []
+        for row_idx in range(start_row + 1, min(end_row + 1, len(all_rows))):
+            row = all_rows[row_idx]
+            if row_idx < len(all_rows):
+                # Extract columns for this row, pad if necessary
+                row_data = row[start_col:end_col + 1] if start_col < len(row) else []
+                # Pad to match column count
+                while len(row_data) < len(header_row):
+                    row_data.append("")
+                data_rows.append(row_data[:len(header_row)])
+        
+        return {
+            "headers": header_row,
+            "data": data_rows,
+            "start_row": start_row + 1,  # Convert to 1-based line numbers
+            "end_row": end_row + 1,
+            "column_count": len(header_row),
+        }
+
+    def _get_table(
+        self,
+        all_rows: List[List[Any]],
+        start_row: int,
+        start_col: int,
+        visited_cells: set
+    ) -> Dict[str, Any]:
+        """
+        Extract a table starting from (start_row, start_col) by expanding to find rectangular bounds.
+        
+        This method finds the maximum column and row extent of the table by scanning:
+        - Right until finding a column that's empty within the current region
+        - Down until finding a row that's empty within the current region
+        
+        Args:
+            all_rows: All rows from the CSV
+            start_row: Starting row index (0-based)
+            start_col: Starting column index (0-based)
+            visited_cells: Set of (row, col) tuples to track processed cells
+            
+        Returns:
+            Dictionary with headers, data, and metadata
+        """
+        if start_row >= len(all_rows) or start_col < 0:
+            return {
+                "headers": [],
+                "data": [],
+                "start_row": start_row + 1,
+                "end_row": start_row + 1,
+                "column_count": 0,
+            }
+        
+        # Find the last column of the table by scanning right
+        max_col = start_col
+        max_row_in_file = len(all_rows) - 1
+        
+        for col in range(start_col, max(len(row) for row in all_rows) if all_rows else start_col + 1):
+            has_data = False
+            # Check if this column has any data in the rows we've seen so far
+            # We need to check from start_row downward to find where the table ends
+            for r in range(start_row, max_row_in_file + 1):
+                if r < len(all_rows) and col < len(all_rows[r]):
+                    value = all_rows[r][col]
+                    if value is not None and isinstance(value, str) and value.strip():
+                        has_data = True
+                        max_col = col
+                        break
+            if not has_data:
+                break
+        
+        # Find the last row of the table by scanning down
+        max_row = start_row
+        for row in range(start_row, max_row_in_file + 1):
+            has_data = False
+            # Check if this row has any data in the columns we've determined
+            for col in range(start_col, max_col + 1):
+                if row < len(all_rows) and col < len(all_rows[row]):
+                    value = all_rows[row][col]
+                    if value is not None and isinstance(value, str) and value.strip():
+                        has_data = True
+                        max_row = row
+                        break
+            if not has_data:
+                break
+        
+        # Now extract the rectangular table region
+        table_data = []
+        headers = []
+        
+        # Process header row
+        if start_row < len(all_rows):
+            header_row = all_rows[start_row]
+            header_cells = []
+            for col in range(start_col, max_col + 1):
+                if col < len(header_row):
+                    value = header_row[col]
+                    header_cells.append(value)
+                    visited_cells.add((start_row, col))
+                else:
+                    header_cells.append("")
+            
+            # Only consider it a header row if at least one cell has data
+            if any(
+                val is not None and (not isinstance(val, str) or val.strip())
+                for val in header_cells
+            ):
+                headers = header_cells
+                table_data.append(header_cells)
+            else:
+                return {
+                    "headers": [],
+                    "data": [],
+                    "start_row": start_row + 1,
+                    "end_row": start_row + 1,
+                    "column_count": 0,
+                }
+        
+        # Process data rows within the determined boundaries
+        for row_idx in range(start_row + 1, max_row + 1):
+            if row_idx < len(all_rows):
+                row = all_rows[row_idx]
+                row_data = []
+                for col in range(start_col, max_col + 1):
+                    if col < len(row):
+                        value = row[col]
+                        row_data.append(value)
+                        if value is not None and isinstance(value, str) and value.strip():
+                            visited_cells.add((row_idx, col))
+                    else:
+                        row_data.append("")
+                table_data.append(row_data)
+        
+        return {
+            "headers": headers,
+            "data": table_data[1:] if table_data else [],  # Skip header row from data
+            "start_row": start_row + 1,  # Convert to 1-based line numbers
+            "end_row": max_row + 1,
+            "column_count": len(headers),
+        }
+
+    def find_tables_in_csv(self, all_rows: List[List[Any]]) -> List[Dict[str, Any]]:
+        """
+        Find and extract all tables from CSV rows using region-growing approach.
+        
+        Detection criteria:
+        A table is a rectangular region surrounded by empty rows & empty columns.
+        Boundaries only need to be empty within the context of that region, not globally.
+        File edges count as boundaries (no empty rows/columns needed at edges).
+        
+        Args:
+            all_rows: List of all rows from CSV (each row is a list of values)
+            
+        Returns:
+            List of table dictionaries, each containing:
+            - headers: List of header values
+            - data: List of data rows (as lists)
+            - start_row: Starting line number (1-based)
+            - end_row: Ending line number (1-based)
+            - column_count: Number of columns
+        """
+        if not all_rows:
+            return []
+        
+        tables = []
+        visited_cells: set = set()  # Track already processed cells as (row, col) tuples
+        
+        # Find maximum column count across all rows
+        max_cols = max(len(row) for row in all_rows) if all_rows else 0
+        
+        # Scan for tables: iterate through all rows and columns
+        for row_idx in range(len(all_rows)):
+            for col_idx in range(max_cols):
+                # Check if this cell has data and hasn't been visited
+                if (row_idx, col_idx) in visited_cells:
+                    continue
+                
+                # Check if cell has non-empty data
+                if row_idx < len(all_rows) and col_idx < len(all_rows[row_idx]):
+                    value = all_rows[row_idx][col_idx]
+                    if value is not None and isinstance(value, str) and value.strip():
+                        # Found a potential table start - expand to find bounds
+                        table = self._get_table(all_rows, row_idx, col_idx, visited_cells)
+                        
+                        # Check if table has meaningful data
+                        has_data = any(
+                            val is not None and (not isinstance(val, str) or val.strip())
+                            for val in table["headers"]
+                        ) or any(
+                            any(val is not None and (not isinstance(val, str) or val.strip()) for val in row)
+                            for row in table["data"]
+                        )
+                        
+                        if has_data:
+                            tables.append(table)
+        
+        # If no tables detected, treat entire file as single table
+        if not tables:
+            max_col = max((len(row) - 1 for row in all_rows), default=0)
+            table = self._extract_rectangular_table(
+                all_rows,
+                0,
+                0,
+                len(all_rows) - 1,
+                max_col
+            )
+            if table["data"] or any(
+                val is not None and (not isinstance(val, str) or val.strip())
+                for val in table["headers"]
+            ):
+                tables.append(table)
+        
+        return tables
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
@@ -414,9 +740,20 @@ class CSVParser:
                 sample_data=json.dumps(sample_data, indent=2),headers=headers
             )
             response = await self._call_llm(llm, messages)
-            if '</think>' in response.content:
-                response.content = response.content.split('</think>')[-1]
-            return response.content
+            # Handle response - it could be a message object with .content or a string
+            # Use getattr to safely access .content attribute
+            content = getattr(response, 'content', None)  # type: ignore
+            if content is not None:
+                if '</think>' in content:
+                    content = content.split('</think>')[-1]
+                return content
+            elif isinstance(response, str):
+                if '</think>' in response:
+                    return response.split('</think>')[-1]
+                return response
+            else:
+                # Fallback for dict/list responses
+                return str(response)
         except Exception:
             raise
 
@@ -458,6 +795,237 @@ class CSVParser:
             processed_texts.extend(descriptions)
 
         return processed_texts
+    def convert_table_to_dict(self, table: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[int]]:
+        """
+        Convert a table (with headers and data rows as lists) to dictionary format.
+        
+        Args:
+            table: Table dictionary with headers and data
+            
+        Returns:
+            Tuple of (data, line_numbers) where:
+            - data: List of dictionaries where keys are column headers
+            - line_numbers: List of line numbers (1-based)
+        """
+        headers = table["headers"]
+        data_rows = table["data"]
+        start_row = table["start_row"]
+        
+        # Generate placeholder names for empty headers
+        processed_headers = [
+            stripped if col and (stripped := str(col).strip()) else f"Column_{i}"
+            for i, col in enumerate(headers, start=1)
+        ]
+        
+        # Convert rows to dictionaries
+        data = []
+        line_numbers = []
+        
+        for idx, row in enumerate(data_rows):
+            # Pad row if shorter than headers, or truncate if longer
+            padded_row = row + [""] * (len(processed_headers) - len(row)) if len(row) < len(processed_headers) else row[:len(processed_headers)]
+            
+            # Create dictionary with parsed values
+            cleaned_row = {
+                processed_headers[i]: self._parse_value(padded_row[i])
+                for i in range(len(processed_headers))
+            }
+            
+            # Skip rows where all values are None
+            if not all(value is None for value in cleaned_row.values()):
+                line_numbers.append(start_row + idx + 1)  # +1 because data starts after header
+                data.append(cleaned_row)
+        
+        return (data, line_numbers)
+
+    async def get_blocks_from_csv_with_multiple_tables(
+        self, 
+        tables: List[Dict[str, Any]], 
+        llm: BaseChatModel
+    ) -> BlocksContainer:
+        """
+        Process multiple tables from CSV and create BlocksContainer.
+        
+        Args:
+            tables: List of table dictionaries from find_tables_in_csv()
+            llm: Language model instance
+            
+        Returns:
+            BlocksContainer with multiple TABLE BlockGroups
+        """
+        blocks: List[Block] = []
+        block_groups: List[BlockGroup] = []
+        
+        # Get threshold from environment variable (default: 1000)
+        threshold = int(os.getenv("MAX_TABLE_ROWS_FOR_LLM", "1000"))
+        
+        # Track cumulative row count at record level
+        cumulative_row_count = [0]
+        
+        # Process each table independently
+        for table_idx, table in enumerate(tables):
+            # Convert table to dictionary format
+            csv_result, line_numbers = self.convert_table_to_dict(table)
+            
+            if not csv_result:
+                continue
+            
+            # Phase 1: Detect if headers are valid for this table
+            current_headers = list(csv_result[0].keys())
+            first_rows = [current_headers]
+            
+            # Select up to 5 rows with the least number of empty values
+            selected_rows = []
+            fallback_rows = []
+            NUM_SAMPLE_ROWS = 5
+            
+            for idx, row in enumerate(csv_result):
+                empty_count = self._count_empty_values(row)
+                
+                if empty_count == 0:
+                    selected_rows.append((idx, row, empty_count))
+                    if len(selected_rows) >= NUM_SAMPLE_ROWS:
+                        break
+                else:
+                    fallback_rows.append((idx, row, empty_count))
+            
+            if len(selected_rows) < NUM_SAMPLE_ROWS:
+                fallback_rows.sort(key=lambda x: (x[2], x[0]))
+                needed = NUM_SAMPLE_ROWS - len(selected_rows)
+                selected_rows.extend(fallback_rows[:needed])
+            
+            selected_rows.sort(key=lambda x: x[0])
+            first_rows.extend([list(row[1].values()) for row in selected_rows])
+            
+            has_valid_headers = await self.detect_headers_with_llm(first_rows, llm)
+            
+            # Phase 2: Generate headers if needed
+            if not has_valid_headers:
+                logger.info(f"No valid headers detected for table {table_idx + 1}, generating headers with LLM")
+                all_data_rows = [list(row.values()) for row in csv_result]
+                
+                new_headers = await self.generate_headers_with_llm(
+                    all_data_rows[:10],
+                    len(current_headers),
+                    llm
+                )
+                
+                # Reconstruct csv_result with new headers
+                csv_result = [{new_headers[i]: "null" if current_headers[i].startswith("Column_") else current_headers[i] for i in range(len(new_headers))}]
+                line_numbers = [table["start_row"]] + line_numbers
+                
+                csv_result.extend([
+                    {new_headers[i]: row[i] for i in range(len(new_headers))}
+                    for row in all_data_rows
+                ])
+            else:
+                logger.info(f"Valid headers detected for table {table_idx + 1}, using existing headers")
+            
+            # Add current table rows to cumulative count
+            table_row_count = len(csv_result)
+            cumulative_row_count[0] += table_row_count
+            
+            # Check if cumulative count exceeds threshold
+            use_llm_for_rows = cumulative_row_count[0] <= threshold
+            
+            # Get table summary (always use LLM)
+            table_summary = await self.get_table_summary(llm, csv_result)
+            
+            # Create table BlockGroup
+            table_group_index = len(block_groups)
+            table_group_children: List[BlockContainerIndex] = []
+            
+            column_headers = list(csv_result[0].keys())
+            
+            if use_llm_for_rows:
+                # Use LLM for row descriptions
+                batch_size = 50
+                batches = []
+                for i in range(0, len(csv_result), batch_size):
+                    batch = csv_result[i : i + batch_size]
+                    batches.append((i, batch))
+                
+                max_concurrent_batches = min(10, len(batches))
+                batch_results = []
+                
+                for i in range(0, len(batches), max_concurrent_batches):
+                    current_batches = batches[i:i + max_concurrent_batches]
+                    
+                    batch_tasks = []
+                    for start_idx, batch in current_batches:
+                        task = self.get_rows_text(llm, batch, table_summary)
+                        batch_tasks.append((start_idx, batch, task))
+                    
+                    task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])
+                    
+                    for j, (start_idx, batch, _) in enumerate(batch_tasks):
+                        row_texts = task_results[j]
+                        batch_results.append((start_idx, batch, row_texts))
+                
+                # Create blocks for this table
+                for start_idx, batch, row_texts in batch_results:
+                    for idx, (row, row_text) in enumerate(zip(batch, row_texts), start=start_idx):
+                        block_index = len(blocks)
+                        actual_row_number = line_numbers[idx] if idx < len(line_numbers) else idx + 1
+                        
+                        blocks.append(
+                            Block(
+                                index=block_index,
+                                type=BlockType.TABLE_ROW,
+                                format=DataFormat.JSON,
+                                data={
+                                    "row_natural_language_text": row_text,
+                                    "row_number": actual_row_number,
+                                    "row": json.dumps(row)
+                                },
+                                parent_index=table_group_index,
+                            )
+                        )
+                        table_group_children.append(BlockContainerIndex(block_index=block_index))
+            else:
+                # Use simple format for rows (skip LLM)
+                for idx, row in enumerate(csv_result):
+                    block_index = len(blocks)
+                    actual_row_number = line_numbers[idx] if idx < len(line_numbers) else idx + 1
+                    row_text = generate_simple_row_text(row)
+                    
+                    blocks.append(
+                        Block(
+                            index=block_index,
+                            type=BlockType.TABLE_ROW,
+                            format=DataFormat.JSON,
+                            data={
+                                "row_natural_language_text": row_text,
+                                "row_number": actual_row_number,
+                                "row": json.dumps(row)
+                            },
+                            parent_index=table_group_index,
+                        )
+                    )
+                    table_group_children.append(BlockContainerIndex(block_index=block_index))
+            
+            # Create markdown for this table
+            csv_markdown = self.to_markdown(csv_result)
+            
+            table_group = BlockGroup(
+                index=table_group_index,
+                type=GroupType.TABLE,
+                format=DataFormat.JSON,
+                table_metadata=TableMetadata(
+                    num_of_rows=len(csv_result),
+                    num_of_cols=len(column_headers),
+                ),
+                data={
+                    "table_summary": table_summary,
+                    "column_headers": column_headers,
+                    "table_markdown": csv_markdown,
+                },
+                children=table_group_children,
+            )
+            block_groups.append(table_group)
+        
+        return BlocksContainer(blocks=blocks, block_groups=block_groups)
+
     #  recordName, recordId, version, source, orgId, csv_binary, virtual_record_id
     async def get_blocks_from_csv_result(self, csv_result: List[Dict[str, Any]], line_numbers: List[int], llm: BaseChatModel) -> BlocksContainer:
 
