@@ -912,7 +912,7 @@ class CSVParser:
         for i, col in enumerate(headers, start=1):
             # Get base name
             base_name = str(col).strip() if col and str(col).strip() else f"Column_{i}"
-            
+
             # Handle duplicates by adding numeric suffix
             if base_name in seen:
                 seen[base_name] += 1
@@ -920,9 +920,9 @@ class CSVParser:
             else:
                 seen[base_name] = 0
                 unique_name = base_name
-            
+
             processed_headers.append(unique_name)
-        
+
         # Convert rows to dictionaries
         data = []
         line_numbers = []
