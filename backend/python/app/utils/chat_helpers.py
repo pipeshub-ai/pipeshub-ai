@@ -348,7 +348,7 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
 
             block_num = meta.get("blockNum")
             if block_num is None:
-                if extension == "xlsx":
+                if extension == "xlsx" or extension == "tsv":
                     # Guard against non-dict data
                     if isinstance(data, dict):
                         block_num = [data.get("row_number", 1)]
