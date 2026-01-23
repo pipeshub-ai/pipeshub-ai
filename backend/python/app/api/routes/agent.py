@@ -276,10 +276,24 @@ async def stream_response(
     # ⚡ OPTIMIZATION: Reduced recursion limit for faster termination
     config = {"recursion_limit": 30}  # Reduced from 50 - optimized graph needs less
 
+    logger.debug("🔄 Starting graph streaming with stream_mode='custom'")
+
+    chunk_count = 0
     async for chunk in agent_graph.astream(initial_state, config=config, stream_mode="custom"):
+        chunk_count += 1
+        logger.debug(f"📦 Received chunk #{chunk_count}: {type(chunk)}")
+
+        # StreamWriter(dict) with stream_mode="custom" yields dicts with 'event' and 'data'
         if isinstance(chunk, dict) and "event" in chunk:
-            # Convert dict to JSON string for streaming
-            yield f"event: {chunk['event']}\ndata: {json.dumps(chunk['data'])}\n\n"
+            event_type = chunk.get('event', 'unknown')
+            data = chunk.get('data', {})
+            logger.info(f"✅ Yielding streaming event: {event_type}")
+            # Convert to SSE format
+            yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+        else:
+            logger.warning(f"⚠️ Received unexpected chunk format: {type(chunk)} - {chunk}")
+
+    logger.info(f"🏁 Graph streaming completed. Total chunks: {chunk_count}")
 
 
 @router.post("/agent-chat-stream")

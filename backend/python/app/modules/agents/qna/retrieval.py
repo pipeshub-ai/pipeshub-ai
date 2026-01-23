@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime
 
 from langchain_core.messages import ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import StreamWriter
 
 from app.models.blocks import BlockType, GroupType
@@ -21,7 +22,7 @@ from app.utils.chat_helpers import get_flattened_results
 logger = logging.getLogger(__name__)
 
 
-async def conditional_retrieve_node(state: ChatState, writer: StreamWriter) -> ChatState:
+async def conditional_retrieve_node(state: ChatState, config: RunnableConfig, writer: StreamWriter) -> ChatState:
     """
     Smart retrieval based on query analysis.
 
@@ -30,7 +31,8 @@ async def conditional_retrieve_node(state: ChatState, writer: StreamWriter) -> C
 
     Args:
         state: Current chat state with query analysis
-        writer: Stream writer for status updates
+        config: Runnable config for context preservation
+        writer: StreamWriter for status updates
 
     Returns:
         Updated chat state with search results
@@ -53,14 +55,13 @@ async def conditional_retrieve_node(state: ChatState, writer: StreamWriter) -> C
             return state
 
         # Perform retrieval
-        logger_instance.info("Gathering knowledge sources...")
-        writer({
-            "event": "status",
-            "data": {
-                "status": "retrieving",
-                "message": "Gathering knowledge sources..."
-            }
-        })
+        logger_instance.info("📚 Gathering knowledge sources...")
+        try:
+            if writer:
+                # StreamWriter accepts ONE argument - a dict with event and data
+                writer({"event": "status", "data": {"status": "retrieving", "message": "📚 Gathering knowledge sources..."}})
+        except Exception as e:
+            logger_instance.debug(f"Failed to write stream event: {e}")
 
         # Get services
         retrieval_service = state["retrieval_service"]
@@ -119,13 +120,12 @@ async def conditional_retrieve_node(state: ChatState, writer: StreamWriter) -> C
             return state
 
         # Process search results like chatbot does - CRITICAL for proper formatting and citations
-        writer({
-            "event": "status",
-            "data": {
-                "status": "processing",
-                "message": "Processing search results..."
-            }
-        })
+        try:
+            if writer:
+                # StreamWriter accepts ONE argument - a dict with event and data
+                writer({"event": "status", "data": {"status": "processing", "message": "Processing search results..."}})
+        except Exception as e:
+            logger_instance.debug(f"Failed to write stream event: {e}")
 
         # Initialize blob storage for processing results
         config_service = state["config_service"]
@@ -180,13 +180,12 @@ async def conditional_retrieve_node(state: ChatState, writer: StreamWriter) -> C
         )
 
         if should_rerank:
-            writer({
-                "event": "status",
-                "data": {
-                    "status": "ranking",
-                    "message": "Ranking relevant information..."
-                }
-            })
+            try:
+                if writer:
+                    # StreamWriter accepts ONE argument - a dict with event and data
+                    writer({"event": "status", "data": {"status": "ranking", "message": "Ranking relevant information..."}})
+            except Exception as e:
+                logger_instance.debug(f"Failed to write stream event: {e}")
 
             final_results = await reranker_service.rerank(
                 query=query,

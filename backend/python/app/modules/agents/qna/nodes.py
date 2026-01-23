@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import hashlib
 import json
 import logging
@@ -8,6 +9,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.types import StreamWriter
 
 from app.modules.agents.qna.chat_state import ChatState
@@ -64,6 +67,45 @@ PING_REPEAT_MIN = AnalysisConfig.PING_REPEAT_MIN
 SUSPICIOUS_RESPONSE_MIN = AnalysisConfig.SUSPICIOUS_RESPONSE_MIN
 LOOP_DETECTION_MIN_CALLS = PerformanceConfig.LOOP_DETECTION_MIN_CALLS
 LOOP_DETECTION_MAX_UNIQUE_TOOLS = PerformanceConfig.LOOP_DETECTION_MAX_UNIQUE_TOOLS
+
+# ============================================================================
+# STREAMING HELPER (for Python < 3.11)
+# ============================================================================
+
+def safe_stream_write(writer: StreamWriter, event_data: dict, config: RunnableConfig = None) -> None:
+    """
+    Safely write to stream writer.
+    Uses 'config' to restore context if it's missing (common in async/threaded flows).
+    This is the STANDARD way to bridge context gaps in LangChain/LangGraph.
+    Args:
+        writer: StreamWriter instance passed to the node
+        event_data: Dict with 'event' and 'data' keys
+        config: RunnableConfig from the node (optional, for context preservation)
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        if writer is not None:
+            try:
+                # Try writing normally
+                writer(event_data)
+            except RuntimeError as e:
+                # If context is lost, explicitly restore it using the node's config
+                if "get_config" in str(e) and config:
+                    # Set the context variable temporarily for this operation
+                    token = var_child_runnable_config.set(config)
+                    try:
+                        writer(event_data)
+                    finally:
+                        var_child_runnable_config.reset(token)
+                else:
+                    # If it's a different error or we have no config, raise it
+                    raise e
+        else:
+            logger.debug("⚠️ Stream writer is None (not in streaming mode)")
+    except Exception as e:
+        logger.warning(f"❌ Stream write failed: {e}")
 
 # ============================================================================
 # GENERIC TOOL RESULT ANALYSIS FUNCTIONS
@@ -634,7 +676,7 @@ def build_simple_tool_context(state: ChatState) -> str:
 # PHASE 1: ENHANCED QUERY ANALYSIS
 # ============================================================================
 
-async def analyze_query_node(state: ChatState, writer: StreamWriter) -> ChatState:
+async def analyze_query_node(state: ChatState, config: RunnableConfig, writer: StreamWriter) -> ChatState:
     """Analyze query complexity, follow-ups, and determine retrieval needs"""
     try:
         logger = state["logger"]
@@ -643,7 +685,7 @@ async def analyze_query_node(state: ChatState, writer: StreamWriter) -> ChatStat
         perf = get_performance_tracker(state)
         perf.start_step("analyze_query_node")
 
-        writer({"event": "status", "data": {"status": "analyzing", "message": "🧠 Analyzing your request..."}})
+        safe_stream_write(writer, {"event": "status", "data": {"status": "analyzing", "message": "🧠 Analyzing your request..."}}, config)
 
         query = state["query"].lower()
         previous_conversations = state.get("previous_conversations", [])
@@ -750,7 +792,7 @@ async def analyze_query_node(state: ChatState, writer: StreamWriter) -> ChatStat
 # PHASE 2: SMART RETRIEVAL
 # ============================================================================
 
-async def conditional_retrieve_node(state: ChatState, writer: StreamWriter) -> ChatState:
+async def conditional_retrieve_node(state: ChatState, config: RunnableConfig, writer: StreamWriter) -> ChatState:
     """Smart retrieval based on query analysis"""
     try:
         logger = state["logger"]
@@ -766,7 +808,7 @@ async def conditional_retrieve_node(state: ChatState, writer: StreamWriter) -> C
         return state
 
         logger.info("📚 Gathering knowledge sources...")
-        writer({"event": "status", "data": {"status": "retrieving", "message": "📚 Gathering knowledge sources..."}})
+        safe_stream_write(writer, {"event": "status", "data": {"status": "retrieving", "message": "📚 Gathering knowledge sources..."}}, config)
 
         retrieval_service = state["retrieval_service"]
         arango_service = state["arango_service"]
@@ -857,7 +899,7 @@ async def get_user_info_node(state: ChatState) -> ChatState:
 # PHASE 4: ENHANCED AGENT PROMPT PREPARATION
 # ============================================================================
 
-def prepare_agent_prompt_node(state: ChatState, writer: StreamWriter) -> ChatState:
+def prepare_agent_prompt_node(state: ChatState, config: RunnableConfig, writer: StreamWriter) -> ChatState:
     """Prepare enhanced agent prompt with dual-mode formatting instructions and user context"""
     try:
         logger = state["logger"]
@@ -872,7 +914,7 @@ def prepare_agent_prompt_node(state: ChatState, writer: StreamWriter) -> ChatSta
 
         if is_complex:
             logger.info(f"🔍 Complex workflow detected: {', '.join(complexity_types)}")
-            writer({"event": "status", "data": {"status": "thinking", "message": "Planning complex workflow..."}})
+            safe_stream_write(writer, {"event": "status", "data": {"status": "thinking", "message": "Planning complex workflow..."}}, config)
 
         # Determine expected output mode
         if has_internal_knowledge:
@@ -925,7 +967,7 @@ def prepare_agent_prompt_node(state: ChatState, writer: StreamWriter) -> ChatSta
 # PHASE 5: ENHANCED AGENT WITH DUAL-MODE AWARENESS
 # ============================================================================
 
-async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
+async def agent_node(state: ChatState, config: RunnableConfig, writer: StreamWriter) -> ChatState:
     """Agent with reasoning and dual-mode output capabilities"""
     try:
         logger = state["logger"]
@@ -1033,18 +1075,18 @@ async def agent_node(state: ChatState, writer: StreamWriter) -> ChatState:
 
         # Status messages
         if iteration_count == 0 and is_complex:
-            writer({"event": "status", "data": {"status": "planning", "message": "Creating execution plan..."}})
+            safe_stream_write(writer, {"event": "status", "data": {"status": "planning", "message": "Creating execution plan..."}}, config)
         elif iteration_count > 0:
             # Enhanced status with progress tracking
             recent_tools = [result.get("tool_name", "unknown") for result in state.get("all_tool_results", [])[-3:]]
             unique_recent = set(recent_tools)
 
             if len(unique_recent) == 1 and len(recent_tools) >= PING_REPEAT_MIN:
-                writer({"event": "status", "data": {"status": "adapting", "message": f"⚠️ Avoiding repetition - adapting plan (step {iteration_count + 1})..."}})
+                safe_stream_write(writer, {"event": "status", "data": {"status": "adapting", "message": f"⚠️ Avoiding repetition - adapting plan (step {iteration_count + 1})..."}}, config)
             else:
-                writer({"event": "status", "data": {"status": "adapting", "message": f"Adapting plan (step {iteration_count + 1})..."}})
+                safe_stream_write(writer, {"event": "status", "data": {"status": "adapting", "message": f"Adapting plan (step {iteration_count + 1})..."}}, config)
         else:
-            writer({"event": "status", "data": {"status": "thinking", "message": "Processing your request..."}})
+            safe_stream_write(writer, {"event": "status", "data": {"status": "thinking", "message": "Processing your request..."}}, config)
 
         # Get tools (using simplified tool system)
         from app.modules.agents.qna.tool_system import get_agent_tools
@@ -1329,7 +1371,7 @@ def _detect_tool_success(result: object) -> bool:
     return True
 
 
-async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatState:
+async def tool_execution_node(state: ChatState, config: RunnableConfig, writer: StreamWriter) -> ChatState:
     """Execute tools with planning context"""
     try:
         logger = state["logger"]
@@ -1339,7 +1381,7 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
         perf.start_step("tool_execution_node")
 
         iteration = len(state.get("all_tool_results", []))
-        writer({"event": "status", "data": {"status": "executing", "message": f" Executing tools (step {iteration + 1})..."}})
+        safe_stream_write(writer, {"event": "status", "data": {"status": "executing", "message": f" Executing tools (step {iteration + 1})..."}}, config)
 
         if state.get("error"):
             perf.finish_step(error=True)
@@ -1426,7 +1468,10 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
 
         # Create execution tasks for parallel execution
         async def execute_single_tool(tool_call: Any) -> dict[str, Any]:  # noqa: ANN401
-            """Execute a single tool with async support and timing."""
+            """
+            Execute a single tool with async support and timing.
+            Uses standard asyncio patterns to preserve StreamWriter context.
+            """
             # ⚡ Track individual tool execution time
             tool_start_time = time.time()
 
@@ -1471,59 +1516,28 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
                     logger.info(f"▶️ Executing: {tool_name}")
                     logger.debug(f"  Args: {tool_args}")
 
-                    # PHASE 2: Execute tool properly (handle sync/async correctly)
-                    # ⚡ FIX: Run sync tools in executor with event loop support
-                    if hasattr(tool, '_run'):
-                        # Tool is sync - run in executor to avoid blocking main event loop
-                        # Create wrapper that sets up event loop in thread
-                        def run_with_loop() -> Any:  # noqa: ANN401
-                            import asyncio
-                            # Always create a fresh event loop for this thread
-                            loop = asyncio.new_event_loop()
-                            asyncio.set_event_loop(loop)
-                            try:
-                                # If tool._run is a coroutine function, run it with the loop
-                                result = tool._run(**tool_args)
-                                if asyncio.iscoroutine(result):
-                                    return loop.run_until_complete(result)
-                                return result
-                            finally:
-                                # Clean up the loop to prevent resource leaks
-                                try:
-                                    loop.close()
-                                except Exception:
-                                    pass
-
-                        import asyncio
-                        main_loop = asyncio.get_event_loop()
-                        result = await main_loop.run_in_executor(None, run_with_loop)
-                    elif hasattr(tool, 'arun'):
-                        # Tool supports true async - use it directly!
-                        # ⚡ FIX: LangChain arun() expects dict, not **kwargs
+                    # STANDARD EXECUTION PATTERN - Preserves StreamWriter context
+                    # Check if tool has native async implementation
+                    if hasattr(tool, 'arun'):
+                        # Native Async: Await directly
+                        # This preserves context automatically
                         result = await tool.arun(tool_args)
+                    elif hasattr(tool, '_run'):
+                        # Native Sync: Offload to thread pool properly
+                        # functools.partial passes arguments without wrappers
+                        # run_in_executor keeps us connected to the main program flow
+                        loop = asyncio.get_running_loop()
+                        result = await loop.run_in_executor(
+                            None,
+                            functools.partial(tool._run, **tool_args)
+                        )
                     else:
                         # Fallback to sync run
-                        def run_with_loop() -> Any:  # noqa: ANN401
-                            import asyncio
-                            # Always create a fresh event loop for this thread
-                            loop = asyncio.new_event_loop()
-                            asyncio.set_event_loop(loop)
-                            try:
-                                # If tool.run is a coroutine function, run it with the loop
-                                result = tool.run(**tool_args)
-                                if asyncio.iscoroutine(result):
-                                    return loop.run_until_complete(result)
-                                return result
-                            finally:
-                                # Clean up the loop to prevent resource leaks
-                                try:
-                                    loop.close()
-                                except Exception:
-                                    pass
-
-                        import asyncio
-                        main_loop = asyncio.get_event_loop()
-                        result = await main_loop.run_in_executor(None, run_with_loop)
+                        loop = asyncio.get_running_loop()
+                        result = await loop.run_in_executor(
+                            None,
+                            functools.partial(tool.run, **tool_args)
+                        )
 
                     # Log result preview
                     result_preview = str(result)[:RESULT_PREVIEW_LENGTH] + "..." if len(str(result)) > RESULT_PREVIEW_LENGTH else str(result)
@@ -1622,7 +1636,10 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
                     logger.error(f"❌ {tool_name} failed with error in {tool_duration_ms:.0f}ms")
                     logger.error(f"Error details: {str(result)[:500]}")
 
-                return (tool_result, tool_message)
+                return {
+                    "tool_result": tool_result,
+                    "tool_message": tool_message
+                }
 
             except Exception as e:
                 error_result = f"Error executing {tool_name}: {str(e)}"
@@ -1642,17 +1659,21 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
                 # Errors are usually short, keep them complete for debugging
                 tool_message = ToolMessage(content=error_result, tool_call_id=tool_id)
 
-                return (tool_result, tool_message)
+                return {
+                    "tool_result": tool_result,
+                    "tool_message": tool_message
+                }
 
         # PHASE 3: Execute all tools in parallel using asyncio.gather
+        # Since we removed the custom event loops, this is now safe
         import asyncio
         execution_start = asyncio.get_event_loop().time()
 
         logger.info(f"⚡ Executing {len(tool_calls)} tool(s) in parallel...")
 
         try:
-            # Execute all tools concurrently
-            execution_results = await asyncio.gather(
+            # Execute all tools in parallel
+            raw_results = await asyncio.gather(
                 *[execute_single_tool(tc) for tc in tool_calls],
                 return_exceptions=True
             )
@@ -1663,14 +1684,13 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
             logger.info(f"✅ Completed {len(tool_calls)} tool(s) in {execution_time_ms:.0f}ms (parallel execution)")
 
             # Process results
-            for result in execution_results:
-                if isinstance(result, Exception):
-                    logger.error(f"Tool execution exception: {result}")
+            for r in raw_results:
+                if isinstance(r, Exception):
+                    logger.error(f"Execution panic: {r}")
                     continue
 
-                tool_result, tool_message = result
-                tool_results.append(tool_result)
-                tool_messages.append(tool_message)
+                tool_results.append(r["tool_result"])
+                tool_messages.append(r["tool_message"])
 
         except Exception as e:
             logger.error(f"Error in parallel tool execution: {e}")
@@ -1728,10 +1748,7 @@ async def tool_execution_node(state: ChatState, writer: StreamWriter) -> ChatSta
 # ============================================================================
 
 # 7. Fixed Final Response Node - Correct Streaming Format
-async def final_response_node(
-    state: ChatState,
-    writer: StreamWriter
-) -> ChatState:
+async def final_response_node(state: ChatState, config: RunnableConfig, writer: StreamWriter) -> ChatState:
     """Generate final response with correct streaming format"""
     try:
         logger = state["logger"]
@@ -1741,7 +1758,7 @@ async def final_response_node(
         perf.start_step("final_response_node")
         llm = state["llm"]
 
-        writer({"event": "status", "data": {"status": "finalizing", "message": "Generating final response..."}})
+        safe_stream_write(writer, {"event": "status", "data": {"status": "finalizing", "message": "Generating final response..."}}, config)
 
         if state.get("error"):
             error = state["error"]
@@ -1759,10 +1776,10 @@ async def final_response_node(
             }
 
             # Stream the error message
-            writer({"event": "answer_chunk", "data": {"chunk": error_content}})
+            safe_stream_write(writer, {"event": "answer_chunk", "data": {"chunk": error_content}}, config)
 
             # Send complete event with error response
-            writer({"event": "complete", "data": error_response})
+            safe_stream_write(writer, {"event": "complete", "data": error_response}, config)
 
             # Store in state
             state["response"] = error_content
@@ -1781,7 +1798,7 @@ async def final_response_node(
         if use_existing_response:
             logger.debug(f"Using existing response: {len(str(existing_response))} chars")
 
-            writer({"event": "status", "data": {"status": "delivering", "message": "Delivering response..."}})
+            safe_stream_write(writer, {"event": "status", "data": {"status": "delivering", "message": "Delivering response..."}}, config)
 
             # Normalize response format (handles markdown code blocks)
             final_content = _normalize_response_format(existing_response)
@@ -1837,14 +1854,14 @@ async def final_response_node(
                 else:
                     accumulated = chunk_text
 
-                writer({
+                safe_stream_write(writer, {
                     "event": "answer_chunk",
                     "data": {
                         "chunk": chunk_text,
                         "accumulated": accumulated,
                         "citations": citations  # Include citations in each chunk
                     }
-                })
+                }, config)
                 await asyncio.sleep(STREAMING_CHUNK_DELAY)
 
             # Send complete structure only at the end (properly formatted)
@@ -1858,7 +1875,7 @@ async def final_response_node(
                 "workflowSteps": final_content.get("workflowSteps", [])
             }
 
-            writer({"event": "complete", "data": completion_data})
+            safe_stream_write(writer, {"event": "complete", "data": completion_data}, config)
 
             state["response"] = answer_text  # Store just the answer text
             state["completion_data"] = completion_data
@@ -2052,7 +2069,7 @@ async def final_response_node(
                 logger.warning(f"⚠️ final_results is not a list: {type(final_results)}")
                 final_results = []
 
-        writer({"event": "status", "data": {"status": "generating", "message": "Generating response..."}})
+        safe_stream_write(writer, {"event": "status", "data": {"status": "generating", "message": "Generating response..."}}, config)
 
         # Use stream_llm_response for new generation
         final_content = None
@@ -2068,7 +2085,7 @@ async def final_response_node(
 
                 # Forward streaming events as-is
                 # stream_llm_response already sends answer_chunk and complete events correctly
-                writer({"event": event_type, "data": event_data})
+                safe_stream_write(writer, {"event": event_type, "data": event_data}, config)
 
                 # Track the final complete data
                 if event_type == "complete":
@@ -2094,7 +2111,7 @@ async def final_response_node(
                 chunk_size = 100
                 for i in range(0, len(fallback_content), chunk_size):
                     chunk = fallback_content[i:i + chunk_size]
-                    writer({"event": "answer_chunk", "data": {"chunk": chunk}})
+                    safe_stream_write(writer, {"event": "answer_chunk", "data": {"chunk": chunk}}, config)
                     await asyncio.sleep(STREAMING_FALLBACK_DELAY)
 
                 # Create completion data with proper format
@@ -2118,7 +2135,7 @@ async def final_response_node(
                     "chunkIndexes": []
                 }
 
-                writer({"event": "complete", "data": completion_data})
+                safe_stream_write(writer, {"event": "complete", "data": completion_data}, config)
                 final_content = completion_data
 
             except Exception as fallback_error:
@@ -2132,8 +2149,8 @@ async def final_response_node(
                     "answerMatchType": "Error",
                     "chunkIndexes": []
                 }
-                writer({"event": "answer_chunk", "data": {"chunk": error_content}})
-                writer({"event": "complete", "data": error_response})
+                safe_stream_write(writer, {"event": "answer_chunk", "data": {"chunk": error_content}}, config)
+                safe_stream_write(writer, {"event": "complete", "data": error_response}, config)
                 final_content = error_response
 
         # Store final response - just the answer text
@@ -2170,7 +2187,7 @@ async def final_response_node(
         perf.finish_step(error=True)
         perf.log_summary(logger)  # Still log performance even on error
         state["error"] = {"status_code": 400, "detail": str(e)}
-        writer({"event": "error", "data": {"error": str(e)}})
+        safe_stream_write(writer, {"event": "error", "data": {"error": str(e)}}, config)
         return state
 
 

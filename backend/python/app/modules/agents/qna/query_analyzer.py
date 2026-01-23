@@ -14,6 +14,8 @@ import logging
 import re
 from typing import Dict, List, Tuple
 
+from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.types import StreamWriter
 
 from app.modules.agents.qna.chat_state import ChatState
@@ -214,7 +216,7 @@ Return ONLY valid JSON (no markdown, no code blocks):
         return (None, None, None, [], f"LLM error: {str(e)}")
 
 
-async def analyze_query_node(state: ChatState, writer: StreamWriter) -> ChatState:
+async def analyze_query_node(state: ChatState, config: RunnableConfig, writer: StreamWriter) -> ChatState:
     """
     Analyze query to determine complexity, follow-up status, and data needs.
 
@@ -228,7 +230,8 @@ async def analyze_query_node(state: ChatState, writer: StreamWriter) -> ChatStat
 
     Args:
         state: Current chat state
-        writer: Stream writer for status updates
+        config: Runnable config for context preservation
+        writer: StreamWriter for status updates
 
     Returns:
         Updated chat state with query_analysis
@@ -240,13 +243,24 @@ async def analyze_query_node(state: ChatState, writer: StreamWriter) -> ChatStat
         perf = get_performance_tracker(state)
         perf.start_step("analyze_query_node")
 
-        writer({
-            "event": "status",
-            "data": {
-                "status": "analyzing",
-                "message": "Analyzing your request..."
-            }
-        })
+        # Stream status update - use standard context restoration
+        if writer:
+            try:
+                # Try writing normally
+                writer({"event": "status", "data": {"status": "analyzing", "message": "🧠 Analyzing your request..."}})
+            except RuntimeError as e:
+                # If context is lost, explicitly restore it using the node's config
+                if "get_config" in str(e) and config:
+                    # Set the context variable temporarily for this operation
+                    token = var_child_runnable_config.set(config)
+                    try:
+                        writer({"event": "status", "data": {"status": "analyzing", "message": "🧠 Analyzing your request..."}})
+                    finally:
+                        var_child_runnable_config.reset(token)
+                else:
+                    logger_instance.warning(f"Stream write failed: {e}")
+            except Exception as e:
+                logger_instance.warning(f"Stream write failed: {e}")
 
         query = state["query"]
         previous_conversations = state.get("previous_conversations", [])
