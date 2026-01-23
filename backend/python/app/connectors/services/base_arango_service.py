@@ -3687,9 +3687,18 @@ class BaseArangoService:
                         "connector_id": connector_id
                     }
                 else:
+                    # No records found to delete - this is valid if connector had no data
+                    self.logger.info(
+                        f"Connector instance {connector_id} had no records to delete. "
+                        f"This is normal if the connector was empty."
+                    )
                     return {
                         "success": True,
                         "deleted_records_count": 0,
+                        "deleted_record_groups_count": 0,
+                        "deleted_roles_count": 0,
+                        "deleted_groups_count": 0,
+                        "deleted_drives_count": 0,
                         "virtual_record_ids": [],
                         "connector_id": connector_id
                     }

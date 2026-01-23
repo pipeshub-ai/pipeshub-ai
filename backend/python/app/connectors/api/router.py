@@ -2199,6 +2199,49 @@ async def reindex_record_group(
             detail=f"Internal server error while reindexing record group: {str(e)}"
         )
 
+def _validate_connector_deletion_permissions(
+    instance: Dict[str, Any],
+    user_id: str,
+    is_admin: bool,
+    logger
+) -> None:
+    """
+    Validate that the user has permission to delete the connector instance.
+
+    Args:
+        instance: Connector instance dictionary
+        user_id: ID of the user attempting deletion
+        is_admin: Whether the user is an administrator
+        logger: Logger instance
+
+    Raises:
+        HTTPException: 403 if user doesn't have permission to delete
+    """
+    # For team connectors, only admins can delete
+    if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+        logger.error("Only administrators can delete team connectors")
+        raise HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value,
+            detail="Only administrators can delete team connectors"
+        )
+
+    # For personal connectors, only the creator can delete
+    if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+        logger.error("Only the creator can delete this personal connector")
+        raise HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value,
+            detail="Only the creator can delete this personal connector"
+        )
+
+    # For all connectors, creator or admin can delete
+    if instance.get("createdBy") != user_id and not is_admin:
+        logger.error("Only the creator or an administrator can delete this connector")
+        raise HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value,
+            detail="Only the creator or an administrator can delete this connector"
+        )
+
+
 async def check_beta_connector_access(
     connector_type: str,
     request: Request
@@ -6101,35 +6144,13 @@ async def delete_connector_instance(
                 detail=f"Connector instance {connector_id} not found or access denied"
             )
 
-        connector_type = instance.get("type", "").upper()
+        connector_type = instance.get("type", "")
 
         # Check beta connector access
         await check_beta_connector_access(connector_type, request)
 
         # 3. Check permissions - only creator or admin can delete
-        # For team connectors, only admins can delete
-        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
-            logger.error("Only administrators can delete team connectors")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only administrators can delete team connectors"
-            )
-
-        # For personal connectors, only the creator can delete
-        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
-            logger.error("Only the creator can delete this personal connector")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only the creator can delete this personal connector"
-            )
-
-        # For all connectors, creator or admin can delete
-        if instance.get("createdBy") != user_id and not is_admin:
-            logger.error("Only the creator or an administrator can delete this connector")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only the creator or an administrator can delete this connector"
-            )
+        _validate_connector_deletion_permissions(instance, user_id, is_admin, logger)
 
         logger.info(f"🗑️ Starting deletion of connector instance {connector_id} by user {user_id}")
 
@@ -6141,7 +6162,7 @@ async def delete_connector_instance(
                 "appGroup": instance.get("appGroup"),
                 "appGroupId": instance.get("appGroupId"),
                 "connectorId": connector_id,
-                "apps": [connector_type.replace(" ", "").lower()],
+                "apps": [connector_type.replace(" ", "").lower()],  # Normalize for appDisabled event
                 "scope": instance.get("scope")
             }
             disable_message = {
@@ -6183,12 +6204,9 @@ async def delete_connector_instance(
                     "timestamp": get_epoch_timestamp_in_ms()
                 }
 
-                # Use the kafka_service from arango_service if available
-                if arango_service.kafka_service:
-                    await arango_service.kafka_service.publish_event("record-events", bulk_delete_message)
-                    logger.info(f"✅ Published bulk delete event for {len(virtual_record_ids)} records")
-                else:
-                    logger.warning("Kafka service not available, skipping bulk delete event")
+                # Publish bulk delete event using messaging producer for consistency
+                await producer.send_message(topic="record-events", message=bulk_delete_message)
+                logger.info(f"✅ Published bulk delete event for {len(virtual_record_ids)} records")
             except Exception as e:
                 logger.warning(f"Failed to publish bulk delete event: {e}")
 
@@ -6224,7 +6242,7 @@ async def delete_connector_instance(
         logger.error(f"❌ Failed to delete connector instance {connector_id}: {e}", exc_info=True)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail=f"Failed to delete connector instance: {str(e)}"
+            detail="Failed to delete connector instance. Please try again."
         )
 
 
