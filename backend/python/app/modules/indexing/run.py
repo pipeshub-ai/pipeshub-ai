@@ -6,10 +6,7 @@ from langchain_experimental.text_splitter import SemanticChunker
 from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import (
-    CollectionNames,
-    ProgressStatus,
-)
+from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
     ChunkingError,
@@ -678,7 +675,6 @@ class IndexingPipeline:
                     return
 
                 ids = [point.id for point in result[0]] #type: ignore
-                self.logger.info(f"🎯 Filter: {filter_dict}")
 
                 try:
                     await self.get_embedding_model_instance()
@@ -711,6 +707,99 @@ class IndexingPipeline:
                 record_id=record_id,
                 details={"error": str(e)},
             )
+
+    async def bulk_delete_embeddings(self, virtual_record_ids: List[str]) -> Dict[str, Any]:
+        """
+        Bulk delete embeddings for multiple records in a single operation.
+        Uses Qdrant's filter-based deletion for efficiency.
+
+        This is used when deleting a connector instance and all its records.
+
+        Args:
+            virtual_record_ids: List of virtual record IDs to delete embeddings for
+
+        Returns:
+            Dict with deletion statistics:
+                - deleted_count: Number of embedding points deleted
+                - virtual_record_ids_processed: Number of virtual record IDs processed
+                - success: Boolean indicating success
+
+        Raises:
+            EmbeddingDeletionError: If there's an error during the deletion process
+        """
+        try:
+            if not virtual_record_ids:
+                self.logger.info("No virtual record IDs provided for bulk deletion")
+                return {"deleted_count": 0, "virtual_record_ids_processed": 0, "success": True}
+
+            self.logger.info(f"🗑️ Starting bulk deletion of embeddings for {len(virtual_record_ids)} records")
+
+            # Delete from virtualRecordToDocIdMapping collection in batch
+            try:
+                await self.arango_service.delete_nodes(
+                    keys=virtual_record_ids,
+                    collection=CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
+                )
+                self.logger.info(f"✅ Deleted {len(virtual_record_ids)} entries from virtualRecordToDocIdMapping")
+            except Exception as e:
+                # Log but continue - the primary goal is Qdrant cleanup
+                self.logger.warning(f"Failed to delete from virtualRecordToDocIdMapping: {e}")
+
+            # Initialize embedding model to set up vector store
+            try:
+                await self.get_embedding_model_instance()
+            except Exception as e:
+                self.logger.warning(f"Failed to get embedding model instance: {e}")
+                # We can still try Qdrant deletion directly
+
+            total_deleted = 0
+
+            # Process in batches to avoid filter size limits
+            batch_size = 100
+            for i in range(0, len(virtual_record_ids), batch_size):
+                batch = virtual_record_ids[i:i + batch_size]
+
+                try:
+                    # Build filter for batch - use "should" for OR logic
+                    # should expects a dict with field name as key and list of values
+                    filter_dict = await self.vector_db_service.filter_collection(
+                        should={"virtualRecordId": batch}
+                    )
+
+                    # Scroll to get all point IDs matching the filter
+                    result = await self.vector_db_service.scroll(
+                        collection_name=self.collection_name,
+                        scroll_filter=filter_dict,
+                        limit=1000000,  # High limit for bulk deletion
+                    )
+
+                    if result and result[0]:
+                        ids = [point.id for point in result[0]]
+                        if ids:
+                            await self.vector_store.adelete(ids=ids)
+                            total_deleted += len(ids)
+                            self.logger.info(f"✅ Deleted {len(ids)} embeddings in batch {i // batch_size + 1}")
+
+                except Exception as e:
+                    self.logger.warning(f"Failed to delete batch {i // batch_size + 1}: {e}")
+                    continue
+
+            self.logger.info(f"✅ Bulk deletion complete: {total_deleted} embeddings deleted for {len(virtual_record_ids)} virtual record IDs")
+
+            return {
+                "deleted_count": total_deleted,
+                "virtual_record_ids_processed": len(virtual_record_ids),
+                "success": True
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to bulk delete embeddings: {str(e)}")
+            raise EmbeddingDeletionError(
+                f"Bulk embedding deletion failed: {str(e)}",
+                record_id="bulk_delete",
+                details={"error": str(e), "count": len(virtual_record_ids) if virtual_record_ids else 0}
+            )
+
 
     async def index_documents(
         self, sentences: List[Dict[str, Any]],record_id: str

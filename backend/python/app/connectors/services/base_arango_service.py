@@ -3191,6 +3191,524 @@ class BaseArangoService:
                 "reason": f"Internal error: {str(e)}"
             }
 
+    async def delete_connector_instance(self, connector_id: str, org_id: str) -> Dict:
+        """
+        Delete a connector instance and ALL its related data in a single transaction.
+
+        This method performs a comprehensive cleanup of:
+        - All records with this connectorId
+        - All type-specific records (files, mails, webpages, comments, tickets)
+        - All record groups, roles, groups, drives, syncPoints
+        - All edges (permissions, relations, classifications)
+        - The connector app document itself
+
+        Classification nodes (departments, categories, topics, languages) are NOT deleted
+        as they are shared resources.
+        Users are NOT deleted - only userAppRelation edges are removed.
+
+        Args:
+            connector_id: The connector instance ID (_key in apps collection)
+            org_id: The organization ID for validation
+
+        Returns:
+            Dict with:
+                - success: bool
+                - deleted_records_count: int
+                - virtual_record_ids: List[str] - for Qdrant cleanup
+                - error: str (if failed)
+        """
+        try:
+            self.logger.info(f"🗑️ Starting connector instance deletion for {connector_id}")
+
+            # Verify connector exists
+            connector = await self.get_document(connector_id, CollectionNames.APPS.value)
+            if not connector:
+                return {
+                    "success": False,
+                    "error": f"Connector instance {connector_id} not found"
+                }
+
+            # Define all collections that need write access
+            write_collections = [
+                # Node collections
+                CollectionNames.APPS.value,
+                CollectionNames.RECORDS.value,
+                CollectionNames.FILES.value,
+                CollectionNames.MAILS.value,
+                CollectionNames.WEBPAGES.value,
+                CollectionNames.COMMENTS.value,
+                CollectionNames.TICKETS.value,
+                CollectionNames.RECORD_GROUPS.value,
+                CollectionNames.ROLES.value,
+                CollectionNames.GROUPS.value,
+                CollectionNames.DRIVES.value,
+                CollectionNames.SYNC_POINTS.value,
+                CollectionNames.BLOCKS.value,
+                CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
+                # Edge collections
+                CollectionNames.BELONGS_TO.value,
+                CollectionNames.INHERIT_PERMISSIONS.value,
+                CollectionNames.IS_OF_TYPE.value,
+                CollectionNames.RECORD_RELATIONS.value,
+                CollectionNames.TICKET_RELATIONS.value,
+                CollectionNames.PERMISSION.value,
+                CollectionNames.USER_APP_RELATION.value,
+                CollectionNames.ORG_APP_RELATION.value,
+                CollectionNames.USER_DRIVE_RELATION.value,
+                CollectionNames.BELONGS_TO_RECORD_GROUP.value,
+                CollectionNames.BELONGS_TO_DEPARTMENT.value,
+                CollectionNames.BELONGS_TO_CATEGORY.value,
+                CollectionNames.BELONGS_TO_TOPIC.value,
+                CollectionNames.BELONGS_TO_LANGUAGE.value,
+            ]
+
+            # Build the comprehensive deletion AQL query
+            deletion_query = """
+            // Step 1: Collect all records for this connector
+            LET connector_records = (
+                FOR r IN @@records
+                    FILTER r.connectorId == @connector_id
+                    RETURN { _key: r._key, virtualRecordId: r.virtualRecordId }
+            )
+
+            // Step 2: Collect all record groups for this connector
+            LET connector_record_groups = (
+                FOR rg IN @@recordGroups
+                    FILTER rg.connectorId == @connector_id
+                    RETURN rg._key
+            )
+
+            // Step 3: Collect roles and groups for this connector
+            LET connector_roles = (
+                FOR role IN @@roles
+                    FILTER role.connectorId == @connector_id
+                    RETURN role._key
+            )
+
+            LET connector_groups = (
+                FOR grp IN @@groups
+                    FILTER grp.connectorId == @connector_id
+                    RETURN grp._key
+            )
+
+            // Step 4: Collect drives for this connector
+            LET connector_drives = (
+                FOR drive IN @@drives
+                    FILTER drive.connectorId == @connector_id
+                    RETURN drive._key
+            )
+
+            // Step 5: Delete classification edges (NOT the nodes - they are shared)
+            LET deleted_dept_edges = (
+                FOR rec IN connector_records
+                    FOR edge IN @@belongsToDepartment
+                        FILTER edge._from == CONCAT('records/', rec._key)
+                        REMOVE edge IN @@belongsToDepartment
+                        RETURN 1
+            )
+
+            LET deleted_cat_edges = (
+                FOR rec IN connector_records
+                    FOR edge IN @@belongsToCategory
+                        FILTER edge._from == CONCAT('records/', rec._key)
+                        REMOVE edge IN @@belongsToCategory
+                        RETURN 1
+            )
+
+            LET deleted_topic_edges = (
+                FOR rec IN connector_records
+                    FOR edge IN @@belongsToTopic
+                        FILTER edge._from == CONCAT('records/', rec._key)
+                        REMOVE edge IN @@belongsToTopic
+                        RETURN 1
+            )
+
+            LET deleted_lang_edges = (
+                FOR rec IN connector_records
+                    FOR edge IN @@belongsToLanguage
+                        FILTER edge._from == CONCAT('records/', rec._key)
+                        REMOVE edge IN @@belongsToLanguage
+                        RETURN 1
+            )
+
+            // Step 6: Delete isOfType edges and type-specific documents
+            // First, collect all type-specific document keys by collection type
+            LET file_keys = (
+                FOR rec IN connector_records
+                    FOR edge IN @@isOfType
+                        FILTER edge._from == CONCAT('records/', rec._key)
+                        LET target = PARSE_IDENTIFIER(edge._to)
+                        FILTER target.collection == 'files'
+                        RETURN target.key
+            )
+
+            LET mail_keys = (
+                FOR rec IN connector_records
+                    FOR edge IN @@isOfType
+                        FILTER edge._from == CONCAT('records/', rec._key)
+                        LET target = PARSE_IDENTIFIER(edge._to)
+                        FILTER target.collection == 'mails'
+                        RETURN target.key
+            )
+
+            LET webpage_keys = (
+                FOR rec IN connector_records
+                    FOR edge IN @@isOfType
+                        FILTER edge._from == CONCAT('records/', rec._key)
+                        LET target = PARSE_IDENTIFIER(edge._to)
+                        FILTER target.collection == 'webpages'
+                        RETURN target.key
+            )
+
+            LET comment_keys = (
+                FOR rec IN connector_records
+                    FOR edge IN @@isOfType
+                        FILTER edge._from == CONCAT('records/', rec._key)
+                        LET target = PARSE_IDENTIFIER(edge._to)
+                        FILTER target.collection == 'comments'
+                        RETURN target.key
+            )
+
+            LET ticket_keys = (
+                FOR rec IN connector_records
+                    FOR edge IN @@isOfType
+                        FILTER edge._from == CONCAT('records/', rec._key)
+                        LET target = PARSE_IDENTIFIER(edge._to)
+                        FILTER target.collection == 'tickets'
+                        RETURN target.key
+            )
+
+            // Delete type-specific documents
+            LET deleted_files = (
+                FOR key IN file_keys
+                    REMOVE key IN @@files OPTIONS { ignoreErrors: true }
+                    RETURN 1
+            )
+
+            LET deleted_mails = (
+                FOR key IN mail_keys
+                    REMOVE key IN @@mails OPTIONS { ignoreErrors: true }
+                    RETURN 1
+            )
+
+            LET deleted_webpages = (
+                FOR key IN webpage_keys
+                    REMOVE key IN @@webpages OPTIONS { ignoreErrors: true }
+                    RETURN 1
+            )
+
+            LET deleted_comments = (
+                FOR key IN comment_keys
+                    REMOVE key IN @@comments OPTIONS { ignoreErrors: true }
+                    RETURN 1
+            )
+
+            LET deleted_tickets = (
+                FOR key IN ticket_keys
+                    REMOVE key IN @@tickets OPTIONS { ignoreErrors: true }
+                    RETURN 1
+            )
+
+            // Delete isOfType edges
+            LET deleted_type_edges = (
+                FOR rec IN connector_records
+                    FOR edge IN @@isOfType
+                        FILTER edge._from == CONCAT('records/', rec._key)
+                        REMOVE edge IN @@isOfType
+                        RETURN 1
+            )
+
+            // Step 7-10: Build record source list first (used by multiple steps)
+            LET record_sources = (
+                FOR rec IN connector_records
+                    RETURN CONCAT('records/', rec._key)
+            )
+
+            // Step 7: Delete record relations (parent-child, attachments, etc.) in one pass
+            LET deleted_record_relations = (
+                FOR edge IN @@recordRelations
+                    FILTER edge._from IN record_sources OR edge._to IN record_sources
+                    REMOVE edge IN @@recordRelations
+                    RETURN 1
+            )
+
+            // Step 8: Delete ticket relations in one pass
+            LET deleted_ticket_relations = (
+                FOR edge IN @@ticketRelations
+                    FILTER edge._from IN record_sources OR edge._to IN record_sources
+                    REMOVE edge IN @@ticketRelations
+                    RETURN 1
+            )
+
+            // Step 9-10: Build all target/source lists needed for edge deletions
+            LET record_targets = (
+                FOR rec IN connector_records
+                    RETURN CONCAT('records/', rec._key)
+            )
+
+            LET record_group_targets = (
+                FOR rg_key IN connector_record_groups
+                    RETURN CONCAT('recordGroups/', rg_key)
+            )
+
+            LET role_sources = (
+                FOR role_key IN connector_roles
+                    RETURN CONCAT('roles/', role_key)
+            )
+
+            LET group_sources = (
+                FOR grp_key IN connector_groups
+                    RETURN CONCAT('groups/', grp_key)
+            )
+
+            LET group_targets = (
+                FOR grp_key IN connector_groups
+                    RETURN CONCAT('groups/', grp_key)
+            )
+
+            LET rg_sources_belongs_to = (
+                FOR rg_key IN connector_record_groups
+                    RETURN CONCAT('recordGroups/', rg_key)
+            )
+
+            // Step 9: Delete ALL belongsTo edges in a single step (FROM records, TO groups, FROM record groups)
+            LET deleted_belongs_to = (
+                FOR edge IN @@belongsTo
+                    FILTER edge._from IN record_sources OR
+                           edge._to IN group_targets OR
+                           edge._from IN rg_sources_belongs_to
+                    REMOVE edge IN @@belongsTo
+                    RETURN 1
+            )
+
+            // Delete all belongsToRecordGroup edges FROM records in one pass
+            LET deleted_belongs_to_rg = (
+                FOR edge IN @@belongsToRecordGroup
+                    FILTER edge._from IN record_sources
+                    REMOVE edge IN @@belongsToRecordGroup
+                    RETURN 1
+            )
+
+            // Step 11-15: Delete ALL permission edges in a single step to avoid "access after data-modification" error
+
+            // Delete all permission edges matching any condition in one pass
+            LET deleted_all_perms = (
+                FOR edge IN @@permission
+                    FILTER edge._to IN record_targets OR
+                           edge._to IN record_group_targets OR
+                           edge._from IN role_sources OR
+                           edge._from IN group_sources
+                    REMOVE edge IN @@permission
+                    RETURN 1
+            )
+
+            // Step 13: Delete ALL inheritPermissions edges in a single step
+            // Build source/target lists for record groups
+            LET rg_sources_targets = (
+                FOR rg_key IN connector_record_groups
+                    RETURN CONCAT('recordGroups/', rg_key)
+            )
+
+            // Delete all inheritPermissions edges in one pass
+            LET deleted_inherit_perms = (
+                FOR edge IN @@inheritPermissions
+                    FILTER edge._from IN rg_sources_targets OR edge._to IN rg_sources_targets OR
+                           edge._from IN record_sources OR edge._to IN record_sources
+                    REMOVE edge IN @@inheritPermissions
+                    RETURN 1
+            )
+
+            // Step 14: Delete roles (permission edges already deleted above)
+            LET deleted_roles = (
+                FOR role_key IN connector_roles
+                    REMOVE role_key IN @@roles
+                    RETURN 1
+            )
+
+            // Step 15: Delete groups (belongsTo and permission edges already deleted above)
+            LET deleted_groups = (
+                FOR grp_key IN connector_groups
+                    REMOVE grp_key IN @@groups
+                    RETURN 1
+            )
+
+            // Step 16: Delete userAppRelation edges (DON'T delete users)
+            LET deleted_user_app = (
+                FOR edge IN @@userAppRelation
+                    FILTER edge._to == CONCAT('apps/', @connector_id)
+                    REMOVE edge IN @@userAppRelation
+                    RETURN 1
+            )
+
+            // Step 17: Delete orgAppRelation edge
+            LET deleted_org_app = (
+                FOR edge IN @@orgAppRelation
+                    FILTER edge._to == CONCAT('apps/', @connector_id)
+                    REMOVE edge IN @@orgAppRelation
+                    RETURN 1
+            )
+
+            // Step 18: Delete userDriveRelation edges and drives
+            LET deleted_drive_edges = (
+                FOR drive_key IN connector_drives
+                    FOR edge IN @@userDriveRelation
+                        FILTER edge._to == CONCAT('drives/', drive_key)
+                        REMOVE edge IN @@userDriveRelation
+                        RETURN 1
+            )
+
+            LET deleted_drives = (
+                FOR drive_key IN connector_drives
+                    REMOVE drive_key IN @@drives
+                    RETURN 1
+            )
+
+            // Step 19: Delete syncPoints for this connector
+            LET deleted_sync_points = (
+                FOR sp IN @@syncPoints
+                    FILTER sp.connectorId == @connector_id
+                    REMOVE sp IN @@syncPoints
+                    RETURN 1
+            )
+
+            // Step 20: Delete blocks for this connector
+            LET deleted_blocks = (
+                FOR block IN @@blocks
+                    FILTER block.connectorId == @connector_id
+                    REMOVE block IN @@blocks
+                    RETURN 1
+            )
+
+            // Step 22: Delete record groups
+            LET deleted_record_groups = (
+                FOR rg_key IN connector_record_groups
+                    REMOVE rg_key IN @@recordGroups
+                    RETURN 1
+            )
+
+            // Step 23: Delete records
+            LET deleted_records = (
+                FOR rec IN connector_records
+                    REMOVE rec._key IN @@records
+                    RETURN 1
+            )
+
+            // Step 24: Delete virtualRecordToDocIdMapping entries
+            LET deleted_mappings = (
+                FOR rec IN connector_records
+                    FILTER rec.virtualRecordId != null
+                    REMOVE rec.virtualRecordId IN @@virtualRecordMapping OPTIONS { ignoreErrors: true }
+                    RETURN 1
+            )
+
+            // Step 25: Delete the app itself
+            LET deleted_app = (
+                REMOVE @connector_id IN @@apps
+                RETURN 1
+            )
+
+            // Return statistics and virtualRecordIds for Qdrant cleanup
+            RETURN {
+                deleted_record_count: LENGTH(connector_records),
+                deleted_record_group_count: LENGTH(connector_record_groups),
+                deleted_role_count: LENGTH(connector_roles),
+                deleted_group_count: LENGTH(connector_groups),
+                deleted_drive_count: LENGTH(connector_drives),
+                virtual_record_ids: connector_records[* FILTER CURRENT.virtualRecordId != null RETURN CURRENT.virtualRecordId]
+            }
+            """
+
+            bind_vars = {
+                "connector_id": connector_id,
+                "@records": CollectionNames.RECORDS.value,
+                "@recordGroups": CollectionNames.RECORD_GROUPS.value,
+                "@roles": CollectionNames.ROLES.value,
+                "@groups": CollectionNames.GROUPS.value,
+                "@drives": CollectionNames.DRIVES.value,
+                "@files": CollectionNames.FILES.value,
+                "@mails": CollectionNames.MAILS.value,
+                "@webpages": CollectionNames.WEBPAGES.value,
+                "@comments": CollectionNames.COMMENTS.value,
+                "@tickets": CollectionNames.TICKETS.value,
+                "@syncPoints": CollectionNames.SYNC_POINTS.value,
+                "@blocks": CollectionNames.BLOCKS.value,
+                "@apps": CollectionNames.APPS.value,
+                "@virtualRecordMapping": CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
+                "@belongsTo": CollectionNames.BELONGS_TO.value,
+                "@belongsToRecordGroup": CollectionNames.BELONGS_TO_RECORD_GROUP.value,
+                "@belongsToDepartment": CollectionNames.BELONGS_TO_DEPARTMENT.value,
+                "@belongsToCategory": CollectionNames.BELONGS_TO_CATEGORY.value,
+                "@belongsToTopic": CollectionNames.BELONGS_TO_TOPIC.value,
+                "@belongsToLanguage": CollectionNames.BELONGS_TO_LANGUAGE.value,
+                "@isOfType": CollectionNames.IS_OF_TYPE.value,
+                "@recordRelations": CollectionNames.RECORD_RELATIONS.value,
+                "@ticketRelations": CollectionNames.TICKET_RELATIONS.value,
+                "@permission": CollectionNames.PERMISSION.value,
+                "@inheritPermissions": CollectionNames.INHERIT_PERMISSIONS.value,
+                "@userAppRelation": CollectionNames.USER_APP_RELATION.value,
+                "@orgAppRelation": CollectionNames.ORG_APP_RELATION.value,
+                "@userDriveRelation": CollectionNames.USER_DRIVE_RELATION.value,
+            }
+
+            # Execute the deletion query in a transaction
+            transaction = self.db.begin_transaction(
+                read=write_collections,
+                write=write_collections,
+                exclusive=[],
+                allow_implicit=True,
+                lock_timeout=60000,  # 60 seconds timeout for large deletions
+            )
+
+            try:
+                cursor = transaction.aql.execute(deletion_query, bind_vars=bind_vars)
+                result = next(cursor, None)
+
+                # Commit the transaction
+                transaction.commit_transaction()
+
+                if result:
+                    self.logger.info(
+                        f"✅ Connector instance {connector_id} deleted successfully. "
+                        f"Records: {result.get('deleted_record_count', 0)}, "
+                        f"RecordGroups: {result.get('deleted_record_group_count', 0)}, "
+                        f"Roles: {result.get('deleted_role_count', 0)}, "
+                        f"Groups: {result.get('deleted_group_count', 0)}, "
+                        f"Drives: {result.get('deleted_drive_count', 0)}"
+                    )
+
+                    return {
+                        "success": True,
+                        "deleted_records_count": result.get("deleted_record_count", 0),
+                        "deleted_record_groups_count": result.get("deleted_record_group_count", 0),
+                        "deleted_roles_count": result.get("deleted_role_count", 0),
+                        "deleted_groups_count": result.get("deleted_group_count", 0),
+                        "deleted_drives_count": result.get("deleted_drive_count", 0),
+                        "virtual_record_ids": result.get("virtual_record_ids", []),
+                        "connector_id": connector_id
+                    }
+                else:
+                    return {
+                        "success": True,
+                        "deleted_records_count": 0,
+                        "virtual_record_ids": [],
+                        "connector_id": connector_id
+                    }
+
+            except Exception as tx_error:
+                # Abort the transaction on error
+                try:
+                    transaction.abort_transaction()
+                except Exception:
+                    pass
+                raise tx_error
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete connector instance {connector_id}: {str(e)}")
+            return {
+                "success": False,
+                "error": f"Failed to delete connector instance: {str(e)}"
+            }
+
     async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:
         """
         Delete a record by external ID

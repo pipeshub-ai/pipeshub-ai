@@ -36,6 +36,7 @@ from app.config.constants.arangodb import (
     AccountType,
     CollectionNames,
     Connectors,
+    EventTypes,
     MimeTypes,
     RecordRelations,
     RecordTypes,
@@ -4069,111 +4070,6 @@ async def update_connector_instance_config(
         )
 
 
-@router.delete("/api/v1/connectors/{connector_id}")
-async def delete_connector_instance(
-    connector_id: str,
-    request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
-) -> Dict[str, Any]:
-    """
-    Delete a connector instance and its configuration.
-
-    Args:
-        connector_id: Unique instance key
-        request: FastAPI request object
-        arango_service: Injected ArangoDB service
-
-    Returns:
-        Dictionary with success status
-
-    Raises:
-        HTTPException: 404 if instance not found
-    """
-    container = request.app.container
-    logger = container.logger()
-    connector_registry = request.app.state.connector_registry
-
-    try:
-        user_id = request.state.user.get("userId")
-        org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
-        if not user_id or not org_id:
-            logger.error(f"User not authenticated: {user_id} {org_id}")
-            raise HTTPException(
-                status_code=HttpStatusCode.UNAUTHORIZED.value,
-                detail="User not authenticated"
-            )
-        # Verify instance exists
-        instance = await connector_registry.get_connector_instance(
-            connector_id=connector_id,
-            user_id=user_id,
-            org_id=org_id,
-            is_admin=is_admin
-        )
-        if not instance:
-            logger.error(f"Connector instance {connector_id} not found or access denied")
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail=f"Connector instance {connector_id} not found or access denied"
-            )
-        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
-            logger.error("Only administrators can delete team connectors")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only administrators can delete team connectors"
-            )
-        if instance.get("createdBy") != user_id and not is_admin:
-            logger.error("Only the creator or an administrator can delete this connector")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only the creator or an administrator can delete this connector"
-            )
-        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
-            logger.error("Only the creator can delete this connector")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only the creator can delete this connector"
-            )
-
-        connector_type = instance.get("type", "")
-        await check_beta_connector_access(connector_type, request)
-
-        # Delete configuration from etcd
-        config_service = container.config_service()
-        config_path = _get_config_path_for_instance(connector_id)
-
-        try:
-            await config_service.delete_config(config_path)
-        except Exception as e:
-            logger.warning(f"Could not delete config for {connector_id}: {e}")
-
-        # Delete instance from database
-        await arango_service.delete_nodes(
-            [connector_id],
-            CollectionNames.APPS.value
-        )
-
-        await arango_service.delete_edge(
-            org_id,
-            connector_id,
-            CollectionNames.ORG_APP_RELATION.value
-        )
-
-        logger.info(f"Deleted connector instance {connector_id}")
-
-        return {
-            "success": True,
-            "message": f"Connector instance {connector_id} deleted successfully"
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting instance {connector_id}: {e}")
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail=f"Failed to delete connector instance: {str(e)}"
-        )
 
 
 @router.put("/api/v1/connectors/{connector_id}/name")
@@ -6137,6 +6033,198 @@ async def toggle_connector_instance(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to toggle connector instance {connector_id} {toggle_type}: {str(e)}"
+        )
+
+
+@router.delete("/api/v1/connectors/{connector_id}")
+async def delete_connector_instance(
+    connector_id: str,
+    request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service),
+) -> Dict[str, Any]:
+    """
+    Delete a connector instance and all its related data.
+
+    This is a destructive operation that:
+    1. Stops any active sync services for this connector
+    2. Deletes all records, record groups, roles, groups, drives for this connector
+    3. Deletes all edges (permissions, relations, classifications)
+    4. Publishes event to delete embeddings from Qdrant
+    5. Deletes the connector app itself
+    6. Cleans up connector credentials from configuration store
+
+    Classification nodes (departments, categories, topics, languages) are NOT deleted
+    as they are shared resources across connectors.
+    Users are NOT deleted - only userAppRelation edges are removed.
+
+    Args:
+        connector_id: Unique connector instance key
+        request: FastAPI request object
+        arango_service: Injected ArangoDB service
+
+    Returns:
+        Dictionary with deletion statistics
+
+    Raises:
+        HTTPException: 401 if not authenticated, 403 if not authorized,
+                      404 if connector not found, 500 for internal errors
+    """
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+
+    try:
+        # 1. Get and validate user context
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+
+        if not user_id or not org_id:
+            logger.error("User not authenticated for connector deletion")
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated"
+            )
+
+        # 2. Get and validate connector instance
+        instance = await connector_registry.get_connector_instance(
+            connector_id=connector_id,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin
+        )
+
+        if not instance:
+            logger.error(f"Connector instance {connector_id} not found or access denied")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector instance {connector_id} not found or access denied"
+            )
+
+        connector_type = instance.get("type", "").upper()
+
+        # Check beta connector access
+        await check_beta_connector_access(connector_type, request)
+
+        # 3. Check permissions - only creator or admin can delete
+        # For team connectors, only admins can delete
+        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+            logger.error("Only administrators can delete team connectors")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only administrators can delete team connectors"
+            )
+
+        # For personal connectors, only the creator can delete
+        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+            logger.error("Only the creator can delete this personal connector")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only the creator can delete this personal connector"
+            )
+
+        # For all connectors, creator or admin can delete
+        if instance.get("createdBy") != user_id and not is_admin:
+            logger.error("Only the creator or an administrator can delete this connector")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only the creator or an administrator can delete this connector"
+            )
+
+        logger.info(f"🗑️ Starting deletion of connector instance {connector_id} by user {user_id}")
+
+        # 4. Stop any active sync services for this connector (send appDisabled event)
+        try:
+            producer = container.messaging_producer
+            disable_payload = {
+                "orgId": org_id,
+                "appGroup": instance.get("appGroup"),
+                "appGroupId": instance.get("appGroupId"),
+                "connectorId": connector_id,
+                "apps": [connector_type.replace(" ", "").lower()],
+                "scope": instance.get("scope")
+            }
+            disable_message = {
+                "eventType": "appDisabled",
+                "payload": disable_payload,
+                "timestamp": get_epoch_timestamp_in_ms()
+            }
+            await producer.send_message(topic="entity-events", message=disable_message)
+            logger.info(f"✅ Sent appDisabled event for connector {connector_id}")
+        except Exception as e:
+            logger.warning(f"Failed to send appDisabled event: {e}")
+
+        # 5. Delete from ArangoDB (returns records for Qdrant cleanup)
+        deletion_result = await arango_service.delete_connector_instance(
+            connector_id=connector_id,
+            org_id=org_id
+        )
+
+        if not deletion_result.get("success"):
+            logger.error(f"Failed to delete connector data: {deletion_result.get('error')}")
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail=deletion_result.get("error", "Failed to delete connector data")
+            )
+
+        # 6. Publish BULK_DELETE_RECORDS event to Kafka for Qdrant cleanup
+        virtual_record_ids = deletion_result.get("virtual_record_ids", [])
+        if virtual_record_ids:
+            try:
+                bulk_delete_payload = {
+                    "orgId": org_id,
+                    "connectorId": connector_id,
+                    "virtualRecordIds": virtual_record_ids,
+                    "totalRecords": len(virtual_record_ids)
+                }
+                bulk_delete_message = {
+                    "eventType": EventTypes.BULK_DELETE_RECORDS.value,
+                    "payload": bulk_delete_payload,
+                    "timestamp": get_epoch_timestamp_in_ms()
+                }
+
+                # Use the kafka_service from arango_service if available
+                if arango_service.kafka_service:
+                    await arango_service.kafka_service.publish_event("record-events", bulk_delete_message)
+                    logger.info(f"✅ Published bulk delete event for {len(virtual_record_ids)} records")
+                else:
+                    logger.warning("Kafka service not available, skipping bulk delete event")
+            except Exception as e:
+                logger.warning(f"Failed to publish bulk delete event: {e}")
+
+        # 7. Clean up connector credentials from etcd/config store
+        try:
+            config_service = container.config_service()
+            config_path = f"connectors/{connector_id}"
+            await config_service.delete_config(config_path)
+            logger.info(f"✅ Deleted config for connector {connector_id}")
+        except Exception as e:
+            logger.warning(f"Failed to delete config for connector {connector_id}: {e}")
+
+        logger.info(
+            f"✅ Successfully deleted connector instance {connector_id}. "
+            f"Records: {deletion_result.get('deleted_records_count', 0)}, "
+            f"Embeddings queued for deletion: {len(virtual_record_ids)}"
+        )
+
+        return {
+            "success": True,
+            "message": f"Connector instance {connector_id} deleted successfully",
+            "deletedRecords": deletion_result.get("deleted_records_count", 0),
+            "deletedRecordGroups": deletion_result.get("deleted_record_groups_count", 0),
+            "deletedRoles": deletion_result.get("deleted_roles_count", 0),
+            "deletedGroups": deletion_result.get("deleted_groups_count", 0),
+            "deletedDrives": deletion_result.get("deleted_drives_count", 0),
+            "embeddingsQueuedForDeletion": len(virtual_record_ids)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Failed to delete connector instance {connector_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to delete connector instance: {str(e)}"
         )
 
 
