@@ -708,7 +708,13 @@ class BaseArangoService:
                 self.logger.warning(f"User not found for userId: {user_id}")
                 return None
 
-            user.get('_key')
+            user_key=user.get('_key')
+
+            # Get user's accessible apps and extract connector IDs (_key)
+            user_apps_ids = await self._get_user_app_ids(user_key)
+
+            # Build app record filter for connector records
+            app_record_filter = 'FILTER record.origin != "CONNECTOR" OR record.connectorId IN @user_apps_ids'
 
             # First check access and get permission paths
             access_query = f"""
@@ -724,8 +730,9 @@ class BaseArangoService:
                 RETURN k
             )
             LET directAccessPermissionEdge = (
-                FOR records, edge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FILTER records._key == @recordId
+                FOR record, edge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FILTER record._key == @recordId
+                {app_record_filter}
                 RETURN {{
                     type: 'DIRECT',
                     source: userDoc,
@@ -735,8 +742,9 @@ class BaseArangoService:
             LET groupAccessPermissionEdge = (
                 FOR group, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
                 FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
-                FOR records, permEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                FILTER records._key == @recordId
+                FOR record, permEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                FILTER record._key == @recordId
+                {app_record_filter}
                 RETURN {{
                     type: 'GROUP',
                     source: group,
@@ -755,6 +763,7 @@ class BaseArangoService:
                 // Hop 3: RecordGroup -> Record
                 FOR record, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
                 FILTER record._key == @recordId
+                {app_record_filter}
 
                 RETURN {{
                     type: 'RECORD_GROUP',
@@ -777,12 +786,13 @@ class BaseArangoService:
                 // Hop 4: Child RecordGroup -> Record (belongs_to)
                 FOR record, childRgToRecordEdge IN 1..1 INBOUND childRecordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
                     FILTER record._key == @recordId
+                    {app_record_filter}
 
-                RETURN {{
-                    type: 'NESTED_RECORD_GROUP',
-                    source: childRecordGroup,
-                    role: groupToRgEdge.role
-                }}
+                    RETURN {{
+                        type: 'NESTED_RECORD_GROUP',
+                        source: childRecordGroup,
+                        role: groupToRgEdge.role
+                    }}
             )
             LET directUserToRecordGroupAccess = (
                 // Direct user -> record_group permission (with nested record groups support)
@@ -794,6 +804,7 @@ class BaseArangoService:
                         // Only process if final vertex is the target record
                         FILTER record._key == @recordId
                         FILTER IS_SAME_COLLECTION("records", record)
+                        {app_record_filter}
 
                         LET finalEdge = LENGTH(path.edges) > 0 ? path.edges[LENGTH(path.edges) - 1] : edge
 
@@ -806,8 +817,9 @@ class BaseArangoService:
             )
             LET orgAccessPermissionEdge = (
                 FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FOR records, permEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
-                FILTER records._key == @recordId
+                FOR record, permEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                FILTER record._key == @recordId
+                {app_record_filter}
                 RETURN {{
                     type: 'ORGANIZATION',
                     source: org,
@@ -825,6 +837,7 @@ class BaseArangoService:
                         FOR record, edge, path IN 0..2 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
                             FILTER record._key == @recordId
                             FILTER IS_SAME_COLLECTION("records", record)
+                            {app_record_filter}
 
                             LET finalEdge = LENGTH(path.edges) > 0 ? path.edges[LENGTH(path.edges) - 1] : edge
 
@@ -925,6 +938,7 @@ class BaseArangoService:
                 "userId": user_id,
                 "orgId": org_id,
                 "recordId": record_id,
+                "user_apps_ids": user_apps_ids,
                 "@users": CollectionNames.USERS.value,
                 "records": CollectionNames.RECORDS.value,
                 "files": CollectionNames.FILES.value,
@@ -1368,6 +1382,7 @@ class BaseArangoService:
                             FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "CONNECTOR"
 
+                            {app_record_filter}
                             {folder_filter}
                             {record_filter}
                             RETURN {{
@@ -1399,6 +1414,7 @@ class BaseArangoService:
                                 FILTER record.orgId == org_id OR record.orgId == null
                                 FILTER record.origin == "CONNECTOR"
 
+                                {app_record_filter}
                                 {folder_filter}
                                 {record_filter}
 
