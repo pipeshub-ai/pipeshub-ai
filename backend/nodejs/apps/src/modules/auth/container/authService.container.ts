@@ -96,7 +96,8 @@ export class AuthServiceContainer {
             configurationService,
             logger,
           );
-        });
+        })
+        .inSingletonScope();
     } catch (error) {
       const logger = container.get<Logger>('Logger');
       logger.error('Failed to initialize services', {

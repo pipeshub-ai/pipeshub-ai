@@ -13,6 +13,7 @@ import { UserAccountController } from '../controller/userAccount.controller';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
+import { UserController } from '../../user_management/controller/users.controller';
 
 const otpGenerationBody = z.object({
   email: z.string().email('Invalid email'),
@@ -31,14 +32,7 @@ const initAuthBody = z.object({
     .string()
     .min(1, 'Email is required')
     .max(254, 'Email address is too long') // RFC 5321 limit
-    .email('Invalid email format')
-    .refine(
-      (email) => {
-        const localPart = email.split('@')[0];
-        return localPart && !/^\d+$/.test(localPart);
-      },
-      { message: 'Invalid email format' },
-    ),
+    .email('Invalid email format'),
 });
 
 const initAuthValidationSchema = z.object({
@@ -48,11 +42,18 @@ const initAuthValidationSchema = z.object({
   headers: z.object({}),
 });
 
-export function createUserAccountRouter(container: Container) {
+export function createUserAccountRouter(container: Container, entityManagerContainer?: Container) {
   const router = Router();
 
   router.use(attachContainerMiddleware(container));
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
+
+  // Wire up UserController for JIT provisioning if entityManagerContainer is provided
+  if (entityManagerContainer && entityManagerContainer.isBound('UserController')) {
+    const userController = entityManagerContainer.get<UserController>('UserController');
+    const userAccountController = container.get<UserAccountController>('UserAccountController');
+    userAccountController.setUserController(userController);
+  }
 
   router.post(
     '/initAuth',
@@ -85,13 +86,6 @@ export function createUserAccountRouter(container: Container) {
       .string()
       .max(254, 'Email address is too long') // RFC 5321 limit
       .email('Invalid email format')
-      .refine(
-        (email) => {
-          const localPart = email.split('@')[0];
-          return localPart && !/^\d+$/.test(localPart);
-        },
-        { message: 'Invalid email format' },
-      )
       .optional(),
     'cf-turnstile-response': z.string().optional(), // Add Turnstile token
   }).strict();
@@ -257,7 +251,6 @@ export function createUserAccountRouter(container: Container) {
       }
     },
   );
-
   // router.post('/setup', resetViaLinkValidator, userAccountSetup);
   return router;
 }

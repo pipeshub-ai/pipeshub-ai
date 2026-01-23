@@ -9,11 +9,13 @@ import {
   Grid,
   Link,
   Alert,
+  Switch,
   Snackbar,
   TextField,
   Typography,
   InputAdornment,
   CircularProgress,
+  FormControlLabel,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
@@ -75,6 +77,7 @@ const MicrosoftAuthForm = forwardRef<MicrosoftAuthFormRef, MicrosoftAuthFormProp
       tenantId: '',
       redirectUri:
         redirectUris?.recommendedRedirectUri || `${window.location.origin}/auth/microsoft/callback`,
+      enableJit: true,
     });
 
     const [errors, setErrors] = useState({
@@ -138,6 +141,7 @@ const MicrosoftAuthForm = forwardRef<MicrosoftAuthFormRef, MicrosoftAuthFormProp
             redirectUri: recommendedUri,
             clientId: config?.clientId || '',
             tenantId: config?.tenantId || '',
+            enableJit: config?.enableJit || false,
           });
         } catch (error) {
           console.error('Failed to load Microsoft authentication configuration:', error);
@@ -201,6 +205,7 @@ const MicrosoftAuthForm = forwardRef<MicrosoftAuthFormRef, MicrosoftAuthFormProp
         await updateMicrosoftAuthConfig({
           clientId: formData.clientId,
           tenantId: formData.tenantId,
+          enableJit: formData.enableJit,
         });
 
         showSuccessSnackbar('Microsoft authentication configuration saved successfully');
@@ -351,6 +356,41 @@ const MicrosoftAuthForm = forwardRef<MicrosoftAuthFormRef, MicrosoftAuthFormProp
                     },
                   }}
                 />
+              </Grid>
+
+              <Grid item xs={12}>
+                <Box
+                  sx={{
+                    p: 2,
+                    borderRadius: 1,
+                    bgcolor: alpha(theme.palette.primary.main, 0.04),
+                    border: `1px solid ${alpha(theme.palette.primary.main, 0.15)}`,
+                  }}
+                >
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={formData.enableJit}
+                        onChange={(e) =>
+                          setFormData((prev) => ({ ...prev, enableJit: e.target.checked }))
+                        }
+                        color="primary"
+                      />
+                    }
+                    label={
+                      <Box>
+                        <Typography variant="subtitle2">
+                          Enable Just-In-Time (JIT) Provisioning
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          Automatically create user accounts when they sign in with Microsoft for the
+                          first time
+                        </Typography>
+                      </Box>
+                    }
+                    sx={{ alignItems: 'flex-start', ml: 0 }}
+                  />
+                </Box>
               </Grid>
             </Grid>
 

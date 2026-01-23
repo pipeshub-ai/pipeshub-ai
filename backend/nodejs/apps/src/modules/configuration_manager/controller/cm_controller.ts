@@ -492,13 +492,13 @@ export const setAzureAdAuthConfig =
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
 
-      const { clientId, tenantId } = req.body;
+      const { clientId, tenantId, enableJit } = req.body;
       const authority = `https://login.microsoftonline.com/${tenantId}`;
 
       const encryptedAuthConfig = EncryptionService.getInstance(
         configManagerConfig.algorithm,
         configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ clientId, tenantId, authority }));
+      ).encrypt(JSON.stringify({ clientId, tenantId, authority, enableJit: enableJit || false }));
 
       await keyValueStoreService.set<string>(
         configPaths.auth.azureAD,
@@ -548,13 +548,13 @@ export const setMicrosoftAuthConfig =
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
 
-      const { clientId, tenantId } = req.body;
+      const { clientId, tenantId, enableJit } = req.body;
       const authority = `https://login.microsoftonline.com/${tenantId}`;
 
       const encryptedAuthConfig = EncryptionService.getInstance(
         configManagerConfig.algorithm,
         configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ clientId, tenantId, authority }));
+      ).encrypt(JSON.stringify({ clientId, tenantId, authority, enableJit: enableJit || false }));
 
       await keyValueStoreService.set<string>(
         configPaths.auth.microsoft,
@@ -604,12 +604,12 @@ export const setGoogleAuthConfig =
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
 
-      const { clientId } = req.body;
+      const { clientId, enableJit } = req.body;
 
       const encryptedAuthConfig = EncryptionService.getInstance(
         configManagerConfig.algorithm,
         configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ clientId }));
+      ).encrypt(JSON.stringify({ clientId, enableJit: enableJit || false }));
 
       await keyValueStoreService.set<string>(
         configPaths.auth.google,
@@ -668,6 +668,7 @@ export const setOAuthConfig =
         userInfoEndpoint,
         scope,
         redirectUri,
+        enableJit,
       } = req.body;
 
       const oauthConfig = {
@@ -679,6 +680,7 @@ export const setOAuthConfig =
         ...(userInfoEndpoint && { userInfoEndpoint }),
         ...(scope && { scope }),
         ...(redirectUri && { redirectUri }),
+        enableJit: enableJit || false,
       };
 
       const encryptedAuthConfig = EncryptionService.getInstance(
@@ -1722,7 +1724,7 @@ export const setSsoAuthConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const { entryPoint, emailKey } = req.body;
+      const { entryPoint, emailKey, enableJit } = req.body;
       let { certificate } = req.body;
       certificate = certificate
         .replace(/\\n/g, '') // Remove \n
@@ -1744,7 +1746,7 @@ export const setSsoAuthConfig =
       const encryptedSsoConfig = EncryptionService.getInstance(
         configManagerConfig.algorithm,
         configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ certificate, entryPoint, emailKey }));
+      ).encrypt(JSON.stringify({ certificate, entryPoint, emailKey, enableJit: enableJit || false }));
       await keyValueStoreService.set<string>(
         configPaths.auth.sso,
         encryptedSsoConfig,

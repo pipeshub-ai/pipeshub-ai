@@ -1143,7 +1143,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
             ...(params.row.indexingStatus === 'AUTO_INDEX_OFF'
               ? [
                 {
-                  label: 'Start Manual Indexing',
+                  label: 'Start Indexing',
                   icon: refreshIcon,
                   color: theme.palette.success.main,
                   onClick: () => handleRetryIndexing(params.row.id),

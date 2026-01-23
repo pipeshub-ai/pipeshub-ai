@@ -243,7 +243,6 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
       ]);
       setPermissions(p || []);
       setUsers(u || []);
-      console.log('users', u);
       setTeams(t || []);
     } catch (e: any) {
       setError(e?.message || 'Failed to load permissions');

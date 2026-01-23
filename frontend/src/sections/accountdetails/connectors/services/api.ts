@@ -528,7 +528,6 @@ export class ConnectorApiService {
       
       const response = await axios.get(`${BASE_URL}/agents/active`, { params });
       if (!response.data) throw new Error('Failed to fetch configured connector instances');
-      console.log(response.data);
       return {
         connectors: response.data.connectors || [],
         pagination: response.data.pagination || {}

@@ -29,6 +29,7 @@ services:
       - NODE_ENV=${NODE_ENV:-development}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
+      - STRICT_MODE=${STRICT_MODE:-false}
 
       # Security settings - allow override with custom secret
       - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
@@ -92,7 +93,7 @@ services:
       etcd:
         condition: service_started
       arango:
-        condition: service_started
+        condition: service_healthy
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
@@ -137,7 +138,7 @@ services:
     volumes:
       - arango_data:/var/lib/arangodb3
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8529/_api/version"]
+      test: ["CMD-SHELL", "arangosh --server.endpoint tcp://localhost:8529 --server.password '${ARANGO_PASSWORD:-your_password}' --javascript.execute-string 'db._version()' || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 5
