@@ -273,15 +273,15 @@ class CSVParser:
     ) -> List[Tuple[int, Dict[str, Any], int]]:
         """
         Select representative sample rows from CSV data by prioritizing rows with fewer empty values.
-        
+
         This method selects up to num_sample_rows rows, prioritizing:
         1. Perfect rows with no empty values (stops early if enough are found)
         2. Rows with the fewest empty values as fallback
-        
+
         Args:
             csv_result: List of dictionaries representing CSV rows
             num_sample_rows: Number of sample rows to select (default: 5)
-            
+
         Returns:
             List of tuples (row_index, row_dict, empty_count) sorted by original index
         """
@@ -323,19 +323,19 @@ class CSVParser:
     ) -> Tuple[List[Dict[str, Any]], List[int]]:
         """
         Reconstruct csv_result with newly generated headers.
-        
+
         This helper creates a new csv_result where:
         - The first row contains the old headers as data (with "null" for auto-generated columns)
         - Subsequent rows contain the actual data
         - All rows use the new headers as keys
-        
+
         Args:
             new_headers: List of newly generated header names
             current_headers: List of current/old header names
             all_data_rows: All data rows as lists of values
             first_row_line_number: Line number for the first row (old headers)
             existing_line_numbers: Line numbers for the data rows
-            
+
         Returns:
             Tuple of (reconstructed_csv_result, reconstructed_line_numbers)
         """
@@ -359,10 +359,10 @@ class CSVParser:
     def read_raw_rows(self, file_stream: TextIO) -> List[List[str]]:
         """
         Read CSV as raw list of lists without any processing.
-        
+
         Args:
             file_stream: An opened file stream containing CSV data
-            
+
         Returns:
             List of rows, where each row is a list of string values
         """
@@ -374,12 +374,12 @@ class CSVParser:
     def _is_empty_row(self, row: List[Any], start_col: Optional[int] = None, end_col: Optional[int] = None) -> bool:
         """
         Check if all values in a row (or a range within the row) are None/empty.
-        
+
         Args:
             row: List of values (can be strings or None)
             start_col: Optional starting column index (inclusive, 0-based)
             end_col: Optional ending column index (inclusive, 0-based)
-            
+
         Returns:
             True if all values in the row (or specified range) are empty/None, False otherwise
         """
@@ -404,13 +404,13 @@ class CSVParser:
     def _is_empty_column(self, all_rows: List[List[Any]], col_idx: int, start_row: Optional[int] = None, end_row: Optional[int] = None) -> bool:
         """
         Check if a column is empty within a specific row range.
-        
+
         Args:
             all_rows: List of all rows
             col_idx: Column index to check
             start_row: Optional starting row index (inclusive, 0-based)
             end_row: Optional ending row index (inclusive, 0-based)
-            
+
         Returns:
             True if all values in the column (within specified range) are empty/None, False otherwise
         """
@@ -446,14 +446,14 @@ class CSVParser:
     ) -> Dict[str, Any]:
         """
         Extract a table from a bounded rectangular region.
-        
+
         Args:
             all_rows: All rows from the CSV
             start_row: Starting row index (0-based)
             start_col: Starting column index (0-based)
             end_row: Ending row index (inclusive, 0-based)
             end_col: Ending column index (inclusive, 0-based)
-            
+
         Returns:
             Dictionary with headers, data, and metadata
         """
@@ -499,18 +499,18 @@ class CSVParser:
     ) -> Dict[str, Any]:
         """
         Extract a table starting from (start_row, start_col) by expanding to find rectangular bounds.
-        
+
         This method finds the maximum column and row extent of the table by scanning:
         - Right until finding a column that's empty within the current region
         - Down until finding a row that's empty within the current region
-        
+
         Args:
             all_rows: All rows from the CSV
             start_row: Starting row index (0-based)
             start_col: Starting column index (0-based)
             visited_cells: Set of (row, col) tuples to track processed cells
             max_cols: Maximum number of columns across all rows
-            
+
         Returns:
             Dictionary with headers, data, and metadata
         """
@@ -614,15 +614,15 @@ class CSVParser:
     def find_tables_in_csv(self, all_rows: List[List[Any]]) -> List[Dict[str, Any]]:
         """
         Find and extract all tables from CSV rows using region-growing approach.
-        
+
         Detection criteria:
         A table is a rectangular region surrounded by empty rows & empty columns.
         Boundaries only need to be empty within the context of that region, not globally.
         File edges count as boundaries (no empty rows/columns needed at edges).
-        
+
         Args:
             all_rows: List of all rows from CSV (each row is a list of values)
-            
+
         Returns:
             List of table dictionaries, each containing:
             - headers: List of header values
@@ -893,10 +893,10 @@ class CSVParser:
     def convert_table_to_dict(self, table: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[int]]:
         """
         Convert a table (with headers and data rows as lists) to dictionary format.
-        
+
         Args:
             table: Table dictionary with headers and data
-            
+
         Returns:
             Tuple of (data, line_numbers) where:
             - data: List of dictionaries where keys are column headers
@@ -940,11 +940,11 @@ class CSVParser:
     ) -> BlocksContainer:
         """
         Process multiple tables from CSV and create BlocksContainer.
-        
+
         Args:
             tables: List of table dictionaries from find_tables_in_csv()
             llm: Language model instance
-            
+
         Returns:
             BlocksContainer with multiple TABLE BlockGroups
         """
