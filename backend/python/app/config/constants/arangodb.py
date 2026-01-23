@@ -61,6 +61,7 @@ class Connectors(Enum):
     AZURE_BLOB = "AZURE BLOB"
     AZURE_FILES = "AZURE FILES"
     LINEAR = "LINEAR"
+    ZAMMAD = "ZAMMAD"
 
     UNKNOWN = "UNKNOWN"
 
@@ -80,6 +81,7 @@ class AppGroups(Enum):
     GOOGLE_CLOUD = "Google Cloud"
     AZURE = "Azure"
     LINEAR = "Linear"
+    ZAMMAD = "Zammad"
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
@@ -275,7 +277,6 @@ class RecordRelations(Enum):
     PARENT_CHILD = "PARENT_CHILD"
     SIBLING = "SIBLING"
     ATTACHMENT = "ATTACHMENT"
-    DUPLICATE = "DUPLICATE"
     OTHERS = "OTHERS"
     LINKED_TO = "LINKED_TO"
     BLOCKS = "BLOCKS"
