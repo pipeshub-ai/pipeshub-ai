@@ -180,6 +180,17 @@ class Health:
                     "enable_auto_commit": True,
                 }
 
+                # Add SSL/SASL configuration for AWS MSK
+                if kafka_config.get("ssl"):
+                    sasl_config = kafka_config.get("sasl", {})
+                    if sasl_config.get("username"):
+                        config["security_protocol"] = "SASL_SSL"
+                        config["sasl_mechanism"] = sasl_config.get("mechanism", "SCRAM-SHA-512").upper()
+                        config["sasl_plain_username"] = sasl_config["username"]
+                        config["sasl_plain_password"] = sasl_config["password"]
+                    else:
+                        config["security_protocol"] = "SSL"
+
                 # Create and start consumer to test connection
                 consumer = AIOKafkaConsumer(**config)
                 await consumer.start()

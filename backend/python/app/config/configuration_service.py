@@ -87,13 +87,23 @@ class ConfigurationService:
             kafka_brokers = os.getenv("KAFKA_BROKERS")
             if kafka_brokers:
                 brokers_list = [broker.strip() for broker in kafka_brokers.split(",")]
-                return {
+                config = {
                     "host": brokers_list[0].split(":")[0] if ":" in brokers_list[0] else brokers_list[0],
                     "port": int(brokers_list[0].split(":")[1]) if ":" in brokers_list[0] else 9092,
                     "topic": "records",
                     "bootstrap_servers": brokers_list,
-                    "brokers": brokers_list
+                    "brokers": brokers_list,
+                    "ssl": os.getenv("KAFKA_SSL", "").lower() == "true"
                 }
+                # Add SASL config if username is provided
+                kafka_username = os.getenv("KAFKA_USERNAME")
+                if kafka_username:
+                    config["sasl"] = {
+                        "mechanism": os.getenv("KAFKA_SASL_MECHANISM", "scram-sha-512"),
+                        "username": kafka_username,
+                        "password": os.getenv("KAFKA_PASSWORD", "")
+                    }
+                return config
         elif key == config_node_constants.ARANGODB.value:
             # ArangoDB configuration fallback
             arango_url = os.getenv("ARANGO_URL")

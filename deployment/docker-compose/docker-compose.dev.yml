@@ -55,7 +55,11 @@ services:
       # Ensure we use the same password as configured for the ArangoDB service
 
       # Kafka config
-      - KAFKA_BROKERS=kafka-1:9092
+      - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
+      - KAFKA_SSL=${KAFKA_SSL:-false}
+      - KAFKA_USERNAME=${KAFKA_USERNAME:-}
+      - KAFKA_PASSWORD=${KAFKA_PASSWORD:-}
+      - KAFKA_SASL_MECHANISM=${KAFKA_SASL_MECHANISM:-}
 
       # Redis config
       - REDIS_HOST=redis

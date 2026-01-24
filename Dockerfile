@@ -112,6 +112,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libzstd1 \
     # Other runtime deps
     libpq5 \
+    # OpenGL library (required by Docling for PDF processing)
+    libgl1 \
+    libglib2.0-0 \
     # OCR tools
     ocrmypdf \
     tesseract-ocr \
