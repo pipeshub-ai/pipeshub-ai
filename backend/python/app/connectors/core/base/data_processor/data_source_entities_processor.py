@@ -719,10 +719,10 @@ class DataSourceEntitiesProcessor:
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
         await self._handle_parent_record(record, tx_store)
 
-        # Create recordRelation edges for related external records if record has related_external_records
-        # (This field is in base Record class with default_factory=list, so it always exists)
-        if record.related_external_records:
-            await self._handle_related_external_records(record, record.related_external_records, tx_store)
+        # Handle related external records (issue links, project links, etc.)
+        # For TicketRecord and ProjectRecord, ALWAYS call this to clean up stale link edges even when related_external_records is empty (handles removed links)
+        if isinstance(record, (TicketRecord, ProjectRecord)):
+            await self._handle_related_external_records(record, record.related_external_records or [], tx_store)
 
         # Create ticket-user relationship edges (ASSIGNED_TO, CREATED_BY, REPORTED_BY) if record is a TicketRecord
         if isinstance(record, TicketRecord):
