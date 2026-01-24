@@ -136,6 +136,14 @@ ZAMMAD_CONFIG_PATH = "/services/connectors/{connector_id}/config"
             description="Filter tickets by organization (leave empty for all organizations)",
             option_source_type=OptionSourceType.DYNAMIC
         ))
+        .add_filter_field(FilterField(
+            name="group_ids",
+            display_name="Groups",
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            description="Filter tickets by group/team (leave empty for all groups)",
+            option_source_type=OptionSourceType.DYNAMIC
+        ))
         .add_filter_field(CommonFields.modified_date_filter("Filter tickets by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter tickets by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
@@ -376,11 +384,17 @@ class ZammadConnector(BaseConnector):
                 await self.data_entities_processor.on_new_app_users(users)
                 self.logger.info(f"✅ Synced {len(users)} users")
 
-            # Step 2: Fetch and sync groups (as UserGroups only, not RecordGroups)
+            # Step 2: Fetch and sync groups (creates BOTH RecordGroups AND UserGroups)
+            # Groups are the permission boundary for tickets in Zammad
             self.logger.info("👥 Step 2: Syncing groups...")
-            group_user_groups = await self._fetch_groups(user_email_map)
+            group_record_groups, group_user_groups = await self._fetch_groups(user_email_map)
 
-            # Sync groups as UserGroups (for team management)
+            # Sync RecordGroups from groups (for ticket permission inheritance)
+            if group_record_groups:
+                await self.data_entities_processor.on_new_record_groups(group_record_groups)
+                self.logger.info(f"✅ Synced {len(group_record_groups)} groups as RecordGroups")
+
+            # Sync UserGroups from groups (for membership tracking)
             if group_user_groups:
                 await self.data_entities_processor.on_new_user_groups(group_user_groups)
                 self.logger.info(f"✅ Synced {len(group_user_groups)} groups as UserGroups")
@@ -389,7 +403,7 @@ class ZammadConnector(BaseConnector):
             self.logger.info("🎭 Step 3: Syncing roles...")
             await self._sync_roles(users, user_email_map)
 
-            # Step 4: Get organization_ids filter and fetch organizations
+            # Step 4: Get organization_ids filter and fetch organizations (for filtering only, not permissions)
             organization_ids = None
             organization_ids_operator = None
             organization_ids_filter = self.sync_filters.get(SyncFilterKey.ORGANIZATION_IDS) if self.sync_filters else None
@@ -407,16 +421,16 @@ class ZammadConnector(BaseConnector):
             else:
                 self.logger.info("📋 No organization filter set - will fetch all organizations")
 
-            # Step 5: Fetch and sync organizations (filtered by organization_ids if specified)
-            self.logger.info("🏢 Step 5: Syncing organizations...")
-            await self._sync_organizations(
+            # Step 5: Fetch organizations (for filtering and metadata, NOT for permissions)
+            self.logger.info("🏢 Step 5: Fetching organizations for filter options...")
+            await self._fetch_organizations(
                 organization_ids=organization_ids,
                 organization_ids_operator=organization_ids_operator
             )
 
-            # Step 6: Sync tickets (organization_ids sync filter is applied at API level in _fetch_tickets_batch)
+            # Step 6: Sync tickets (linked to group RecordGroups via group_id)
             self.logger.info("🎫 Step 6: Syncing tickets...")
-            await self._sync_tickets_for_organizations()
+            await self._sync_tickets_for_groups()
 
             # Step 7: Sync knowledge base (always fetch, indexing filters control indexing_status)
             self.logger.info("📚 Step 7: Syncing knowledge base...")
@@ -515,17 +529,20 @@ class ZammadConnector(BaseConnector):
     async def _fetch_groups(
         self,
         user_email_map: Dict[str, AppUser]
-    ) -> List[Tuple[AppUserGroup, List[AppUser]]]:
+    ) -> Tuple[List[Tuple[RecordGroup, List[Permission]]], List[Tuple[AppUserGroup, List[AppUser]]]]:
         """
-        Fetch Zammad groups and create UserGroups only (for team management).
-        Groups are NOT used as RecordGroups - organizations are used for record organization.
+        Fetch Zammad groups and create BOTH RecordGroups AND UserGroups.
+        Groups are the permission boundary for tickets in Zammad.
 
         Args:
             user_email_map: Map of email -> AppUser for membership tracking
 
         Returns:
-            List of (UserGroup, members) tuples
+            Tuple of (record_groups, user_groups):
+            - record_groups: List of (RecordGroup, permissions) tuples
+            - user_groups: List of (UserGroup, members) tuples
         """
+        record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
         user_groups: List[Tuple[AppUserGroup, List[AppUser]]] = []
 
         datasource = await self._get_fresh_datasource()
@@ -555,8 +572,42 @@ class ZammadConnector(BaseConnector):
                 if not active or not group_id or not group_name:
                     continue
 
+                # Parse timestamps
+                created_at = self._parse_zammad_datetime(group_data.get("created_at", ""))
+                updated_at = self._parse_zammad_datetime(group_data.get("updated_at", ""))
 
-                # 1. Create AppUserGroup for membership tracking
+                # Build web URL for group
+                web_url = None
+                if self.base_url:
+                    web_url = f"{self.base_url}/#manage/groups/{group_id}"
+
+                # 1. Create RecordGroup for permission inheritance
+                record_group = RecordGroup(
+                    id=str(uuid4()),
+                    org_id=self.data_entities_processor.org_id,
+                    external_group_id=f"group_{group_id}",
+                    connector_id=self.connector_id,
+                    connector_name=self.connector_name,
+                    name=group_name,
+                    short_name=str(group_id),
+                    group_type=RecordGroupType.PROJECT,
+                    web_url=web_url,
+                    source_created_at=created_at if created_at else None,
+                    source_updated_at=updated_at if updated_at else None,
+                )
+
+                # Permission: UserGroup -> RecordGroup (group members can access)
+                permissions: List[Permission] = [
+                    Permission(
+                        entity_type=EntityType.USER_GROUP,
+                        type=PermissionType.READ,
+                        external_id=str(group_id)  # Links to UserGroup.source_user_group_id
+                    )
+                ]
+
+                record_groups.append((record_group, permissions))
+
+                # 2. Create AppUserGroup for membership tracking
                 user_group = AppUserGroup(
                     id=str(uuid4()),
                     org_id=self.data_entities_processor.org_id,
@@ -600,9 +651,9 @@ class ZammadConnector(BaseConnector):
 
         self.logger.info(
             f"📥 Fetched {len(user_groups)} groups, "
-            f"created {len(user_groups)} UserGroups (groups are not used as RecordGroups)"
+            f"created {len(record_groups)} RecordGroups and {len(user_groups)} UserGroups"
         )
-        return user_groups
+        return (record_groups, user_groups)
 
     async def _sync_roles(
         self,
@@ -692,13 +743,14 @@ class ZammadConnector(BaseConnector):
             self.logger.error(f"❌ Error syncing roles: {e}", exc_info=True)
             raise
 
-    async def _sync_organizations(
+    async def _fetch_organizations(
         self,
         organization_ids: Optional[List[str]] = None,
         organization_ids_operator: Optional[Any] = None
     ) -> None:
         """
-        Fetch and sync organizations from Zammad as RecordGroups.
+        Fetch organizations from Zammad and cache for filter options and ticket metadata.
+        Organizations are NOT used for permissions - Groups control ticket access.
 
         Args:
             organization_ids: Optional list of organization IDs to include/exclude
@@ -772,93 +824,39 @@ class ZammadConnector(BaseConnector):
                 all_organizations = filtered_organizations
                 self.logger.info(f"📋 Filtered to {len(all_organizations)} organizations (operator: {operator_value})")
 
-            # Cache organizations for lookups
+            # Cache organizations for filter options and ticket metadata (NOT for permissions)
             for org_data in all_organizations:
                 org_id = org_data.get("id")
                 if org_id:
                     self._organization_map[org_id] = org_data
 
-            # Create RecordGroups for organizations
-            record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
-
-            for org_data in all_organizations:
-                org_id = org_data.get("id")
-                if not org_id:
-                    continue
-
-                org_name = org_data.get("name", f"Organization {org_id}")
-                active = org_data.get("active", True)
-
-                if not active:
-                    continue
-
-                # Parse timestamps
-                created_at = self._parse_zammad_datetime(org_data.get("created_at", ""))
-                updated_at = self._parse_zammad_datetime(org_data.get("updated_at", ""))
-
-                # Build web URL
-                web_url = None
-                if self.base_url:
-                    web_url = f"{self.base_url}/#organization/profile/{org_id}"
-
-                # Create RecordGroup
-                record_group = RecordGroup(
-                    id=str(uuid4()),
-                    org_id=self.data_entities_processor.org_id,
-                    external_group_id=f"org_{org_id}",  # Consistent format: "org_{id}"
-                    connector_id=self.connector_id,
-                    connector_name=self.connector_name,
-                    name=org_name,
-                    short_name=str(org_id),
-                    group_type=RecordGroupType.PROJECT,
-                    web_url=web_url,
-                    source_created_at=created_at if created_at else None,
-                    source_updated_at=updated_at if updated_at else None,
-                )
-
-                # ORG-level permissions - all org members can access
-                permissions: List[Permission] = [
-                    Permission(
-                        entity_type=EntityType.ORG,
-                        type=PermissionType.READ,
-                        external_id=None
-                    )
-                ]
-
-                record_groups.append((record_group, permissions))
-
-            # Sync organizations
-            if record_groups:
-                await self.data_entities_processor.on_new_record_groups(record_groups)
-                self.logger.info(f"✅ Synced {len(record_groups)} organizations")
+            self.logger.info(f"📥 Cached {len(self._organization_map)} organizations for filter options")
 
         except Exception as e:
-            self.logger.error(f"❌ Error syncing organizations: {e}", exc_info=True)
+            self.logger.error(f"❌ Error fetching organizations: {e}", exc_info=True)
             raise
 
-    async def _sync_tickets_for_organizations(self) -> None:
+    async def _sync_tickets_for_groups(self) -> None:
         """
-        Sync tickets for all organizations.
-        Tickets are organized by organizations (customer organizations), not groups.
-
-        Args:
-            filters: Filter configuration
+        Sync tickets linked to groups.
+        Tickets are organized by groups (agent teams), which control access permissions.
         """
-        # Build organization map for quick lookup
-        organization_map: Dict[str, RecordGroup] = {}
+        # Build group map for quick lookup from database
+        group_map: Dict[str, RecordGroup] = {}
 
-        # Fetch organizations from database
+        # Fetch group RecordGroups from database
+        # Groups use external_group_id format: "group_{group_id}"
         async with self.data_store_provider.transaction() as tx_store:
-            # Fetch all organization record groups for this connector
-            # Organizations use external_group_id format: "org_{organization_id}"
-            for org_id in self._organization_map.keys():
-                org_external_id = f"org_{org_id}"
-                org_rg = await tx_store.get_record_group_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=org_external_id
-                )
-                if org_rg:
-                    organization_map[org_external_id] = org_rg
+            # Get all group RecordGroups for this connector
+            # We need to query by connector_id and filter by group_ prefix
+            all_record_groups = await tx_store.get_record_groups_by_connector(
+                connector_id=self.connector_id
+            )
+            for rg in all_record_groups:
+                if rg.external_group_id and rg.external_group_id.startswith("group_"):
+                    group_map[rg.external_group_id] = rg
+
+        self.logger.info(f"📊 Found {len(group_map)} group RecordGroups for ticket linking")
 
         # Get last sync timestamp for incremental sync
         sync_point_key = "tickets"
@@ -867,7 +865,7 @@ class ZammadConnector(BaseConnector):
 
         # Sync tickets with incremental support
         total_tickets = 0
-        async for batch in self._fetch_tickets_batch(organization_map, last_sync_time):
+        async for batch in self._fetch_tickets_batch(group_map, last_sync_time):
             if batch:
                 await self.data_entities_processor.on_new_records(batch)
                 total_tickets += len(batch)
@@ -903,6 +901,15 @@ class ZammadConnector(BaseConnector):
         per_page = 100
         batch_size = 50
 
+        # Get group_ids from sync filter to filter at API level (for efficiency)
+        selected_group_ids = []
+        group_ids_operator = None
+        if self.sync_filters:
+            group_ids_filter = self.sync_filters.get(SyncFilterKey.GROUP_IDS)
+            if group_ids_filter:
+                selected_group_ids = group_ids_filter.get_value(default=[])
+                group_ids_operator = group_ids_filter.get_operator()
+
         # Get organization_ids from sync filter to filter at API level (for efficiency)
         selected_organization_ids = []
         organization_ids_operator = None
@@ -923,6 +930,27 @@ class ZammadConnector(BaseConnector):
                 dt = dt.replace(tzinfo=timezone.utc)
             iso_format = dt.isoformat().replace('+00:00', 'Z')
             query_parts.append(f"updated_at:>={iso_format}")
+
+        # Apply group_ids filter at API level if specified
+        if selected_group_ids:
+            # Check operator: "in" (include) or "not_in" (exclude)
+            if group_ids_operator:
+                operator_value = group_ids_operator.value if hasattr(group_ids_operator, 'value') else str(group_ids_operator)
+            else:
+                operator_value = "in"
+
+            is_exclude = operator_value == "not_in"
+
+            if is_exclude:
+                # For NOT_IN, we need to exclude these group IDs
+                # Zammad search syntax: NOT group_id:1 AND NOT group_id:2
+                group_exclude_parts = [f"NOT group_id:{gid}" for gid in selected_group_ids]
+                query_parts.append(f"({' AND '.join(group_exclude_parts)})")
+            else:
+                # For IN, include only these group IDs
+                # Zammad search syntax: (group_id:1 OR group_id:2)
+                group_ids_str = " OR ".join([f"group_id:{gid}" for gid in selected_group_ids])
+                query_parts.append(f"({group_ids_str})")
 
         # Apply organization_ids filter at API level if specified
         if selected_organization_ids:
@@ -1065,16 +1093,18 @@ class ZammadConnector(BaseConnector):
         title = ticket_data.get("title", "")
         record_name = f"#{ticket_number} - {title}" if ticket_number else title
 
-        # Get organization ID (tickets are organized by organizations, not groups)
-        organization_id = ticket_data.get("organization_id")
+        # Get group_id (tickets are linked to groups for permissions)
+        # Groups control who can access the ticket (agent teams)
+        group_id = ticket_data.get("group_id")
+
         # Determine record_group_type based on external_record_group_id format
-        # Organizations use "org_{id}" format and are RecordGroupType.PROJECT
+        # Groups use "group_{id}" format and are RecordGroupType.PROJECT
         record_group_type = None
-        if organization_id:
-            external_record_group_id = f"org_{organization_id}"
-            record_group_type = RecordGroupType.PROJECT  # Organizations are PROJECT type
+        if group_id:
+            external_record_group_id = f"group_{group_id}"
+            record_group_type = RecordGroupType.PROJECT  # Groups are PROJECT type
         else:
-            external_record_group_id = None  # Tickets without organization won't be linked to a RecordGroup
+            external_record_group_id = None  # Tickets without group won't be linked to a RecordGroup
 
         # Map state to Status enum
         state_id = ticket_data.get("state_id")
@@ -1323,8 +1353,8 @@ class ZammadConnector(BaseConnector):
         # Attachments inherit the same group type as their parent ticket
         file_record_group_type = None
         if parent_ticket.external_record_group_id:
-            # If parent has org_{id} format, it's PROJECT type
-            if parent_ticket.external_record_group_id.startswith("org_"):
+            # If parent has group_{id} format, it's PROJECT type
+            if parent_ticket.external_record_group_id.startswith("group_"):
                 file_record_group_type = RecordGroupType.PROJECT
             # If parent has record_group_type set, use it
             elif parent_ticket.record_group_type:
@@ -1957,16 +1987,65 @@ class ZammadConnector(BaseConnector):
         """
         options: List[FilterOption] = []
 
-        if filter_key == SyncFilterKey.ORGANIZATION_IDS.value:
+        if filter_key == SyncFilterKey.GROUP_IDS.value:
             datasource = await self._get_fresh_datasource()
-            page = 1
+            fetch_page = 1
+            per_page = 100
+            all_groups = []
+
+            # Fetch all groups with pagination
+            while True:
+                response = await datasource.list_groups(
+                    page=fetch_page,
+                    per_page=per_page
+                )
+
+                if not response.success or not response.data:
+                    break
+
+                groups_data = response.data
+                if not isinstance(groups_data, list):
+                    groups_data = [groups_data]
+
+                if not groups_data:
+                    break
+
+                all_groups.extend(groups_data)
+
+                # Check if there are more pages
+                if len(groups_data) < per_page:
+                    break
+
+                fetch_page += 1
+
+            # Build filter options from groups
+            for group in all_groups:
+                group_id = group.get("id")
+                group_name = group.get("name", "")
+                active = group.get("active", True)
+
+                if not active or not group_id or not group_name:
+                    continue
+
+                # Apply search filter
+                if search and search.lower() not in group_name.lower():
+                    continue
+
+                options.append(FilterOption(
+                    id=str(group_id),
+                    label=group_name
+                ))
+
+        elif filter_key == SyncFilterKey.ORGANIZATION_IDS.value:
+            datasource = await self._get_fresh_datasource()
+            fetch_page = 1
             per_page = 100
             all_organizations = []
 
             # Fetch all organizations with pagination
             while True:
                 response = await datasource.list_organizations(
-                    page=page,
+                    page=fetch_page,
                     per_page=per_page
                 )
 
@@ -1986,7 +2065,7 @@ class ZammadConnector(BaseConnector):
                 if len(organizations_data) < per_page:
                     break
 
-                page += 1
+                fetch_page += 1
 
             # Build filter options from organizations
             for org in all_organizations:
@@ -2215,29 +2294,29 @@ class ZammadConnector(BaseConnector):
             self.logger.info(f"Ticket {ticket_id} has changed at source")
 
             # Re-transform ticket
-            organization_map: Dict[str, RecordGroup] = {}
+            group_map: Dict[str, RecordGroup] = {}
             async with self.data_store_provider.transaction() as tx_store:
-                # Check if ticket has organization_id and add it to map
-                organization_id = ticket_data.get("organization_id")
-                if organization_id:
-                    org_external_id = f"org_{organization_id}"
-                    org_rg = await tx_store.get_record_group_by_external_id(
+                # Check if ticket has group_id and add it to map
+                group_id = ticket_data.get("group_id")
+                if group_id:
+                    group_external_id = f"group_{group_id}"
+                    group_rg = await tx_store.get_record_group_by_external_id(
                         connector_id=self.connector_id,
-                        external_id=org_external_id
+                        external_id=group_external_id
                     )
-                    if org_rg:
-                        organization_map[org_external_id] = org_rg
+                    if group_rg:
+                        group_map[group_external_id] = group_rg
 
                 # Also check existing record's external_record_group_id (for backward compatibility)
-                if record.external_record_group_id and record.external_record_group_id not in organization_map:
-                    org_rg = await tx_store.get_record_group_by_external_id(
+                if record.external_record_group_id and record.external_record_group_id not in group_map:
+                    existing_rg = await tx_store.get_record_group_by_external_id(
                         connector_id=self.connector_id,
                         external_id=record.external_record_group_id
                     )
-                    if org_rg:
-                        organization_map[record.external_record_group_id] = org_rg
+                    if existing_rg:
+                        group_map[record.external_record_group_id] = existing_rg
 
-            updated_ticket = await self._transform_ticket_to_ticket_record(ticket_data, organization_map)
+            updated_ticket = await self._transform_ticket_to_ticket_record(ticket_data, group_map)
             if not updated_ticket:
                 return None
 
