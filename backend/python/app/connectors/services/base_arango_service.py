@@ -3312,13 +3312,8 @@ class BaseArangoService:
                     CollectionNames.SYNC_POINTS.value
                 )
 
-                # Step 12: Delete virtualRecordToDocIdMapping entries
-                await self._delete_virtual_record_mappings(
-                    transaction,
-                    collected["virtual_record_ids"]
-                )
 
-                # Step 13: Delete the app itself
+                # Step 12: Delete the app itself
                 await self._delete_nodes_by_keys(
                     transaction,
                     [connector_id],
@@ -3616,30 +3611,6 @@ class BaseArangoService:
             self.logger.warning(f"⚠️ Error deleting from {collection}: {e}")
             return 0
 
-    async def _delete_virtual_record_mappings(self, transaction, virtual_record_ids: List[str]) -> int:
-        """Delete virtualRecordToDocIdMapping entries."""
-        if not virtual_record_ids:
-            return 0
-
-        query = """
-        FOR doc IN @@collection
-            FILTER doc._key IN @virtual_record_ids
-            REMOVE doc IN @@collection
-            RETURN 1
-        """
-
-        try:
-            cursor = transaction.aql.execute(query, bind_vars={
-                "@collection": CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
-                "virtual_record_ids": virtual_record_ids
-            })
-            deleted = len(list(cursor))
-            if deleted > 0:
-                self.logger.debug(f"🗑️ Deleted {deleted} virtual record mappings")
-            return deleted
-        except Exception as e:
-            self.logger.warning(f"⚠️ Error deleting virtual record mappings: {e}")
-            return 0
 
 
     async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:

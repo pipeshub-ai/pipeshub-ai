@@ -2208,6 +2208,10 @@ def _validate_connector_deletion_permissions(
     """
     Validate that the user has permission to delete the connector instance.
 
+    Permission rules:
+    - Personal connectors: Only the owning user (creator) can delete
+    - Team connectors: Only administrators can delete
+
     Args:
         instance: Connector instance dictionary
         user_id: ID of the user attempting deletion
@@ -2217,28 +2221,24 @@ def _validate_connector_deletion_permissions(
     Raises:
         HTTPException: 403 if user doesn't have permission to delete
     """
+    scope = instance.get("scope")
+    created_by = instance.get("createdBy")
+
     # For team connectors, only admins can delete
-    if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
+    if scope == ConnectorScope.TEAM.value and not is_admin:
         logger.error("Only administrators can delete team connectors")
         raise HTTPException(
             status_code=HttpStatusCode.FORBIDDEN.value,
             detail="Only administrators can delete team connectors"
         )
 
-    # For personal connectors, only the creator can delete
-    if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+    # For personal connectors, only the creator (owning user) can delete
+    # Admins cannot delete personal connectors
+    if scope == ConnectorScope.PERSONAL.value and created_by != user_id:
         logger.error("Only the creator can delete this personal connector")
         raise HTTPException(
             status_code=HttpStatusCode.FORBIDDEN.value,
             detail="Only the creator can delete this personal connector"
-        )
-
-    # For all connectors, creator or admin can delete
-    if instance.get("createdBy") != user_id and not is_admin:
-        logger.error("Only the creator or an administrator can delete this connector")
-        raise HTTPException(
-            status_code=HttpStatusCode.FORBIDDEN.value,
-            detail="Only the creator or an administrator can delete this connector"
         )
 
 
