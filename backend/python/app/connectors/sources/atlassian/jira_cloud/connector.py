@@ -3969,12 +3969,18 @@ class JiraConnector(BaseConnector):
         record_id: Optional[str] = None,
         version: int = 0,
         external_id_prefix: str = "attachment_",
+        skip_filter_check: bool = False,
     ) -> FileRecord:
         """
         Create a FileRecord for an attachment with consistent settings.
 
         This helper consolidates FileRecord creation logic to avoid duplication
         and ensure consistency across sync, streaming, and reindexing flows.
+
+        Args:
+            skip_filter_check: If True, skip filter checks (used during reindexing).
+                              If False, apply indexing filter checks (default for sync/streaming).
+
         Returns:
             FileRecord with consistent field settings
         """
@@ -4015,8 +4021,9 @@ class JiraConnector(BaseConnector):
             parent_node_id=parent_node_id,
         )
 
-        # Set indexing status based on filters (if loaded)
-        if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_ATTACHMENTS):
+        # Set indexing status based on filters (if loaded and not skipping filter check)
+        # Skip filter check during reindexing to allow reindexing regardless of filter settings
+        if not skip_filter_check and self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_ATTACHMENTS):
             file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
         return file_record
@@ -4509,6 +4516,7 @@ class JiraConnector(BaseConnector):
             project_id = record.external_record_group_id if hasattr(record, 'external_record_group_id') else ""
 
             # Create updated FileRecord using helper method (preserving record ID)
+            # Skip filter check during reindexing to allow reindexing regardless of filter settings
             attachment_record = self._create_attachment_file_record(
                 attachment_id=attachment_id,
                 filename=filename,
@@ -4521,6 +4529,7 @@ class JiraConnector(BaseConnector):
                 weburl=weburl,
                 record_id=record.id,
                 version=version,
+                skip_filter_check=True,
             )
 
             # Permissions: empty list - records inherit project-level permissions via inherit_permissions=True
