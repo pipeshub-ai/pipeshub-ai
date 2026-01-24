@@ -89,16 +89,6 @@ async def _llm_based_intent_analysis(query: str, state: ChatState, filters: Dict
             # Return default values when LLM unavailable
             return (None, None, None, [], "LLM not available")
 
-        # Prepare conversation history context (optimized)
-        conversation_context = "No previous conversation history"
-        if previous_conversations:
-            recent_turns = previous_conversations[-3:]  # Last 3 turns
-            conversation_parts = [
-                f"{turn.get('role', 'unknown')}: {turn.get('content', '')[:200]}"
-                for turn in recent_turns
-            ]
-            conversation_context = "\n".join(conversation_parts)
-
         # Get available tools (cached in state if available)
         available_tools = state.get("available_tools", [])
         if not available_tools:
@@ -114,47 +104,30 @@ async def _llm_based_intent_analysis(query: str, state: ChatState, filters: Dict
         if len(available_tools) > _MAX_TOOLS_TO_SHOW_IN_PROMPT:
             tools_list += f" (and {len(available_tools) - _MAX_TOOLS_TO_SHOW_IN_PROMPT} more)"
 
-        tools_info = f"""
-AVAILABLE TOOLS: {tools_list}
-NOTE: retrieval.search_internal_knowledge is ALWAYS available as an essential tool.
-The agent will decide when to use tools - this analysis is for PLANNING ONLY.
-"""
 
         # Build concise, focused prompt
         has_filters = bool(filters.get("kb")) or bool(filters.get("apps"))
         filters_info = f"Filters: KB={filters.get('kb', [])}, Apps={filters.get('apps', [])}" if has_filters else "No filters"
 
-        intent_prompt = f"""Analyze this query and return JSON with: is_follow_up, needs_internal_data, is_complex, complexity_types, reason.
+        intent_prompt = f"""Analyze query and return JSON: is_follow_up, needs_internal_data, is_complex, complexity_types, reason.
 
 QUERY: "{query}"
-HISTORY: {conversation_context}
-{filters_info}{tools_info}
+{filters_info}
 
-ANALYSIS RULES:
+RULES:
+1. is_follow_up: TRUE if uses "it/that/this", yes/no, or references previous topic
+2. needs_internal_data: TRUE if asks about company docs/processes OR filters set ({has_filters})
+3. is_complex: TRUE if multi-step/conditions/comparisons
 
-1. FOLLOW-UP (is_follow_up):
-   TRUE if: uses pronouns (it/that/this), very short (yes/no/ok), asks for more details, references previous conversation
-   FALSE if: self-contained, new topic, makes sense without history
-
-2. INTERNAL DATA (needs_internal_data):
-   TRUE if: company-specific processes/docs, explicit filters, asks about company data
-   FALSE if: general knowledge, calculations, conversational, can use other tools (Slack/Jira)
-
-3. COMPLEXITY (is_complex, complexity_types):
-   TRUE if: multiple steps, conditions, comparisons, aggregations, or follow-up
-   Types: multi_step, conditional, comparison, aggregation, creation, action, follow_up
-
-BE CONSERVATIVE: Default to FALSE for needs_internal_data unless clearly company-specific.
-
-Return ONLY valid JSON (no markdown, no code blocks):
-{{"is_follow_up": bool, "needs_internal_data": bool, "is_complex": bool, "complexity_types": ["type1"], "reason": "brief reason"}}"""
+Return JSON only (no markdown):
+{{"is_follow_up": bool, "needs_internal_data": bool, "is_complex": bool, "complexity_types": ["type"], "reason": "brief"}}"""
 
         from langchain_core.messages import HumanMessage
-        # Optimize LLM call with max_tokens for faster response
+        # Optimize LLM call with max_tokens for faster response (200 tokens is enough for this JSON)
         try:
             # Try to bind max_tokens if LLM supports it
             if hasattr(llm, 'bind'):
-                llm_optimized = llm.bind(max_tokens=500)  # Limit response for speed
+                llm_optimized = llm.bind(max_tokens=200, temperature=0)  # Fast, deterministic
                 response = await llm_optimized.ainvoke([HumanMessage(content=intent_prompt)])
             else:
                 response = await llm.ainvoke([HumanMessage(content=intent_prompt)])

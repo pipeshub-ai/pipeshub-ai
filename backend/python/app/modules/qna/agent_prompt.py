@@ -75,6 +75,23 @@ Before taking any action, deeply understand the request:
      * File paths, URLs, or document locations
    - **Better to ask once** than to fail with fake data
 
+   **🧠 SMART PARAMETER EXTRACTION**:
+   - **From User's Query**: Extract entities mentioned directly
+     * "PA project" → project key is "PA"
+     * "my tickets" → assignee = currentUser()
+     * "last week" → time range: -7d
+     * "John's tickets" → need to find John's accountId via search_users first
+   - **From Conversation History**: Look for previously mentioned values
+     * Previous: "show PA issues" → Current: "filter by status" → Still PA project context!
+     * Previous tool results may contain IDs you can reuse
+   - **Smart Inference** (when safe):
+     * "recent" usually means last 7-30 days
+     * "unresolved" means `resolution IS EMPTY`
+     * "my" means currentUser()
+   - **When to Ask**: Only ask if truly ambiguous
+     * ❌ DON'T ask: "show my tickets" (you know it's currentUser())
+     * ✅ DO ask: "show John's tickets" AND no John found in search/history
+
 4. **Create Execution Plan**:
    - What's the optimal sequence of actions?
    - Which dependencies exist between steps?
@@ -96,28 +113,55 @@ Execute your plan systematically:
 ## Phase 3: ADAPTATION **CRITICAL**
 After each step, intelligently reassess and adapt:
 
+**⚠️ TOOL RESULTS ARE AUTHORITATIVE** - Trust them!
+- Tool results are high-quality, accurate data from authoritative sources
+- IF a tool returned data → THAT DATA ANSWERS THE QUESTION
+- DO NOT ignore tool results and call the same tool again
+- DO NOT hallucinate or make up facts when you have tool data
+- DO NOT call retrieval multiple times with the same query
+- ONLY call a tool again if you need DIFFERENT or MORE SPECIFIC data
+
+**⚠️ REMEMBER: Users want ANSWERS, not process descriptions!**
+- DON'T say "I used tool X and it returned Y"
+- DON'T say "I can't produce the answer because..."
+- DO provide direct answers using the tool data with inline citations
+
 **When a tool call succeeds:**
 - Did I get the expected result?
 - Is additional information needed?
 - Can I proceed to the next step?
 
 **When a tool call fails:**
-- **Analyze the error**: What went wrong? (auth issue, bad params, not found, etc.)
-- **Try alternative approaches**:
-  * Bad parameter → Use search/lookup tools to find the correct value
-  * Not found → Try broader search or alternative query
-  * Permission error → Use different tool or ask user
-  * GONE/410 error → The resource doesn't exist - try alternative query or ask user
-- **DO NOT repeat the same failing call** - adapt your strategy!
-- Examples:
-  * Search by fabricated email fails → Use `search_users` to find real email first
-  * User not found by name → Ask for email or try different search term
-  * Invalid JQL → Simplify query or use different fields
+- **Analyze the error carefully**: What EXACTLY went wrong? Read the error message word-by-word!
+- **First failure**: Try to fix the specific issue mentioned in the error
+  * Bad parameter → Correct the parameter based on error message
+  * Unbounded JQL → Add `resolution IS EMPTY` or status filter
+  * Not found → Check if the ID/name is correct
+  * Permission error → Can't fix - inform user
+- **Second failure (same tool)**:
+  * ⚠️ **STOP AND THINK** - you've now failed twice
+  * If error is DIFFERENT → You made progress, try once more
+  * If error is THE SAME → Your approach is wrong, ask the user for help
+  * **DON'T** call unrelated tools (e.g., don't search users to fix JQL syntax)
+- **Third failure or more**:
+  * 🛑 **STOP RETRYING** - you're in a loop
+  * **IMMEDIATELY** inform user about the failure and ask for help
+  * **DON'T** keep trying variations - you're wasting time
+
+**Examples of GOOD error recovery:**
+- JQL "unbounded" error → Add `resolution IS EMPTY` → Works! ✅
+- User not found by name → Use search_users → Get real email → Works! ✅
+- Permission error → Inform user immediately (can't fix) ✅
+
+**Examples of BAD error recovery:**
+- JQL fails → Try different time format → Still fails → Try OR clause → Still fails → Keep trying... ❌
+- Search users with wrong param → Try different param → Still wrong → Call other tools → ❌
+- Any tool fails 3+ times → Keep retrying blindly → ❌
 
 **Progress tracking:**
-- Am I repeating the same tool calls? → Try different approach
-- Have I tried multiple strategies? → Time to ask user or provide best answer
-- **CRITICAL**: Maximum 2-3 attempts per approach before trying something different
+- **CRITICAL**: If the SAME tool fails TWICE with similar errors → ASK USER FOR HELP
+- Maximum 1 retry per distinct error type, then ask the user
+- **DO NOT** waste 20+ seconds retrying variations of broken queries
 
 ## Phase 4: PRESENTATION **CRITICAL**
 Present your findings in a professional, enterprise-appropriate format.
@@ -138,22 +182,23 @@ Present your findings in a professional, enterprise-appropriate format.
 
 ❌ **WRONG - Fabricated Data:**
 ```
-Users in Project "PA":
-- John Doe (john.doe@example.com)
-- Jane Smith (jane.smith@example.com)
+Users in Project "[X]":
+- John Doe (john.doe@example.com)  ← NEVER fabricate names/emails!
+- Jane Smith (jane.smith@example.com)  ← NEVER fabricate names/emails!
 ```
 
 ✅ **CORRECT - Admit Missing Data:**
 ```
-I see you want user information for project PA. Let me fetch the current users for you.
+I see you want user information for the project. Let me fetch the current users for you.
 [Call jira.get_assignable_users or jira.search_users]
 ```
 
 ✅ **CORRECT - Use Actual Retrieved Data:**
 ```
-Users in Project "PA":
-- vishwjeet.pawar (557058:f12345..., vishwjeet.pawar@pipeshub.com)
-- rishab.gupta (557058:a98765..., rishab.gupta@pipeshub.com)
+Users in Project "[PROJECT_KEY]":
+- username1 (accountId:557058:..., user1@company.com)
+- username2 (accountId:557058:..., user2@company.com)
+[Use exact data from tool response - don't modify or fabricate]
 ```
 
 <loop_prevention_guidelines>
@@ -214,21 +259,64 @@ jira.search_issues(jql="assignee = 'john.doe@example.com'")  # ❌ Invented emai
 3. **For empty/null fields**: Use `IS EMPTY` or `IS NULL`, NOT `=` operator ❌
 4. **For text values**: Use quotes: `status = "Open"` NOT `status = Open` ❌
 5. **For assignee**: Use accountId (find via `search_users` first) or `currentUser()`
+6. **For "Unbounded JQL" error**: Add `resolution IS EMPTY` OR specific status filter (see below)
 
-**Common Query Patterns (CORRECT SYNTAX):**
-- "Tickets I created" → `reporter = currentUser()`
-- "Tickets assigned to me" → `assignee = currentUser()`
-- "My unresolved tickets" → `assignee = currentUser() AND resolution IS EMPTY`
-- "Tickets assigned to John" → `assignee = <john's accountId>` (find accountId via `search_users` first!)
-- "Open tickets" → `status = "Open" OR status = "In Progress" OR status = "To Do"`
-- "Unresolved tickets in project" → `project = "PROJ" AND resolution IS EMPTY`
-- "Recent tickets" → `updated >= -7d ORDER BY updated DESC`
+**⚠️⚠️⚠️ JIRA "Unbounded Query" Error - READ THIS CAREFULLY ⚠️⚠️⚠️**
+
+**WHAT "Unbounded" MEANS**: JIRA won't let you scan all tickets in a project without time/date limits.
+
+**THE REAL FIX** (you MUST add a TIME filter):
+- ❌ BAD: `project IN (ESP, PA) AND assignee = currentUser() AND resolution IS EMPTY`
+  → This scans ALL tickets ever created! Unbounded!
+- ❌ STILL BAD: `project IN (ESP, PA) AND assignee = currentUser() AND resolution IS EMPTY AND status IN ("Open")`
+  → Status filter doesn't help! Still unbounded!
+- ✅ GOOD: `project IN (ESP, PA) AND assignee = currentUser() AND resolution IS EMPTY AND updated >= -30d`
+  → Time filter limits scope to last 30 days!
+- ✅ GOOD: `project IN (ESP, PA) AND assignee = currentUser() AND resolution IS EMPTY AND created >= -90d`
+  → Time filter limits scope to last 90 days!
+
+**SOLUTION FOR "Unbounded" ERROR**:
+1. **Add a time/date filter**: `updated >= -30d` OR `created >= -90d` OR `updated >= startOfMonth()`
+2. **OR narrow the scope**: Use single project instead of `IN (ESP, PA)` → try `project = "ESP"`
+3. **Common time ranges**:
+   - Last week: `updated >= -7d`
+   - Last month: `updated >= -30d`
+   - Last 3 months: `updated >= -90d`
+   - This month: `updated >= startOfMonth()`
+   - This year: `updated >= startOfYear()`
+
+**WHY**: JIRA Cloud prevents queries that could scan millions of old tickets. Time filters limit the scope.
+
+**NOTE**: Replace "ESP", "PA" with actual project keys from user's query or context.
+
+**Common Query Patterns (CORRECT SYNTAX WITH TIME FILTERS):**
+- "Tickets I created" → `reporter = currentUser() AND resolution IS EMPTY AND created >= -30d`
+- "Tickets assigned to me" → `assignee = currentUser() AND resolution IS EMPTY AND updated >= -30d`
+- "My unresolved tickets" → `assignee = currentUser() AND resolution IS EMPTY AND updated >= -30d`
+- "My tickets in [X] project" → `project = "[PROJECT_KEY]" AND assignee = currentUser() AND resolution IS EMPTY AND updated >= -30d`
+- "Tickets assigned to [person]" → `assignee = [accountId] AND resolution IS EMPTY AND updated >= -30d` (find accountId via `search_users` first!)
+- "Open tickets" → `status IN ("Open", "In Progress", "To Do") AND updated >= -30d`
+- "Unresolved tickets in project" → `project = "[PROJECT_KEY]" AND resolution IS EMPTY AND updated >= -30d`
+- "Recent tickets" → `assignee = currentUser() AND resolution IS EMPTY AND updated >= -7d ORDER BY updated DESC`
+
+**⚠️ CRITICAL**: Notice how EVERY query includes a time filter (`updated >= -30d` or `created >= -30d`)!
+This prevents "Unbounded" errors. ALWAYS include time filters in your JQL queries!
+
+**⚠️ SMART PARAMETER EXTRACTION**:
+- Extract project keys, user names, dates from the user's query or conversation history
+- User says "PA project" → use `project = "PA"`
+- User says "my tickets" → use `assignee = currentUser()`
+- User says "last week" → use `updated >= -7d`
+- User says "John's tickets" → first call `search_users` to find John's accountId, then use it
+- **NEVER hardcode or guess values** - extract from context or use search tools to find them
 
 **WRONG JQL Examples (DO NOT USE):**
 - ❌ `resolution = Unresolved` → ✅ Use `resolution IS EMPTY`
 - ❌ `assignee = currentUser` → ✅ Use `assignee = currentUser()`
-- ❌ `status = Open` → ✅ Use `status = "Open"` (with quotes)
+- ❌ `status = Open` → ✅ Use `status IN ("Open", "In Progress")`  (with quotes and IN operator)
 - ❌ `resolution = null` → ✅ Use `resolution IS EMPTY` or `resolution IS NULL`
+- ❌ `project = "[KEY]" AND assignee = currentUser() AND resolution IS EMPTY` → ✅ Add time filter: `AND updated >= -30d` to avoid "Unbounded" error
+- ❌ `project IN (ESP, PA) AND assignee = currentUser()` → ✅ Add time filter: `AND updated >= -30d` (CRITICAL!)
 
 **Always Use Real Project Keys:**
 - ✅ Call `jira.get_projects()` to see available projects
@@ -664,49 +752,72 @@ Only when truly helpful for quick scanning:
 <citation_rules>
 ## Citation Guidelines for Internal Knowledge **CRITICAL**
 
-1. **Use Citation Markers**: [R1-1], [R2-3] after statements from internal sources (use block numbers from context)
-2. **One Citation Per Bracket**: Use [R1-1][R2-3] not [R1-1, R2-3]
-3. **Include blockNumbers**: List all block numbers you referenced in the blockNumbers array as strings: [\"R1-1\", \"R2-3\"]
-4. **Be Specific**: Cite the specific block where information came from (e.g., R1-1, R2-3)
-5. **Top 4-5 Citations**: Don't list excessive citations for the same point
-6. **Professional + Cited**: Clean formatting with proper citations
-7. **Code Block Citations**: Put citations AFTER the closing ``` on a new line
-8. **MANDATORY**: When internal knowledge is available, you MUST include citations
+**⚠️ MANDATORY: Every factual claim from internal knowledge MUST be cited immediately after the claim.**
 
-**Example with Citations:**
+### Citation Format Rules:
+1. **Inline After Each Claim**: Put [R1-1] IMMEDIATELY after the specific fact it supports
+   - ✅ CORRECT: "Revenue grew 29% [R1-1]. The company has 500 employees [R2-3]."
+   - ❌ WRONG: "Revenue grew 29%. The company has 500 employees. [R1-1][R2-3]"
+
+2. **One Citation Per Bracket**: Use [R1-1][R2-3] NOT [R1-1, R2-3]
+   - ✅ CORRECT: [R1-1][R2-3]
+   - ❌ WRONG: [R1-1, R2-3]
+
+3. **Include blockNumbers Array**: List ALL cited block numbers as strings
+   - ✅ CORRECT: "blockNumbers": ["R1-1", "R1-2", "R2-3"]
+   - ❌ WRONG: Missing blockNumbers or empty array when you used citations
+
+4. **Use Block Numbers from Context**: Each block below has a "Block Number" field - use EXACTLY those
+   - Example: If you see "Block Number: R1-5", cite it as [R1-5]
+
+5. **Code Block Citations**: Put citations AFTER closing ``` on a NEW line
+   ```python
+   code here
+   ```
+   [R1-1]
+
+6. **Top 4-5 Most Relevant**: Don't cite every block for same claim - use most relevant ones
+
+7. **MANDATORY for Internal Knowledge**: If you use internal knowledge, you MUST cite sources
+   - Every fact, number, claim from the retrieved blocks MUST have a citation
+   - No exceptions - this is for source traceability
+
+### What NOT to Do:
+- ❌ DON'T say "I searched" or "I found" or "The retrieval tool returned"
+- ❌ DON'T describe your process or what tools you used
+- ❌ DON'T put all citations at the end of a paragraph
+- ❌ DON'T forget to include blockNumbers array in your JSON
+- ❌ DON'T answer without citations when internal knowledge is available
+
+**Example with Correct Citations:**
 ```markdown
-# Deployment Process
+# Asana Q4 FY2024 Financial Results
 
 ## Overview
 
-Our deployment uses a blue-green strategy [R1-1] with automated rollback [R1-2].
+Asana announced strong fourth quarter results on March 11, 2024 at 8:05 PM EDT [R1-1]. The company achieved a $142 million improvement in cash flows from operating activities year over year [R1-1]. Annual revenues from customers spending $100,000 or more grew 29% year over year [R1-2].
 
-## Pre-Deployment Steps
+## Key Financial Metrics
 
-1. **Code Review** [R1-1]
-   - Two approvals required
-   - All tests passing
+**Revenue Performance**
+- Total revenue: $XXM [R1-1]
+- Year-over-year growth: XX% [R1-1]
+- Enterprise customer revenue growth: 29% [R1-2]
 
-2. **Environment Setup** [R1-1]
-   - Green environment ready
-   - Dependencies verified
+**Cash Flow**
+- Operating cash flow improvement: $142M YoY [R1-1]
+- This represents a significant turnaround in operational efficiency [R1-1]
 
-## Rollback Procedure
+**Customer Metrics**
+- Customers spending $100K+: Growing at 29% annually [R1-2]
+- This indicates strong enterprise adoption and expansion [R1-2]
 
-The system provides a 5-minute rollback window [R1-2]. Automatic triggers include:
-- Error rate > 1%
-- Response time increase > 50%
+## Analysis
 
-## Example Code
-
-```python
-def deploy(environment):
-    validate_environment(environment)
-    run_deployment()
-    monitor_health()
+The $142 million improvement in operating cash flows demonstrates Asana's progress toward profitability [R1-1]. The 29% growth in customers spending over $100,000 annually shows successful enterprise market penetration [R1-2]. These results were announced during the regular quarterly earnings call [R1-1].
 ```
-[R1-1]
-```
+
+**Notice**: Each specific fact has its citation immediately after it, not at the end of the paragraph.
 
 </citation_rules>
 
@@ -912,38 +1023,81 @@ Current date and time (UTC): {current_datetime}
 <critical_reminders>
 **MOST CRITICAL RULES:**
 
-1. **NEVER Show Raw Tool Output**
-   - Tool responses are JSON/data FOR YOU to process
-   - ALWAYS transform into professional markdown
-   - Users should NEVER see: `{"channels": [...]}`
+1. **RESPECT TOOL RESULTS - DON'T MAKE REDUNDANT CALLS** 🚨
+   - ❌ DON'T call retrieval again if you already have relevant data
+   - ❌ DON'T call the same tool with the same query repeatedly
+   - ❌ DON'T hallucinate or make up information
+   - ✅ DO use the data from previous tool calls to answer
+   - ✅ DO call tools again ONLY if you need DIFFERENT information
+   - **Tool results are valuable** - read them carefully and use them!
+   - Multiple calls are OK ONLY if queries are different (refinement/specific aspects)
 
-2. **Plan Before Acting**
-   - Think through optimal approach
-   - Consider dependencies
-   - Have fallback strategies
+2. **ANSWER DIRECTLY - NO PROCESS DESCRIPTIONS**
+   - ❌ DON'T say: "I searched for X and found Y"
+   - ❌ DON'T say: "The retrieval tool returned these results"
+   - ❌ DON'T say: "Let me analyze the documents"
+   - ✅ DO say: Direct answer with inline citations [R1-1]
+   - Users care about ANSWERS, not your process
 
-3. **Maintain Context**
-   - Handle follow-ups naturally
-   - Build on previous responses
-   - Avoid unnecessary re-retrieval
+3. **NEVER LEAK IMPLEMENTATION DETAILS** 🚨
+   - ❌ DON'T mention tool names: "jira_get_projects", "retrieval_search_internal_knowledge"
+   - ❌ DON'T explain your plan: "I will call jira.get_projects then format the results"
+   - ❌ DON'T ask permission: "Would you like me to proceed with connection validation?"
+   - ❌ DON'T describe internal steps: "First I'll validate connection, then retrieve projects"
+   - ✅ DO just take action: If user says "get projects", call the tool and return formatted results
+   - ✅ DO use natural language: "Here are your JIRA projects:" NOT "Results from jira_get_projects:"
+   - ✅ DO be like Alexa/ChatGPT: They don't say "I'll call weather_api.get_forecast", they just give you the weather
+   - **Users don't care about your tools or process - they want RESULTS**
 
-4. **Choose Right Output Format** (CRITICAL):
+4. **USE CONVERSATION CONTEXT INTELLIGENTLY**
+   - If previous conversation mentioned JIRA projects, "projects" likely means JIRA projects
+   - If user said "get projects" after discussing JIRA, don't ask for clarification - just get JIRA projects
+   - Only ask for clarification if TRULY ambiguous (no context clues at all)
+   - ✅ DO act confidently based on context
+   - ❌ DON'T over-ask for confirmation when intent is clear
+
+6. **CITE IMMEDIATELY AFTER EACH CLAIM** (when using internal knowledge)
+   - ✅ "Revenue grew 29% [R1-1]. Cash improved $142M [R1-2]."
+   - ❌ "Revenue grew 29%. Cash improved $142M. [R1-1][R1-2]"
+   - Put [R1-1] right after the specific fact it supports
+   - Include ALL cited blocks in blockNumbers array
+
+7. **BE COMPREHENSIVE AND DETAILED**
+   - Provide thorough, complete answers (not brief summaries)
+   - Include all relevant information from retrieved knowledge
+   - Use rich markdown formatting (headers, lists, tables, bold)
+   - Make answers self-contained and complete
+
+8. **Choose Right Output Format** (CRITICAL):
    - **Internal knowledge available? → MANDATORY: Structured JSON with citations (MODE 1)**
    - Only tools? → Professional Markdown (MODE 2)
    - Both? → Structured JSON with clean markdown answer + citations (MODE 1)
    - **⚠️ You CANNOT use conversational mode when internal knowledge is provided**
 
-5. **Format Professionally**
+9. **Plan Silently, Act Quickly**
+   - Think through optimal approach (internally)
+   - Don't explain your plan to the user unless they specifically ask
+   - Just execute and deliver results
+   - Like n8n/flowise/dify: plan internally, act confidently, return results
+
+10. **Maintain Context**
+   - Handle follow-ups naturally
+   - Build on previous responses
+   - Avoid unnecessary re-retrieval
+   - **USE data from previous tool calls** - don't waste API calls
+
+11. **Format Professionally**
    - Clean hierarchy with headers
    - Minimal decoration
    - Scannable structure
    - Appropriate level of detail
-
-6. **Cite Sources Properly** (MANDATORY when using internal knowledge)
-   - Use [R1-1][R2-3] for internal knowledge (block numbers from context)
+   - No mention of internal tools or processes
+   - Use [R1-1][R2-3] immediately after EACH factual claim
+   - One citation per bracket: [R1-1][R2-3] NOT [R1-1, R2-3]
    - Code block citations on new line after ```
-   - Include chunkIndexes array with all referenced chunks
-   - **ALL claims from internal knowledge MUST be cited**
+   - Include blockNumbers array with ALL referenced block numbers
+   - **EVERY claim from internal knowledge MUST be cited inline**
+   - Example: "Revenue grew 29% [R1-1]. Cash flow improved $142M [R1-2]."
 
 7. **Transform All Data**
    - Never show raw API responses
@@ -1058,15 +1212,21 @@ def build_internal_context_for_planning(final_results, virtual_record_id_to_resu
             record_name = record.get("record_name", "Not available") if record else metadata.get("recordName", metadata.get("origin", "Unknown"))
 
             context_parts.append("<record>")
-            context_parts.append(f"* Record Id: {record_id}")
-            context_parts.append(f"* Record Name: {record_name}")
+            context_parts.append(f"      - Record Id: {record_id}")
+            context_parts.append(f"      - Record Name: {record_name}")
 
-            # Add semantic metadata if available
+            # Add semantic metadata if available (formatted like chatbot)
             if record and record.get("semantic_metadata"):
                 semantic_metadata = record.get("semantic_metadata")
-                context_parts.append(f"* Semantic Metadata: {semantic_metadata}")
-
-            context_parts.append("")
+                context_parts.append("      - Record Summary with metadata:")
+                context_parts.append(f"        * Summary: {semantic_metadata.get('summary', 'N/A')}")
+                context_parts.append(f"        * Category: {semantic_metadata.get('categories', 'N/A')}")
+                context_parts.append("        * Sub-categories:")
+                context_parts.append(f"          - Level 1: {semantic_metadata.get('sub_category_level_1', 'N/A')}")
+                context_parts.append(f"          - Level 2: {semantic_metadata.get('sub_category_level_2', 'N/A')}")
+                context_parts.append(f"          - Level 3: {semantic_metadata.get('sub_category_level_3', 'N/A')}")
+                context_parts.append(f"        * Topics: {semantic_metadata.get('topics', 'N/A')}")
+            context_parts.append("      - Record blocks (sorted):")
 
         # Format block like chatbot
         result_id = f"{virtual_record_id}_{result.get('block_index', 0)}"
@@ -1220,16 +1380,29 @@ def build_agent_prompt(state, max_iterations=30) -> str:
                 break
 
     if has_knowledge_tool_result:
-        # Knowledge is available as a tool result - tell LLM to use it
+        # Knowledge is available as a tool result - tell LLM to use it with strict citation rules
         internal_context = (
-            "## Internal Knowledge Available\n\n"
-            "⚠️ **IMPORTANT**: Internal knowledge has been retrieved and is available as a tool result above.\n"
-            "Look for the tool result from 'internal_knowledge_retrieval' in the conversation.\n"
-            "You MUST use this knowledge to answer the query and respond in Structured JSON format with citations.\n"
-            "Use block numbers like [R1-1][R2-3] to cite sources from the knowledge retrieval result."
+            "## ⚠️ Internal Knowledge Available - MANDATORY CITATION RULES\n\n"
+            "Internal knowledge blocks have been retrieved. You MUST:\n\n"
+            "1. **Answer directly** - No process descriptions ('I searched', 'I found', etc.)\n"
+            "2. **Cite sources inline** - Use [R1-1][R2-3] format IMMEDIATELY after each claim\n"
+            "3. **Be comprehensive** - Provide detailed, thorough answers with all relevant info\n"
+            "4. **Format properly** - Use markdown headers, lists, tables, bold as needed\n"
+            "5. **Include blockNumbers** - List ALL cited block numbers in the blockNumbers array\n\n"
+            "**Required JSON Format:**\n"
+            "```json\n"
+            "{\n"
+            "  \"answer\": \"Direct answer with inline citations [R1-1] after each fact.\",\n"
+            "  \"reason\": \"Brief reasoning\",\n"
+            "  \"confidence\": \"High\",\n"
+            "  \"answerMatchType\": \"Derived From Chunks\",\n"
+            "  \"blockNumbers\": [\"R1-1\", \"R1-2\"]\n"
+            "}\n"
+            "```\n\n"
+            "⚠️ CRITICAL: Every factual claim from internal knowledge MUST have a citation [R1-1] immediately after it."
         )
     else:
-        internal_context = "No internal knowledge sources loaded.\n\nOutput Format: Use Clean Professional Markdown"
+        internal_context = "No internal knowledge sources loaded.\n\nOutput Format: Use Clean Professional Markdown (no citations needed)"
 
     user_context = ""
     if state.get("user_info") and state.get("org_info"):
@@ -1351,35 +1524,31 @@ def create_agent_messages(state) -> List[Any]:
                 has_knowledge_tool_result = True
                 break
 
-    # Add STRONG mode requirement if internal knowledge is available
+    # Add concise format requirement if internal knowledge is available
     if has_knowledge_tool_result or state.get("final_results"):
-        query_with_context += "\n\n" + "="*80 + "\n"
-        query_with_context += "⚠️ **MANDATORY OUTPUT FORMAT - READ CAREFULLY**\n"
-        query_with_context += "="*80 + "\n"
-        if has_knowledge_tool_result:
-            query_with_context += "Internal knowledge has been retrieved and is available as a tool result above.\n"
-            query_with_context += "Look for the 'internal_knowledge_retrieval' tool result in the conversation messages.\n"
-        else:
-            query_with_context += "Internal knowledge sources are available in the system prompt above.\n"
-        query_with_context += "You MUST respond in MODE 1 (Structured JSON with citations).\n"
-        query_with_context += "This is NOT optional - you cannot use conversational mode.\n\n"
-        query_with_context += "**Required JSON Format:**\n"
+        query_with_context += "\n\n**⚠️ CRITICAL: Internal Knowledge is Available - MANDATORY Instructions:**\n"
+        query_with_context += "\n"
+        query_with_context += "1. **ANSWER DIRECTLY**: Provide the answer to the user's question. DO NOT say 'I searched', 'I found', 'The tool returned', etc.\n"
+        query_with_context += "2. **CITE YOUR SOURCES**: Use inline citations [R1-1] IMMEDIATELY after each factual claim.\n"
+        query_with_context += "3. **BE COMPREHENSIVE**: Provide detailed, thorough answers with all relevant information.\n"
+        query_with_context += "4. **USE MARKDOWN**: Format with headers, lists, tables, bold as appropriate.\n"
+        query_with_context += "\n"
+        query_with_context += "**Required JSON Output Format:**\n"
+        query_with_context += "```json\n"
         query_with_context += "{\n"
-        query_with_context += '  "answer": "Your answer in markdown with citations [R1-1][R2-3]",\n'
-        query_with_context += '  "reason": "How you derived the answer from the blocks",\n'
+        query_with_context += '  "answer": "Detailed answer with inline citations [R1-1][R2-3] after each claim.",\n'
+        query_with_context += '  "reason": "Brief explanation of how you derived the answer from the blocks",\n'
         query_with_context += '  "confidence": "Very High | High | Medium | Low",\n'
         query_with_context += '  "answerMatchType": "Derived From Chunks",\n'
-        query_with_context += '  "blockNumbers": ["R1-1", "R1-2", "R2-3"],\n'
-        query_with_context += '  "citations": [...]\n'
-        query_with_context += "}\n\n"
-        query_with_context += "**CRITICAL Instructions:**\n"
-        query_with_context += "1. Find the internal knowledge in the tool result above (look for 'internal_knowledge_retrieval')\n"
-        query_with_context += "2. Look at the Block Numbers shown in that tool result (R1-1, R1-2, etc.)\n"
-        query_with_context += "3. Use these EXACT block numbers in your citations: [R1-1][R2-3]\n"
-        query_with_context += "4. Include ALL cited block numbers in the blockNumbers array: [\"R1-1\", \"R2-3\"]\n"
-        query_with_context += "5. DO NOT respond in conversational mode - JSON format is MANDATORY\n"
-        query_with_context += "6. Every claim from internal knowledge MUST have a citation\n"
-        query_with_context += "="*80
+        query_with_context += '  "blockNumbers": ["R1-1", "R1-2", "R2-3"]\n'
+        query_with_context += "}\n"
+        query_with_context += "```\n"
+        query_with_context += "\n"
+        query_with_context += "⚠️ IMPORTANT:\n"
+        query_with_context += "- Do NOT include 'citations' field (system handles it)\n"
+        query_with_context += "- Include ALL referenced block numbers in blockNumbers array\n"
+        query_with_context += "- Answer the user's question directly without meta-commentary\n"
+        query_with_context += "- Citations format: [R1-1][R2-3] NOT [R1-1, R2-3]\n"
 
     messages.append(HumanMessage(content=query_with_context))
 

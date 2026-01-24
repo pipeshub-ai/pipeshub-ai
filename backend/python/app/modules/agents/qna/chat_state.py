@@ -68,6 +68,7 @@ class ChatState(TypedDict):
     # Tool calling specific fields - no ToolExecutor dependency
     pending_tool_calls: Optional[bool]  # Whether the agent has pending tool calls
     tool_results: Optional[List[Dict[str, Any]]]  # Results of current tool execution
+    tool_records: Optional[List[Dict[str, Any]]]  # Full record data from tools (for citation normalization)
 
     # ⚡ PERFORMANCE: Cache fields (must be in TypedDict to persist between nodes!)
     _cached_agent_tools: Optional[List[Any]]  # Cached list of tool wrappers

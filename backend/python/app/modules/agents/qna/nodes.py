@@ -550,7 +550,22 @@ def build_simple_tool_context(state: ChatState) -> str:
             error_lower = result_str.lower()
             retry_guidance = []
 
-            if "uuid" in error_lower or "valid uuid" in error_lower or "validation" in error_lower:
+            # JIRA-specific errors (most common)
+            if "unbounded jql" in error_lower or "unbounded query" in error_lower:
+                retry_guidance.append("  🚨 **UNBOUNDED JQL ERROR** - You MUST add a TIME/DATE FILTER!")
+                retry_guidance.append("  ⚠️ **ROOT CAUSE**: JIRA won't scan all tickets without time limits")
+                retry_guidance.append("  ✅ **CORRECT FIX**: Add `AND updated >= -30d` (last 30 days) to your JQL")
+                retry_guidance.append("  ✅ **ALTERNATIVE**: Add `AND created >= -90d` (last 90 days)")
+                retry_guidance.append("  ❌ **DON'T**: Just add status filters - that won't fix unbounded errors!")
+                retry_guidance.append("  📝 **EXAMPLE**: If your JQL is `project IN (ESP, PA) AND assignee = currentUser() AND resolution IS EMPTY`")
+                retry_guidance.append("                 → FIX IT TO: `project IN (ESP, PA) AND assignee = currentUser() AND resolution IS EMPTY AND updated >= -30d`")
+                retry_guidance.append("  🔄 **ACTION**: RETRY with time filter added: `AND updated >= -30d` or `AND created >= -90d`")
+            elif "username or property" in error_lower and "must be provided" in error_lower:
+                retry_guidance.append("  🚨 **CRITICAL FIX**: jira_search_users requires 'username' parameter, not 'query'")
+                retry_guidance.append("  ✅ **CORRECT**: Use the user's display name or email as 'username' parameter")
+                retry_guidance.append("  ❌ **WRONG**: Don't search for users to fix JQL errors - just fix the JQL!")
+                retry_guidance.append("  💡 **HINT**: Use `currentUser()` in JQL instead of searching for user IDs")
+            elif "uuid" in error_lower or "valid uuid" in error_lower or "validation" in error_lower:
                 retry_guidance.append("  💡 **FIX**: Use a valid UUID format (32 hex chars with dashes, e.g., 12345678-1234-1234-1234-123456789012)")
                 retry_guidance.append("  🔍 **HINT**: Use the search tool first to get valid IDs, or ask the user")
             elif "permission" in error_lower or "insufficient" in error_lower or "403" in error_lower:
@@ -605,12 +620,35 @@ def build_simple_tool_context(state: ChatState) -> str:
                 context_parts.append("   🛑 **MAX RETRIES EXCEEDED** - Cannot retry again")
                 context_parts.append("   📝 **ACTION**: Inform user about the failure and what went wrong")
             else:
-                context_parts.append("   🔄 **CAN RETRY** - Analyze the error and fix the parameters")
-                context_parts.append("   💡 **ACTION**: Correct the parameters based on error message and retry")
+                context_parts.append("   🔄 **CAN RETRY ONCE** - Analyze the error and fix the parameters")
+                # Add specific guidance based on tool and error
+                if tool_name == "jira_search_issues" and "unbounded" in error_preview.lower():
+                    context_parts.append("   🎯 **SPECIFIC FIX**: Add a TIME FILTER → `AND updated >= -30d` (last 30 days)")
+                    context_parts.append("   ❌ **DON'T**: Just add status filters - that won't fix unbounded!")
+                    context_parts.append("   ❌ **DON'T**: Call jira_search_users or other irrelevant tools")
+                    context_parts.append("   ✅ **DO**: Retry jira_search_issues with TIME FILTER added to your JQL")
+                elif tool_name == "jira_search_users" and "username" in error_preview.lower():
+                    context_parts.append("   🎯 **SPECIFIC FIX**: If you're trying to fix a JQL error, DON'T search users")
+                    context_parts.append("   ❌ **DON'T**: Keep trying to search users when the issue is JQL syntax")
+                    context_parts.append("   ✅ **DO**: Use `currentUser()` in your JQL instead of user IDs")
+                else:
+                    context_parts.append("   💡 **ACTION**: Correct the parameters based on error message and retry")
 
-        if any(retry_count.get(tool, 0) < MAX_RETRIES_PER_TOOL for tool in failed_tool_details):
-            context_parts.append("\n✅ **YOU CAN RETRY** - Fix the parameters and try again")
+        # Check if we're seeing repeated similar errors (agent not learning)
+        total_failures = sum(details["count"] for details in failed_tool_details.values())
+        unique_tools_failed = len(failed_tool_details)
+
+        if total_failures >= 3 and unique_tools_failed <= 2:
+            # Same tool(s) failing multiple times = agent not learning from errors
+            context_parts.append("\n🚨 **STOP RETRYING** - You've failed 3+ times with similar errors")
+            context_parts.append("📝 **ACTION**: The issue is likely with the API requirements or user permissions")
+            context_parts.append("💡 **WHAT TO DO**: Inform the user about the error and ask them for help")
+            context_parts.append("❌ **DON'T**: Keep trying variations of the same broken approach")
+            context_parts.append("✅ **DO**: Explain what failed and ask user to clarify their requirements")
+        elif any(retry_count.get(tool, 0) < MAX_RETRIES_PER_TOOL for tool in failed_tool_details):
+            context_parts.append("\n✅ **YOU CAN RETRY ONCE** - Fix the parameters and try again")
             context_parts.append("🔍 **HOW TO FIX**: Read error messages carefully, they tell you exactly what's wrong")
+            context_parts.append("⚠️ **WARNING**: If retry fails again, STOP and ask the user for help")
         else:
             context_parts.append("\n🛑 **MAX RETRIES EXCEEDED** - Cannot retry these tools")
             context_parts.append("📝 **ACTION**: Provide final response explaining what succeeded and what failed")
@@ -1119,18 +1157,70 @@ async def agent_node(state: ChatState, config: RunnableConfig, writer: StreamWri
             # This gives LLM enough context to generate complete responses
             # while keeping token count low for speed
 
-            if iteration_count > 0:
-                # Response generation stage: Use smart summary
-                tool_context = "\n\n**Available Data:**\n"
-                for result in state["all_tool_results"][-3:]:  # Last 3 tool results
-                    tool_name = result.get("tool_name", "unknown")
-                    tool_result = result.get("result", {})
+            # CRITICAL FIX: Inject full content IMMEDIATELY after first retrieval
+            # This prevents agent from calling retrieval multiple times
+            has_retrieval_data = state.get("final_results") and len(state["final_results"]) > 0
+            should_inject_full_content = iteration_count > 0 and has_retrieval_data
 
-                    # Create smart summary
-                    summary = DataOptimizer.create_summary(tool_result, tool_name)
-                    tool_context += f"\n{summary}"
+            if should_inject_full_content:
+                # Response generation stage: Check if we have retrieval data to inject
+                if state.get("final_results") and len(state["final_results"]) > 0:
+                    # CRITICAL: For final response, inject FULL content from retrieval results
+                    # This allows LLM to generate accurate answers with proper context
+                    logger.info(f"📄 Injecting {len(state['final_results'])} full retrieval results")
 
-                tool_context += "\n\n**Note**: Use this data to provide a complete, accurate response. All data is available."
+                    tool_context = "\n\n" + "=" * 80 + "\n"
+                    tool_context += "📚 RETRIEVED DATA - HIGH QUALITY INFORMATION\n"
+                    tool_context += "=" * 80 + "\n\n"
+                    tool_context += "⚠️ **YOU MUST USE THIS DATA**: This is authoritative information retrieved from internal knowledge.\n\n"
+                    tool_context += "**DECISION RULES**:\n"
+                    tool_context += "1. IF this data answers the question → Use it and provide answer with citations [R1-1]\n"
+                    tool_context += "2. IF this data is insufficient → Call retrieval again with a DIFFERENT, more specific query\n"
+                    tool_context += "3. DO NOT hallucinate. DO NOT make up facts. ONLY use data below or call retrieval for more.\n"
+                    tool_context += "4. Use conversation history to extract parameters (project keys, user names, etc.) - DON'T hardcode!\n\n"
+                    tool_context += f"**CURRENT DATA**: {len(state['final_results'])} blocks available below\n\n"
+
+                    for idx, result in enumerate(state["final_results"][:15], 1):  # Max 15 blocks (~22k chars = ~5.5k tokens)
+                        block_num = result.get("block_number", f"Block-{idx}")
+                        content = result.get("content", "")
+                        metadata = result.get("metadata", {})
+
+                        if isinstance(content, list):
+                            # Handle list format (e.g., [{"type": "text", "text": "..."}])
+                            text_parts = []
+                            for item in content:
+                                if isinstance(item, dict) and item.get("type") == "text":
+                                    text_parts.append(item.get("text", ""))
+                            content = "\n".join(text_parts)
+                        elif isinstance(content, dict):
+                            content = content.get("text", str(content))
+
+                        # Truncate very long content blocks (keep first 1500 chars each for speed)
+                        if len(content) > 1500:
+                            content = content[:1500] + "..."
+
+                        tool_context += f"\n### {block_num}\n"
+                        tool_context += f"**Source**: {metadata.get('record_name', 'Unknown')}\n"
+                        tool_context += f"**Content**: {content}\n"
+                        tool_context += f"**→ Cite as: [{block_num}]**\n"
+                        tool_context += "-" * 80 + "\n"
+
+                    tool_context += "\n" + "=" * 80 + "\n"
+                    tool_context += "✅ **INSTRUCTIONS**: Answer the user's question using ONLY the data above.\n"
+                    tool_context += "Include citations [block_number] after each fact. DO NOT call retrieval again.\n"
+                    tool_context += "=" * 80 + "\n"
+                else:
+                    # No retrieval data: Use smart summary
+                    tool_context = "\n\n**Available Data:**\n"
+                    for result in state["all_tool_results"][-3:]:  # Last 3 tool results
+                        tool_name = result.get("tool_name", "unknown")
+                        tool_result = result.get("result", {})
+
+                        # Create smart summary
+                        summary = DataOptimizer.create_summary(tool_result, tool_name)
+                        tool_context += f"\n{summary}"
+
+                    tool_context += "\n\n**Note**: Use this data to provide a complete, accurate response. All data is available."
             else:
                 # Tool selection stage: Minimal context
                 tool_context = PromptOptimizer.create_concise_tool_context(state["all_tool_results"])
@@ -1160,7 +1250,7 @@ async def agent_node(state: ChatState, config: RunnableConfig, writer: StreamWri
         if original_count > optimized_count:
             logger.debug(f"⚡ Optimized messages: {original_count} → {optimized_count} ({original_count - optimized_count} removed)")
 
-        # ⚡ CRITICAL: Validate message sequence before sending to OpenAI
+        # ⚡ CRITICAL: Validate message sequence before sending to LLM (required by most providers)
         is_valid, error_msg = PromptOptimizer.validate_message_sequence(cleaned_messages)
         if not is_valid:
             logger.error(f"❌ Message validation failed: {error_msg}")
@@ -1261,17 +1351,127 @@ async def agent_node(state: ChatState, config: RunnableConfig, writer: StreamWri
 
         # Check for tool calls
         if hasattr(response, 'tool_calls') and response.tool_calls:
-            tool_count = len(response.tool_calls)
-            logger.info(f"🔧 Agent decided to use {tool_count} tools")
+            # Smart duplicate detection: Only filter obvious duplicates with identical params
+            # Allow intentional retries with different parameters or for refinement
+            filtered_tool_calls = []
+            has_retrieval_data = state.get("final_results") and len(state["final_results"]) > 0
+            executed_tool_signatures = set()
 
-            # Log which tools
-            tool_names = []
+            # Build signatures of previously executed tools
+            for tool_result in state.get("all_tool_results", []):
+                if isinstance(tool_result, dict):
+                    tool_sig = f"{tool_result.get('name')}:{str(tool_result.get('args', {}))}"
+                    executed_tool_signatures.add(tool_sig)
+
             for tc in response.tool_calls:
                 tool_name = tc.get("name") if isinstance(tc, dict) else tc.name
-                tool_names.append(tool_name)
-            logger.debug(f"Tools to execute: {', '.join(tool_names)}")
+                tool_args = tc.get("args", {}) if isinstance(tc, dict) else (tc.args if hasattr(tc, 'args') else {})
+                tool_signature = f"{tool_name}:{str(tool_args)}"
 
-            state["pending_tool_calls"] = True
+                # Check for exact duplicate (same tool + same args)
+                if tool_signature in executed_tool_signatures:
+                    logger.info(f"⚠️ Skipping exact duplicate call: {tool_name} with same params")
+                    continue
+
+                # For retrieval: allow different queries but block true duplicates
+                if tool_name == "retrieval_search_internal_knowledge":
+                    # Smart blocking: Allow refinement, block wasteful duplicates
+                    # This enables standard agent behavior (like n8n, flowise, etc)
+
+                    # Get the query from this call
+                    current_query = tool_args.get("query", "")
+
+                    # Track previous retrieval queries in state
+                    if "retrieval_queries" not in state:
+                        state["retrieval_queries"] = []
+
+                    # Check for EXACT duplicate query
+                    if current_query and current_query in state["retrieval_queries"]:
+                        logger.warning(f"⚠️ Blocking EXACT DUPLICATE retrieval query: '{current_query[:80]}...'")
+                        logger.info(f"🎯 Agent should use existing {len(state.get('final_results', []))} results instead")
+                        continue
+
+                    # Check for SIMILAR queries using simple word overlap (> 60% overlap = duplicate)
+                    # This catches cases like "Asana Q4 2024" vs "Asana fourth quarter fiscal 2024"
+                    should_skip_similar = False
+                    if current_query and state["retrieval_queries"]:
+                        current_words = set(current_query.lower().split())
+                        for prev_query in state["retrieval_queries"]:
+                            prev_words = set(prev_query.lower().split())
+                            if len(current_words) > 0 and len(prev_words) > 0:
+                                overlap = len(current_words & prev_words)
+                                similarity = overlap / max(len(current_words), len(prev_words))
+                                if similarity > 0.6:  # More than 60% overlap = similar enough
+                                    logger.warning(f"⚠️ Blocking SIMILAR retrieval query ({similarity:.0%} overlap)")
+                                    logger.warning(f"   Previous: '{prev_query[:60]}...'")
+                                    logger.warning(f"   Current:  '{current_query[:60]}...'")
+                                    logger.info(f"🎯 Agent should use existing {len(state.get('final_results', []))} results")
+                                    should_skip_similar = True
+                                    break  # Found similar query, no need to check more
+
+                    if should_skip_similar:
+                        continue  # Skip this tool call - don't add to filtered list
+
+                    # Check for excessive calls (safety limit: max 2 retrieval calls for same topic)
+                    # Chatbot does ONE retrieval, agent should match that efficiency
+                    retrieval_count = len(state.get("retrieval_queries", []))
+                    if retrieval_count >= 2:
+                        logger.warning(f"⚠️ Blocking retrieval - already made {retrieval_count} calls")
+                        logger.warning(f"   Agent has {len(state.get('final_results', []))} results - should answer now")
+                        logger.info("🎯 Chatbot does 1 retrieval → answer. Agent should match that efficiency.")
+                        continue
+
+                    # This is a NEW query or first call - allow it
+                    if current_query:
+                        state["retrieval_queries"].append(current_query)
+                        logger.info(f"✅ Allowing retrieval call #{retrieval_count + 1}: '{current_query[:80]}...'")
+
+                        # Warn if calling again (should answer after first retrieval like chatbot)
+                        existing_results = len(state.get("final_results", []))
+                        if existing_results >= 10:
+                            logger.warning(f"⚠️ Agent already has {existing_results} results - should ANSWER, not retrieve again!")
+                            logger.warning("💡 Chatbot answers immediately after retrieval. Agent should too.")
+
+                filtered_tool_calls.append(tc)
+
+            # Replace tool_calls with filtered version
+            if filtered_tool_calls:
+                response.tool_calls = filtered_tool_calls
+                tool_count = len(filtered_tool_calls)
+                logger.info(f"🔧 Agent decided to use {tool_count} tools")
+
+                # Log which tools
+                tool_names = []
+                for tc in filtered_tool_calls:
+                    tool_name = tc.get("name") if isinstance(tc, dict) else tc.name
+                    tool_names.append(tool_name)
+                logger.debug(f"Tools to execute: {', '.join(tool_names)}")
+
+                state["pending_tool_calls"] = True
+            else:
+                # All tool calls were filtered out - force final response
+                logger.info("✅ All planned tools already executed - generating final response")
+                response.tool_calls = []
+                state["pending_tool_calls"] = False
+
+                # Extract response content
+                if hasattr(response, 'content'):
+                    response_content = response.content
+                else:
+                    response_content = str(response)
+
+                # If response has content, store it
+                if response_content and response_content.strip():
+                    mode, parsed_content = detect_response_mode(response_content)
+                    logger.info(f"📄 Response mode detected: {mode}")
+                    state["response"] = parsed_content
+                    state["response_mode"] = mode
+                else:
+                    # Empty response after filtering is OK - final_response_node will generate it
+                    # Keep the AIMessage in history as it shows the agent's reasoning
+                    logger.info("⚠️ Empty response after filtering - final_response_node will generate answer")
+                    state["response"] = None
+                    state["response_mode"] = None
         else:
             logger.info("✅ Agent providing final response")
             state["pending_tool_calls"] = False
@@ -1478,9 +1678,10 @@ async def tool_execution_node(state: ChatState, config: RunnableConfig, writer: 
             tool_name = tool_call.get("name") if isinstance(tool_call, dict) else tool_call.name
 
             # Handle both tool_call.args and tool_call.function formats
+            # Different LLM providers use different formats - support both
             if isinstance(tool_call, dict):
                 tool_args = tool_call.get("args", {})
-                # Check for function format (used by some LLM providers like OpenAI)
+                # Check for function format (used by OpenAI, Gemini, and others)
                 if not tool_args and "function" in tool_call:
                     function_data = tool_call["function"]
                     tool_args = function_data.get("arguments", {})
@@ -1494,9 +1695,9 @@ async def tool_execution_node(state: ChatState, config: RunnableConfig, writer: 
                 tool_args = tool_call.args
                 tool_id = tool_call.id
 
-            # Handle Anthropic's nested kwargs format
-            # Anthropic sometimes wraps arguments in a 'kwargs' key when using custom tools
-            # Unwrap it if it's the only key or if it contains the actual arguments
+            # Handle nested kwargs format (used by some LLM providers)
+            # Some providers wrap arguments in a 'kwargs' key - unwrap it for consistency
+            # This ensures compatibility across OpenAI, Anthropic, Gemini, and other providers
             if isinstance(tool_args, dict) and "kwargs" in tool_args:
                 # If kwargs is the only key, unwrap it
                 if len(tool_args) == 1:
@@ -1557,50 +1758,78 @@ async def tool_execution_node(state: ChatState, config: RunnableConfig, writer: 
                 # **DEBUG**: Log detection result
                 logger.debug(f"🔍 Tool result detection: is_success={is_success}, status={status}")
 
-                if(tool_name == "retrieval.search_internal_knowledge"):
-                    # CRITICAL: The tool stores results in its self.state, but we need to ensure
-                    # they're in the graph's state object. The tool wrapper should pass the same
-                    # state reference, but let's explicitly sync it here to be safe.
+                # CRITICAL: Handle structured retrieval tool output
+                # Retrieval tool returns RetrievalToolOutput with minimal summary + full metadata
+                llm_content = result  # Default: pass result as-is
 
-                    # Check if tool stored results in its state (via tool wrapper)
-                    tool_state = None
-                    if hasattr(tool, '_state'):
-                        tool_state = tool._state
-                    elif hasattr(tool, 'state'):
-                        tool_state = tool.state
+                if tool_name == "retrieval_search_internal_knowledge":
+                    logger.info("🎯 MATCHED RETRIEVAL TOOL - Extracting structured output")
+                    logger.debug(f"   Raw result type: {type(result)}")
 
-                    # Sync results from tool's state to graph's state
-                    if tool_state:
-                        if "final_results" in tool_state and tool_state.get("final_results"):
-                            state["final_results"] = tool_state["final_results"]
-                            logger.debug(f"✅ Synced {len(state['final_results'])} final_results from tool state to graph state")
-                        if "virtual_record_id_to_result" in tool_state:
-                            state["virtual_record_id_to_result"] = tool_state["virtual_record_id_to_result"]
-                            logger.debug(f"✅ Synced {len(state.get('virtual_record_id_to_result', {}))} records from tool state to graph state")
+                    # Handle multiple formats (dict, str, or Pydantic model)
+                    import ast
+                    import json as json_module
 
-                    # Fallback: if still not in state, try to extract from result
-                    if "final_results" not in state or not state.get("final_results"):
-                        if isinstance(result, list):
-                            state["final_results"] = result
-                            logger.debug(f"✅ Stored {len(result)} final_results in state from tool result (fallback)")
-                        elif isinstance(result, str):
+                    from app.agents.actions.retrieval.retrieval import (
+                        RetrievalToolOutput,
+                    )
+
+                    retrieval_output = None
+
+                    # Try parsing as dict first
+                    if isinstance(result, dict) and "content" in result and "final_results" in result:
+                        try:
+                            retrieval_output = RetrievalToolOutput(**result)
+                            logger.debug("   ✅ Parsed as dict")
+                        except Exception as e:
+                            logger.warning(f"   ⚠️ Failed to parse dict: {e}")
+
+                    # Try parsing as JSON string or Python repr string
+                    elif isinstance(result, str):
+                        # Try JSON first (double quotes)
+                        try:
+                            result_dict = json_module.loads(result)
+                            if "content" in result_dict and "final_results" in result_dict:
+                                retrieval_output = RetrievalToolOutput(**result_dict)
+                                logger.debug("   ✅ Parsed as JSON string")
+                        except json_module.JSONDecodeError:
+                            # Try Python literal eval (handles single quotes from str(dict))
                             try:
-                                parsed_result = json.loads(result)
-                                if isinstance(parsed_result, list):
-                                    state["final_results"] = parsed_result
-                                    logger.debug(f"✅ Parsed and stored {len(parsed_result)} final_results from JSON string (fallback)")
-                            except (json.JSONDecodeError, TypeError):
-                                logger.warning(f"⚠️ Could not extract final_results from compressed result: {type(result)}")
+                                result_dict = ast.literal_eval(result)
+                                if isinstance(result_dict, dict) and "content" in result_dict and "final_results" in result_dict:
+                                    retrieval_output = RetrievalToolOutput(**result_dict)
+                                    logger.debug("   ✅ Parsed as Python repr string (ast.literal_eval)")
+                            except Exception as e2:
+                                logger.warning(f"   ⚠️ Failed to parse string as JSON or Python repr: {e2}")
 
-                    # Verify final state
-                    final_results_count = len(state.get('final_results', []))
-                    virtual_records_count = len(state.get('virtual_record_id_to_result', {}))
-                    logger.debug(f"✅ Final state: {final_results_count} final_results, {virtual_records_count} virtual_record_id_to_result records")
-                    logger.debug("***************************************************************************************************************")
+                    # Already a Pydantic model
+                    elif isinstance(result, RetrievalToolOutput):
+                        retrieval_output = result
+                        logger.debug("   ✅ Already RetrievalToolOutput")
+
+                    if retrieval_output:
+                        # Extract structured data
+                        llm_content = retrieval_output.content
+                        final_results = retrieval_output.final_results
+                        virtual_record_id_to_result = retrieval_output.virtual_record_id_to_result
+
+                        # Store in graph state for citation processing
+                        state["final_results"] = final_results
+                        state["virtual_record_id_to_result"] = virtual_record_id_to_result
+
+                        logger.info(f"✅ EXTRACTED {len(final_results)} final_results from structured output")
+                        logger.info(f"✅ EXTRACTED {len(virtual_record_id_to_result)} virtual_record_id_to_result from structured output")
+                        logger.info(f"📉 Token optimization: LLM gets {len(llm_content)} char summary (not {len(json.dumps(final_results))} char full content)")
+                    else:
+                        logger.error(f"❌ Could not parse retrieval result (type: {type(result)})")
+                        logger.error(f"   Result preview: {str(result)[:200]}")
+                        # FALLBACK: Use minimal error message instead of full result
+                        llm_content = "✅ Retrieval completed but failed to extract structured data. Results available in state for final response."
+                        logger.warning(f"⚠️ Using fallback message for LLM ({len(llm_content)} chars)")
 
                 tool_result = {
                     "tool_name": tool_name,
-                    "result": result,
+                    "result": llm_content,  # Use extracted content, not raw result
                     "status": status,
                     "tool_id": tool_id,
                     "args": tool_args,
@@ -1609,13 +1838,16 @@ async def tool_execution_node(state: ChatState, config: RunnableConfig, writer: 
                 }
 
                 # ⚡ OPTIMIZATION: Format optimization WITHOUT data loss
-                # Preserve ALL data but remove unnecessary metadata and use compact formatting
-                # This maintains answer quality while still optimizing token usage
-                optimized_result = PromptOptimizer.compress_tool_result(
-                    result,
-                    max_chars=None,  # No hard limit - preserve data
-                    preserve_data=True  # Keep all user-facing data
-                )
+                # For retrieval tool, llm_content is already optimized - don't compress further
+                # For other tools, apply compression
+                if tool_name == "retrieval_search_internal_knowledge":
+                    optimized_result = llm_content  # Already optimized by tool
+                else:
+                    optimized_result = PromptOptimizer.compress_tool_result(
+                        llm_content,
+                        max_chars=None,  # No hard limit - preserve data
+                        preserve_data=True  # Keep all user-facing data
+                    )
                 tool_message = ToolMessage(content=optimized_result, tool_call_id=tool_id)
 
                 # ⚡ PERFORMANCE: Track tool execution time
@@ -1627,14 +1859,14 @@ async def tool_execution_node(state: ChatState, config: RunnableConfig, writer: 
                     logger.info(f"✅ {tool_name} executed successfully in {tool_duration_ms:.0f}ms")
 
                     # **GENERIC FEEDBACK**: Provide intelligent guidance based on tool result analysis
-                    data_analysis = analyze_tool_data_content(tool_name, str(result))
+                    data_analysis = analyze_tool_data_content(tool_name, str(llm_content))
                     if data_analysis["has_data"]:
                         logger.info(f"📊 {tool_name} retrieved data: {', '.join(data_analysis['data_types'])}")
                         if data_analysis["next_actions"]:
                             logger.info(f"🎯 Suggested next actions: {', '.join(data_analysis['next_actions'])}")
                 else:
                     logger.error(f"❌ {tool_name} failed with error in {tool_duration_ms:.0f}ms")
-                    logger.error(f"Error details: {str(result)[:500]}")
+                    logger.error(f"Error details: {str(llm_content)[:500]}")
 
                 return {
                     "tool_result": tool_result,
@@ -1683,19 +1915,62 @@ async def tool_execution_node(state: ChatState, config: RunnableConfig, writer: 
 
             logger.info(f"✅ Completed {len(tool_calls)} tool(s) in {execution_time_ms:.0f}ms (parallel execution)")
 
-            # Process results
+            # Process results and extract records (like chatbot does)
+            tool_records = []
             for r in raw_results:
                 if isinstance(r, Exception):
                     logger.error(f"Execution panic: {r}")
                     continue
 
-                tool_results.append(r["tool_result"])
+                tool_result = r["tool_result"]
+                tool_results.append(tool_result)
                 tool_messages.append(r["tool_message"])
+
+                # CRITICAL: Extract records from tool results for citation normalization
+                # Tools like fetch_full_record return {"ok": true, "records": [...]}
+                # We need to accumulate these records for proper citation handling
+                result_data = tool_result.get("result")
+                if isinstance(result_data, dict) and "records" in result_data:
+                    records_from_tool = result_data.get("records", [])
+                    if records_from_tool:
+                        tool_records.extend(records_from_tool)
+                        logger.debug(f"📦 Extracted {len(records_from_tool)} records from tool {tool_result.get('tool_name')}")
+
+            # ⚠️ CRITICAL: After first successful retrieval, inject ANSWER NOW reminder
+            # This matches chatbot behavior: retrieve once → answer immediately
+            for r in raw_results:
+                if isinstance(r, Exception):
+                    continue
+                tool_result = r.get("tool_result", {})
+                if tool_result.get("tool_name") == "retrieval_search_internal_knowledge" and tool_result.get("status") == "success":
+                    retrieval_count = len(state.get("retrieval_queries", []))
+                    existing_results = len(state.get("final_results", []))
+
+                    if retrieval_count >= 1 and existing_results > 0:
+                        # Inject a STRONG reminder message to answer now
+                        from langchain_core.messages import HumanMessage
+
+                        reminder_msg = HumanMessage(content=f"""
+🎯 **CRITICAL**: You retrieved {existing_results} blocks. ANSWER NOW using that data.
+
+**DO NOT** call retrieval again! You have the data. Just synthesize it into your answer with [R1-1] citations.
+
+Chatbot does: Retrieve once → Answer. You should too.
+""")
+                        state["messages"].append(reminder_msg)
+                        logger.info(f"💬 Injected ANSWER NOW reminder (agent has {existing_results} results)")
+                        break  # Only inject once
 
         except Exception as e:
             logger.error(f"Error in parallel tool execution: {e}")
             # Fallback: If parallel execution fails, we already have some results
             pass
+
+        # Store tool records in state for citation normalization
+        if "tool_records" not in state:
+            state["tool_records"] = []
+        state["tool_records"].extend(tool_records)
+        logger.debug(f"📊 Total tool records in state: {len(state['tool_records'])}")
 
         # Add to messages
         state["messages"].extend(tool_messages)
@@ -1824,10 +2099,14 @@ async def final_response_node(state: ChatState, config: RunnableConfig, writer: 
                 answer_text = final_content.get("answer", "")
                 logger.debug(f"📝 Processing citations for answer (length: {len(answer_text)} chars)")
                 # Normalize citations using the agent-specific function
+                # Get tool records from state (accumulated during tool execution)
+                tool_records = state.get("tool_records", [])
+                logger.debug(f"📦 Using {len(tool_records)} tool records for citation normalization")
                 normalized_answer, citations = normalize_citations_and_chunks_for_agent(
                     answer_text,
                     final_results,
-                    virtual_record_id_to_result
+                    virtual_record_id_to_result,
+                    records=tool_records
                 )
                 logger.debug(f"✅ Citation normalization complete: {len(citations)} citations created")
                 logger.debug(f"📄 Answer text length: {len(normalized_answer)} chars")
@@ -1903,17 +2182,43 @@ async def final_response_node(state: ChatState, config: RunnableConfig, writer: 
         cleaned_messages = _clean_message_history(state.get("messages", []), is_complex=is_complex)
 
         validated_messages = []
-        for msg in cleaned_messages:
+        for i, msg in enumerate(cleaned_messages):
             if isinstance(msg, SystemMessage):
                 validated_messages.append({"role": "system", "content": msg.content})
             elif isinstance(msg, HumanMessage):
                 validated_messages.append({"role": "user", "content": msg.content})
             elif isinstance(msg, AIMessage):
                 # For AIMessage, preserve tool_calls ONLY if they're present and valid
-                # (cleaned_messages should have already removed invalid tool_calls)
-                msg_dict = {"role": "assistant", "content": msg.content}
+                # CRITICAL: Many LLM providers (Anthropic, Gemini, etc.) require tool_calls to have corresponding results
+                # If a tool_call doesn't have a result (e.g., execution was terminated), strip it out
+                msg_dict = {"role": "assistant", "content": msg.content or ""}  # Ensure content is never None
+
                 if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                    msg_dict["tool_calls"] = msg.tool_calls
+                    # Verify each tool_call has a corresponding ToolMessage in the next messages
+                    # This prevents "tool_use without tool_result" errors across all LLM providers
+                    validated_tool_calls = []
+                    for tc in msg.tool_calls:
+                        tool_id = tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)
+                        if not tool_id:
+                            continue  # Skip invalid tool calls
+
+                        # Check if there's a ToolMessage with this tool_call_id after this message
+                        has_result = False
+                        for future_msg in cleaned_messages[i+1:i+10]:  # Check next 10 messages
+                            if isinstance(future_msg, ToolMessage) and hasattr(future_msg, 'tool_call_id'):
+                                if future_msg.tool_call_id == tool_id:
+                                    has_result = True
+                                    break
+
+                        # Only include tool_call if it has a result
+                        if has_result:
+                            validated_tool_calls.append(tc)
+
+                    # Only add tool_calls if there are validated ones
+                    # This works for all LLM providers (OpenAI, Anthropic, Gemini, Claude, etc.)
+                    if validated_tool_calls:
+                        msg_dict["tool_calls"] = validated_tool_calls
+
                 validated_messages.append(msg_dict)
             elif isinstance(msg, ToolMessage):
                 # Preserve tool_call_id for proper message threading
@@ -1975,13 +2280,20 @@ async def final_response_node(state: ChatState, config: RunnableConfig, writer: 
             # Specific instructions based on execution outcomes
             if has_only_failures:
                 synthesis_instruction += f"⚠️ **ALL TOOLS FAILED** ({failed_count} tool(s)):\n"
-                synthesis_instruction += "- List EACH failed tool and WHY it failed (show actual error messages)\n"
-                synthesis_instruction += "- Explain what was attempted and what went wrong\n"
-                synthesis_instruction += "- Provide SPECIFIC next steps for the user:\n"
-                synthesis_instruction += "  * What information is needed to retry successfully?\n"
-                synthesis_instruction += "  * Alternative approaches they can take\n"
-                synthesis_instruction += "  * What they should check or fix first\n"
-                synthesis_instruction += "- Be helpful and constructive, not just report errors\n"
+                synthesis_instruction += "\n"
+                synthesis_instruction += "**YOU MUST RESPOND** (do NOT return empty response!):\n"
+                synthesis_instruction += "1. **Acknowledge the issue**: \"I tried to retrieve your tickets but encountered an error.\"\n"
+                synthesis_instruction += "2. **Explain what happened**: Show the actual error (e.g., \"JIRA returned: 'Unbounded JQL query'\")\n"
+                synthesis_instruction += "3. **What you tried**: \"I attempted to search with: [show the JQL query]\"\n"
+                synthesis_instruction += "4. **Why it failed**: Explain the root cause in user-friendly terms\n"
+                synthesis_instruction += "5. **Ask for help or clarification**: What information do you need from the user?\n"
+                synthesis_instruction += "   - For JIRA unbounded errors: \"Would you like tickets from the last 30 days, 90 days, or a specific time range?\"\n"
+                synthesis_instruction += "   - For missing data: \"Could you provide [specific information needed]?\"\n"
+                synthesis_instruction += "6. **Suggest alternatives**: What can the user do instead?\n"
+                synthesis_instruction += "\n"
+                synthesis_instruction += "**FORMAT**: Use friendly, conversational markdown (not JSON)\n"
+                synthesis_instruction += "**TONE**: Helpful and apologetic, not technical or cold\n"
+                synthesis_instruction += "**LENGTH**: 3-5 sentences minimum (NOT empty!)\n"
             elif has_mixed_results:
                 synthesis_instruction += f"⚙️ **MIXED RESULTS** ({successful_count} succeeded, {failed_count} failed):\n"
                 synthesis_instruction += "- Start with '## ✅ Successfully Completed' section:\n"
@@ -1997,29 +2309,49 @@ async def final_response_node(state: ChatState, config: RunnableConfig, writer: 
                 synthesis_instruction += "  * What information is still needed\n"
                 synthesis_instruction += "  * Alternative approaches if needed\n"
             else:
-                # All succeeded
-                synthesis_instruction += f"✅ **ALL TOOLS SUCCEEDED** ({successful_count} tool(s)):\n"
-                synthesis_instruction += "- Provide a comprehensive summary of what was accomplished\n"
-                synthesis_instruction += "- Include all relevant data from successful tool executions\n"
-                synthesis_instruction += "- Show specific results, IDs, links, or confirmations\n"
-                synthesis_instruction += "- Format professionally with clear structure\n"
+                # All succeeded - be concise and direct
+                synthesis_instruction += "✅ **ANSWER THE USER'S QUESTION WITH CITATIONS**:\n"
+                synthesis_instruction += "\n"
+                synthesis_instruction += "🚫 **ABSOLUTELY FORBIDDEN RESPONSES**:\n"
+                synthesis_instruction += "- ❌ DO NOT say: 'I can't produce the requested summary'\n"
+                synthesis_instruction += "- ❌ DO NOT say: 'The block identifiers are not present'\n"
+                synthesis_instruction += "- ❌ DO NOT say: 'I need to load the data'\n"
+                synthesis_instruction += "- ❌ DO NOT make excuses or say you can't answer\n"
+                synthesis_instruction += "- ❌ DO NOT explain what tools you used or the process\n"
+                synthesis_instruction += "- ❌ DO NOT ask follow-up questions\n"
+                synthesis_instruction += "\n"
+                synthesis_instruction += "✅ **YOU MUST DO THIS**:\n"
+                synthesis_instruction += "- The retrieval tool HAS PROVIDED the blocks with [R1-1] style identifiers\n"
+                synthesis_instruction += "- Look at the tool results above - the block numbers are RIGHT THERE\n"
+                synthesis_instruction += "- Provide a comprehensive, detailed answer using the retrieved data\n"
+                synthesis_instruction += "- **MANDATORY**: Include inline citations [R1-1] IMMEDIATELY after EACH factual claim\n"
+                synthesis_instruction += "- Focus on delivering the answer they asked for with proper citations\n"
+                synthesis_instruction += "\n"
+                synthesis_instruction += "**CITATION FORMAT (MANDATORY)**:\n"
+                synthesis_instruction += "- Every factual claim from retrieved data MUST have [R1-1] style citation immediately after it\n"
+                synthesis_instruction += "- Example CORRECT: 'Revenue grew 29% [R1-1]. Cash flows improved $142M [R1-2].'\n"
+                synthesis_instruction += "- Example WRONG: 'Revenue grew 29%. Cash flows improved $142M. [R1-1][R1-2]'\n"
+                synthesis_instruction += "- One citation per bracket: [R1-1][R2-3] NOT [R1-1, R2-3]\n"
+                synthesis_instruction += "- Use block numbers exactly as shown in the tool results above\n"
+                synthesis_instruction += "- The block numbers ARE in the tool results - use them!\n"
 
-            synthesis_instruction += "\n**IMPORTANT**:\n"
-            synthesis_instruction += f"- Review ALL {len(all_tool_results)} tool results shown above\n"
-            synthesis_instruction += "- Provide a COMPLETE, DETAILED response (NOT just 1-2 sentences)\n"
-            synthesis_instruction += "- Use proper markdown formatting with headers and lists\n"
-            synthesis_instruction += "- Be specific - mention actual tool names, errors, and outcomes\n"
-            synthesis_instruction += "- Help the user understand what happened and what to do next\n"
-            synthesis_instruction += "\n**CRITICAL - JSON FORMAT REQUIRED**:\n"
+            synthesis_instruction += "\n**CRITICAL REQUIREMENTS**:\n"
+            synthesis_instruction += "- Answer the user's original question directly with inline citations\n"
+            synthesis_instruction += "- DO NOT mention tool names, execution status, or internal processes\n"
+            synthesis_instruction += "- Every claim needs a citation [R1-1] right after it\n"
+            synthesis_instruction += "- If data doesn't answer the question, say so briefly\n"
+            synthesis_instruction += "\n**JSON FORMAT REQUIRED**:\n"
             synthesis_instruction += "You MUST respond with ONLY a valid JSON object in this exact format:\n"
             synthesis_instruction += '{\n'
-            synthesis_instruction += '  "answer": "Your detailed markdown response here",\n'
-            synthesis_instruction += '  "citations": [],\n'
-            synthesis_instruction += '  "confidence": "High",\n'
-            synthesis_instruction += '  "reason": "Brief explanation",\n'
-            synthesis_instruction += '  "answerMatchType": "Derived From Tool Execution"\n'
+            synthesis_instruction += '  "answer": "Your detailed answer with inline citations [R1-1] after each fact.",\n'
+            synthesis_instruction += '  "reason": "How you derived the answer from the blocks",\n'
+            synthesis_instruction += '  "confidence": "Very High | High | Medium | Low",\n'
+            synthesis_instruction += '  "answerMatchType": "Derived From Chunks",\n'
+            synthesis_instruction += '  "blockNumbers": ["R1-1", "R1-2", "R2-3"]\n'
             synthesis_instruction += '}\n'
-            synthesis_instruction += "DO NOT include any text before or after the JSON. Return ONLY the JSON object."
+            synthesis_instruction += "\n⚠️ CRITICAL: Include blockNumbers array with ALL cited block numbers.\n"
+            synthesis_instruction += "Do NOT include 'citations' field - system handles that automatically.\n"
+            synthesis_instruction += "Return ONLY the JSON object - no extra text."
 
             full_context += synthesis_instruction
 
@@ -2035,24 +2367,32 @@ async def final_response_node(state: ChatState, config: RunnableConfig, writer: 
                     "content": f"Based on the tool execution results:{full_context}\n\nPlease provide a comprehensive final response following the REQUIRED RESPONSE FORMAT above."
                 })
         elif tool_context:
-            # Normal case - just add tool context
-            json_format_instruction = "\n\n**CRITICAL - JSON FORMAT REQUIRED**:\n"
-            json_format_instruction += "You MUST respond with ONLY a valid JSON object in this exact format:\n"
+            # Normal case - just add tool context with strong citation requirements
+            json_format_instruction = "\n\n**⚠️ CRITICAL - CITATIONS ARE MANDATORY**:\n"
+            json_format_instruction += "If you used internal knowledge/retrieval data, you MUST include inline citations [R1-1] immediately after EACH fact.\n"
+            json_format_instruction += "\n"
+            json_format_instruction += "**CITATION FORMAT**:\n"
+            json_format_instruction += "- Put [R1-1] right after the claim: 'Revenue grew 29% [R1-1].'\n"
+            json_format_instruction += "- One per bracket: [R1-1][R2-3] NOT [R1-1, R2-3]\n"
+            json_format_instruction += "- List ALL cited blocks in blockNumbers array\n"
+            json_format_instruction += "\n"
+            json_format_instruction += "**JSON FORMAT REQUIRED**:\n"
+            json_format_instruction += "You MUST respond with ONLY a valid JSON object:\n"
             json_format_instruction += '{\n'
-            json_format_instruction += '  "answer": "Your detailed response here",\n'
-            json_format_instruction += '  "citations": [],\n'
-            json_format_instruction += '  "confidence": "High",\n'
-            json_format_instruction += '  "reason": "Brief explanation",\n'
-            json_format_instruction += '  "answerMatchType": "Derived From Tool Execution"\n'
+            json_format_instruction += '  "answer": "Answer with inline citations [R1-1] after each fact.",\n'
+            json_format_instruction += '  "reason": "How you derived the answer",\n'
+            json_format_instruction += '  "confidence": "Very High | High | Medium | Low",\n'
+            json_format_instruction += '  "answerMatchType": "Derived From Chunks",\n'
+            json_format_instruction += '  "blockNumbers": ["R1-1", "R1-2"]\n'
             json_format_instruction += '}\n'
-            json_format_instruction += "DO NOT include any text before or after the JSON. Return ONLY the JSON object."
+            json_format_instruction += "\nDo NOT include 'citations' field. Return ONLY the JSON object."
 
             if validated_messages and validated_messages[-1]["role"] == "user":
                 validated_messages[-1]["content"] += f"\n\n{tool_context}{json_format_instruction}"
             else:
                 validated_messages.append({
                     "role": "user",
-                    "content": f"{tool_context}{json_format_instruction}\n\nPlease provide your response."
+                    "content": f"{tool_context}{json_format_instruction}\n\nProvide your response with citations."
                 })
 
         # Get final results for citations
@@ -2069,6 +2409,15 @@ async def final_response_node(state: ChatState, config: RunnableConfig, writer: 
                 logger.warning(f"⚠️ final_results is not a list: {type(final_results)}")
                 final_results = []
 
+        # CRITICAL DEBUG: Log final_results availability for citation processing
+        logger.info(f"📊 CITATION DEBUG: final_results count = {len(final_results)}")
+        if final_results:
+            logger.debug(f"📊 First result sample: {list(final_results[0].keys()) if final_results else 'N/A'}")
+        else:
+            logger.error("⚠️ CRITICAL: final_results is EMPTY - citations will not be generated!")
+            logger.error(f"⚠️ State keys available: {list(state.keys())}")
+            logger.error(f"⚠️ virtual_record_id_to_result count: {len(state.get('virtual_record_id_to_result', {}))}")
+
         safe_stream_write(writer, {"event": "status", "data": {"status": "generating", "message": "Generating response..."}}, config)
 
         # Use stream_llm_response for new generation
@@ -2076,9 +2425,15 @@ async def final_response_node(state: ChatState, config: RunnableConfig, writer: 
 
         try:
             virtual_record_id_to_result = state.get("virtual_record_id_to_result", {})
+            tool_records = state.get("tool_records", [])
+            logger.info("📦 CITATION DEBUG: Passing to stream_llm_response:")
+            logger.info(f"   - final_results: {len(final_results)} items")
+            logger.info(f"   - virtual_record_id_to_result: {len(virtual_record_id_to_result)} records")
+            logger.info(f"   - tool_records: {len(tool_records)} records")
             async for stream_event in stream_llm_response(
                 llm, validated_messages, final_results, logger,
-                virtual_record_id_to_result=virtual_record_id_to_result
+                virtual_record_id_to_result=virtual_record_id_to_result,
+                records=tool_records
             ):
                 event_type = stream_event["event"]
                 event_data = stream_event["data"]
@@ -2099,9 +2454,17 @@ async def final_response_node(state: ChatState, config: RunnableConfig, writer: 
                 response = await llm.ainvoke(validated_messages)
                 fallback_content = response.content if hasattr(response, 'content') else str(response)
 
-                # Process citations
+                # Process citations with tool records
                 if final_results:
-                    cited_fallback = process_citations(fallback_content, final_results, [], from_agent=True)
+                    tool_records = state.get("tool_records", [])
+                    virtual_record_id_to_result = state.get("virtual_record_id_to_result", {})
+                    cited_fallback = process_citations(
+                        fallback_content,
+                        final_results,
+                        records=tool_records,
+                        from_agent=True,
+                        virtual_record_id_to_result=virtual_record_id_to_result
+                    )
                     if isinstance(cited_fallback, str):
                         fallback_content = cited_fallback
                     elif isinstance(cited_fallback, dict):
@@ -2167,8 +2530,46 @@ async def final_response_node(state: ChatState, config: RunnableConfig, writer: 
                 logger.error(f"⚠️ SUSPICIOUSLY SHORT RESPONSE ({response_len} chars) despite {len(all_tool_results)} tool executions!")
                 logger.error(f"Response preview: {answer_text[:200]}")
                 logger.error(f"Tool summary: {successful_count} succeeded, {failed_count} failed")
+
+                # FALLBACK: Generate a helpful error message for the user
+                if response_len == 0 and failed_count > 0:
+                    logger.warning("🔧 Generating fallback response for empty output with failures")
+                    fallback_msg = "I apologize, but I encountered an issue while processing your request.\n\n"
+
+                    # Summarize what went wrong
+                    if all_tool_results:
+                        first_error = None
+                        for result in all_tool_results:
+                            if result.get("status") == "error":
+                                first_error = result
+                                break
+
+                        if first_error:
+                            error_msg = str(first_error.get("result", {})).get("error", "unknown error") if isinstance(first_error.get("result"), dict) else str(first_error.get("result", ""))[:200]
+
+                            if "unbounded" in error_msg.lower():
+                                fallback_msg += "I tried to search for your tickets, but JIRA requires a time range for the query.\n\n"
+                                fallback_msg += "**Would you like to see:**\n"
+                                fallback_msg += "- Tickets from the last 30 days?\n"
+                                fallback_msg += "- Tickets from the last 90 days?\n"
+                                fallback_msg += "- Tickets from a specific date range?\n\n"
+                                fallback_msg += "Please let me know and I'll retrieve them for you."
+                            else:
+                                fallback_msg += f"The error was: {error_msg[:150]}\n\n"
+                                fallback_msg += "Could you provide more details or try rephrasing your request?"
+                    else:
+                        fallback_msg += "I wasn't able to complete the task. Could you provide more details or try again?"
+
+                    answer_text = fallback_msg
+                    state["response"] = answer_text
+                    logger.info(f"✅ Using fallback response: {len(answer_text)} characters")
         else:
             logger.error("❌ No final content generated - this should not happen")
+            # FALLBACK: Generate generic error message
+            fallback_msg = "I apologize, but I encountered an unexpected error while processing your request. Could you please try again or rephrase your question?"
+            state["response"] = fallback_msg
+            answer_text = fallback_msg
+            logger.warning(f"🔧 Using generic fallback response: {len(answer_text)} characters")
 
         # ⚡ PERFORMANCE: Finish step timing and log complete summary
         duration = perf.finish_step(response_length=len(answer_text) if final_content else 0)
@@ -2206,7 +2607,7 @@ def _normalize_response_format(response) -> dict:
                 if isinstance(parsed, dict) and "answer" in parsed:
                     return {
                         "answer": parsed.get("answer", ""),
-                        "citations": parsed.get("citations", []),
+                        "citations": [],  # NEVER use LLM-generated citations - normalization will create proper ones
                         "confidence": parsed.get("confidence", "High"),
                         "reason": parsed.get("reason", "Direct response"),
                         "answerMatchType": parsed.get("answerMatchType", "Derived From Tool Execution"),
@@ -2225,7 +2626,7 @@ def _normalize_response_format(response) -> dict:
                 if isinstance(parsed, dict) and "answer" in parsed:
                     return {
                         "answer": parsed.get("answer", ""),
-                        "citations": parsed.get("citations", []),
+                        "citations": [],  # NEVER use LLM-generated citations - normalization will create proper ones
                         "confidence": parsed.get("confidence", "High"),
                         "reason": parsed.get("reason", "Direct response"),
                         "answerMatchType": parsed.get("answerMatchType", "Derived From Tool Execution"),
@@ -2251,7 +2652,7 @@ def _normalize_response_format(response) -> dict:
         # Already in dict format, ensure required keys exist
         return {
             "answer": response.get("answer", str(response.get("content", response))),
-            "citations": response.get("citations", []),
+            "citations": [],  # NEVER use LLM-generated citations - normalization will create proper ones
             "confidence": response.get("confidence", "Medium"),
             "reason": response.get("reason", "Processed response"),
             "answerMatchType": response.get("answerMatchType", "Derived From Tool Execution"),
@@ -2372,10 +2773,12 @@ def _validate_and_fix_message_sequence(messages) -> List[Any]:
     """
     Validate and fix message sequence to ensure proper tool_call threading.
 
-    OpenAI API Requirements:
+    Standard LLM API Requirements (OpenAI, Anthropic, Gemini, etc.):
     1. ToolMessages MUST have a preceding AIMessage with tool_calls
     2. AIMessages with tool_calls MUST have ALL corresponding ToolMessages
     3. Tool_call_id in ToolMessage MUST match id in AIMessage.tool_calls
+
+    This validation works across all LLM providers that support tool calling.
     """
     validated = []
     pending_tool_calls = {}  # Maps tool_call_id -> True for expected tool responses

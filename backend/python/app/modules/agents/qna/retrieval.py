@@ -267,33 +267,61 @@ def _inject_knowledge_as_tool_result(
     This makes the knowledge available as a tool execution result rather than in the system prompt.
     """
     try:
-        # Format knowledge as a structured tool result
+        # Format knowledge as a structured tool result (matching chatbot's approach)
         knowledge_content_parts = [
-            "## Internal Knowledge Retrieval Results",
+            "## 📚 INTERNAL KNOWLEDGE RETRIEVED - MANDATORY CITATION RULES",
             "",
-            "⚠️ **CRITICAL**: Internal knowledge has been retrieved. You MUST use this information to answer the query.",
-            "You MUST respond in Structured JSON format with citations when using this knowledge.",
+            "=" * 80,
+            "⚠️⚠️⚠️ CRITICAL: YOU MUST INCLUDE INLINE CITATIONS [R1-1] IN YOUR ANSWER ⚠️⚠️⚠️",
+            "=" * 80,
             "",
-            "**Required JSON Format:**",
-            "```json",
-            "{",
-            '  "answer": "Your answer in markdown with citations like [R1-1][R2-3]",',
-            '  "reason": "How you derived the answer from the blocks",',
-            '  "confidence": "Very High | High | Medium | Low",',
-            '  "answerMatchType": "Derived From Chunks",',
-            '  "blockNumbers": ["R1-1", "R1-2", "R2-3"],',
-            '  "citations": [...]',
-            "}",
+            "**CITATION FORMAT EXAMPLE (FOLLOW THIS EXACTLY):**",
+            "",
+            "```markdown",
+            "Asana announced Q4 FY2024 results on March 11, 2024 [R1-1]. The company",
+            "achieved $142 million improvement in cash flows [R1-1]. Annual revenues from",
+            "customers spending $100,000+ grew 29% year over year [R1-2].",
             "```",
             "",
-            "**Citation Rules:**",
-            "- Each block below has a Block Number (e.g., R1-1, R1-2, R2-3)",
-            "- Use these EXACT block numbers in your citations: [R1-1][R2-3]",
-            "- Include citations immediately after each claim from internal knowledge",
-            "- List ALL referenced block numbers in the blockNumbers array: [\"R1-1\", \"R1-2\"]",
-            "- One citation per bracket: [R1-1][R2-3] NOT [R1-1, R2-3]",
+            "**NOTICE**: Each fact has [R1-1] or [R1-2] IMMEDIATELY after it!",
             "",
-            "---",
+            "=" * 80,
+            "📋 YOUR MANDATORY INSTRUCTIONS:",
+            "=" * 80,
+            "",
+            "1. **INCLUDE [R CITATIONS IN YOUR ANSWER** (NOT OPTIONAL!)",
+            "   - Each block below has a \"Block Number\" like R1-1, R1-2, R2-3",
+            "   - Put [R1-1] IMMEDIATELY after EACH fact: \"Revenue grew 29% [R1-1].\"",
+            "   - Format: [R1-1][R2-3] NOT [R1-1, R2-3]",
+            "   - If you don't include citations, the answer will be REJECTED",
+            "",
+            "2. **ANSWER DIRECTLY (No Meta-Commentary)**",
+            "   - ❌ DON'T say: \"I searched and found...\"",
+            "   - ❌ DON'T say: \"The tool returned...\"",
+            "   - ❌ DON'T say: \"Based on the retrieved information...\"",
+            "   - ✅ DO say: \"Asana announced results on March 11, 2024 [R1-1].\"",
+            "",
+            "3. **BE COMPREHENSIVE**",
+            "   - Provide detailed, thorough answers (not brief summaries)",
+            "   - Include ALL relevant information from the blocks",
+            "   - Use markdown formatting (headers, lists, tables, bold)",
+            "",
+            "4. **JSON OUTPUT FORMAT**",
+            "   ```json",
+            "   {",
+            '     "answer": "Detailed answer with [R1-1] citations [R2-3] inline.",',
+            '     "reason": "Brief explanation",',
+            '     "confidence": "Very High | High | Medium | Low",',
+            '     "answerMatchType": "Derived From Chunks",',
+            '     "blockNumbers": ["R1-1", "R1-2", "R2-3"]',
+            "   }",
+            "   ```",
+            "",
+            "=" * 80,
+            "⚠️ REMINDER: Your answer MUST contain [R1-1] style citations!",
+            "=" * 80,
+            "",
+            "## 📄 Retrieved Knowledge Blocks (Use These Block Numbers in Citations)",
             ""
         ]
 
@@ -332,10 +360,25 @@ def _inject_knowledge_as_tool_result(
                 knowledge_content_parts.append(f"* Record Id: {record_id}")
                 knowledge_content_parts.append(f"* Record Name: {record_name}")
 
-                # Add semantic metadata if available
-                if record and record.get("semantic_metadata"):
-                    semantic_metadata = record.get("semantic_metadata")
-                    knowledge_content_parts.append(f"* Semantic Metadata: {semantic_metadata}")
+                # Add semantic metadata if available (CRITICAL for better context!)
+                if record:
+                    # Extract semantic metadata like chatbot does
+                    semantic_metadata = record.get("semantic_metadata", {})
+                    if isinstance(semantic_metadata, dict) and semantic_metadata:
+                        knowledge_content_parts.append("* Record Summary with metadata:")
+                        if semantic_metadata.get("summary"):
+                            knowledge_content_parts.append(f"  - Summary: {semantic_metadata.get('summary')}")
+                        if semantic_metadata.get("categories"):
+                            knowledge_content_parts.append(f"  - Category: {semantic_metadata.get('categories')}")
+                        if semantic_metadata.get("sub_category_level_1"):
+                            knowledge_content_parts.append("  - Sub-categories:")
+                            knowledge_content_parts.append(f"    * Level 1: {semantic_metadata.get('sub_category_level_1')}")
+                            if semantic_metadata.get("sub_category_level_2"):
+                                knowledge_content_parts.append(f"    * Level 2: {semantic_metadata.get('sub_category_level_2')}")
+                            if semantic_metadata.get("sub_category_level_3"):
+                                knowledge_content_parts.append(f"    * Level 3: {semantic_metadata.get('sub_category_level_3')}")
+                        if semantic_metadata.get("topics"):
+                            knowledge_content_parts.append(f"  - Topics: {semantic_metadata.get('topics')}")
 
                 knowledge_content_parts.append("")
 
