@@ -244,12 +244,7 @@ class DataSourceEntitiesProcessor:
             tx_store: Transaction store
         """
         # Always clean up all possible link relation types to handle removed links
-        relation_types_to_delete = set(self.LINK_RELATION_TYPES)
-
-        if related_external_records:
-            for rel in related_external_records:
-                if rel.relation_type:
-                    relation_types_to_delete.add(rel.relation_type.value)
+        relation_types_to_delete = self.LINK_RELATION_TYPES
 
         if relation_types_to_delete:
             try:
