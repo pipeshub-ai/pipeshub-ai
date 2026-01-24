@@ -58,7 +58,7 @@ class KafkaService:
                     sasl_config = kafka_config.get("sasl", {})
                     if sasl_config.get("username"):
                         producer_config["security_protocol"] = "SASL_SSL"
-                        producer_config["sasl_mechanism"] = sasl_config.get("mechanism", "SCRAM-SHA-512").upper().replace("-", "-")
+                        producer_config["sasl_mechanism"] = sasl_config.get("mechanism", "SCRAM-SHA-512").upper()
                         producer_config["sasl_plain_username"] = sasl_config["username"]
                         producer_config["sasl_plain_password"] = sasl_config["password"]
                     else:
