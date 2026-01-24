@@ -10028,6 +10028,7 @@ class BaseArangoService:
         kb_id: str,
         folder_name: str,
         parent_folder_id: Optional[str] = None,
+        exclude_folder_id: Optional[str] = None,
         transaction: Optional[TransactionDatabase] = None
     ) -> Optional[Dict]:
         """
@@ -10051,6 +10052,7 @@ class BaseArangoService:
                 FILTER edge.relationshipType == "PARENT_CHILD"
                 LET folder_record = DOCUMENT(edge._to)
                 FILTER folder_record != null
+                FILTER folder_record._key != @exclude_folder_id
                 FILTER folder_record.connectorId == @kb_id
                 // Verify it's a folder by checking associated FILES document via IS_OF_TYPE edge
                 LET folder_file = FIRST(
@@ -10071,13 +10073,15 @@ class BaseArangoService:
                 }
             """
 
-            cursor = db.aql.execute(query, bind_vars={
+            bind_vars = {
                 "parent_from": parent_from,
                 "name_variants": name_variants,
                 "kb_id": kb_id,
+                "exclude_folder_id": exclude_folder_id,
                 "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
-            })
+            }
+            cursor = db.aql.execute(query, bind_vars=bind_vars)
 
             result = next(cursor, None)
 
@@ -10332,33 +10336,72 @@ class BaseArangoService:
         updates:Dict,
         transaction: Optional[TransactionDatabase]= None
     )-> bool:
-        """ Update folder """
+        """ Update folder - updates both RECORDS (recordName) and FILES (name) collections """
         try:
             self.logger.info(f"🚀 Updating folder {folder_id}")
 
             db = transaction if transaction else self.db
 
-            query = """
-            FOR folder IN @@folder_collection
-                FILTER folder._key == @folder_id
-                UPDATE folder WITH @updates IN @@folder_collection
-                RETURN NEW
-            """
+            # Extract name from updates if present
+            name = updates.get("name")
 
-            cursor = db.aql.execute(query, bind_vars={
-                "folder_id": folder_id,
-                "updates": updates,
-                "@folder_collection": CollectionNames.FILES.value,
-            })
+            # Prepare updates for RECORDS collection (recordName)
+            records_updates = {}
+            # Prepare updates for FILES collection (name)
+            files_updates = {}
 
-            result = next(cursor, None)
+            if name is not None:
+                records_updates["recordName"] = name
+                files_updates["name"] = name
 
-            if result:
-                self.logger.info("✅ Folder updated successfully")
-                return True
-            else:
-                self.logger.warning("⚠️ Folder not found")
-                return False
+            # Copy other updates to both collections
+            for key, value in updates.items():
+                if key != "name":
+                    records_updates[key] = value
+                    files_updates[key] = value
+
+            # Update RECORDS collection (primary source of truth for folder name)
+            if records_updates:
+                records_query = """
+                FOR folder_record IN @@records_collection
+                    FILTER folder_record._key == @folder_id
+                    UPDATE folder_record WITH @updates IN @@records_collection
+                    RETURN NEW
+                """
+
+                records_cursor = db.aql.execute(records_query, bind_vars={
+                    "folder_id": folder_id,
+                    "updates": records_updates,
+                    "@records_collection": CollectionNames.RECORDS.value,
+                })
+
+                records_result = next(records_cursor, None)
+                if not records_result:
+                    self.logger.warning("⚠️ Folder record not found in RECORDS collection")
+                    return False
+
+            # Update FILES collection (for consistency)
+            if files_updates:
+                files_query = """
+                FOR folder_file IN @@files_collection
+                    FILTER folder_file._key == @folder_id
+                    UPDATE folder_file WITH @updates IN @@files_collection
+                    RETURN NEW
+                """
+
+                files_cursor = db.aql.execute(files_query, bind_vars={
+                    "folder_id": folder_id,
+                    "updates": files_updates,
+                    "@files_collection": CollectionNames.FILES.value,
+                })
+
+                files_result = next(files_cursor, None)
+                if not files_result:
+                    self.logger.warning("⚠️ Folder file not found in FILES collection")
+                    return False
+
+            self.logger.info("✅ Folder updated successfully")
+            return True
 
         except Exception as e:
             self.logger.error(f"❌ Failed to update Folder : {str(e)}")
@@ -13324,67 +13367,74 @@ class BaseArangoService:
                     return False
 
             try:
-                # Step 1: Get complete inventory of what we're deleting
-                # Folders are now represented by RECORDS documents
+                # Step 1: Get complete inventory of what we're deleting using graph traversal
+                # This collects ALL records/folders at any depth and FILES documents BEFORE edge deletion
                 inventory_query = """
                 LET kb = DOCUMENT("recordGroups", @kb_id)
                 FILTER kb != null
-                // Find all folders (RECORDS documents with isFile == false in associated FILES document)
-                LET all_folders = (
-                    FOR folder_record IN @@records_collection
-                        FILTER folder_record.connectorId == @kb_id
-                        // Verify it's a folder by checking associated FILES document
-                        LET folder_file = FIRST(
-                            FOR isEdge IN @@is_of_type
-                                FILTER isEdge._from == folder_record._id
-                                LET f = DOCUMENT(isEdge._to)
-                                FILTER f != null AND f.isFile == false
-                                RETURN 1
-                        )
-                        FILTER folder_file != null
-                        RETURN folder_record._key
+                LET kb_id_full = CONCAT('recordGroups/', @kb_id)
+
+                // Step 1: Get all records that directly belong to KB via belongs_to_kb edges (INBOUND)
+                // All records (including nested) have belongs_to_kb edges pointing TO the KB
+                LET direct_records = (
+                    FOR v, e, p IN 1..1 INBOUND kb_id_full @@belongs_to_kb
+                        FILTER IS_SAME_COLLECTION(@@records_collection, v)
+                        RETURN DISTINCT v
                 )
-                LET all_kb_records_with_details = (
-                    FOR edge IN @@belongs_to_kb
-                        FILTER edge._to == CONCAT('recordGroups/', @kb_id)
-                        LET record = DOCUMENT(edge._from)
-                        FILTER record != null
-                        // Exclude folders - ensure it's a file record by checking FILES document
-                        LET record_file = FIRST(
-                            FOR isEdge IN @@is_of_type
-                                FILTER isEdge._from == record._id
-                                LET f = DOCUMENT(isEdge._to)
-                                FILTER f != null AND f.isFile != false
-                                RETURN 1
-                        )
-                        FILTER record_file == null  // Exclude folders (isFile == false)
-                        // Get associated file record for each record
-                        LET file_record = FIRST(
-                            FOR isEdge IN @@is_of_type
-                                FILTER isEdge._from == record._id
-                                LET fileRecord = DOCUMENT(isEdge._to)
-                                FILTER fileRecord != null AND fileRecord.isFile == true
-                                RETURN fileRecord
-                        )
-                        FILTER file_record != null
+
+                // Step 2: Get all nested records/folders via PARENT_CHILD traversal from direct records
+                // This ensures we capture the full hierarchy even if some records are deeply nested
+                LET nested_records = (
+                    FOR root_record IN direct_records
+                        FOR v, e, p IN 1..100 OUTBOUND root_record._id @@record_relations
+                            FILTER e.relationshipType == "PARENT_CHILD"
+                            FILTER IS_SAME_COLLECTION(@@records_collection, v)
+                            RETURN DISTINCT v
+                )
+
+                // Combine all records and folders (direct + nested)
+                LET all_records_and_folders = UNION_DISTINCT(direct_records, nested_records)
+
+                // Collect FILES documents BEFORE edge deletion (CRITICAL FIX)
+                LET all_files_with_details = (
+                    FOR record IN all_records_and_folders
+                        FOR edge IN @@is_of_type
+                            FILTER edge._from == record._id
+                            LET file = DOCUMENT(edge._to)
+                            FILTER file != null
+                            RETURN {
+                                file_key: file._key,
+                                is_folder: file.isFile == false,
+                                record_key: record._key,
+                                record: record,
+                                file_doc: file
+                            }
+                )
+
+                // Separate folders and file records
+                LET folders = (
+                    FOR item IN all_files_with_details
+                        FILTER item.is_folder == true
+                        RETURN item.record_key
+                )
+
+                LET file_records = (
+                    FOR item IN all_files_with_details
+                        FILTER item.is_folder == false
                         RETURN {
-                            record: record,
-                            file_record: file_record
+                            record: item.record,
+                            file_record: item.file_doc
                         }
                 )
-                LET all_file_records = (
-                    FOR record_data IN all_kb_records_with_details
-                        FILTER record_data.file_record != null
-                        RETURN record_data.file_record._key
-                )
+
                 RETURN {
-                    kb_exists: kb != null,
-                    folders: all_folders,
-                    records_with_details: all_kb_records_with_details,
-                    file_records: all_file_records,
-                    total_folders: LENGTH(all_folders),
-                    total_records: LENGTH(all_kb_records_with_details),
-                    total_file_records: LENGTH(all_file_records)
+                    kb_exists: true,
+                    record_keys: all_records_and_folders[*]._key,
+                    file_keys: all_files_with_details[*].file_key,
+                    folder_keys: folders,
+                    records_with_details: file_records,
+                    total_folders: LENGTH(folders),
+                    total_records: LENGTH(file_records)
                 }
                 """
 
@@ -13392,6 +13442,7 @@ class BaseArangoService:
                     "kb_id": kb_id,
                     "@records_collection": CollectionNames.RECORDS.value,
                     "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                     "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 })
 
@@ -13405,127 +13456,105 @@ class BaseArangoService:
                     return True
 
                 records_with_details = inventory.get("records_with_details", [])
+                all_record_keys = inventory.get("record_keys", [])
 
                 self.logger.info(f"📋 KB {kb_id} deletion inventory:")
-                self.logger.info(f"   📁 Folders: {inventory['total_folders']}")
-                self.logger.info(f"   📄 Records: {inventory['total_records']}")
-                self.logger.info(f"   🗂️ File records: {inventory['total_file_records']}")
+                self.logger.info(f"   📁 Folders: {inventory.get('total_folders', 0)}")
+                self.logger.info(f"   📄 Records: {inventory.get('total_records', 0)}")
+                self.logger.info(f"   🗂️ File records: {inventory.get('total_file_records', 0)}")
 
                 # Step 2: Delete ALL edges first (prevents foreign key issues)
-                self.logger.info("🗑️ Step 1: Deleting all edges...")
-
-                all_record_keys = [rd["record"]["_key"] for rd in records_with_details]
+                self.logger.info("🗑️ Step 2: Deleting all edges...")
                 edges_cleanup_query = """
-                LET btk_keys_to_delete = (FOR e IN @@belongs_to_kb FILTER e._to == CONCAT('recordGroups/', @kb_id) RETURN e._key)
-                LET perm_keys_to_delete = (FOR e IN @@permission FILTER e._to == CONCAT('recordGroups/', @kb_id) RETURN e._key)
-                LET iot_keys_to_delete = (FOR rk IN @all_records FOR e IN @@is_of_type FILTER e._from == CONCAT('records/', rk) RETURN e._key)
-                // Folders are now RECORDS documents, so use records/{folder_key}
-                LET all_related_doc_ids = APPEND((FOR f IN @all_folders RETURN CONCAT('records/', f)), (FOR r IN @all_records RETURN CONCAT('records/', r)))
-                LET relation_keys_to_delete = (FOR e IN @@record_relations FILTER e._from IN all_related_doc_ids OR e._to IN all_related_doc_ids COLLECT k = e._key RETURN k)
-                FOR btk_key IN btk_keys_to_delete REMOVE btk_key IN @@belongs_to_kb OPTIONS { ignoreErrors: true }
-                FOR perm_key IN perm_keys_to_delete REMOVE perm_key IN @@permission OPTIONS { ignoreErrors: true }
-                FOR iot_key IN iot_keys_to_delete REMOVE iot_key IN @@is_of_type OPTIONS { ignoreErrors: true }
-                FOR relation_key IN relation_keys_to_delete REMOVE relation_key IN @@record_relations OPTIONS { ignoreErrors: true }
+                LET record_ids = (FOR k IN @record_keys RETURN CONCAT('records/', k))
+                LET kb_id_full = CONCAT('recordGroups/', @kb_id)
+
+                // Collect ALL edge keys in one pass
+                LET belongs_to_keys = (
+                    FOR e IN @@belongs_to_kb
+                        FILTER e._to == kb_id_full
+                        RETURN e._key
+                )
+
+                LET is_of_type_keys = (
+                    FOR e IN @@is_of_type
+                        FILTER e._from IN record_ids
+                        RETURN e._key
+                )
+
+                LET permission_keys = (
+                    FOR e IN @@permission
+                        FILTER e._to == kb_id_full OR e._to IN record_ids
+                        RETURN e._key
+                )
+
+                LET relation_keys = (
+                    FOR e IN @@record_relations
+                        FILTER e._from IN record_ids OR e._to IN record_ids
+                        RETURN e._key
+                )
+
+                // Delete all edges (using different variable names to avoid AQL error)
+                FOR btk_key IN belongs_to_keys REMOVE btk_key IN @@belongs_to_kb OPTIONS { ignoreErrors: true }
+                FOR iot_key IN is_of_type_keys REMOVE iot_key IN @@is_of_type OPTIONS { ignoreErrors: true }
+                FOR perm_key IN permission_keys REMOVE perm_key IN @@permission OPTIONS { ignoreErrors: true }
+                FOR rel_key IN relation_keys REMOVE rel_key IN @@record_relations OPTIONS { ignoreErrors: true }
+
+                RETURN {
+                    belongs_to_deleted: LENGTH(belongs_to_keys),
+                    is_of_type_deleted: LENGTH(is_of_type_keys),
+                    permission_deleted: LENGTH(permission_keys),
+                    relation_deleted: LENGTH(relation_keys)
+                }
                 """
-                transaction.aql.execute(edges_cleanup_query, bind_vars={
+                cursor = transaction.aql.execute(edges_cleanup_query, bind_vars={
                     "kb_id": kb_id,
-                    "all_folders": inventory["folders"],
-                    "all_records": all_record_keys,
+                    "record_keys": all_record_keys,
                     "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
                     "@permission": CollectionNames.PERMISSION.value,
                     "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                     "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                 })
-                self.logger.info(f"✅ All edges deleted for KB {kb_id}")
+                # Fully consume the cursor to release the transaction lock
+                results = list(cursor)
+                edge_deletion_result = results[0] if results else {}
 
-                # Step 3: Delete all file records
-                if inventory["file_records"]:
-                    self.logger.info(f"🗑️ Step 2: Deleting {len(inventory['file_records'])} file records...")
-                    transaction.aql.execute(
-                        "FOR k IN @keys REMOVE k IN @@files_collection OPTIONS { ignoreErrors: true }",
-                        bind_vars={
-                            "keys": inventory["file_records"],
-                            "@files_collection": CollectionNames.FILES.value
-                        }
-                    )
-                    self.logger.info(f"✅ Deleted {len(inventory['file_records'])} file records")
+                self.logger.info(f"✅ All edges deleted for KB {kb_id}: "
+                               f"belongs_to={edge_deletion_result.get('belongs_to_deleted', 0)}, "
+                               f"is_of_type={edge_deletion_result.get('is_of_type_deleted', 0)}, "
+                               f"permission={edge_deletion_result.get('permission_deleted', 0)}, "
+                               f"relations={edge_deletion_result.get('relation_deleted', 0)}")
 
-                # Step 4: Delete all records
+                # Step 3: Delete all FILES documents (folders + files) using helper method
+                file_keys = inventory.get("file_keys", [])
+                if file_keys:
+                    self.logger.info(f"🗑️ Step 3: Deleting {len(file_keys)} FILES documents (folders + files)...")
+                    await self.delete_nodes(file_keys, CollectionNames.FILES.value, transaction=transaction)
+                    self.logger.info(f"✅ Deleted {len(file_keys)} FILES documents")
+
+                # Step 4: Delete all RECORDS documents (folders + files) using helper method
                 if all_record_keys:
-                    self.logger.info(f"🗑️ Step 3: Deleting {len(all_record_keys)} records...")
-                    transaction.aql.execute(
-                        "FOR k IN @keys REMOVE k IN @@records_collection OPTIONS { ignoreErrors: true }",
-                        bind_vars={
-                            "keys": all_record_keys,
-                            "@records_collection": CollectionNames.RECORDS.value
-                        }
-                    )
-                    self.logger.info(f"✅ Deleted {len(all_record_keys)} records")
+                    self.logger.info(f"🗑️ Step 4: Deleting {len(all_record_keys)} RECORDS documents (folders + files)...")
+                    await self.delete_nodes(all_record_keys, CollectionNames.RECORDS.value, transaction=transaction)
+                    self.logger.info(f"✅ Deleted {len(all_record_keys)} RECORDS documents")
 
-                # Step 5: Delete all folders (RECORDS documents and their associated FILES documents)
-                if inventory["folders"]:
-                    self.logger.info(f"🗑️ Step 4: Deleting {len(inventory['folders'])} folders...")
-
-                    # First, get all folder FILES document keys
-                    folder_files_query = """
-                    FOR folder_key IN @folder_keys
-                        LET folder_record = DOCUMENT("records", folder_key)
-                        FILTER folder_record != null
-                        LET folder_file = FIRST(
-                            FOR isEdge IN @@is_of_type
-                                FILTER isEdge._from == folder_record._id
-                                LET f = DOCUMENT(isEdge._to)
-                                FILTER f != null AND f.isFile == false
-                                RETURN f._key
-                        )
-                        FILTER folder_file != null
-                        RETURN folder_file
-                    """
-
-                    folder_files_cursor = transaction.aql.execute(folder_files_query, bind_vars={
-                        "folder_keys": inventory["folders"],
-                        "@is_of_type": CollectionNames.IS_OF_TYPE.value,
-                    })
-                    folder_file_keys = [f for f in folder_files_cursor]
-
-                    # Delete folder FILES documents
-                    if folder_file_keys:
-                        transaction.aql.execute(
-                            "FOR k IN @keys REMOVE k IN @@files_collection OPTIONS { ignoreErrors: true }",
-                            bind_vars={
-                                "keys": folder_file_keys,
-                                "@files_collection": CollectionNames.FILES.value
-                            }
-                        )
-                        self.logger.info(f"✅ Deleted {len(folder_file_keys)} folder FILES documents")
-
-                    # Delete folder RECORDS documents
-                    transaction.aql.execute(
-                        "FOR k IN @keys REMOVE k IN @@records_collection OPTIONS { ignoreErrors: true }",
-                        bind_vars={
-                            "keys": inventory["folders"],
-                            "@records_collection": CollectionNames.RECORDS.value
-                        }
-                    )
-                    self.logger.info(f"✅ Deleted {len(inventory['folders'])} folder RECORDS documents")
-
-                # Step 6: Delete the KB document itself
+                # Step 5: Delete the KB document itself
                 self.logger.info(f"🗑️ Step 5: Deleting KB document {kb_id}...")
-                transaction.aql.execute(
-                    "REMOVE @kb_id IN @@recordGroups_collection OPTIONS { ignoreErrors: true }",
+                cursor = transaction.aql.execute(
+                    "REMOVE @kb_id IN @@recordGroups_collection OPTIONS { ignoreErrors: true } RETURN OLD",
                     bind_vars={
                         "kb_id": kb_id,
                         "@recordGroups_collection": CollectionNames.RECORD_GROUPS.value
                     }
                 )
 
-                # Step 7: Commit transaction
+                # Step 6: Commit transaction
                 if should_commit:
                     self.logger.info("💾 Committing complete deletion transaction...")
                     await asyncio.to_thread(lambda: transaction.commit_transaction())
                     self.logger.info("✅ Transaction committed successfully!")
 
-                # Step 8: Publish delete events for all records (after successful transaction)
+                # Step 7: Publish delete events for all records (after successful transaction)
                 try:
                     delete_event_tasks = []
                     for record_data in records_with_details:
