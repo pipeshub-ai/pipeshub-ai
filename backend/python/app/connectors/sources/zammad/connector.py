@@ -42,6 +42,7 @@ from app.connectors.core.registry.connector_builder import (
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterField,
+    FilterOperatorType,
     FilterOption,
     FilterOptionsResponse,
     FilterType,
@@ -88,6 +89,10 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Config path for Zammad connector
 ZAMMAD_CONFIG_PATH = "/services/connectors/{connector_id}/config"
+
+# Constants for batch processing and parsing
+BATCH_SIZE_KB_ANSWERS = 50
+ATTACHMENT_ID_PARTS_COUNT = 3
 
 
 @ConnectorBuilder("Zammad")\
@@ -746,7 +751,7 @@ class ZammadConnector(BaseConnector):
     async def _fetch_organizations(
         self,
         organization_ids: Optional[List[str]] = None,
-        organization_ids_operator: Optional[Any] = None
+        organization_ids_operator: Optional[FilterOperatorType] = None
     ) -> None:
         """
         Fetch organizations from Zammad and cache for filter options and ticket metadata.
@@ -1572,7 +1577,7 @@ class ZammadConnector(BaseConnector):
                     total_answers += 1
 
                     # Batch processing
-                    if len(batch_records) >= 50:
+                    if len(batch_records) >= BATCH_SIZE_KB_ANSWERS:
                         await self.data_entities_processor.on_new_records(batch_records)
                         self.logger.debug(f"Processed batch of {len(batch_records)} KB answers")
                         batch_records = []
@@ -1938,7 +1943,7 @@ class ZammadConnector(BaseConnector):
         """
         # Parse external_record_id (format: {ticket_id}_{article_id}_{attachment_id})
         parts = record.external_record_id.split("_")
-        if len(parts) != 3:
+        if len(parts) != ATTACHMENT_ID_PARTS_COUNT:
             raise ValueError(f"Invalid attachment ID format: {record.external_record_id}")
 
         ticket_id, article_id, attachment_id = parts
