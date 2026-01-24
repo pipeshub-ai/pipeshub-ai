@@ -10,7 +10,6 @@ from typing import Any, Dict, List, Literal, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.types import StreamWriter
 
 from app.modules.agents.qna.chat_state import ChatState
@@ -34,6 +33,7 @@ from app.modules.agents.qna.optimization import (
     PromptOptimizer,
 )
 from app.modules.agents.qna.performance_tracker import get_performance_tracker
+from app.modules.agents.qna.stream_utils import safe_stream_write
 from app.modules.qna.agent_prompt import (
     create_agent_messages,
     detect_response_mode,
@@ -67,45 +67,6 @@ PING_REPEAT_MIN = AnalysisConfig.PING_REPEAT_MIN
 SUSPICIOUS_RESPONSE_MIN = AnalysisConfig.SUSPICIOUS_RESPONSE_MIN
 LOOP_DETECTION_MIN_CALLS = PerformanceConfig.LOOP_DETECTION_MIN_CALLS
 LOOP_DETECTION_MAX_UNIQUE_TOOLS = PerformanceConfig.LOOP_DETECTION_MAX_UNIQUE_TOOLS
-
-# ============================================================================
-# STREAMING HELPER (for Python < 3.11)
-# ============================================================================
-
-def safe_stream_write(writer: StreamWriter, event_data: dict, config: RunnableConfig = None) -> None:
-    """
-    Safely write to stream writer.
-    Uses 'config' to restore context if it's missing (common in async/threaded flows).
-    This is the STANDARD way to bridge context gaps in LangChain/LangGraph.
-    Args:
-        writer: StreamWriter instance passed to the node
-        event_data: Dict with 'event' and 'data' keys
-        config: RunnableConfig from the node (optional, for context preservation)
-    """
-    import logging
-    logger = logging.getLogger(__name__)
-
-    try:
-        if writer is not None:
-            try:
-                # Try writing normally
-                writer(event_data)
-            except RuntimeError as e:
-                # If context is lost, explicitly restore it using the node's config
-                if "get_config" in str(e) and config:
-                    # Set the context variable temporarily for this operation
-                    token = var_child_runnable_config.set(config)
-                    try:
-                        writer(event_data)
-                    finally:
-                        var_child_runnable_config.reset(token)
-                else:
-                    # If it's a different error or we have no config, raise it
-                    raise e
-        else:
-            logger.debug("⚠️ Stream writer is None (not in streaming mode)")
-    except Exception as e:
-        logger.warning(f"❌ Stream write failed: {e}")
 
 # ============================================================================
 # GENERIC TOOL RESULT ANALYSIS FUNCTIONS
@@ -638,7 +599,7 @@ def build_simple_tool_context(state: ChatState) -> str:
         total_failures = sum(details["count"] for details in failed_tool_details.values())
         unique_tools_failed = len(failed_tool_details)
 
-        if total_failures >= 3 and unique_tools_failed <= 2:
+        if total_failures >= PerformanceConfig.MIN_FAILURES_FOR_STOP_RETRY and unique_tools_failed <= PerformanceConfig.MAX_UNIQUE_TOOLS_FAILED:
             # Same tool(s) failing multiple times = agent not learning from errors
             context_parts.append("\n🚨 **STOP RETRYING** - You've failed 3+ times with similar errors")
             context_parts.append("📝 **ACTION**: The issue is likely with the API requirements or user permissions")
@@ -1195,9 +1156,9 @@ async def agent_node(state: ChatState, config: RunnableConfig, writer: StreamWri
                         elif isinstance(content, dict):
                             content = content.get("text", str(content))
 
-                        # Truncate very long content blocks (keep first 1500 chars each for speed)
-                        if len(content) > 1500:
-                            content = content[:1500] + "..."
+                        # Truncate very long content blocks (keep first N chars each for speed)
+                        if len(content) > PerformanceConfig.MAX_CONTENT_BLOCK_LENGTH:
+                            content = content[:PerformanceConfig.MAX_CONTENT_BLOCK_LENGTH] + "..."
 
                         tool_context += f"\n### {block_num}\n"
                         tool_context += f"**Source**: {metadata.get('record_name', 'Unknown')}\n"
@@ -1401,7 +1362,7 @@ async def agent_node(state: ChatState, config: RunnableConfig, writer: StreamWri
                             if len(current_words) > 0 and len(prev_words) > 0:
                                 overlap = len(current_words & prev_words)
                                 similarity = overlap / max(len(current_words), len(prev_words))
-                                if similarity > 0.6:  # More than 60% overlap = similar enough
+                                if similarity > PerformanceConfig.QUERY_SIMILARITY_THRESHOLD:  # More than 60% overlap = similar enough
                                     logger.warning(f"⚠️ Blocking SIMILAR retrieval query ({similarity:.0%} overlap)")
                                     logger.warning(f"   Previous: '{prev_query[:60]}...'")
                                     logger.warning(f"   Current:  '{current_query[:60]}...'")
@@ -1412,10 +1373,10 @@ async def agent_node(state: ChatState, config: RunnableConfig, writer: StreamWri
                     if should_skip_similar:
                         continue  # Skip this tool call - don't add to filtered list
 
-                    # Check for excessive calls (safety limit: max 2 retrieval calls for same topic)
+                    # Check for excessive calls (safety limit: max N retrieval calls for same topic)
                     # Chatbot does ONE retrieval, agent should match that efficiency
                     retrieval_count = len(state.get("retrieval_queries", []))
-                    if retrieval_count >= 2:
+                    if retrieval_count >= PerformanceConfig.MAX_RETRIEVAL_CALLS:
                         logger.warning(f"⚠️ Blocking retrieval - already made {retrieval_count} calls")
                         logger.warning(f"   Agent has {len(state.get('final_results', []))} results - should answer now")
                         logger.info("🎯 Chatbot does 1 retrieval → answer. Agent should match that efficiency.")
@@ -1428,7 +1389,7 @@ async def agent_node(state: ChatState, config: RunnableConfig, writer: StreamWri
 
                         # Warn if calling again (should answer after first retrieval like chatbot)
                         existing_results = len(state.get("final_results", []))
-                        if existing_results >= 10:
+                        if existing_results >= PerformanceConfig.MIN_RESULTS_BEFORE_ANSWER:
                             logger.warning(f"⚠️ Agent already has {existing_results} results - should ANSWER, not retrieve again!")
                             logger.warning("💡 Chatbot answers immediately after retrieval. Agent should too.")
 

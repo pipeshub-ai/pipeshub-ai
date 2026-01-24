@@ -16,6 +16,7 @@ from langgraph.types import StreamWriter
 
 from app.models.blocks import BlockType, GroupType
 from app.modules.agents.qna.chat_state import ChatState
+from app.modules.agents.qna.stream_utils import safe_stream_write
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import get_flattened_results
 
@@ -56,12 +57,11 @@ async def conditional_retrieve_node(state: ChatState, config: RunnableConfig, wr
 
         # Perform retrieval
         logger_instance.info("📚 Gathering knowledge sources...")
-        try:
-            if writer:
-                # StreamWriter accepts ONE argument - a dict with event and data
-                writer({"event": "status", "data": {"status": "retrieving", "message": "📚 Gathering knowledge sources..."}})
-        except Exception as e:
-            logger_instance.debug(f"Failed to write stream event: {e}")
+        safe_stream_write(
+            writer,
+            {"event": "status", "data": {"status": "retrieving", "message": "📚 Gathering knowledge sources..."}},
+            config
+        )
 
         # Get services
         retrieval_service = state["retrieval_service"]
@@ -120,12 +120,11 @@ async def conditional_retrieve_node(state: ChatState, config: RunnableConfig, wr
             return state
 
         # Process search results like chatbot does - CRITICAL for proper formatting and citations
-        try:
-            if writer:
-                # StreamWriter accepts ONE argument - a dict with event and data
-                writer({"event": "status", "data": {"status": "processing", "message": "Processing search results..."}})
-        except Exception as e:
-            logger_instance.debug(f"Failed to write stream event: {e}")
+        safe_stream_write(
+            writer,
+            {"event": "status", "data": {"status": "processing", "message": "Processing search results..."}},
+            config
+        )
 
         # Initialize blob storage for processing results
         config_service = state["config_service"]
@@ -180,12 +179,11 @@ async def conditional_retrieve_node(state: ChatState, config: RunnableConfig, wr
         )
 
         if should_rerank:
-            try:
-                if writer:
-                    # StreamWriter accepts ONE argument - a dict with event and data
-                    writer({"event": "status", "data": {"status": "ranking", "message": "Ranking relevant information..."}})
-            except Exception as e:
-                logger_instance.debug(f"Failed to write stream event: {e}")
+            safe_stream_write(
+                writer,
+                {"event": "status", "data": {"status": "ranking", "message": "Ranking relevant information..."}},
+                config
+            )
 
             final_results = await reranker_service.rerank(
                 query=query,

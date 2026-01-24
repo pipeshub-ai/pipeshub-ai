@@ -43,6 +43,20 @@ class PerformanceConfig:
     LOOP_DETECTION_MIN_CALLS = 5
     LOOP_DETECTION_MAX_UNIQUE_TOOLS = 2
 
+    # Failure thresholds
+    MIN_FAILURES_FOR_STOP_RETRY = 3  # Stop retrying after this many failures
+    MAX_UNIQUE_TOOLS_FAILED = 2  # Max unique tools before considering loop
+
+    # Retrieval limits
+    MAX_RETRIEVAL_CALLS = 2  # Maximum retrieval calls per query
+    MIN_RESULTS_BEFORE_ANSWER = 10  # Minimum results before suggesting answer
+
+    # Content truncation
+    MAX_CONTENT_BLOCK_LENGTH = 1500  # Max chars per content block in context
+
+    # Query similarity
+    QUERY_SIMILARITY_THRESHOLD = 0.6  # Similarity threshold (60% overlap) for blocking duplicate queries
+
 
 class AnalysisConfig:
     """Configuration for query and result analysis."""
