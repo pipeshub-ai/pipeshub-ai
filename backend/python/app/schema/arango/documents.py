@@ -401,6 +401,11 @@ ticket_record_schema = {
             "assigneeSourceTimestamp": {"type": ["number", "null"]},
             "creatorSourceTimestamp": {"type": ["number", "null"]},
             "reporterSourceTimestamp": {"type": ["number", "null"]},
+            "labels":{
+                "type": "array",
+                "items": {"type": "string", "minLength": 0},
+                "default": [],
+            },
         },
     },
 }
@@ -415,6 +420,48 @@ project_record_schema = {
             "leadId": {"type": ["string", "null"]},
             "leadName": {"type": ["string", "null"]},
             "leadEmail": {"type": ["string", "null"]},
+        },
+    },
+}
+        
+            
+pull_request_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties":{
+            "orgId": {"type": "string"},
+            "summary": {"type": ["string", "null"]},
+            "description": {"type": ["string", "null"]},
+            "status": {"type": ["string", "null"]},
+            "assignee":{
+                "type": "array",
+                "items": {"type": "string", "minLength": 0},
+                "default": [],
+            },
+            "assigneeEmail":{
+                "type": "array",
+                "items": {"type": "string", "minLength": 0},
+                "default": [],
+            },
+            "creatorEmail": {"type": ["string", "null"]},
+            "creatorName": {"type": ["string", "null"]},
+            "reviewEmail":{
+                "type": "array",
+                "items": {"type": "string", "minLength": 0},
+                "default": []
+            },
+            "reviewName":{
+                "type": "array",
+                "items": {"type": "string", "minLength": 0},
+                "default": []
+            },
+            "mergeable":{"type": ["string", "null"]},
+            "mergedBy": {"type": ["string", "null"]},
+            "labels":{
+                "type": "array",
+                "items": {"type": "string", "minLength": 0},
+                "default": [],
+            },
         },
     },
 }

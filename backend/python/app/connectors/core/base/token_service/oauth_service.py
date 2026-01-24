@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, Optional
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode
 
 from aiohttp import ClientSession
 
@@ -198,8 +198,27 @@ class OAuthProvider:
                 raise Exception(f"Token exchange failed: {error_detail}")
 
             response.raise_for_status()
-            token_data = await response.json()
+            # token_data = await response.json()
+            # Handle both JSON and form-encoded responses
+            content_type = response.headers.get('Content-Type', '').lower()
+            if 'application/json' in content_type:
+                token_data = await response.json()
+            elif 'application/x-www-form-urlencoded' in content_type or 'text/plain' in content_type:
+                # Parse form-encoded response (used by GitHub and some other providers)
+                text_response = await response.text()
+                # print(f"\n text response: {text_response} \n")
+                parsed_data = parse_qs(text_response, keep_blank_values=True)
+                # print(f"\n parsed_data : {parsed_data} \n")
+                # Convert parsed_qs format (list of values) to dict (take first value)
 
+                token_data = {key: values[0] if values else None for key, values in parsed_data.items()}
+                # Convert string numbers to integers for expires_in if present
+                if 'expires_in' in token_data and token_data['expires_in']:
+                    try:
+                        token_data['expires_in'] = int(token_data['expires_in'])
+                    except (ValueError, TypeError):
+                        pass
+            # print(f"\n token data : {token_data} \n")
         token = OAuthToken.from_dict(token_data)
         return token
 
