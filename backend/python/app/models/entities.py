@@ -36,6 +36,7 @@ class RecordGroupType(str, Enum):
     SERVICENOW_CATEGORY = "SERVICENOW_CATEGORY"
     BUCKET = "BUCKET"
     FILE_SHARE = "FILE_SHARE"
+    REPOSITORY = "REPOSITORY"
     MAILBOX = "MAILBOX"
     GROUP_MAILBOX = "GROUP_MAILBOX"
     WEB = "WEB"
@@ -60,6 +61,7 @@ class RecordType(str, Enum):
     SHAREPOINT_DOCUMENT_LIBRARY = "SHAREPOINT_DOCUMENT_LIBRARY"
     LINK = "LINK"
     PROJECT = "PROJECT"
+    PULL_REQUEST = "PULL_REQUEST"
     OTHERS = "OTHERS"
 
 
@@ -723,6 +725,8 @@ class TicketRecord(Record):
     assignee_source_timestamp: Optional[int] = None
     creator_source_timestamp: Optional[int] = None
     reporter_source_timestamp: Optional[int] = None
+    labels:List[str] = []
+    is_email_hidden:bool = False # this means reporters, assignees... emails are hidden and represents connector's native id
 
     def to_arango_record(self) -> Dict:
         def _get_value(field_value: Optional[Union[Enum, str]]) -> Optional[str]:
@@ -749,6 +753,7 @@ class TicketRecord(Record):
             "assigneeSourceTimestamp": self.assignee_source_timestamp,
             "creatorSourceTimestamp": self.creator_source_timestamp,
             "reporterSourceTimestamp": self.reporter_source_timestamp,
+            "labels":self.labels
         }
 
     @staticmethod
@@ -813,6 +818,7 @@ class TicketRecord(Record):
             assignee_source_timestamp=ticket_doc.get("assigneeSourceTimestamp"),
             creator_source_timestamp=ticket_doc.get("creatorSourceTimestamp"),
             reporter_source_timestamp=ticket_doc.get("reporterSourceTimestamp"),
+            labels=ticket_doc.get("labels"),
         )
 
     def to_kafka_record(self) -> Dict:
@@ -1016,6 +1022,50 @@ class SharePointPageRecord(Record):
             "externalRevisionId": self.external_revision_id,
             "externalGroupId": self.external_record_group_id,
             "parentExternalRecordId": self.parent_external_record_id,
+        }
+
+class PullRequestRecord(Record):
+    """Record class for Github Pull Request"""
+    status: Optional[str] = None
+    assignee: List[str] = []
+    assignee_email: List[str] = []
+    creator_email: Optional[str] = None
+    creator_name: Optional[str] =None
+    review_mail: List[str]=[]
+    review_name: List[str]=[]
+    mergeable:Optional[str]=None
+    merged_by:Optional[str]=None
+    labels:List[str] = []
+
+    def to_kafka_record(self) -> Dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
+            "mimeType": self.mime_type,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "signedUrl": self.signed_url,
+            "signedUrlRoute": self.fetch_signed_url,
+            "origin": self.origin.value,
+            "webUrl": self.weburl,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+        }
+    def to_arango_record(self) -> Dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "status": self.status,
+            "assignee": self.assignee,
+            "reviewName": self.review_name,
+            "mergedBy": self.merged_by,
+            "creatorEmail": self.creator_email,
+            "mergeable": self.mergeable,
+            "labels":self.labels
         }
 
 class RecordGroup(BaseModel):

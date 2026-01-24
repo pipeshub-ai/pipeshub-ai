@@ -6,7 +6,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 if TYPE_CHECKING:
-    pass
+    from app.models.entities import RecordType
 
 class Point(BaseModel):
     x: float
@@ -20,15 +20,13 @@ class CommentFormat(str, Enum):
 
 class BlockType(str, Enum):
     TEXT = "text"
-    IMAGE = "image"
-    TABLE_ROW = "table_row"
-
-    # Do not use these types as currently not supported
     PARAGRAPH = "paragraph"
     TEXTSECTION = "textsection"
     TABLE = "table"
+    TABLE_ROW = "table_row"
     TABLE_CELL = "table_cell"
     FILE = "file"
+    IMAGE = "image"
     VIDEO = "video"
     AUDIO = "audio"
     LINK = "link"
@@ -38,26 +36,9 @@ class BlockType(str, Enum):
     HEADING = "heading"
     QUOTE = "quote"
     DIVIDER = "divider"
-    COMMIT = "commit"
 
 class BlockSubType(str, Enum):
     CHILD_RECORD = "child_record"
-    COMMENT = "comment"
-
-class CommentSubtype(str, Enum):
-    CODE_REVIEW = "code_review"
-
-class BlockSubType(str, Enum):
-    CHILD_RECORD = "child_record"
-    COMMENT = "comment"
-    PARAGRAPH = "paragraph"
-    HEADING = "heading"
-    QUOTE = "quote"
-    LIST_ITEM = "list_item"
-    CODE = "code"
-    EQUATION = "equation"
-    DIVIDER = "divider"
-    LINK = "link"
 
 class DataFormat(str, Enum):
     TXT = "txt"
@@ -70,28 +51,15 @@ class DataFormat(str, Enum):
     YAML = "yaml"
     BASE64 = "base64"
     UTF8 = "utf8"
-    PATCH = "patch"
-    DIFF = "diff"
-    CODE = "code"
 
 class CommentAttachment(BaseModel):
     """Attachment model for comments"""
     name: str = Field(description="Name of the attachment")
-    id: str = Field(description="ID of the attachment")
-
-class CommentAttachment(BaseModel):
-    """Attachment model for comments"""
-    name: str = Field(description="Name of the attachment")
-    id: str = Field(description="ID of the attachment")
 
 class BlockComment(BaseModel):
     text: str
-    subtype: CommentSubtype
     format: DataFormat
-    author_id: Optional[str] = Field(default=None, description="ID of the user who created the comment")
-    author_name: Optional[str] = Field(default=None, description="Name of the user who created the comment")
-    thread_id: Optional[str] = None
-    resolution_status: Optional[str] = Field(default=None, description="Status of the comment (e.g., 'resolved', 'open')")
+    thread_id: Optional[str] = None # my case external id
     weburl: Optional[HttpUrl] = Field(default=None, description="Web URL for the comment (e.g., direct link to comment in Linear)") # add html_url
     created_at: Optional[datetime] = Field(default=None, description="Timestamp when the comment was created in Linear")
     updated_at: Optional[datetime] = Field(default=None, description="Timestamp when the comment was updated in Linear")
@@ -155,10 +123,15 @@ class ChildType(str, Enum):
     USER = "user"
 
 class ChildRecord(BaseModel):
-    """Metadata for child references (records, users, or other types)"""
-    child_type: ChildType = Field(description="Type of child: 'record', 'user', etc.")
-    child_id: str = Field(description="ID of the child (ArangoDB record ID, user ID, etc.)")
-    child_name: Optional[str] = Field(default=None, description="Name/title of the child")
+    """Metadata for child references (records or users)"""
+    child_type: ChildType = Field(description="Type of child: 'record' or 'user'")
+    # For records
+    record_id: Optional[str] = Field(default=None, description="ArangoDB record ID (for records)")
+    record_name: Optional[str] = Field(default=None, description="Record name (for records)")
+    record_type: Optional["RecordType"] = Field(default=None, description="Record type (for records)")
+    # For users
+    user_id: Optional[str] = Field(default=None, description="Notion user ID (for users)")
+    user_name: Optional[str] = Field(default=None, description="User name (for users)")
 
 class TableRowMetadata(BaseModel):
     """Metadata specific to table row blocks"""
@@ -171,7 +144,6 @@ class TableMetadata(BaseModel):
     """Metadata specific to table blocks"""
     num_of_rows: Optional[int] = None
     num_of_cols: Optional[int] = None
-    num_of_cells: Optional[int] = None
     has_header: bool = False
     column_names: Optional[List[str]] = None
     captions: Optional[List[str]] = Field(default_factory=list)
@@ -236,40 +208,19 @@ class GroupType(str, Enum):
     TEXT_SECTION = "text_section"
     LIST = "list"
     TABLE = "table"
-    TEXT_SECTION = "text_section"
-    COMMITS = "commits"
-    PATCH = "patch"
+    CODE = "code"
+    MEDIA = "media"
     SHEET = "sheet"
     FORM_AREA = "form_area"
     INLINE = "inline"
     KEY_VALUE_AREA = "key_value_area"
     ORDERED_LIST = "ordered_list"
-    COLUMN = "column"
-    COLUMN_LIST = "column_list"
 
-    # Do not use these types as currently not supported
-    CODE = "code"
-    MEDIA = "media"
-    FULL_CODE_PATCH = "full_code_patch"
-    
 class GroupSubType(str, Enum):
-    MILESTONE = "milestone" # Milestone block group
-    UPDATE = "update" # Update block group
-    CHILD_RECORD = "child_record" # Child record reference block group
-    CONTENT = "content" # Content block group
-    RECORD = "record" # Record block group
-    COMMENT_THREAD = "comment_thread" # Comment thread block group (used for comments in a thread)
-    COMMENT = "comment" # Comment block group
+    MILESTONE = "milestone"
+    UPDATE = "update"
     PROJECT_CONTENT = "project_content"
-    ISSUE_CONTENT = "issue_content"
-    TOGGLE = "toggle"
-    CALLOUT = "callout"
-    QUOTE = "quote"
-    SYNCED_BLOCK = "synced_block"
-    NESTED_BLOCK = "nested_block"  # Generic wrapper for blocks with children
-    ISSUE_CONTENT = "issue_content"
-    PR_CONTENT = "pr_content"
-    PR_FILE_CHANGE = "pr_file_change"
+    CHILD_RECORD = "child_record"
 
 class SemanticMetadata(BaseModel):
     entities: Optional[List[Dict[str, Any]]] = None
@@ -295,7 +246,7 @@ class Block(BaseModel):
     sub_type: Optional[BlockSubType] = None
     name: Optional[str] = None
     format: DataFormat = None
-    comments: List[List[BlockComment]] = Field(default_factory=list, description="2D list of comments grouped by thread_id, with each thread's comments in API order")
+    comments: List[BlockComment] = Field(default_factory=list)
     source_creation_date: Optional[datetime] = None
     source_update_date: Optional[datetime] = None
     source_id: Optional[str] = None
@@ -317,168 +268,39 @@ class Block(BaseModel):
     link_metadata: Optional[LinkMetadata] = None
     image_metadata: Optional[ImageMetadata] = None
     semantic_metadata: Optional[SemanticMetadata] = None
-    children_records: Optional[List[ChildRecord]] = Field(default=None, description="List of child records associated with this block")
 
 class Blocks(BaseModel):
     blocks: List[Block] = Field(default_factory=list)
 
 class BlockContainerIndex(BaseModel):
-    """Legacy model for backward compatibility - use BlockGroupChildren instead"""
     block_index: Optional[int] = None
     block_group_index: Optional[int] = None
 
-class IndexRange(BaseModel):
-    """Represents a range of indices (inclusive)"""
-    start: int = Field(description="Starting index (inclusive)")
-    end: int = Field(description="Ending index (inclusive)")
-
-class BlockGroupChildren(BaseModel):
-    """Container for child block and block group references using ranges"""
-    block_ranges: List[IndexRange] = Field(default_factory=list, description="Ranges of block indices")
-    block_group_ranges: List[IndexRange] = Field(default_factory=list, description="Ranges of block group indices")
-
-    def add_block_index(self, index: int) -> None:
-        """Add a block index, merging into existing ranges if contiguous"""
-        if not self.block_ranges:
-            self.block_ranges.append(IndexRange(start=index, end=index))
-            return
-
-        # Try to merge with existing ranges
-        for range_obj in self.block_ranges:
-            if index == range_obj.end + 1:
-                range_obj.end = index
-                return
-            elif index == range_obj.start - 1:
-                range_obj.start = index
-                return
-            elif range_obj.start <= index <= range_obj.end:
-                # Already in range
-                return
-
-        # Add new range and sort
-        self.block_ranges.append(IndexRange(start=index, end=index))
-        self.block_ranges.sort(key=lambda r: r.start)
-
-    def add_block_group_index(self, index: int) -> None:
-        """Add a block group index, merging into existing ranges if contiguous"""
-        if not self.block_group_ranges:
-            self.block_group_ranges.append(IndexRange(start=index, end=index))
-            return
-
-        # Try to merge with existing ranges
-        for range_obj in self.block_group_ranges:
-            if index == range_obj.end + 1:
-                range_obj.end = index
-                return
-            elif index == range_obj.start - 1:
-                range_obj.start = index
-                return
-            elif range_obj.start <= index <= range_obj.end:
-                # Already in range
-                return
-
-        # Add new range and sort
-        self.block_group_ranges.append(IndexRange(start=index, end=index))
-        self.block_group_ranges.sort(key=lambda r: r.start)
-
-    @staticmethod
-    def from_indices(block_indices: Optional[List[int]] = None,
-                     block_group_indices: Optional[List[int]] = None) -> 'BlockGroupChildren':
-        """Create BlockGroupChildren from lists of indices by grouping into ranges"""
-        def indices_to_ranges(indices: List[int]) -> List[IndexRange]:
-            if not indices:
-                return []
-
-            # Sort and remove duplicates
-            sorted_indices = sorted(set(indices))
-            ranges = []
-            start = sorted_indices[0]
-            end = sorted_indices[0]
-
-            for i in range(1, len(sorted_indices)):
-                if sorted_indices[i] == end + 1:
-                    # Contiguous, extend current range
-                    end = sorted_indices[i]
-                else:
-                    # Gap found, save current range and start new one
-                    ranges.append(IndexRange(start=start, end=end))
-                    start = sorted_indices[i]
-                    end = sorted_indices[i]
-
-            # Add the last range
-            ranges.append(IndexRange(start=start, end=end))
-            return ranges
-
-        block_ranges = indices_to_ranges(block_indices or [])
-        block_group_ranges = indices_to_ranges(block_group_indices or [])
-
-        return BlockGroupChildren(
-            block_ranges=block_ranges,
-            block_group_ranges=block_group_ranges
-        )
-
 class BlockGroup(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
-    index: int = None
+    index: int = None # index with in my code make sure to be in sortedf order
     name: Optional[str] = Field(description="Name of the block group",default=None)
     type: GroupType = Field(description="Type of the block group")
-    sub_type: Optional[GroupSubType] = Field(default=None, description="Subtype of the block group (e.g., milestone, update, project_content)")
+    group_subtype: Optional[GroupSubType] = Field(default=None, description="Subtype of the block group (e.g., milestone, update, project_content)")  # for llm context subtype to be pr_content
     parent_index: Optional[int] = Field(description="Index of the parent block group",default=None)
     description: Optional[str] = Field(description="Description of the block group",default=None)
     source_group_id: Optional[str] = Field(description="Source group identifier",default=None)
-    requires_processing : bool = Field(default=False, description="Indicates if further processing is needed for this block group")
+    requires_processing : bool = Field(default=False, description="Indicates if further processing is needed for this block group") #true  so internally breaks into blocks
     citation_metadata: Optional[CitationMetadata] = None
     list_metadata: Optional[ListMetadata] = None
     table_metadata: Optional[TableMetadata] = None
-    table_row_metadata: Optional[TableRowMetadata] = None
+    table_row_metadata: Optional[TableRowMetadata] = None # add ask it comment records as child records
     table_cell_metadata: Optional[TableCellMetadata] = None
     code_metadata: Optional[CodeMetadata] = None
     media_metadata: Optional[MediaMetadata] = None
     file_metadata: Optional[FileMetadata] = None
     link_metadata: Optional[LinkMetadata] = None
     semantic_metadata: Optional[SemanticMetadata] = None
-    children_records: Optional[List[ChildRecord]] = Field(default=None, description="List of child records associated with this block group")
-    children: Optional[BlockGroupChildren] = None
+    children: Optional[List[BlockContainerIndex]] = None
     data: Optional[Any] = None
-
-    @field_validator('children', mode='before')
-    @classmethod
-    def convert_children_format(cls, v:Optional[BlockGroupChildren|dict|list]) -> Optional[BlockGroupChildren|dict|list]:
-        """Convert old List[BlockContainerIndex] format to new BlockGroupChildren format"""
-        if v is None:
-            return None
-
-        # If it's already a BlockGroupChildren instance or dict with the new format, return as-is
-        if isinstance(v, BlockGroupChildren):
-            return v
-        if isinstance(v, dict) and ('block_ranges' in v or 'block_group_ranges' in v):
-            return v
-
-        # If it's a list, it's the old format (List[BlockContainerIndex])
-        if isinstance(v, list):
-            block_indices = []
-            block_group_indices = []
-
-            for item in v:
-                if isinstance(item, dict):
-                    if item.get('block_index') is not None:
-                        block_indices.append(item['block_index'])
-                    if item.get('block_group_index') is not None:
-                        block_group_indices.append(item['block_group_index'])
-                elif hasattr(item, 'block_index') or hasattr(item, 'block_group_index'):
-                    if hasattr(item, 'block_index') and item.block_index is not None:
-                        block_indices.append(item.block_index)
-                    if hasattr(item, 'block_group_index') and item.block_group_index is not None:
-                        block_group_indices.append(item.block_group_index)
-
-            return BlockGroupChildren.from_indices(block_indices, block_group_indices)
-
-        return v
     format: Optional[DataFormat] = None
-    # TODO: discuss below part as i need 1D but in Linear 2D
     weburl: Optional[HttpUrl] = Field(default=None, description="Web URL for the original source context (e.g., Linear project page). This will be used as primary webUrl in citations for all generated blocks")
-    comments: List[BlockComment] = Field(default_factory=list, description="1D list of comments grouped by thread_id, with each thread's comments sorted by created_at")
-    source_modified_date: Optional[datetime] = None
+    comments: List[List[BlockComment]] = Field(default_factory=list, description="2D list of comments grouped by thread_id, with each thread's comments sorted by created_at")
 
 class BlockGroups(BaseModel):
     block_groups: List[BlockGroup] = Field(default_factory=list)

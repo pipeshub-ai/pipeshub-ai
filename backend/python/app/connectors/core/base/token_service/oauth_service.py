@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, Optional
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode
 
 from aiohttp import ClientSession
 
