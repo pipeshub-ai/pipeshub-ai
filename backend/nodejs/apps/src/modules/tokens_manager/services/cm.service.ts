@@ -162,7 +162,7 @@ export class ConfigService {
       ssl: process.env.KAFKA_SSL === 'true',
       ...(process.env.KAFKA_USERNAME && {
         sasl: {
-          mechanism: process.env.KAFKA_SASL_MECHANISM as 'plain' | 'scram-sha-256' | 'scram-sha-512',
+          mechanism: (process.env.KAFKA_SASL_MECHANISM || 'scram-sha-512') as 'plain' | 'scram-sha-256' | 'scram-sha-512',
           username: process.env.KAFKA_USERNAME,
           password: process.env.KAFKA_PASSWORD!,
         },
