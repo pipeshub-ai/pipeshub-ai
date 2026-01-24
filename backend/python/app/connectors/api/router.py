@@ -3380,6 +3380,7 @@ async def get_connector_instance_config(
 async def update_connector_instance_auth_config(
     connector_id: str,
     request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service),
 ) -> Dict[str, Any]:
     """
     Update authentication configuration for a connector instance.
@@ -3556,6 +3557,9 @@ async def update_connector_instance_auth_config(
                 logger.debug(f"Expected OAuth fields: {oauth_field_names}")
                 logger.debug(f"Received auth config keys: {list(auth_config_raw.keys())}")
 
+        # Merge auth config with existing to preserve important fields like connectorScope
+        existing_auth_config = existing_config.get("auth", {}) or {}
+
         # Filter out OAuth credential fields from auth config - only for OAUTH type
         # For other auth types (OAUTH_ADMIN_CONSENT, API_TOKEN, etc.), keep all fields
         # as they may be needed for those authentication methods
@@ -3582,7 +3586,12 @@ async def update_connector_instance_auth_config(
             # (e.g., clientId/clientSecret for OAUTH_ADMIN_CONSENT, API_TOKEN, etc.)
             auth_config_clean = auth_config_raw.copy()
 
-        new_config["auth"] = auth_config_clean
+        # Merge with existing auth config to preserve fields like connectorScope
+        # Start with existing config, then overlay with new values
+        merged_auth_config = existing_auth_config.copy()
+        merged_auth_config.update(auth_config_clean)
+
+        new_config["auth"] = merged_auth_config
 
         # Clear credentials and OAuth state when auth config is updated
         new_config["credentials"] = None
@@ -3619,6 +3628,10 @@ async def update_connector_instance_auth_config(
             if not new_config["auth"].get("tokenUrl"):
                 oauth_updates["tokenUrl"] = auth_metadata.get("tokenUrl", "")
             new_config["auth"].update(oauth_updates)
+
+        if not new_config["auth"].get("connectorScope"):
+            connector_doc = await arango_service.get_document(connector_id, CollectionNames.APPS.value)
+            new_config["auth"]["connectorScope"] = connector_doc.get("scope", "")
 
         # Save configuration
         await config_service.set_config(config_path, new_config)
