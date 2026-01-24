@@ -79,6 +79,21 @@ class DataSourceEntitiesProcessor:
         RecordType.LINK,
         RecordType.TICKET
     ]
+
+    # Record relation types that connectors create for related external records
+    # Used for cleanup when related_external_records changes
+    LINK_RELATION_TYPES = [
+        RecordRelations.BLOCKS.value,
+        RecordRelations.DUPLICATES.value,
+        RecordRelations.DEPENDS_ON.value,
+        RecordRelations.CLONES.value,
+        RecordRelations.IMPLEMENTS.value,
+        RecordRelations.REVIEWS.value,
+        RecordRelations.CAUSES.value,
+        RecordRelations.RELATED.value,
+        RecordRelations.LINKED_TO.value,
+    ]
+
     def __init__(self, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
         self.logger = logger
         self.data_store_provider: DataStoreProvider = data_store_provider
@@ -220,19 +235,21 @@ class DataSourceEntitiesProcessor:
         Handle related external records by creating record relations.
         Creates placeholder records if not found, then creates edges with the specified relation types.
 
-        This method first deletes existing edges of the same relationship types from this record
-        to avoid duplicates and stale relationships, then creates new edges based on the current related_external_records.
+        This method first deletes ALL existing link-type edges from this record to ensure
+        stale relationships are removed, then creates new edges based on the current related_external_records.
 
         Args:
             record: The record to create relations for
             related_external_records: List of RelatedExternalRecord objects (strict type checking)
             tx_store: Transaction store
         """
-        if not related_external_records:
-            return
+        # Always clean up all possible link relation types to handle removed links
+        relation_types_to_delete = set(self.LINK_RELATION_TYPES)
 
-        # Collect unique relationship types that will be created
-        relation_types_to_delete = {rel.relation_type.value for rel in related_external_records if rel.relation_type}
+        if related_external_records:
+            for rel in related_external_records:
+                if rel.relation_type:
+                    relation_types_to_delete.add(rel.relation_type.value)
 
         if relation_types_to_delete:
             try:
@@ -707,7 +724,7 @@ class DataSourceEntitiesProcessor:
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
         await self._handle_parent_record(record, tx_store)
 
-        # Create LINKED_TO edges for related external records if record has related_external_records
+        # Create recordRelation edges for related external records if record has related_external_records
         # (This field is in base Record class with default_factory=list, so it always exists)
         if record.related_external_records:
             await self._handle_related_external_records(record, record.related_external_records, tx_store)
