@@ -47,10 +47,21 @@ class JiraRESTClientViaToken(HTTPClient):
     def __init__(self, base_url: str, token: str, token_type: str = "Bearer") -> None:
         super().__init__(token, token_type)
         self.base_url = base_url
+        self.token = token
+        self.token_type = token_type
 
     def get_base_url(self) -> str:
         """Get the base URL"""
         return self.base_url
+
+    def get_token(self) -> str:
+        """Get the token (without Bearer prefix)."""
+        return self.token
+
+    def set_token(self, token: str) -> None:
+        """Set the token and update Authorization header atomically."""
+        self.token = token
+        self.headers["Authorization"] = f"{self.token_type} {token}"
 
 @dataclass
 class JiraUsernamePasswordConfig:
