@@ -75,7 +75,7 @@ export class KafkaAdminService {
       } else {
         this.logger.info('Topics may already exist or creation was skipped');
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       // Handle the case where topics already exist (race condition)
       if (error.type === 'TOPIC_ALREADY_EXISTS') {
         this.logger.info('Topics already exist (concurrent creation detected)');
