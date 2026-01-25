@@ -1197,8 +1197,7 @@ class Processor:
 
             # Try different encodings to decode binary data
             encodings = ["utf-8", "latin1", "cp1252", "iso-8859-1"]
-            csv_result = None
-            line_numbers = None
+            all_rows = None
             for encoding in encodings:
                 try:
                     self.logger.debug(
@@ -1210,11 +1209,12 @@ class Processor:
                     # Create string stream from decoded text
                     csv_stream = io.StringIO(csv_text)
 
-                    # Use the parser's read_stream method directly
-                    csv_result, line_numbers = parser.read_stream(csv_stream)
+                    # Read raw rows for table detection
+                    all_rows = parser.read_raw_rows(csv_stream)
+
 
                     self.logger.info(
-                        f"✅ Successfully parsed delimited file with {encoding} encoding. Rows: {len(csv_result):,}"
+                        f"✅ Successfully parsed delimited file with {encoding} encoding. Rows: {len(all_rows)}"
                     )
                     break
                 except UnicodeDecodeError:
@@ -1225,7 +1225,7 @@ class Processor:
                     continue
 
 
-            if csv_result is None or not csv_result:
+            if all_rows is None or not all_rows:
                 self.logger.info(f"Unable to decode delimited file with any supported encoding or it is empty for record: {recordName}. Setting indexing status to EMPTY.")
 
                 yield {"event": "parsing_complete", "data": {"record_id": recordId}}
@@ -1236,33 +1236,43 @@ class Processor:
 
             self.logger.debug("📑 Delimited file result processed")
 
-            # Extract domain metadata from delimited file content
-            self.logger.info("🎯 Extracting domain metadata")
-            if csv_result:
-                record = await self.arango_service.get_document(
-                    recordId, CollectionNames.RECORDS.value
-                    )
-                if record is None:
-                    self.logger.error(f"❌ Record {recordId} not found in database")
-                    yield {"event": "parsing_complete", "data": {"record_id": recordId}}
-                    yield {"event": "indexing_complete", "data": {"record_id": recordId}}
-                    return
-                record = convert_record_dict_to_record(record)
-                record.virtual_record_id = virtual_record_id
+            # Detect multiple tables
+            tables = parser.find_tables_in_csv(all_rows)
+            self.logger.info(f"🔍 Detected {len(tables)} table(s) in delimited file")
 
-                # Signal parsing complete after delimited file is parsed (before LLM block creation)
+            record = await self.arango_service.get_document(
+                recordId, CollectionNames.RECORDS.value
+            )
+            if record is None:
+                self.logger.error(f"❌ Record {recordId} not found in database")
                 yield {"event": "parsing_complete", "data": {"record_id": recordId}}
-
-                # Create blocks (involves LLM calls for row descriptions and summaries)
-                block_containers = await parser.get_blocks_from_csv_result(csv_result, line_numbers, llm)
-                record.block_containers = block_containers
-
-                ctx = TransformContext(record=record)
-                pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
-                await pipeline.apply(ctx)
-
-                # Signal indexing complete
                 yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                return
+            record = convert_record_dict_to_record(record)
+            record.virtual_record_id = virtual_record_id
+
+            # Signal parsing complete after delimited file is parsed (before LLM block creation)
+            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+
+            # Route to appropriate processing method based on number of tables
+            if len(tables) == 1:
+                # Single table - use existing logic for backward compatibility
+                self.logger.info("📊 Processing as single table (backward compatibility mode)")
+                csv_result, line_numbers = parser.convert_table_to_dict(tables[0])
+                block_containers = await parser.get_blocks_from_csv_result(csv_result, line_numbers, llm)
+            else:
+                # Multiple tables - use new multi-table processing
+                self.logger.info(f"📊 Processing {len(tables)} tables with multi-table logic")
+                block_containers = await parser.get_blocks_from_csv_with_multiple_tables(tables, llm)
+
+            record.block_containers = block_containers
+
+            ctx = TransformContext(record=record)
+            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            await pipeline.apply(ctx)
+
+            # Signal indexing complete
+            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
 
             self.logger.info("✅ Delimited file processing completed successfully")
 

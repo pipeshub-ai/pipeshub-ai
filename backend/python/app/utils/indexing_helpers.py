@@ -138,7 +138,7 @@ def generate_simple_row_text(row_data: Dict[str, Any]) -> str:
     parts = []
     for key, value in row_data.items():
         # Convert value to string, handle None values
-        value_str = str(value) if value is not None else "None"
+        value_str = str(value) if value is not None else "null"
         parts.append(f"{key}: {value_str}")
     return ", ".join(parts)
 
