@@ -95,7 +95,7 @@ export class Application {
       const configurationManagerConfig = loadConfigurationManagerConfig();
       const appConfig = await loadAppConfig();
 
-      // Ensure Kafka topics exist (important for AWS MSK where auto-create is disabled)
+      // Ensure Kafka topics exist (important for Kafka deployments where auto-create is disabled)
       try {
         this.logger.info('Ensuring Kafka topics exist...');
         await ensureKafkaTopicsExist(appConfig.kafka, this.logger, REQUIRED_KAFKA_TOPICS);
@@ -103,7 +103,6 @@ export class Application {
       } catch (kafkaError: any) {
         this.logger.warn(
           `Could not verify/create Kafka topics: ${kafkaError.message}. ` +
-          'Topics may need to be created manually for AWS MSK.',
         );
         // Don't throw - allow app to continue; topics might already exist or be created elsewhere
       }
