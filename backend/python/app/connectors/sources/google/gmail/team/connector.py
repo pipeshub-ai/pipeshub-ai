@@ -9,11 +9,13 @@ from logging import Logger
 from pathlib import Path
 from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
+import html2text
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
+from mailparser_reply import EmailReplyParser
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -2191,19 +2193,8 @@ class GoogleGmailTeamConnector(BaseConnector):
         message_id: str,
         record: Record
     ) -> StreamingResponse:
-        """
-        Stream mail body content from Gmail.
-
-        Args:
-            gmail_service: Raw Gmail API service client
-            message_id: Gmail message ID
-            record: Record object
-
-        Returns:
-            StreamingResponse with mail body content
-        """
         try:
-            # Fetch the message directly
+            # 1. Fetch message
             message = (
                 gmail_service.users()
                 .messages()
@@ -2211,25 +2202,45 @@ class GoogleGmailTeamConnector(BaseConnector):
                 .execute()
             )
 
-            # Extract the encoded body content
+            # 2. Extract payload (HTML)
             mail_content_base64 = self._extract_body_from_payload(message.get("payload", {}))
-
-            # Decode the Gmail URL-safe base64 encoded content
-            mail_content = base64.urlsafe_b64decode(
+            raw_html = base64.urlsafe_b64decode(
                 mail_content_base64.encode("ASCII")
             ).decode("utf-8", errors="replace")
 
-            # Async generator to stream only the mail content
-            async def message_stream() -> AsyncGenerator[bytes, None]:
-                yield mail_content.encode("utf-8")
 
-            # Return the streaming response with only the mail body
+            latest_reply_text = ""
+
+            if raw_html:
+                # --- STEP 1: Smart Conversion (HTML -> Text) ---
+                converter = html2text.HTML2Text()
+                converter.ignore_links = False
+                converter.ignore_images = False
+                converter.body_width = 0
+
+                clean_text = converter.handle(raw_html)
+
+
+                # --- STEP 2: Extract Reply ---
+                email_parser = EmailReplyParser(languages=['en'])
+                parsed_mail = email_parser.read(clean_text)
+
+                latest_reply_text = parsed_mail.latest_reply
+
+                if not latest_reply_text:
+                    latest_reply_text = clean_text
+
+
+            async def message_stream() -> AsyncGenerator[bytes, None]:
+                yield latest_reply_text.encode("utf-8")
+
             return create_stream_record_response(
                 message_stream(),
                 filename=f"{record.record_name}",
                 mime_type="text/plain",
                 fallback_filename=f"record_{record.id}"
             )
+
         except HttpError as http_error:
             if hasattr(http_error, 'resp') and http_error.resp.status == HttpStatusCode.NOT_FOUND.value:
                 self.logger.error(f"Message not found with ID {message_id}")
