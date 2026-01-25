@@ -444,22 +444,6 @@ class EntityEventService(BaseEventService):
                             self.logger.info(f"Skipping sync for {app_name}")
                             continue
 
-                        # Gmail and Google Drive need both init and start events
-                        # They have specialized event handlers that require init to call initialize()
-                        # Use case-insensitive comparison since app_name comes as lowercase from payload
-                        if app_name.upper() in [Connectors.GOOGLE_MAIL.value]:
-                            # Initialize app (this will fetch and create users)
-                            await self.__handle_sync_event(
-                                event_type=f"{app_name.lower()}.init",
-                                value={
-                                    "orgId": org_id,
-                                    "connector":app_name,
-                                    "connectorId":connector_id
-                                },
-                            )
-                            # TODO: Remove this sleep
-                            await asyncio.sleep(5)
-
                         if sync_action == "immediate":
                             # Start sync - connector should already be initialized
                             await self.__handle_sync_event(
@@ -484,22 +468,6 @@ class EntityEventService(BaseEventService):
                         if app_name in [Connectors.GOOGLE_CALENDAR.value]:
                             self.logger.info(f"Skipping sync for {app_name}")
                             continue
-
-                        # Gmail and Google Drive need both init and start events
-                        # They have specialized event handlers that require init to call initialize()
-                        # Use case-insensitive comparison since app_name comes as lowercase from payload
-                        if app_name.upper() in [Connectors.GOOGLE_MAIL.value]:
-                            # Initialize app
-                            await self.__handle_sync_event(
-                                event_type=f"{app_name.lower()}.init",
-                                value={
-                                    "orgId": org_id,
-                                    "connector":app_name,
-                                    "connectorId":connector_id
-                                },
-                            )
-                            # TODO: Remove this sleep
-                            await asyncio.sleep(5)
 
                         # Start sync for each app (connector already initialized for standard connectors)
                         await self.__handle_sync_event(

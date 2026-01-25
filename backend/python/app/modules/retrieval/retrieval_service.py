@@ -16,7 +16,6 @@ from app.config.constants.ai_models import (
 # from langchain_cohere import CohereEmbeddings
 from app.config.constants.arangodb import (
     CollectionNames,
-    Connectors,
     RecordTypes,
 )
 from app.config.constants.service import config_node_constants
@@ -465,10 +464,10 @@ class RetrievalService:
                 if record_type == "file" and record_id in files_map:
                     files = files_map[record_id]
                     weburl = files.get("webUrl")
-                    if weburl and record.get("connectorName", "") == Connectors.GOOGLE_MAIL.value:
-                        user_email = user.get("email") if user else None
-                        if user_email:
-                            weburl = weburl.replace("{user.email}", user_email)
+                    # if weburl and record.get("connectorName", "") == Connectors.GOOGLE_MAIL.value:
+                    #     user_email = user.get("email") if user else None
+                    #     if user_email:
+                    #         weburl = weburl.replace("{user.email}", user_email)
                     fallback_mimetype = files.get("mimeType")
                 elif record_type == "mail" and record_id in mails_map:
                     mail = mails_map[record_id]

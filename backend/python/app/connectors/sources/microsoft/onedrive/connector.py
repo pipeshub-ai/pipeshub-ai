@@ -1069,7 +1069,7 @@ class OneDriveConnector(BaseConnector):
                 if await self._user_has_onedrive(user.source_user_id):
                     users_to_sync.append(user)
                 else:
-                    self.logger.info(f"\n\n\n\n\n\nSkipping user {user.email}: No OneDrive license or drive not provisioned")
+                    self.logger.info(f"Skipping user {user.email}: No OneDrive license or drive not provisioned")
 
             self.logger.info(f"Processing {len(users_to_sync)} users with OneDrive out of {len(active_users)} active users")
 

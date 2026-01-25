@@ -25,7 +25,6 @@ from fastapi import (
 )
 from fastapi.responses import Response, StreamingResponse
 from google.oauth2 import service_account
-from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 from jose import JWTError
@@ -33,12 +32,9 @@ from pydantic import BaseModel, ValidationError
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
-    AccountType,
     CollectionNames,
     Connectors,
     MimeTypes,
-    RecordRelations,
-    RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
@@ -670,244 +666,28 @@ async def download_file(
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
-        external_record_id = record.external_record_id
         connector_id = record.connector_id
-        creds = None
         # Get connector instance to check scope
         connector_instance = await arango_service.get_document(connector_id, CollectionNames.APPS.value)
         connector_type = connector_instance.get("type", None)
         if connector_type is None:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Connector not found")
 
-        if connector_type.lower() == Connectors.GOOGLE_MAIL.value.lower():
-            connector_scope = connector_instance.get("scope", ConnectorScope.PERSONAL.value) if connector_instance else ConnectorScope.PERSONAL.value
-
-            # Use service account credentials only for TEAM scope connectors in enterprise/business accounts
-            # Personal scope connectors always use user credentials regardless of account type
-            if (org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value] and
-                connector_scope == ConnectorScope.TEAM.value):
-                # Use service account credentials for team scope in enterprise accounts
-                creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container, connector, connector_id)
-            else:
-                # Use user credentials for personal scope or individual accounts
-                creds = await get_user_credentials(org_id, user_id, logger, google_token_handler, request.app.container,connector,connector_id)
-
         try:
-
-            if connector_type.lower() == Connectors.GOOGLE_MAIL.value.lower():
-                file_id = external_record_id
-                logger.info(f"Downloading Gmail attachment for record_id: {record_id}")
-                gmail_service = build("gmail", "v1", credentials=creds)
-
-                # Get the related message's externalRecordId using AQL
-                aql_query = f"""
-                FOR v, e IN 1..1 ANY '{CollectionNames.RECORDS.value}/{record_id}' {CollectionNames.RECORD_RELATIONS.value}
-                    FILTER e.relationType == '{RecordRelations.ATTACHMENT.value}'
-                    RETURN {{
-                        messageId: v.externalRecordId,
-                        _key: v._key,
-                        relationType: e.relationType
-                    }}
-                """
-
-                cursor = arango_service.db.aql.execute(aql_query)
-                messages = list(cursor)
-
-                async def attachment_stream() -> AsyncGenerator[bytes, None]:
-                    try:
-                        # First try getting the attachment from Gmail
-                        message_id = None
-                        if messages and messages[0]:
-                            message = messages[0]
-                            message_id = message["messageId"]
-                            logger.info(f"Found message ID: {message_id}")
-                        else:
-                            logger.warning("Related message not found, returning empty buffer")
-                            yield b""
-                            return
-
-                        try:
-                            # Check if file_id is a combined ID (messageId_partId format)
-                            actual_attachment_id = file_id
-                            if "_" in file_id:
-                                try:
-                                    message_id, part_id = file_id.split("_", 1)
-
-                                    # Fetch the message to get the actual attachment ID
-                                    try:
-                                        message = (
-                                            gmail_service.users()
-                                            .messages()
-                                            .get(userId="me", id=message_id, format="full")
-                                            .execute()
-                                        )
-                                    except Exception as access_error:
-                                        if hasattr(access_error, 'resp') and access_error.resp.status == HttpStatusCode.NOT_FOUND.value:
-                                            logger.info(f"Message not found with ID {message_id}, searching for related messages...")
-
-                                            # Get messageIdHeader from the original mail
-                                            file_key = await arango_service.get_key_by_external_message_id(message_id)
-                                            aql_query = """
-                                            FOR mail IN mails
-                                                FILTER mail._key == @file_key
-                                                RETURN mail.messageIdHeader
-                                            """
-                                            bind_vars = {"file_key": file_key}
-                                            cursor = arango_service.db.aql.execute(aql_query, bind_vars=bind_vars)
-                                            message_id_header = next(cursor, None)
-
-                                            if not message_id_header:
-                                                raise HTTPException(
-                                                    status_code=HttpStatusCode.NOT_FOUND.value,
-                                                    detail="Original mail not found"
-                                                )
-
-                                            # Find all mails with the same messageIdHeader
-                                            aql_query = """
-                                            FOR mail IN mails
-                                                FILTER mail.messageIdHeader == @message_id_header
-                                                AND mail._key != @file_key
-                                                RETURN mail._key
-                                            """
-                                            bind_vars = {"message_id_header": message_id_header, "file_key": file_key}
-                                            cursor = arango_service.db.aql.execute(aql_query, bind_vars=bind_vars)
-                                            related_mail_keys = list(cursor)
-
-                                            # Try each related mail ID until we find one that works
-                                            message = None
-                                            for related_key in related_mail_keys:
-                                                related_mail = await arango_service.get_document(related_key, CollectionNames.RECORDS.value)
-                                                related_message_id = related_mail.get("externalRecordId")
-                                                try:
-                                                    message = (
-                                                        gmail_service.users()
-                                                        .messages()
-                                                        .get(userId="me", id=related_message_id, format="full")
-                                                        .execute()
-                                                    )
-                                                    if message:
-                                                        logger.info(f"Found accessible message with ID: {related_message_id}")
-                                                        message_id = related_message_id  # Update message_id to use the accessible one
-                                                        break
-                                                except Exception as e:
-                                                    logger.warning(f"Failed to fetch message with ID {related_message_id}: {str(e)}")
-                                                    continue
-
-                                            if not message:
-                                                raise HTTPException(
-                                                    status_code=HttpStatusCode.NOT_FOUND.value,
-                                                    detail="No accessible messages found."
-                                                )
-                                        else:
-                                            raise access_error
-
-                                    if not message or "payload" not in message:
-                                        raise Exception(f"Message or payload not found for message ID {message_id}")
-
-                                    # Search for the part with matching partId
-                                    parts = message["payload"].get("parts", [])
-                                    for part in parts:
-                                        if part.get("partId") == part_id:
-                                            actual_attachment_id = part.get("body", {}).get("attachmentId")
-                                            if not actual_attachment_id:
-                                                raise Exception("Attachment ID not found in part body")
-                                            logger.info(f"Found attachment ID: {actual_attachment_id}")
-                                            break
-                                    else:
-                                        raise Exception("Part ID not found in message")
-
-                                except Exception as e:
-                                    logger.error(f"Error extracting attachment ID: {str(e)}")
-                                    raise HTTPException(
-                                        status_code=HttpStatusCode.BAD_REQUEST.value,
-                                        detail=f"Invalid attachment ID format: {str(e)}"
-                                    )
-
-                            # Try to get the attachment with potential fallback message_id
-                            try:
-                                attachment = (
-                                    gmail_service.users()
-                                    .messages()
-                                    .attachments()
-                                    .get(userId="me", messageId=message_id, id=actual_attachment_id)
-                                    .execute()
-                                )
-                            except Exception as attachment_error:
-                                if hasattr(attachment_error, 'resp') and attachment_error.resp.status == HttpStatusCode.NOT_FOUND.value:
-                                    raise HTTPException(
-                                        status_code=HttpStatusCode.NOT_FOUND.value,
-                                        detail="Attachment not found in accessible messages"
-                                    )
-                                raise attachment_error
-
-                            # Decode the attachment data
-                            file_data = base64.urlsafe_b64decode(attachment["data"])
-                            yield file_data
-
-                        except Exception as gmail_error:
-                            logger.info(
-                                f"Failed to get attachment from Gmail: {str(gmail_error)}, trying Drive..."
-                            )
-
-                            # Try to get the file from Drive as fallback
-                            file_buffer = io.BytesIO()
-                            try:
-                                drive_service = build("drive", "v3", credentials=creds)
-                                request = drive_service.files().get_media(
-                                    fileId=file_id
-                                )
-                                downloader = MediaIoBaseDownload(file_buffer, request)
-
-                                done = False
-                                while not done:
-                                    status, done = downloader.next_chunk()
-                                    logger.info(
-                                        f"Download {int(status.progress() * 100)}%."
-                                    )
-
-                                    # Yield current chunk and reset buffer
-                                    file_buffer.seek(0)
-                                    yield file_buffer.getvalue()
-                                    file_buffer.seek(0)
-                                    file_buffer.truncate()
-
-                            except Exception as drive_error:
-                                logger.error(
-                                    f"Failed to get file from both Gmail and Drive. Gmail error: {str(gmail_error)}, Drive error: {str(drive_error)}"
-                                )
-                                raise HTTPException(
-                                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                    detail="Failed to download file from both Gmail and Drive",
-                                )
-                            finally:
-                                file_buffer.close()
-
-                    except Exception as e:
-                        logger.error(f"Error in attachment stream: {str(e)}")
-                        raise HTTPException(
-                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                            detail=f"Error streaming attachment: {str(e)}",
-                        )
-
-                return StreamingResponse(
-                    attachment_stream(), media_type="application/octet-stream"
+            container: ConnectorAppContainer = request.app.container
+            connector: BaseConnector = container.connectors_map[connector_id]
+            if not connector:
+                raise HTTPException(
+                    status_code=HttpStatusCode.NOT_FOUND.value,
+                    detail=f"Connector '{connector_id}' not found"
                 )
 
+            if connector.get_app_name() == Connectors.GOOGLE_DRIVE or connector.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
+                buffer = await connector.stream_record(record, user_id)
             else:
-                container: ConnectorAppContainer = request.app.container
-                connector: BaseConnector = container.connectors_map[connector_id]
-                if not connector:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.NOT_FOUND.value,
-                        detail=f"Connector '{connector_id}' not found"
-                    )
+                buffer = await connector.stream_record(record)
 
-                if connector.get_app_name() == Connectors.GOOGLE_DRIVE:
-                    buffer = await connector.stream_record(record, user_id)
-                else:
-                    buffer = await connector.stream_record(record)
-
-                return buffer
+            return buffer
 
         except Exception as e:
             logger.error(f"Error downloading file: {str(e)}")
@@ -987,469 +767,27 @@ async def stream_record(
                 detail="You do not have permission to access this record"
             )
 
-        external_record_id = record.external_record_id
         connector = record.connector_name.value
         connector_id = record.connector_id
-        recordType = record.record_type
         logger.info(f"Connector: {connector} connector_id: {connector_id}")
         # Different auth handling based on account type and connector scope
-        creds = None
-
-        if connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
-            # Get connector instance to check scope
-            connector_instance = await arango_service.get_document(connector_id, CollectionNames.APPS.value)
-            connector_scope = connector_instance.get("scope", ConnectorScope.PERSONAL.value) if connector_instance else ConnectorScope.PERSONAL.value
-            # Use service account credentials only for TEAM scope connectors in enterprise/business accounts
-            # Personal scope connectors always use user credentials regardless of account type
-            if (org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value] and
-                connector_scope == ConnectorScope.TEAM.value):
-                # Use service account credentials for team scope in enterprise accounts
-                creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container,connector, connector_id)
-            else:
-                # Use user credentials for personal scope or individual accounts
-                creds = await get_user_credentials(org_id, user_id,logger, google_token_handler, request.app.container,connector=connector, connector_id=connector_id)
-
 
         try:
-            if connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
-                file_id = external_record_id
-                logger.info(
-                    f"Handling Gmail request for record_id: {record_id}, type: {recordType}"
+            container: ConnectorAppContainer = request.app.container
+            connector: BaseConnector = container.connectors_map[connector_id]
+            if not connector:
+                raise HTTPException(
+                    status_code=HttpStatusCode.NOT_FOUND.value,
+                    detail=f"Connector '{connector_id}' not found"
                 )
-                gmail_service = build("gmail", "v1", credentials=creds)
 
-                if recordType == RecordTypes.MAIL.value:
-                    try:
-                        # First attempt to fetch the message directly
-                        try:
-                            message = (
-                                gmail_service.users()
-                                .messages()
-                                .get(userId="me", id=file_id, format="full")
-                                .execute()
-                            )
-                        except Exception as access_error:
-                            if hasattr(access_error, 'resp') and access_error.resp.status == HttpStatusCode.NOT_FOUND.value:
-                                logger.info(f"Message not found with ID {file_id}, searching for related messages...")
-
-                                # Get messageIdHeader from the original mail
-                                file_key = await arango_service.get_key_by_external_message_id(file_id)
-                                aql_query = """
-                                FOR mail IN mails
-                                    FILTER mail._key == @file_key
-                                    RETURN mail.messageIdHeader
-                                """
-                                bind_vars = {"file_key": file_key}
-                                cursor = arango_service.db.aql.execute(aql_query, bind_vars=bind_vars)
-                                message_id_header = next(cursor, None)
-
-                                if not message_id_header:
-                                    raise HTTPException(
-                                        status_code=HttpStatusCode.NOT_FOUND.value,
-                                        detail="Original mail not found"
-                                    )
-
-                                # Find all mails with the same messageIdHeader
-                                aql_query = """
-                                FOR mail IN mails
-                                    FILTER mail.messageIdHeader == @message_id_header
-                                    AND mail._key != @file_key
-                                    RETURN mail._key
-                                """
-                                bind_vars = {"message_id_header": message_id_header, "file_key": file_key}
-                                cursor = arango_service.db.aql.execute(aql_query, bind_vars=bind_vars)
-                                related_mail_keys = list(cursor)
-
-                                # Try each related mail ID until we find one that works
-                                message = None
-                                for related_key in related_mail_keys:
-                                    related_mail = await arango_service.get_document(related_key, CollectionNames.RECORDS.value)
-                                    related_id = related_mail.get("externalRecordId")
-                                    try:
-                                        message = (
-                                            gmail_service.users()
-                                            .messages()
-                                            .get(userId="me", id=related_id, format="full")
-                                            .execute()
-                                        )
-                                        if message:
-                                            logger.info(f"Found accessible message with ID: {related_id}")
-                                            break
-                                    except Exception as e:
-                                        logger.warning(f"Failed to fetch message with ID {related_id}: {str(e)}")
-                                        continue
-
-                                if not message:
-                                    raise HTTPException(
-                                        status_code=HttpStatusCode.NOT_FOUND.value,
-                                        detail="No accessible messages found."
-                                    )
-                            else:
-                                raise access_error
-
-                        # Continue with existing code for processing the message
-                        def extract_body(payload: dict) -> str:
-                            # If there are no parts, return the direct body data
-                            if "parts" not in payload:
-                                return payload.get("body", {}).get("data", "")
-
-                            # Search for a text/html part that isn't an attachment (empty filename)
-                            for part in payload.get("parts", []):
-                                if (
-                                    part.get("mimeType") == "text/html"
-                                    and part.get("filename", "") == ""
-                                ):
-                                    content = part.get("body", {}).get("data", "")
-                                    return content
-
-                            # Fallback: if no html text, try to use text/plain
-                            for part in payload.get("parts", []):
-                                if (
-                                    part.get("mimeType") == "text/plain"
-                                    and part.get("filename", "") == ""
-                                ):
-                                    content = part.get("body", {}).get("data", "")
-                                    return content
-                            return ""
-
-                        # Extract the encoded body content
-                        mail_content_base64 = extract_body(message.get("payload", {}))
-                        # Decode the Gmail URL-safe base64 encoded content; errors are replaced to avoid issues with malformed text
-                        mail_content = base64.urlsafe_b64decode(
-                            mail_content_base64.encode("ASCII")
-                        ).decode("utf-8", errors="replace")
-
-                        # Async generator to stream only the mail content
-                        async def message_stream() -> AsyncGenerator[bytes, None]:
-                            yield mail_content.encode("utf-8")
-
-                        # Return the streaming response with only the mail body
-                        return StreamingResponse(
-                            message_stream(), media_type="text/plain"
-                        )
-                    except Exception as mail_error:
-                        logger.error(f"Failed to fetch mail content: {str(mail_error)}")
-                        raise HTTPException(
-                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to fetch mail content"
-                        )
-
-                # Handle attachment download
-                logger.info(f"Downloading Gmail attachment for record_id: {record_id}")
-
-                # Get file metadata first
-                file = await arango_service.get_document(
-                    record_id, CollectionNames.FILES.value
-                )
-                if not file:
-                    raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found")
-
-                file_name = file.get("name", "")
-                mime_type = file.get("mimeType", "application/octet-stream")
-
-                # Get the related message's externalRecordId using AQL
-                aql_query = f"""
-                FOR v, e IN 1..1 ANY '{CollectionNames.RECORDS.value}/{record_id}' {CollectionNames.RECORD_RELATIONS.value}
-                    FILTER e.relationType == '{RecordRelations.ATTACHMENT.value}'
-                    RETURN {{
-                        messageId: v.externalRecordId,
-                        _key: v._key,
-                        relationType: e.relationType
-                    }}
-                """
-
-                cursor = arango_service.db.aql.execute(aql_query)
-                messages = list(cursor)
-
-                # First try getting the attachment from Gmail
-                try:
-                    message_id = None
-                    if messages and messages[0]:
-                        message = messages[0]
-                        message_id = message["messageId"]
-                        logger.info(f"Found message ID: {message_id}")
-                    else:
-                        raise Exception("Related message not found")
-
-                    # Check if file_id is a combined ID (messageId_partId format)
-                    actual_attachment_id = file_id
-                    if "_" in file_id:
-                        try:
-                            message_id, part_id = file_id.split("_", 1)
-
-                            # Fetch the message to get the actual attachment ID
-                            try:
-                                message = (
-                                    gmail_service.users()
-                                    .messages()
-                                    .get(userId="me", id=message_id, format="full")
-                                    .execute()
-                                )
-                            except Exception as access_error:
-                                if hasattr(access_error, 'resp') and access_error.resp.status == HttpStatusCode.NOT_FOUND.value:
-                                    logger.info(f"Message not found with ID {message_id}, searching for related messages...")
-
-                                    # Get messageIdHeader from the original mail
-                                    file_key = await arango_service.get_key_by_external_message_id(message_id)
-                                    aql_query = """
-                                    FOR mail IN mails
-                                        FILTER mail._key == @file_key
-                                        RETURN mail.messageIdHeader
-                                    """
-                                    bind_vars = {"file_key": file_key}
-                                    cursor = arango_service.db.aql.execute(aql_query, bind_vars=bind_vars)
-                                    message_id_header = next(cursor, None)
-
-                                    if not message_id_header:
-                                        raise HTTPException(
-                                            status_code=HttpStatusCode.NOT_FOUND.value,
-                                            detail="Original mail not found"
-                                        )
-
-                                    # Find all mails with the same messageIdHeader
-                                    aql_query = """
-                                    FOR mail IN mails
-                                        FILTER mail.messageIdHeader == @message_id_header
-                                        AND mail._key != @file_key
-                                        RETURN mail._key
-                                    """
-                                    bind_vars = {"message_id_header": message_id_header, "file_key": file_key}
-                                    cursor = arango_service.db.aql.execute(aql_query, bind_vars=bind_vars)
-                                    related_mail_keys = list(cursor)
-
-                                    # Try each related mail ID until we find one that works
-                                    message = None
-                                    for related_key in related_mail_keys:
-                                        related_mail = await arango_service.get_document(related_key, CollectionNames.RECORDS.value)
-                                        related_message_id = related_mail.get("externalRecordId")
-                                        try:
-                                            message = (
-                                                gmail_service.users()
-                                                .messages()
-                                                .get(userId="me", id=related_message_id, format="full")
-                                                .execute()
-                                            )
-                                            if message:
-                                                logger.info(f"Found accessible message with ID: {related_message_id}")
-                                                message_id = related_message_id  # Update message_id to use the accessible one
-                                                break
-                                        except Exception as e:
-                                            logger.warning(f"Failed to fetch message with ID {related_message_id}: {str(e)}")
-                                            continue
-
-                                    if not message:
-                                        raise HTTPException(
-                                            status_code=HttpStatusCode.NOT_FOUND.value,
-                                            detail="No accessible messages found."
-                                        )
-                                else:
-                                    raise access_error
-
-                            if not message or "payload" not in message:
-                                raise Exception(f"Message or payload not found for message ID {message_id}")
-
-                            # Search for the part with matching partId
-                            parts = message["payload"].get("parts", [])
-                            for part in parts:
-                                if part.get("partId") == part_id:
-                                    actual_attachment_id = part.get("body", {}).get("attachmentId")
-                                    if not actual_attachment_id:
-                                        raise Exception("Attachment ID not found in part body")
-                                    logger.info(f"Found attachment ID: {actual_attachment_id}")
-                                    break
-                            else:
-                                raise Exception("Part ID not found in message")
-
-                        except Exception as e:
-                            logger.error(f"Error extracting attachment ID: {str(e)}")
-                            raise HTTPException(
-                                status_code=HttpStatusCode.BAD_REQUEST.value,
-                                detail=f"Invalid attachment ID format: {str(e)}"
-                            )
-
-                    # Try to get the attachment with potential fallback message_id
-                    try:
-                        attachment = (
-                            gmail_service.users()
-                            .messages()
-                            .attachments()
-                            .get(userId="me", messageId=message_id, id=actual_attachment_id)
-                            .execute()
-                        )
-                    except Exception as attachment_error:
-                        if hasattr(attachment_error, 'resp') and attachment_error.resp.status == HttpStatusCode.NOT_FOUND.value:
-                            raise HTTPException(
-                                status_code=HttpStatusCode.NOT_FOUND.value,
-                                detail="Attachment not found in accessible messages"
-                            )
-                        raise attachment_error
-
-                    # Decode the attachment data
-                    file_data = base64.urlsafe_b64decode(attachment["data"])
-
-                    if convertTo == MimeTypes.PDF.value:
-                        with tempfile.TemporaryDirectory() as temp_dir:
-                            temp_file_path = os.path.join(temp_dir, file_name)
-
-                            # Write attachment data to temp file
-                            with open(temp_file_path, "wb") as f:
-                                f.write(file_data)
-
-                            # Convert to PDF
-                            pdf_path = await convert_to_pdf(temp_file_path, temp_dir)
-                            return StreamingResponse(
-                                open(pdf_path, "rb"),
-                                media_type="application/pdf",
-                                headers={
-                                    "Content-Disposition": f'inline; filename="{Path(file_name).stem}.pdf"'
-                                },
-                            )
-
-                    # Return original file if no conversion requested
-                    return StreamingResponse(
-                        iter([file_data]), media_type="application/octet-stream"
-                    )
-
-                except Exception as gmail_error:
-                    logger.info(
-                        f"Failed to get attachment from Gmail: {str(gmail_error)}, trying Drive..."
-                    )
-
-                    # Try Drive as fallback
-                    try:
-                        drive_service = build("drive", "v3", credentials=creds)
-
-                        if convertTo == MimeTypes.PDF.value:
-                            with tempfile.TemporaryDirectory() as temp_dir:
-                                temp_file_path = os.path.join(temp_dir, file_name)
-
-                                # Download from Drive to temp file
-                                with open(temp_file_path, "wb") as f:
-                                    request = drive_service.files().get_media(
-                                        fileId=file_id
-                                    )
-                                    downloader = MediaIoBaseDownload(f, request)
-
-                                    done = False
-                                    while not done:
-                                        status, done = downloader.next_chunk()
-                                        logger.info(
-                                            f"Download {int(status.progress() * 100)}%."
-                                        )
-
-                                # Convert to PDF
-                                pdf_path = await convert_to_pdf(
-                                    temp_file_path, temp_dir
-                                )
-                                return StreamingResponse(
-                                    open(pdf_path, "rb"),
-                                    media_type="application/pdf",
-                                    headers={
-                                        "Content-Disposition": f'inline; filename="{Path(file_name).stem}.pdf"'
-                                    },
-                                )
-
-
-                        # Use the same streaming logic as Drive downloads
-                        async def file_stream() -> AsyncGenerator[bytes, None]:
-                            try:
-                                request = drive_service.files().get_media(
-                                    fileId=file_id
-                                )
-                                buffer = io.BytesIO()
-                                downloader = MediaIoBaseDownload(buffer, request)
-
-                                done = False
-                                while not done:
-                                    try:
-                                        status, done = downloader.next_chunk()
-                                        if status:
-                                            logger.debug(
-                                                f"Download progress: {int(status.progress() * 100)}%"
-                                            )
-
-                                        buffer.seek(0)
-                                        chunk = buffer.read()
-
-                                        if chunk:
-                                            yield chunk
-
-                                        buffer.seek(0)
-                                        buffer.truncate(0)
-
-                                        await asyncio.sleep(0)
-
-                                    except Exception as chunk_error:
-                                        logger.error(
-                                            f"Error streaming chunk: {str(chunk_error)}"
-                                        )
-                                        raise HTTPException(
-                                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                            detail="Error during file streaming",
-                                        )
-
-                            except Exception as stream_error:
-                                logger.error(
-                                    f"Error in file stream: {str(stream_error)}"
-                                )
-                                raise HTTPException(
-                                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                    detail="Error setting up file stream",
-                                )
-                            finally:
-                                buffer.close()
-
-                        return create_stream_record_response(
-                            file_stream(),
-                            filename=file_name,
-                            mime_type=mime_type,
-                            fallback_filename=f"record_{record_id}"
-                        )
-
-                    except Exception as drive_error:
-                        logger.error(
-                            f"Failed to get file from both Gmail and Drive. Gmail error: {str(gmail_error)}, Drive error: {str(drive_error)}"
-                        )
-                        raise HTTPException(
-                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                            detail="Failed to download file from both Gmail and Drive",
-                        )
-            # Handle KB records by streaming from storage service
-            elif connector.lower() == Connectors.KNOWLEDGE_BASE.value.lower() or connector_id is None:
-                logger.info(f"Streaming KB record {record_id} from storage service")
-                endpoints = await config_service.get_config(config_node_constants.ENDPOINTS.value)
-                storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
-                buffer_url = f"{storage_url}/api/v1/document/internal/{external_record_id}/buffer"
-                jwt_payload = {
-                    "orgId": org_id,
-                    "scopes": ["storage:token"],
-                }
-                token = await generate_jwt(config_service, jwt_payload)
-                response = await make_api_call(route=buffer_url, token=token)
-
-                if isinstance(response["data"], dict):
-                    data = response['data'].get('data')
-                    buffer = bytes(data) if isinstance(data, list) else data
-                else:
-                    buffer = response['data']
-
-                return Response(content=buffer or b'', media_type="application/octet-stream")
+            # Pass user_id for google drive
+            if connector.get_app_name() == Connectors.GOOGLE_DRIVE or connector.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
+                buffer = await connector.stream_record(record, user_id)
             else:
-                container: ConnectorAppContainer = request.app.container
-                connector_instance: BaseConnector = container.connectors_map.get(connector_id)
-                if not connector_instance:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.NOT_FOUND.value,
-                        detail=f"Connector '{connector_id}' not found"
-                    )
+                buffer = await connector.stream_record(record)
 
-                # Pass user_id for google drive
-                if connector_instance.get_app_name() == Connectors.GOOGLE_DRIVE:
-                    buffer = await connector_instance.stream_record(record, user_id)
-                else:
-                    buffer = await connector_instance.stream_record(record)
-
-                return buffer
-
+            return buffer
         except Exception as e:
             logger.error(f"Error downloading file: {str(e)}", exc_info=True)
             raise HTTPException(
@@ -5771,14 +5109,6 @@ async def _ensure_connector_initialized(
     Raises:
         HTTPException: If initialization fails
     """
-    # Skip synchronous initialization for Gmail and Google Drive - they use event-based initialization
-    # via specialized sync services and don't extend BaseConnector
-    is_gmail_or_drive = connector_type in [Connectors.GOOGLE_MAIL.value]
-
-    if is_gmail_or_drive:
-        logger.info(f"Skipping synchronous initialization for {connector_type} - will be initialized via event handlers")
-        return None
-
     # Check if connector already exists in container
     connector_exists = (
         hasattr(container, 'connectors_map') and
@@ -6015,7 +5345,7 @@ async def toggle_connector_instance(
             org_account_type = str(org.get("accountType", "")).lower()
             custom_google_business_logic = (
                 org_account_type == "enterprise" and
-                connector_type in ["GMAIL", "DRIVE", "DRIVE WORKSPACE", "GCS"] and
+                connector_type in ["GMAIL", "GMAIL WORKSPACE", "DRIVE", "DRIVE WORKSPACE", "GCS"] and
                 instance.get("scope") == ConnectorScope.TEAM.value
             )
 

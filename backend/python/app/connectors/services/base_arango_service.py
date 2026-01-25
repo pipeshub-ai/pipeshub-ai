@@ -4743,18 +4743,29 @@ class BaseArangoService:
                 signed_url_route = f"{connector_url}/api/v1/{record['orgId']}/{user_id}/{record['connectorName'].lower()}/record/{record['_key']}/signedUrl"
 
                 if record.get("recordType") == "MAIL":
-                    url = f"{connector_url}/api/v1/stream/record/{record['_key']}"
-                    file_content_bytes = await self._download_from_signed_url(url,request)
                     mime_type = "text/gmail_content"
-                    # Convert bytes to string for JSON serialization
                     try:
-                        # For mail content, decode as UTF-8 text
-                        file_content = file_content_bytes.decode('utf-8', errors='replace')
+
+                        return {
+                            "orgId": record.get("orgId"),
+                            "recordId": record.get("_key"),
+                            "recordName": record.get("recordName", ""),
+                            "recordType": record.get("recordType", ""),
+                            "version": record.get("version", 1),
+                            "origin": record.get("origin", ""),
+                            "extension": extension,
+                            "mimeType": mime_type,
+                            "body": file_content,
+                            "connectorId": record.get("connectorId", ""),
+                            "createdAtTimestamp": str(record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())),
+                            "updatedAtTimestamp": str(get_epoch_timestamp_in_ms()),
+                            "sourceCreatedAtTimestamp": str(record.get("sourceCreatedAtTimestamp", record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())))
+                        }
                     except Exception as decode_error:
                         self.logger.warning(f"Failed to decode file content as UTF-8: {str(decode_error)}")
                         # Fallback: encode as base64 string for binary content
-                        import base64
-                        file_content = base64.b64encode(file_content_bytes).decode('utf-8')
+                        # import base64
+                        # file_content = base64.b64encode(file_content_bytes).decode('utf-8')
 
 
 

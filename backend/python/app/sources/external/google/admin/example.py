@@ -6,11 +6,13 @@ import asyncio
 import json
 import logging
 import os
-from typing import Any, Dict, Optional
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.admin.admin import GoogleAdminDataSource
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
+from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 
 try:
     from google.oauth2 import service_account  # type: ignore
@@ -122,82 +124,283 @@ async def main() -> None:
     
     google_drive_client = GoogleDriveDataSource(enterprise_drive_client.get_client())
     
-    # List all users - customer parameter is REQUIRED
-    print("Listing all users...")
-    try:
-        # Try with minimal parameters first
-        results = await google_admin_client.users_list(
-            customer="my_customer",
-            maxResults=10  # Start with small number for testing
-        )
-        print(f"✅ Success! Found {len(results.get('users', []))} users")
-        print("user results", results)
-    except Exception as e:
-        print(f"❌ Error listing users: {e}")
-        print(f"Error type: {type(e).__name__}")
-    
-    
-    # List all groups
-    print("\nListing all groups...")
-    try:
-        groups_results = await google_admin_client.groups_list(
-            customer="my_customer",
-            maxResults=10  # Start with small number for testing
-        )
-        print(f"✅ Success! Found {len(groups_results.get('groups', []))} groups")
-        print(groups_results)
-        if groups_results.get('groups'):
-            print(f"First group: {groups_results['groups'][0].get('email', 'N/A')}")
-    except Exception as e:
-        print(f"❌ Error listing groups: {e}")
-        print(f"Error type: {type(e).__name__}")
-    
-    # List all drives
-    print("\nListing all drives...")
-    drives_results = await google_drive_client.drives_list(
-        pageSize=10,  # Start with small number for testing
-        # useDomainAdminAccess=True,
-    )
-    drives = drives_results.get('drives', [])
-    print(f"✅ Success! Found {len(drives)} drives")
-    print(drives_results)
-        
-    #     # List permissions for each drive
-    #     if drives:
-    #         for drive in drives[:3]:  # Limit to first 3 drives for testing
-    #             drive_id = drive.get('id')
-    #             drive_name = drive.get('name', 'N/A')
-    #             print(f"\n📁 Listing permissions for drive: {drive_name} (ID: {drive_id})")
-    #             try:
-    #                 permissions_results = await google_drive_client.permissions_list(
-    #                     fileId=drive_id,
-    #                     pageSize=10,  # Start with small number for testing
-    #                     supportsAllDrives=True,
-    #                     useDomainAdminAccess=True,
-    #                     fields="permissions(id, displayName, type, role, domain, emailAddress, deleted)"
-    #                 )
-    #                 permissions = permissions_results.get('permissions', [])
-    #                 print(f"✅ Found {len(permissions)} permissions for drive '{drive_name}'")
-    #                 print("\n\n permissions: ", permissions)
-    #                 for perm in permissions:
-    #                     perm_role = perm.get('role', 'N/A')
-    #                     perm_type = perm.get('type', 'N/A')
-    #                     perm_email = perm.get('emailAddress', 'N/A')
-    #                     print(f"  - {perm_type}: {perm_email} ({perm_role})")
-    #             except Exception as e:
-    #                 print(f"❌ Error listing permissions for drive '{drive_name}': {e}")
-    #                 print(f"Error type: {type(e).__name__}")
+    # # List all users - customer parameter is REQUIRED
+    # print("Listing all users...")
+    # try:
+    #     # Try with minimal parameters first
+    #     results = await google_admin_client.users_list(
+    #         customer="my_customer",
+    #         maxResults=10  # Start with small number for testing
+    #     )
+    #     print(f"✅ Success! Found {len(results.get('users', []))} users")
+    #     print("user results", results)
     # except Exception as e:
-    #     print(f"❌ Error listing drives: {e}")
+    #     print(f"❌ Error listing users: {e}")
     #     print(f"Error type: {type(e).__name__}")
+    
+    
+    # # List all groups
+    # print("\nListing all groups...")
+    # try:
+    #     groups_results = await google_admin_client.groups_list(
+    #         customer="my_customer",
+    #         maxResults=10  # Start with small number for testing
+    #     )
+    #     print(f"✅ Success! Found {len(groups_results.get('groups', []))} groups")
+    #     print(groups_results)
+    #     if groups_results.get('groups'):
+    #         print(f"First group: {groups_results['groups'][0].get('email', 'N/A')}")
+    # except Exception as e:
+    #     print(f"❌ Error listing groups: {e}")
+    #     print(f"Error type: {type(e).__name__}")
+    
+    # # Build Gmail client for listing labels and messages
+    # print("\n" + "="*60)
+    # print("Gmail Labels and Messages")
+    # print("="*60)
+    
+    try:
+        # Get user email for Gmail API (use the same user email as Drive)
+        user_email = "vishwjeet.pawar@pipeshub.app"
+        
+        enterprise_gmail_client = await build_enterprise_client_from_credentials(
+            service_name="gmail",
+            version="v1",
+            service_account_file=os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE"),
+            user_email=user_email,
+        )
+        
+        gmail_data_source = GoogleGmailDataSource(enterprise_gmail_client.get_client())
+        
+        # # List all labels
+        # print(f"\n📋 Listing all labels for user: {user_email}...")
+        # labels_response = await gmail_data_source.users_labels_list(userId=user_email)
+        # print("labels_response", labels_response)
+        # labels = labels_response.get("labels", [])
+        
+        # if labels:
+        #     print(f"✅ Found {len(labels)} labels:")
+        #     for label in labels:
+        #         label_id = label.get("id", "")
+        #         label_name = label.get("name", "")
+        #         label_type = label.get("type", "")
+        #         print(f"  - {label_name} (ID: {label_id}, Type: {label_type})")
+            
+            # Get 3 messages from each label
+            # print(f"\n📧 Fetching 3 messages from each label...")
+            # total_messages_found = 0
+            
+            # for label in labels:
+            #     label_id = label.get("id", "")
+            #     label_name = label.get("name", "")
+                
+            #     try:
+            #         # Try to get messages with this label
+            #         # Note: labelIds should be a list according to Gmail API
+            #         messages_response = await gmail_data_source.users_messages_list(
+            #             userId=user_email,
+            #             labelIds=[label_id],  # Pass as list
+            #             maxResults=3
+            #         )
+            #         messages = messages_response.get("messages", [])
+                    
+            #         if messages:
+            #             print(f"\n  📁 Label: {label_name} ({label_id})")
+            #             print(f"     Found {len(messages)} message(s):")
+            #             for i, msg in enumerate(messages, 1):
+            #                 msg_id = msg.get("id", "N/A")
+            #                 print(f"       {i}. Message ID: {msg_id}")
+            #             total_messages_found += len(messages)
+            #         else:
+            #             print(f"  📁 Label: {label_name} ({label_id}) - No messages found")
+                        
+            #     except Exception as e:
+            #         print(f"  ⚠️  Error fetching messages for label '{label_name}': {e}")
+            #         continue
+            
+            # if total_messages_found == 0:
+            #     print("\n⚠️  No messages found in any label. Fetching last 5 messages instead...")
+            #     messages_response = await gmail_data_source.users_messages_list(
+            #         userId=user_email,
+            #         maxResults=5
+            #     )
+            #     messages = messages_response.get("messages", [])
+            #     print(f"\n✅ Found {len(messages)} messages:")
+            #     for i, msg in enumerate(messages, 1):
+            #         print(f"  {i}. Message ID: {msg.get('id', 'N/A')}")
+            # else:
+            #     print(f"\n✅ Total messages found across all labels: {total_messages_found}")
 
-    # permissions_results = await google_drive_client.permissions_list(
-    #                     fileId="1r4nhP3f4d29-xhRePaq1tfY7FvCpneuU",
-    #                     supportsAllDrives=True,
-    #                     # useDomainAdminAccess=True,
-    #                     fields="permissions(id, displayName, type, role, domain, emailAddress, deleted)"
-    #                 )
-    # print("\n\n\n permissions: ", permissions_results)
+        # Fetch the latest thread and its messages
+        print("\n📧 Fetching latest thread...")
+        threads_response = await gmail_data_source.users_threads_list(
+            userId=user_email,
+            maxResults=1  # Get only the latest thread
+        )
+        threads = threads_response.get("threads", [])
+        
+        if not threads:
+            print("❌ No threads found")
+        else:
+            print(f"✅ Found latest thread. Fetching all messages...\n")
+            
+            # Helper function to extract headers from message payload
+            def extract_headers(payload):
+                headers = {}
+                if isinstance(payload, dict):
+                    for header in payload.get("headers", []):
+                        name = header.get("name", "").lower()
+                        value = header.get("value", "")
+                        headers[name] = value
+                return headers
+            
+            # Helper function to format date
+            def format_date(internal_date):
+                if not internal_date:
+                    return "N/A"
+                try:
+                    timestamp = int(internal_date) / 1000
+                    return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+                except:
+                    return str(internal_date)
+            
+            # Helper function to extract attachment info from Gmail message payload
+            def extract_attachment_infos(message: Dict) -> List[Dict]:
+                """Extract attachment info from Gmail message payload.
+                
+                Args:
+                    message: Message data from Gmail API
+                    
+                Returns:
+                    List of attachment info dictionaries
+                """
+                attachment_infos = []
+                payload = message.get('payload', {})
+                parts = payload.get('parts', [])
+
+                def extract_attachments(parts_list):
+                    """Recursively extract attachments from message parts."""
+                    attachments = []
+                    for part in parts_list:
+                        # Check if this part is an attachment
+                        if part.get('filename'):
+                            body = part.get('body', {})
+                            attachment_id = body.get('attachmentId')
+                            if attachment_id:
+                                attachments.append({
+                                    'attachmentId': attachment_id,
+                                    'filename': part.get('filename'),
+                                    'mimeType': part.get('mimeType', 'application/octet-stream'),
+                                    'size': body.get('size', 0)
+                                })
+
+                        # Recursively check nested parts
+                        if part.get('parts'):
+                            attachments.extend(extract_attachments(part.get('parts')))
+
+                    return attachments
+
+                attachment_infos = extract_attachments(parts)
+                return attachment_infos
+            
+            # Process the latest thread
+            thread = threads[0]
+            thread_id = thread.get("id", "N/A")
+            if thread_id == "N/A":
+                print("❌ Thread ID is missing")
+            else:
+                try:
+                    # Get full thread details (includes all messages in the thread)
+                    thread_details = await gmail_data_source.users_threads_get(
+                        userId=user_email,
+                        id=thread_id,
+                        format="full"
+                    )
+                    
+                    messages = thread_details.get("messages", [])
+                    history_id = thread_details.get("historyId", "N/A")
+                    
+                    print("=" * 80)
+                    print("🧵 Latest Thread")
+                    print("=" * 80)
+                    print(f"Thread ID: {thread_id}")
+                    print(f"History ID: {history_id}")
+                    print(f"Number of messages in thread: {len(messages)}")
+                    print()
+                    
+                    # Display each message in the thread
+                    for msg_num, message in enumerate(messages, 1):
+                        msg_id = message.get("id", "N/A")
+                        if msg_id == "N/A":
+                            continue
+                        
+                        # Extract headers
+                        payload = message.get("payload", {})
+                        headers = extract_headers(payload)
+
+                        # NEW: Extract the Global Message-ID from headers
+                        global_msg_id = headers.get('message-id', 'N/A')
+                        print(f"  Global Message-ID: {global_msg_id}")
+                        
+                        # Extract other message info
+                        snippet = message.get("snippet", "No preview available")
+                        label_ids = message.get("labelIds", [])
+                        internal_date = message.get("internalDate", "")
+                        date_str = format_date(internal_date)
+                        
+                        # Print message details
+                        print("-" * 80)
+                        print(f"  📨 Message {msg_num} of {len(messages)} in Thread")
+                        print("-" * 80)
+                        print(f"  Message ID: {msg_id}")
+                        print(f"  Date: {date_str}")
+                        print(f"  From: {headers.get('from', 'N/A')}")
+                        print(f"  To: {headers.get('to', 'N/A')}")
+                        if headers.get('cc'):
+                            print(f"  CC: {headers.get('cc', 'N/A')}")
+                        if headers.get('bcc'):
+                            print(f"  BCC: {headers.get('bcc', 'N/A')}")
+                        print(f"  Subject: {headers.get('subject', 'No Subject')}")
+                        print(f"  Labels: {', '.join(label_ids) if label_ids else 'None'}")
+                        print(f"  Preview: {snippet}")
+                        
+                        # Extract and print attachment info
+                        attachment_infos = extract_attachment_infos(message)
+                        if attachment_infos:
+                            print(f"  📎 Attachments ({len(attachment_infos)}):")
+                            for attach_num, attach_info in enumerate(attachment_infos, 1):
+                                attachment_id = attach_info.get('attachmentId', 'N/A')
+                                filename = attach_info.get('filename', 'Unnamed')
+                                mime_type = attach_info.get('mimeType', 'N/A')
+                                size = attach_info.get('size', 0)
+                                # Format size in human-readable format
+                                if size < 1024:
+                                    size_str = f"{size} B"
+                                elif size < 1024 * 1024:
+                                    size_str = f"{size / 1024:.2f} KB"
+                                else:
+                                    size_str = f"{size / (1024 * 1024):.2f} MB"
+                                    
+                                print(f"    {attach_num}. {filename}")
+                                print(f"       ID: {attachment_id}")
+                                print(f"       Type: {mime_type}")
+                                print(f"       Size: {size_str}")
+                        else:
+                            print(f"  📎 Attachments: None")
+                        print()
+                    
+                except Exception as e:
+                    print(f"  ⚠️  Error fetching thread {thread_id}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    print()
+                
+    except Exception as e:
+        print(f"❌ Error with Gmail API: {e}")
+        print(f"Error type: {type(e).__name__}")
+        import traceback
+        traceback.print_exc()
+    
 
 if __name__ == "__main__":
     asyncio.run(main())

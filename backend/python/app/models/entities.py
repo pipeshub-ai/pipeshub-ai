@@ -424,6 +424,7 @@ class MailRecord(Record):
     is_parent: bool = False
     internet_message_id: Optional[str] = None
     conversation_index: Optional[str] = None
+    label_ids: Optional[List[str]] = None
 
 
     def to_arango_record(self) -> Dict:
@@ -439,6 +440,7 @@ class MailRecord(Record):
             "messageIdHeader": self.internet_message_id,
             "webUrl": self.weburl or "",
             "conversationIndex": self.conversation_index,
+            "labelIds": self.label_ids or [],
         }
 
 
@@ -493,6 +495,7 @@ class MailRecord(Record):
             is_parent=mail_doc.get("isParent", False),
             internet_message_id=mail_doc.get("messageIdHeader"),
             conversation_index=mail_doc.get("conversationIndex"),
+            label_ids=mail_doc.get("labelIds", []),
         )
 
 class WebpageRecord(Record):
