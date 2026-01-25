@@ -199,8 +199,10 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
                 },
             )
 
+        # ⚡ CRITICAL FIX: Use completion_data (includes citations) instead of just response text
+        response_data = final_state.get("completion_data", final_state.get("response"))
+
         # ⚡ OPTIMIZATION: Cache the response for future queries
-        response_data = final_state["response"]
         if isinstance(response_data, JSONResponse):
             # Extract content from JSONResponse if needed
             response_content = response_data.body.decode() if hasattr(response_data, 'body') else None
@@ -210,6 +212,9 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
                     cache.set_llm_response(query_info.query, response_dict, cache_context)
                 except Exception:
                     pass
+        elif isinstance(response_data, dict):
+            # Cache the completion_data which includes citations
+            cache.set_llm_response(query_info.query, response_data, cache_context)
 
         # ⚡ OPTIMIZATION: Log total execution time
         total_time = (time.time() - start_time) * 1000
@@ -220,7 +225,7 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
             logger.info(f"📊 Performance: {total_time:.0f}ms | Memory: {memory_health['memory_info']['total_mb']:.2f}MB")
 
         # ⚡ PERFORMANCE: Attach performance summary to response if available
-        response_to_return = final_state["response"]
+        response_to_return = response_data
 
         # If response is a JSONResponse and we have performance data, enhance it
         if "_performance_tracker" in final_state:
@@ -233,7 +238,7 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
                 # For JSONResponse objects, we can add to headers or log separately
                 logger.info(f"⚡ Performance breakdown: {json.dumps(perf_summary.get('step_breakdown', [])[:3], indent=2)}")
 
-        # Return the response
+        # Return the complete response with citations
         return response_to_return
 
     except HTTPException as he:
@@ -276,10 +281,21 @@ async def stream_response(
     # ⚡ OPTIMIZATION: Reduced recursion limit for faster termination
     config = {"recursion_limit": 30}  # Reduced from 50 - optimized graph needs less
 
+    logger.debug("🔄 Starting graph streaming with stream_mode='custom'")
+
+    chunk_count = 0
     async for chunk in agent_graph.astream(initial_state, config=config, stream_mode="custom"):
+        chunk_count += 1
+        # StreamWriter(dict) with stream_mode="custom" yields dicts with 'event' and 'data'
         if isinstance(chunk, dict) and "event" in chunk:
-            # Convert dict to JSON string for streaming
-            yield f"event: {chunk['event']}\ndata: {json.dumps(chunk['data'])}\n\n"
+            event_type = chunk.get('event', 'unknown')
+            data = chunk.get('data', {})
+            # Convert to SSE format
+            yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+        else:
+            logger.warning(f"⚠️ Received unexpected chunk format: {type(chunk)} - {chunk}")
+
+    logger.info(f"🏁 Graph streaming completed. Total chunks: {chunk_count}")
 
 
 @router.post("/agent-chat-stream")
@@ -1229,8 +1245,8 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
                 },
             )
 
-        # Return the response
-        return final_state["response"]
+        # CRITICAL FIX: Return completion_data (includes citations) instead of just response text
+        return final_state.get("completion_data", final_state["response"])
 
     except Exception as e:
         logger.error(f"Error in chat: {str(e)}", exc_info=True)
