@@ -1,5 +1,6 @@
 import asyncio
 import json
+import ssl
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Set
 
@@ -123,6 +124,7 @@ class KafkaConsumerManager:
 
                 # Add SSL/SASL configuration for AWS MSK
                 if kafka_config.get("ssl"):
+                    config["ssl_context"] = ssl.create_default_context()
                     sasl_config = kafka_config.get("sasl", {})
                     if sasl_config.get("username"):
                         config["security_protocol"] = "SASL_SSL"

@@ -21,6 +21,7 @@ export interface AppConfig {
   indexingBackend: string;
   kafka: {
     brokers: string[];
+    ssl?: boolean;
     sasl?: {
       mechanism: 'plain' | 'scram-sha-256' | 'scram-sha-512';
       username: string;

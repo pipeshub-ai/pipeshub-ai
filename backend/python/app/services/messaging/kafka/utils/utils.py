@@ -1,7 +1,12 @@
+import ssl
 from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Union
 
+from app.config.constants.arangodb import Connectors
 from app.config.constants.service import config_node_constants
 from app.connectors.services.event_service import EventService
+from app.connectors.sources.google.gmail.services.event_service.event_service import (
+    GmailEventService,
+)
 from app.containers.connector import ConnectorAppContainer
 from app.containers.indexing import IndexingAppContainer
 from app.containers.query import QueryAppContainer
@@ -27,6 +32,7 @@ class KafkaUtils:
         kafka_config = await config_service.get_config(
             config_node_constants.KAFKA.value
         )
+
         if not kafka_config:
             raise ValueError("Kafka configuration not found")
 
@@ -100,6 +106,7 @@ class KafkaUtils:
 
         # Add SSL/SASL configuration for AWS MSK
         if kafka_config.ssl:
+            config["ssl_context"] = ssl.create_default_context()
             sasl_config = kafka_config.sasl or {}
             if sasl_config.get("username"):
                 config["security_protocol"] = "SASL_SSL"
@@ -229,21 +236,43 @@ class KafkaUtils:
                 else:
                     connector = payload.get("connector")
 
-                payload.get("connectorId")
-                getattr(app_container, 'sync_tasks_registry', {})
+                connector_id = payload.get("connectorId")
+                sync_tasks_registry = getattr(app_container, 'sync_tasks_registry', {})
                 if not connector:
                     logger.error("Missing connector in event_type or payload")
                     return False
 
                 logger.info(f"Processing sync event: {event_type} for connector {connector}")
 
-                event_service = EventService(
-                    logger=logger,
-                    arango_service=arango_service,
-                    app_container=app_container,
-                )
-                logger.info(f"Processing sync event: {event_type} for {connector}")
-                return await event_service.process_event(event_type, payload)
+                connector_normalized = connector.lower().replace(" ", "")
+
+                if connector_normalized == Connectors.GOOGLE_MAIL.value.lower():
+                    # Create the sync event service
+                    if not connector_id:
+                        logger.error(f"Missing connectorId in sync event payload for connector {connector}. Payload: {payload}")
+                        return False
+                    gmail_sync_tasks = sync_tasks_registry.get(connector_id)
+                    if not gmail_sync_tasks:
+                        logger.error(f"Gmail sync tasks not found in registry for connector {connector_id}")
+                        return False
+
+                    logger.info(f"Gmail sync tasks found in registry: {gmail_sync_tasks} for connector {connector_id}")
+
+                    gmail_event_service = GmailEventService(
+                        logger=logger,
+                        sync_tasks=gmail_sync_tasks,
+                        arango_service=arango_service,
+                    )
+                    logger.info(f"Processing sync event: {event_type} for GMAIL")
+                    return await gmail_event_service.process_event(event_type, payload)
+                else:
+                    event_service = EventService(
+                        logger=logger,
+                        arango_service=arango_service,
+                        app_container=app_container,
+                    )
+                    logger.info(f"Processing sync event: {event_type} for {connector}")
+                    return await event_service.process_event(event_type, payload)
 
             except Exception as e:
                 logger.error(f"Error processing sync message: {str(e)}", exc_info=True)

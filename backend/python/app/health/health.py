@@ -1,5 +1,6 @@
 import asyncio
 import os
+import ssl
 
 import aiohttp  # type: ignore
 from aiokafka import AIOKafkaConsumer  #type: ignore
@@ -182,6 +183,7 @@ class Health:
 
                 # Add SSL/SASL configuration for AWS MSK
                 if kafka_config.get("ssl"):
+                    config["ssl_context"] = ssl.create_default_context()
                     sasl_config = kafka_config.get("sasl", {})
                     if sasl_config.get("username"):
                         config["security_protocol"] = "SASL_SSL"
