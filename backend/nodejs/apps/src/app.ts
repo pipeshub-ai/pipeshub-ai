@@ -102,7 +102,7 @@ export class Application {
         this.logger.info('Kafka topics check completed');
       } catch (kafkaError: any) {
         this.logger.warn(
-          `Could not verify/create Kafka topics: ${kafkaError.message}. ` +
+          `Could not verify/create Kafka topics: ${kafkaError.message}.`
         );
         // Don't throw - allow app to continue; topics might already exist or be created elsewhere
       }
