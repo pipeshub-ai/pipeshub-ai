@@ -2,7 +2,7 @@
 Azure Blob Storage Connector
 
 Connector for synchronizing data from Azure Blob Storage containers. This connector
-uses the native Azure Blob Storage API with account key authentication.
+uses the native Azure Blob Storage API with connection string authentication.
 """
 
 import base64
@@ -10,7 +10,7 @@ import mimetypes
 import uuid
 from datetime import datetime, timedelta, timezone
 from logging import Logger
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote
 
 from aiolimiter import AsyncLimiter
@@ -54,11 +54,11 @@ from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
     FilterField,
+    FilterOperator,
     FilterOption,
     FilterOptionsResponse,
     FilterType,
     IndexingFilterKey,
-    ListOperator,
     MultiselectOperator,
     OptionSourceType,
     SyncFilterKey,
@@ -230,51 +230,15 @@ class AzureBlobDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .with_auth([
-        AuthBuilder.type(AuthType.ACCOUNT_KEY).fields([
+        AuthBuilder.type(AuthType.CONNECTION_STRING).fields([
             AuthField(
-                name="accountName",
-                display_name="Account Name",
-                placeholder="mystorageaccount",
-                description="The Account Name from Azure Blob Storage App settings",
-                field_type="TEXT",
-                max_length=2000,
-                is_secret=False
-            ),
-            AuthField(
-                name="accountKey",
-                display_name="Account Key",
-                placeholder="Your account key",
-                description="The Account Key from Azure Blob Storage App settings",
+                name="azureBlobConnectionString",
+                display_name="Connection String",
+                placeholder="DefaultEndpointsProtocol=https;AccountName=...",
+                description="The Azure Blob Storage connection string from Azure Portal",
                 field_type="PASSWORD",
                 max_length=2000,
                 is_secret=True
-            ),
-            AuthField(
-                name="containerName",
-                display_name="Container Name",
-                placeholder="my-container",
-                description="Optional: specific container to sync. Leave empty to sync all containers.",
-                field_type="TEXT",
-                max_length=2000,
-                is_secret=False
-            ),
-            AuthField(
-                name="endpointProtocol",
-                display_name="Endpoint Protocol",
-                placeholder="https",
-                description="The Endpoint Protocol (default: https)",
-                field_type="TEXT",
-                max_length=2000,
-                is_secret=False
-            ),
-            AuthField(
-                name="endpointSuffix",
-                display_name="Endpoint Suffix",
-                placeholder="core.windows.net",
-                description="The Endpoint Suffix (default: core.windows.net)",
-                field_type="TEXT",
-                max_length=2000,
-                is_secret=False
             ),
         ])
     ])\
@@ -300,16 +264,7 @@ class AzureBlobDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
             default_value=[],
             default_operator=MultiselectOperator.IN.value
         ))
-        .add_filter_field(FilterField(
-            name="file_extensions",
-            display_name="File Extensions",
-            filter_type=FilterType.LIST,
-            category=FilterCategory.SYNC,
-            description="Filter files by extension (e.g., pdf, docx, txt). Leave empty to sync all files.",
-            option_source_type=OptionSourceType.MANUAL,
-            default_value=[],
-            default_operator=ListOperator.IN.value
-        ))
+        .add_filter_field(CommonFields.file_extension_filter())
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
@@ -387,7 +342,7 @@ class AzureBlobConnector(BaseConnector):
         ]
 
     async def init(self) -> bool:
-        """Initializes the Azure Blob client using credentials from the config service."""
+        """Initializes the Azure Blob client using connection string from the config service."""
         config = await self.config_service.get_config(
             f"/services/connectors/{self.connector_id}/config"
         )
@@ -396,15 +351,14 @@ class AzureBlobConnector(BaseConnector):
             return False
 
         auth_config = config.get("auth", {})
-        account_name = auth_config.get("accountName")
-        account_key = auth_config.get("accountKey")
-        self.container_name = auth_config.get("containerName")
+        connection_string = auth_config.get("azureBlobConnectionString")
 
-        if not account_name or not account_key:
-            self.logger.error("Azure Blob account name or account key not found in configuration.")
+        if not connection_string:
+            self.logger.error("Azure Blob connection string not found in configuration.")
             return False
 
-        self.account_name = account_name
+        # Container name is no longer stored in config - it's determined at sync time
+        self.container_name = None
 
         # Get connector scope
         self.connector_scope = ConnectorScope.PERSONAL.value
@@ -432,9 +386,16 @@ class AzureBlobConnector(BaseConnector):
             )
             self.data_source = AzureBlobDataSource(client)
 
+            # Extract account name from the client (derived from connection string)
+            try:
+                self.account_name = client.get_account_name()
+            except Exception as e:
+                self.logger.warning(f"Could not extract account name from connection string: {e}")
+                self.account_name = None
+
             # Update the entities processor with the account name
             if isinstance(self.data_entities_processor, AzureBlobDataSourceEntitiesProcessor):
-                self.data_entities_processor.account_name = self.account_name
+                self.data_entities_processor.account_name = self.account_name or ""
 
             # Load connector filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -455,6 +416,30 @@ class AzureBlobConnector(BaseConnector):
     def _generate_parent_web_url(self, parent_external_id: str) -> str:
         """Generate the web URL for an Azure Blob parent folder/directory."""
         return get_parent_weburl_for_azure_blob(parent_external_id, self.account_name or "")
+
+    def _extract_container_names(self, containers_data: Optional[Iterable[Any]]) -> List[str]:
+        """Extract container names from list_containers response data.
+
+        Handles both dict-based and ContainerProperties-like objects.
+        """
+        container_names: List[str] = []
+        if not containers_data:
+            return container_names
+
+        for container in containers_data:
+            container_name: Optional[str] = None
+
+            # Handle both dict and object formats for robustness
+            if isinstance(container, dict):
+                container_name = container.get("name")
+            else:
+                # Fallback for ContainerProperties objects
+                container_name = getattr(container, "name", None)
+
+            if container_name:
+                container_names.append(container_name)
+
+        return container_names
 
     async def run_sync(self) -> None:
         """Runs a full synchronization from containers."""
@@ -497,11 +482,13 @@ class AzureBlobConnector(BaseConnector):
 
                 containers_data = containers_response.data
                 if containers_data:
-                    containers_to_sync = [
-                        container.get("name") for container in containers_data
-                        if container.get("name")
-                    ]
-                    self.logger.info(f"Found {len(containers_to_sync)} container(s) to sync")
+                    containers_to_sync = self._extract_container_names(containers_data)
+
+                    if containers_to_sync:
+                        self.logger.info(f"Found {len(containers_to_sync)} container(s) to sync: {containers_to_sync}")
+                    else:
+                        self.logger.warning("No valid container names found in response")
+                        return
                 else:
                     self.logger.warning("No containers found")
                     return
@@ -681,6 +668,69 @@ class AzureBlobConnector(BaseConnector):
 
         return True
 
+    def _pass_extension_filter(self, blob_name: str, is_folder: bool = False) -> bool:
+        """
+        Checks if the Azure blob passes the configured file extensions filter.
+
+        For MULTISELECT filters:
+        - Operator IN: Only allow files with extensions in the selected list
+        - Operator NOT_IN: Allow files with extensions NOT in the selected list
+
+        Folders always pass this filter to maintain directory structure.
+
+        Args:
+            blob_name: The name of the blob
+            is_folder: Whether this is a folder (ends with "/")
+
+        Returns:
+            True if the blob passes the filter (should be kept), False otherwise
+        """
+        # 1. ALWAYS Allow Folders
+        # We must sync folders regardless of extension to ensure the directory structure
+        # exists for any files that might be inside them.
+        if is_folder:
+            return True
+
+        # 2. Get the extensions filter
+        extensions_filter = self.sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
+
+        # If no filter configured or filter is empty, allow all files
+        if extensions_filter is None or extensions_filter.is_empty():
+            return True
+
+        # 3. Get the file extension from the blob name
+        file_extension = get_file_extension(blob_name)
+
+        # 4. Handle files without extensions
+        if file_extension is None:
+            operator = extensions_filter.get_operator()
+            operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+            # If using NOT_IN operator, files without extensions pass (not in excluded list)
+            # If using IN operator, files without extensions fail (not in allowed list)
+            return operator_str == FilterOperator.NOT_IN
+
+        # 5. Get the list of extensions from the filter value
+        allowed_extensions = extensions_filter.value
+        if not isinstance(allowed_extensions, list):
+            return True  # Invalid filter value, allow the file
+
+        # Normalize extensions (lowercase, without dots)
+        normalized_extensions = [ext.lower().lstrip(".") for ext in allowed_extensions]
+
+        # 6. Apply the filter based on operator
+        operator = extensions_filter.get_operator()
+        operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+
+        if operator_str == FilterOperator.IN:
+            # Only allow files with extensions in the list
+            return file_extension in normalized_extensions
+        elif operator_str == FilterOperator.NOT_IN:
+            # Allow files with extensions NOT in the list
+            return file_extension not in normalized_extensions
+
+        # Unknown operator, default to allowing the file
+        return True
+
     async def _get_signed_url_route(self, record_id: str) -> str:
         """Generate the signed URL route for a record."""
         endpoints = await self.config_service.get_config(
@@ -701,18 +751,15 @@ class AzureBlobConnector(BaseConnector):
 
         sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
 
-        file_extensions_filter = sync_filters.get("file_extensions")
-        allowed_extensions = []
-        if file_extensions_filter and not file_extensions_filter.is_empty():
-            filter_value = file_extensions_filter.value
-            if isinstance(filter_value, list):
-                allowed_extensions = [ext.lower().lstrip('.') for ext in filter_value if ext]
-            elif isinstance(filter_value, str):
-                allowed_extensions = [filter_value.lower().lstrip('.')]
-
-        if allowed_extensions:
+        # Log extension filter status if configured
+        extensions_filter = sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
+        if extensions_filter and not extensions_filter.is_empty():
+            filter_value = extensions_filter.value
+            operator = extensions_filter.get_operator()
+            operator_str = operator.value if hasattr(operator, 'value') else str(operator)
             self.logger.info(
-                f"File extensions filter active for container {container_name}: {allowed_extensions}"
+                f"File extensions filter active for container {container_name}: "
+                f"operator={operator_str}, extensions={filter_value}"
             )
 
         modified_after_ms, modified_before_ms, created_after_ms, created_before_ms = self._get_date_filters()
@@ -765,18 +812,12 @@ class AzureBlobConnector(BaseConnector):
 
                         is_folder = blob_name.endswith("/")
 
-                        if not is_folder and allowed_extensions:
-                            ext = get_file_extension(blob_name)
-                            if not ext:
-                                self.logger.debug(
-                                    f"Skipping {blob_name}: no file extension found"
-                                )
-                                continue
-                            if ext not in allowed_extensions:
-                                self.logger.debug(
-                                    f"Skipping {blob_name}: extension '{ext}' not in allowed extensions"
-                                )
-                                continue
+                        # Check extension filter
+                        if not self._pass_extension_filter(blob_name, is_folder):
+                            self.logger.debug(
+                                f"Skipping {blob_name}: does not pass extension filter"
+                            )
+                            continue
 
                         if not self._pass_date_filters(
                             blob_dict, modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
@@ -990,8 +1031,14 @@ class AzureBlobConnector(BaseConnector):
 
             # Get content MD5 hash
             content_md5 = blob.get("content_md5")
-            if content_md5 and isinstance(content_md5, bytes):
-                content_md5 = base64.b64encode(content_md5).decode('utf-8')
+            if content_md5:
+                if isinstance(content_md5, (bytes, bytearray)):
+                    # Convert bytes/bytearray to base64 string
+                    content_md5 = base64.b64encode(bytes(content_md5)).decode('utf-8')
+                elif not isinstance(content_md5, str):
+                    # If it's some other type, convert to string
+                    content_md5 = str(content_md5)
+                # If it's already a string, use it as-is
 
             file_record = FileRecord(
                 id=record_id,
@@ -1401,8 +1448,14 @@ class AzureBlobConnector(BaseConnector):
 
             # Get content MD5 hash
             content_md5 = blob_metadata.get("content_md5")
-            if content_md5 and isinstance(content_md5, bytes):
-                content_md5 = base64.b64encode(content_md5).decode('utf-8')
+            if content_md5:
+                if isinstance(content_md5, (bytes, bytearray)):
+                    # Convert bytes/bytearray to base64 string
+                    content_md5 = base64.b64encode(bytes(content_md5)).decode('utf-8')
+                elif not isinstance(content_md5, str):
+                    # If it's some other type, convert to string
+                    content_md5 = str(content_md5)
+                # If it's already a string, use it as-is
 
             updated_record = FileRecord(
                 id=record.id,
@@ -1473,10 +1526,11 @@ class AzureBlobConnector(BaseConnector):
             else:
                 containers_response = await self.data_source.list_containers()
                 if containers_response.success and containers_response.data:
-                    containers_to_sync = [
-                        container.get("name") for container in containers_response.data
-                        if container.get("name")
-                    ]
+                    containers_to_sync = self._extract_container_names(containers_response.data)
+
+                    if not containers_to_sync:
+                        self.logger.warning("No valid container names found in response")
+                        return
 
             if not containers_to_sync:
                 self.logger.warning("No containers to sync")
@@ -1509,14 +1563,23 @@ class AzureBlobConnector(BaseConnector):
         **kwargs,
     ) -> "AzureBlobConnector":
         """Factory method to create and initialize connector."""
-        # Get account name from config for entities processor
-        config = await config_service.get_config(
-            f"/services/connectors/{connector_id}/config"
-        )
+        # Extract account name from connection string if available
         account_name = ""
-        if config:
-            auth_config = config.get("auth", {})
-            account_name = auth_config.get("accountName", "")
+        try:
+            config = await config_service.get_config(
+                f"/services/connectors/{connector_id}/config"
+            )
+            if config:
+                auth_config = config.get("auth", {})
+                connection_string = auth_config.get("azureBlobConnectionString", "")
+                if connection_string:
+                    # Extract account name from connection string
+                    for part in connection_string.split(';'):
+                        if part.startswith('AccountName='):
+                            account_name = part.split('=', 1)[1]
+                            break
+        except Exception as e:
+            logger.warning(f"Could not extract account name from connection string: {e}")
 
         data_entities_processor = AzureBlobDataSourceEntitiesProcessor(
             logger, data_store_provider, config_service, account_name=account_name
