@@ -57,6 +57,7 @@ import {
   createOAuthClientsRouter,
   createOIDCDiscoveryRouter,
 } from './modules/oauth_provider/routes';
+import { ensureKafkaTopicsExist, REQUIRED_KAFKA_TOPICS } from './libs/services/kafka-admin.service';
 
 const loggerConfig = {
   service: 'Application',
@@ -93,6 +94,19 @@ export class Application {
       // Loads configuration
       const configurationManagerConfig = loadConfigurationManagerConfig();
       const appConfig = await loadAppConfig();
+
+      // Ensure Kafka topics exist (important for AWS MSK where auto-create is disabled)
+      try {
+        this.logger.info('Ensuring Kafka topics exist...');
+        await ensureKafkaTopicsExist(appConfig.kafka, this.logger, REQUIRED_KAFKA_TOPICS);
+        this.logger.info('Kafka topics check completed');
+      } catch (kafkaError: any) {
+        this.logger.warn(
+          `Could not verify/create Kafka topics: ${kafkaError.message}. ` +
+          'Topics may need to be created manually for AWS MSK.',
+        );
+        // Don't throw - allow app to continue; topics might already exist or be created elsewhere
+      }
 
       this.tokenManagerContainer = await TokenManagerContainer.initialize(
         configurationManagerConfig,

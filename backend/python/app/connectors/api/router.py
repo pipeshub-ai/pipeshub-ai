@@ -53,7 +53,6 @@ from app.connectors.sources.google.admin.admin_webhook_handler import (
 )
 from app.connectors.sources.google.common.google_token_handler import (
     CredentialKeys,
-    GoogleTokenHandler,
 )
 from app.connectors.sources.google.common.scopes import (
     GOOGLE_CONNECTOR_ENTERPRISE_SCOPES,
@@ -634,8 +633,6 @@ async def download_file(
     token: str,
     signed_url_handler=Depends(Provide[ConnectorAppContainer.signed_url_handler]),
     arango_service: BaseArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
-    google_token_handler: GoogleTokenHandler = Depends(Provide[ConnectorAppContainer.google_token_handler]),
-    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
 ) -> Optional[dict | StreamingResponse]:
     try:
         logger.info(f"Downloading file {record_id} with connector {connector}")
@@ -673,19 +670,44 @@ async def download_file(
         if connector_type is None:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Connector not found")
 
+        # Handle KB separately - fetch from storage service
+        connector_name = record.connector_name.value.lower().replace(" ", "")
+        container: ConnectorAppContainer = request.app.container
+        config_service: ConfigurationService = container.config_service()
+        if connector_name == Connectors.KNOWLEDGE_BASE.value.lower() or connector_name is None:
+            endpoints = await config_service.get_config(
+                config_node_constants.ENDPOINTS.value
+            )
+            storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+            buffer_url = f"{storage_url}/api/v1/document/internal/{record.external_record_id}/buffer"
+            jwt_payload = {
+                "orgId": org_id,
+                "scopes": ["storage:token"],
+            }
+            storage_token = await generate_jwt(config_service, jwt_payload)
+            response = await make_api_call(
+                route=buffer_url, token=storage_token
+            )
+            if isinstance(response["data"], dict):
+                data = response['data'].get('data')
+                buffer = bytes(data) if isinstance(data, list) else data
+            else:
+                buffer = response['data']
+
+            return Response(content=buffer or b'', media_type="application/octet-stream")
+
         try:
-            container: ConnectorAppContainer = request.app.container
-            connector: BaseConnector = container.connectors_map[connector_id]
-            if not connector:
+            connector_obj: BaseConnector = container.connectors_map[connector_id]
+            if not connector_obj:
                 raise HTTPException(
                     status_code=HttpStatusCode.NOT_FOUND.value,
                     detail=f"Connector '{connector_id}' not found"
                 )
 
-            if connector.get_app_name() == Connectors.GOOGLE_DRIVE or connector.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
-                buffer = await connector.stream_record(record, user_id)
+            if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
+                buffer = await connector_obj.stream_record(record, user_id)
             else:
-                buffer = await connector.stream_record(record)
+                buffer = await connector_obj.stream_record(record)
 
             return buffer
 
@@ -710,7 +732,6 @@ async def stream_record(
     record_id: str,
     convertTo: str = Query(None, description="Convert file to this format"),
     arango_service: BaseArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
-    google_token_handler: GoogleTokenHandler = Depends(Provide[ConnectorAppContainer.google_token_handler]),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
 ) -> Optional[dict | StreamingResponse]:
     """
@@ -767,25 +788,48 @@ async def stream_record(
                 detail="You do not have permission to access this record"
             )
 
-        connector = record.connector_name.value
+        connector_name = record.connector_name.value.lower().replace(" ", "")
         connector_id = record.connector_id
-        logger.info(f"Connector: {connector} connector_id: {connector_id}")
+        logger.info(f"Connector: {connector_name} connector_id: {connector_id}")
         # Different auth handling based on account type and connector scope
 
+        # Handle KB separately - fetch from storage service
+        container: ConnectorAppContainer = request.app.container
+        if connector_name == Connectors.KNOWLEDGE_BASE.value.lower() or connector_name is None:
+            endpoints = await config_service.get_config(
+                config_node_constants.ENDPOINTS.value
+            )
+            storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+            buffer_url = f"{storage_url}/api/v1/document/internal/{record.external_record_id}/buffer"
+            jwt_payload = {
+                "orgId": org_id,
+                "scopes": ["storage:token"],
+            }
+            storage_token = await generate_jwt(config_service, jwt_payload)
+            response = await make_api_call(
+                route=buffer_url, token=storage_token
+            )
+            if isinstance(response["data"], dict):
+                data = response['data'].get('data')
+                buffer = bytes(data) if isinstance(data, list) else data
+            else:
+                buffer = response['data']
+
+            return Response(content=buffer or b'', media_type="application/octet-stream")
+
         try:
-            container: ConnectorAppContainer = request.app.container
-            connector: BaseConnector = container.connectors_map[connector_id]
-            if not connector:
+            connector_obj: BaseConnector = container.connectors_map[connector_id]
+            if not connector_obj:
                 raise HTTPException(
                     status_code=HttpStatusCode.NOT_FOUND.value,
                     detail=f"Connector '{connector_id}' not found"
                 )
 
             # Pass user_id for google drive
-            if connector.get_app_name() == Connectors.GOOGLE_DRIVE or connector.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
-                buffer = await connector.stream_record(record, user_id)
+            if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
+                buffer = await connector_obj.stream_record(record, user_id)
             else:
-                buffer = await connector.stream_record(record)
+                buffer = await connector_obj.stream_record(record)
 
             return buffer
         except Exception as e:

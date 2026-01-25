@@ -1,5 +1,6 @@
 import asyncio
 import json
+import ssl
 from typing import Dict
 
 from aiokafka import AIOKafkaProducer
@@ -55,6 +56,7 @@ class KafkaService:
 
                 # Add SSL/SASL configuration for AWS MSK
                 if kafka_config.get("ssl"):
+                    producer_config["ssl_context"] = ssl.create_default_context()
                     sasl_config = kafka_config.get("sasl", {})
                     if sasl_config.get("username"):
                         producer_config["security_protocol"] = "SASL_SSL"

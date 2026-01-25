@@ -1,5 +1,6 @@
 import asyncio
 import json
+import ssl
 from logging import Logger
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 
@@ -31,7 +32,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
     @staticmethod
     def kafka_config_to_dict(kafka_config: KafkaConsumerConfig) -> Dict[str, Any]:
         """Convert KafkaConsumerConfig dataclass to dictionary format for aiokafka consumer"""
-        return {
+        config: Dict[str, Any] = {
             'bootstrap_servers': ",".join(kafka_config.bootstrap_servers),
             'group_id': kafka_config.group_id,
             'auto_offset_reset': kafka_config.auto_offset_reset,
@@ -39,6 +40,20 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             'client_id': kafka_config.client_id,
             'topics': kafka_config.topics  # Include topics in the dictionary
         }
+
+        # Add SSL/SASL configuration
+        if kafka_config.ssl:
+            config["ssl_context"] = ssl.create_default_context()
+            sasl_config = kafka_config.sasl or {}
+            if sasl_config.get("username"):
+                config["security_protocol"] = "SASL_SSL"
+                config["sasl_mechanism"] = sasl_config.get("mechanism", "SCRAM-SHA-512").upper()
+                config["sasl_plain_username"] = sasl_config["username"]
+                config["sasl_plain_password"] = sasl_config["password"]
+            else:
+                config["security_protocol"] = "SSL"
+
+        return config
 
     # implementing abstract methods from IMessagingConsumer
     async def initialize(self) -> None:

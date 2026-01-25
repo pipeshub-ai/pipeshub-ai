@@ -113,6 +113,8 @@ class DataSourceEntitiesProcessor:
         kafka_producer_config = KafkaProducerConfig(
             bootstrap_servers=bootstrap_servers,
             client_id=producer_config.get("client_id", "connectors"),
+            ssl=producer_config.get("ssl", False),
+            sasl=producer_config.get("sasl"),
         )
         self.messaging_producer: IMessagingProducer = MessagingFactory.create_producer(
             broker_type="kafka",
