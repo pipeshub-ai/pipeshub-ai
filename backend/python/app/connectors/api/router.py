@@ -2933,29 +2933,38 @@ async def update_connector_instance_auth_config(
             metadata = await connector_registry.get_connector_metadata(connector_type)
             auth_metadata = metadata.get("config", {}).get("auth", {})
 
-            # Determine redirect URI
-            redirect_uri = auth_metadata.get("redirectUri", "")
-            if base_url:
-                redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
-            else:
-                endpoints = await config_service.get_config(
-                    "/services/endpoints",
-                    use_cache=False
-                )
-                base_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
-                redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+
+            # Get OAuth config from oauthConfigs (same as _prepare_connector_config)
+            oauth_configs = auth_metadata.get("oauthConfigs", {})
+            oauth_config = oauth_configs.get(auth_type, {}) if oauth_configs else {}
+
+            # Get redirect URI from auth schema (same as _prepare_connector_config)
+            auth_schemas = auth_metadata.get("schemas", {})
+            selected_auth_schema = auth_schemas.get(auth_type, {}) if auth_schemas else {}
+            redirect_uri = selected_auth_schema.get("redirectUri", "")
+            if redirect_uri:
+                if base_url:
+                    redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+                else:
+                    endpoints = await config_service.get_config(
+                        "/services/endpoints",
+                        use_cache=False
+                    )
+                    base_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
+                    redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
             # Only use registry defaults if user hasn't provided these values
             oauth_updates = {
-                "scopes": auth_metadata.get("scopes", []),
+                "scopes": oauth_config.get("scopes", []),
                 "redirectUri": redirect_uri,
                 "authType": auth_type,
             }
+
             # Preserve user-provided authorizeUrl and tokenUrl if they exist
             if not new_config["auth"].get("authorizeUrl"):
-                oauth_updates["authorizeUrl"] = auth_metadata.get("authorizeUrl", "")
+                oauth_updates["authorizeUrl"] = oauth_config.get("authorizeUrl", "")
             if not new_config["auth"].get("tokenUrl"):
-                oauth_updates["tokenUrl"] = auth_metadata.get("tokenUrl", "")
+                oauth_updates["tokenUrl"] = oauth_config.get("tokenUrl", "")
             new_config["auth"].update(oauth_updates)
 
         # Save configuration
@@ -3920,6 +3929,7 @@ async def _build_oauth_flow_config(
     Raises:
         HTTPException: If shared OAuth config is referenced but not found
     """
+
     oauth_config_id = auth_config.get("oauthConfigId")
 
     # Use shared OAuth config if available
@@ -3945,23 +3955,30 @@ async def _build_oauth_flow_config(
             )
 
         # Build flow config from shared OAuth config
+        # Prioritize values from connector instance config (auth_config) if they exist
         oauth_flow_config = {
-            "authorizeUrl": shared_oauth_config.get("authorizeUrl", ""),
-            "tokenUrl": shared_oauth_config.get("tokenUrl", ""),
-            "redirectUri": shared_oauth_config.get("redirectUri", ""),
+            "authorizeUrl": auth_config.get("authorizeUrl") or shared_oauth_config.get("authorizeUrl", ""),
+            "tokenUrl": auth_config.get("tokenUrl") or shared_oauth_config.get("tokenUrl", ""),
+            "redirectUri": auth_config.get("redirectUri") or shared_oauth_config.get("redirectUri", ""),
         }
 
-        # Convert scopes from dict to list based on connector scope
-        connector_scope = auth_config.get("connectorScope", "team").lower()
-        scopes_data = shared_oauth_config.get("scopes", {})
-
-        if isinstance(scopes_data, dict):
-            scope_key_map = {"personal": "personal_sync", "team": "team_sync", "agent": "agent"}
-            scope_key = scope_key_map.get(connector_scope, "team_sync")
-            scope_list = scopes_data.get(scope_key, [])
-            oauth_flow_config["scopes"] = scope_list if isinstance(scope_list, list) else []
+        # Prioritize scopes from connector instance config (auth_config) if they exist
+        # This ensures we use the scopes that were set during connector creation/update
+        if auth_config.get("scopes"):
+            oauth_flow_config["scopes"] = auth_config["scopes"] if isinstance(auth_config["scopes"], list) else []
         else:
-            oauth_flow_config["scopes"] = scopes_data if isinstance(scopes_data, list) else []
+            # Fall back to shared OAuth config scopes if not in connector instance config
+            # Convert scopes from dict to list based on connector scope
+            connector_scope = auth_config.get("connectorScope", "team").lower()
+            scopes_data = shared_oauth_config.get("scopes", {})
+
+            if isinstance(scopes_data, dict):
+                scope_key_map = {"personal": "personal_sync", "team": "team_sync", "agent": "agent"}
+                scope_key = scope_key_map.get(connector_scope, "team_sync")
+                scope_list = scopes_data.get(scope_key, [])
+                oauth_flow_config["scopes"] = scope_list if isinstance(scope_list, list) else []
+            else:
+                oauth_flow_config["scopes"] = scopes_data if isinstance(scopes_data, list) else []
 
         # Add optional fields
         if "tokenAccessType" in shared_oauth_config:
@@ -4087,7 +4104,7 @@ async def get_oauth_authorization_url(
             )
 
         auth_config = config["auth"]
-        connector_scope = auth_config.get("connectorScope", "team").lower()
+        connector_scope = instance.get("scope", "team").lower()
 
 
         # ============================================================
@@ -4107,7 +4124,13 @@ async def get_oauth_authorization_url(
         # 4. Generate Authorization URL
         # ============================================================
         oauth_config = get_oauth_config(oauth_flow_config)
+        # Fallback: if scope is empty, use scopes from instance document
+        if not oauth_config.scope:
+            scopes_list = instance.get("scopes", [])
+            if scopes_list and isinstance(scopes_list, list):
+                oauth_config.scope = ' '.join(scopes_list)
         logger.info(f"Using {connector_scope} with scopes: {oauth_config.scope}")
+
 
         oauth_provider = OAuthProvider(
             config=oauth_config,
