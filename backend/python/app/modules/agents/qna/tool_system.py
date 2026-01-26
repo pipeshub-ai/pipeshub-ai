@@ -264,14 +264,26 @@ class ToolWrapper(BaseTool):
                     config_service = retrieval_service.config_service
                     state_logger = self.state.get("logger")
 
+                    # Find connector instance ID for this tool/app
+                    connector_instance_id = self._get_connector_instance_id()
+
+                    if connector_instance_id and state_logger:
+                        state_logger.info(f"Using connector instance ID {connector_instance_id} for {self.app_name}")
+                    elif state_logger:
+                        state_logger.debug(f"No connector instance ID found for {self.app_name}")
+
                     # Prepare tool state with connector instance ID
                     if isinstance(self.state, dict):
                         tool_state = dict(self.state)
                     else:
                         tool_state = self.state
 
-                    # Create client using factory
-                    client = factory.create_client_sync(config_service, state_logger, tool_state)
+                    # Add connector instance ID to state
+                    if isinstance(tool_state, dict):
+                        tool_state["connector_instance_id"] = connector_instance_id
+
+                    # Create client using factory - pass connector_instance_id explicitly
+                    client = factory.create_client_sync(config_service, state_logger, tool_state, connector_instance_id)
                     return action_class(client)
 
             # No factory found - try fallback creation for tools that don't need clients
@@ -289,6 +301,63 @@ class ToolWrapper(BaseTool):
                 # If fallback also fails, raise the original error
                 raise ValueError(f"Not able to get the client from factory for {self.app_name}") from e
 
+    def _get_connector_instance_id(self) -> Optional[str]:
+        """Get connector instance ID for this tool based on app_name.
+
+        Looks up the connector instance from tool_to_connector_map in state,
+        which maps app names to their connector instance IDs.
+
+        Falls back to searching connector_instances directly if map lookup fails.
+
+        Returns:
+            Connector instance ID if found, None otherwise
+        """
+        state_logger = self.state.get("logger")
+        app_name_normalized = self.app_name.replace(" ", "").lower()
+
+        # First try: Use tool_to_connector_map
+        tool_to_connector_map = self.state.get("tool_to_connector_map")
+
+        if tool_to_connector_map:
+            connector_id = (
+                tool_to_connector_map.get(app_name_normalized) or
+                tool_to_connector_map.get(self.app_name) or
+                tool_to_connector_map.get(self.app_name.upper())
+            )
+            if connector_id:
+                return connector_id
+
+            if state_logger:
+                state_logger.debug(
+                    f"🔍 Map lookup failed for '{self.app_name}' (normalized: '{app_name_normalized}'). "
+                    f"Available keys: {list(tool_to_connector_map.keys())}"
+                )
+
+        # Fallback: Search connector_instances directly
+        connector_instances = self.state.get("connector_instances")
+        if connector_instances:
+            for instance in connector_instances:
+                if isinstance(instance, dict):
+                    connector_type = instance.get("type", "")
+                    connector_type_normalized = connector_type.replace(" ", "").lower()
+
+                    # Match by type (normalized or original)
+                    if connector_type_normalized == app_name_normalized or connector_type.lower() == self.app_name.lower():
+                        connector_id = instance.get("id")
+                        if connector_id:
+                            if state_logger:
+                                state_logger.debug(f"✅ Found connector ID via fallback search: {connector_id} for {self.app_name}")
+                            return connector_id
+
+            if state_logger:
+                available_types = [i.get("type", "?") for i in connector_instances if isinstance(i, dict)]
+                state_logger.debug(f"🔍 Fallback search failed for '{self.app_name}'. Available types: {available_types}")
+        else:
+            if state_logger:
+                state_logger.debug(f"🔍 No connector_instances in state for {self.app_name}")
+
+        return None
+
     def _fallback_creation(self, action_class: type) -> Any:  # noqa: ANN401
         """Attempt to create instance without client (for tools that don't need factories).
 
@@ -298,23 +367,50 @@ class ToolWrapper(BaseTool):
         Returns:
             Instance of action_class
         """
+        state_logger = self.state.get("logger")
+
+        # First try: Pass state directly (required for tools like Retrieval)
+        # Many tools need state to access services like retrieval_service, arango_service, etc.
         try:
-            # Try instantiating with no arguments (e.g., Calculator())
-            return action_class()
+            instance = action_class(state=self.state)
+            if state_logger:
+                state_logger.debug(f"Created {action_class.__name__} with state")
+            return instance
         except TypeError:
-            try:
-                # Try with empty dict (some tools might accept dict)
-                return action_class({})
-            except (TypeError, Exception):
-                try:
-                    # Try with None (some tools might accept None)
-                    return action_class(None)
-                except Exception:
-                    # If all fail, raise informative error
-                    raise ValueError(
-                        f"Could not instantiate {action_class.__name__} - "
-                        f"tried: (), ({{}}), (None). Tool may require a client/factory."
-                    )
+            pass
+
+        # Second try: no arguments (e.g., Calculator())
+        try:
+            instance = action_class()
+            if state_logger:
+                state_logger.debug(f"Created {action_class.__name__} with no args")
+            return instance
+        except TypeError:
+            pass
+
+        # Third try: dict argument
+        try:
+            instance = action_class({})
+            if state_logger:
+                state_logger.debug(f"Created {action_class.__name__} with empty dict")
+            return instance
+        except (TypeError, Exception):
+            pass
+
+        # Fourth try: None argument
+        try:
+            instance = action_class(None)
+            if state_logger:
+                state_logger.debug(f"Created {action_class.__name__} with None")
+            return instance
+        except Exception:
+            pass
+
+        # If all fail, raise informative error
+        raise ValueError(
+            f"Could not instantiate {action_class.__name__} - "
+            f"tried: (state=...), (), ({{}}), (None). Tool may require a client/factory."
+        )
 
 class ToolLoader:
     """

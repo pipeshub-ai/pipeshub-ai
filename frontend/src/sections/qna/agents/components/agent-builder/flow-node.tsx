@@ -130,27 +130,38 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
     return map;
   }, [data.id, data.type, storeEdges, storeNodes]);
 
-  // Professional color scheme
+  // Professional color scheme with better contrast and visibility
   const colors = {
-    primary: isDark ? '#6366f1' : '#4f46e5',
-    secondary: isDark ? '#8b5cf6' : '#7c3aed',
-    success: isDark ? '#10b981' : '#059669',
-    warning: isDark ? '#f59e0b' : '#d97706',
-    info: isDark ? '#06b6d4' : '#0891b2',
+    primary: isDark ? '#9ca3af' : '#6b6b6b',
+    secondary: isDark ? '#a8b2c0' : '#808080',
+    success: isDark ? '#9ca3af' : '#525252',
+    warning: isDark ? '#9ca3af' : '#525252',
+    info: isDark ? '#9ca3af' : '#525252',
     background: {
-      card: isDark ? '#1e1e1e' : '#ffffff',
-      section: isDark ? '#2a2a2a' : '#f8fafc',
-      hover: isDark ? '#333333' : '#f1f5f9',
+      card: theme.palette.background.paper,
+      section: isDark 
+        ? alpha('#2a2a2a', 0.6) 
+        : alpha(theme.palette.background.default, 0.7),
+      field: isDark 
+        ? alpha('#2a2a2a', 0.4) 
+        : alpha(theme.palette.background.paper, 0.8),
+      hover: theme.palette.action.hover,
     },
     border: {
-      main: isDark ? '#3a3a3a' : '#e2e8f0',
-      subtle: isDark ? '#2a2a2a' : '#f1f5f9',
-      focus: isDark ? '#6366f1' : '#4f46e5',
+      main: isDark 
+        ? '#4a4a4a' 
+        : '#d0d0d0',
+      subtle: isDark 
+        ? '#3a3a3a' 
+        : '#e0e0e0',
+      focus: isDark ? '#6b6b6b' : '#a0a0a0',
     },
     text: {
-      primary: isDark ? '#f8fafc' : '#0f172a',
-      secondary: isDark ? '#cbd5e1' : '#64748b',
-      muted: isDark ? '#94a3b8' : '#94a3b8',
+      primary: theme.palette.text.primary,
+      secondary: theme.palette.text.secondary,
+      muted: isDark 
+        ? alpha(theme.palette.text.secondary, 0.75) 
+        : alpha(theme.palette.text.secondary, 0.65),
     },
   };
 
@@ -160,25 +171,26 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
     return (
       <Card
         sx={{
-          width: 420, // Increased from 380 for better width
-          minHeight: 650, // Balanced height - not too compact, not too tall
-          border: selected ? `2px solid ${colors.primary}` : `1px solid ${colors.border.main}`,
-          borderRadius: 3,
+          width: 380,
+          minHeight: 600,
+          border: selected ? `2px solid ${colors.border.focus}` : `2px solid ${colors.border.main}`,
+          borderRadius: 1.5,
           backgroundColor: colors.background.card,
-          boxShadow: selected
-            ? `0 0 0 4px ${alpha(colors.primary, 0.1)}, 0 8px 25px ${alpha(isDark ? '#000' : colors.primary, isDark ? 0.4 : 0.15)}`
-            : `0 4px 6px ${alpha(isDark ? '#000' : '#0f172a', isDark ? 0.3 : 0.05)}, 0 1px 3px ${alpha(isDark ? '#000' : '#0f172a', isDark ? 0.2 : 0.1)}`,
+          boxShadow: selected 
+            ? (isDark ? `0 4px 12px rgba(0, 0, 0, 0.3)` : `0 4px 12px rgba(0, 0, 0, 0.1)`)
+            : isDark 
+              ? `0 2px 8px rgba(0, 0, 0, 0.15)`
+              : `0 2px 8px rgba(0, 0, 0, 0.08)`,
           cursor: 'pointer',
-          transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+          transition: 'all 0.2s ease',
           position: 'relative',
           overflow: 'visible',
-          backdropFilter: isDark ? 'blur(10px)' : 'none',
           '&:hover': {
-            transform: 'translateY(-2px)',
-            boxShadow: selected
-              ? `0 0 0 4px ${alpha(colors.primary, 0.15)}, 0 12px 35px ${alpha(isDark ? '#000' : colors.primary, isDark ? 0.5 : 0.2)}`
-              : `0 8px 25px ${alpha(isDark ? '#000' : '#0f172a', isDark ? 0.4 : 0.1)}, 0 4px 6px ${alpha(isDark ? '#000' : '#0f172a', isDark ? 0.3 : 0.05)}`,
-            borderColor: selected ? colors.primary : colors.border.focus,
+            borderColor: colors.border.focus,
+            borderWidth: '2.5px',
+            boxShadow: isDark 
+              ? `0 4px 12px rgba(0, 0, 0, 0.25)`
+              : `0 4px 12px rgba(0, 0, 0, 0.12)`,
           },
         }}
         onClick={(e) => {
@@ -199,77 +211,53 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
           e.stopPropagation();
         }}
       >
-        {/* Header with gradient */}
+        {/* Minimal Header */}
         <Box
           sx={{
-            p: 2.5, // Keep comfortable padding
-            borderBottom: `1px solid ${colors.border.subtle}`,
-            background: isDark
-              ? `linear-gradient(135deg, ${alpha('#2a2a2a', 0.8)} 0%, ${alpha('#1e1e1e', 0.9)} 100%)`
-              : `linear-gradient(135deg, ${alpha('#f8fafc', 0.8)} 0%, ${alpha('#ffffff', 0.9)} 100%)`,
-            borderRadius: '12px 12px 0 0',
-            position: 'relative',
+            p: 2,
+            borderBottom: `2px solid ${colors.border.main}`,
+            backgroundColor: isDark 
+              ? alpha('#1f1f1f', 0.5) 
+              : alpha(theme.palette.background.default, 0.5),
           }}
         >
-          <Box
-            sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }} // Keep comfortable margin
-          >
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-              {' '}
-              {/* Keep comfortable gap */}
-              <Box
-                sx={{
-                  width: 32, // Keep comfortable size
-                  height: 32, // Keep comfortable size
-                  borderRadius: 2,
-                  background: `linear-gradient(135deg, ${colors.primary} 0%, ${colors.secondary} 100%)`,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  boxShadow: `0 4px 8px ${alpha(colors.primary, 0.3)}`,
-                }}
-              >
-                <Icon icon={brainIcon} width={18} height={18} style={{ color: '#ffffff' }} />{' '}
-                {/* Keep comfortable size */}
-              </Box>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+              <Icon icon={brainIcon} width={18} height={18} style={{ color: colors.text.secondary }} />
               <Typography
                 variant="h6"
                 sx={{
-                  fontWeight: 700,
-                  fontSize: '1.1rem', // Keep comfortable size
+                  fontWeight: 600,
+                  fontSize: '0.9375rem',
                   color: colors.text.primary,
-                  letterSpacing: '-0.025em',
                 }}
               >
                 Agent
               </Typography>
             </Box>
           </Box>
-          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <Typography
-              variant="body2"
-              sx={{
-                color: colors.text.secondary,
-                fontSize: '0.875rem', // Keep comfortable size
-                lineHeight: 1.5, // Keep comfortable line height
-                fontWeight: 500,
-                flex: 1,
-              }}
-            >
-              Define the agent&apos;s instructions, then enter a task to complete using tools.
-            </Typography>
-          </Box>
+          <Typography
+            variant="body2"
+            sx={{
+              color: colors.text.secondary,
+              fontSize: '0.8125rem',
+              lineHeight: 1.5,
+              fontWeight: 400,
+            }}
+          >
+            Define the agent&apos;s instructions, then enter a task to complete using tools.
+          </Typography>
         </Box>
 
         {/* Agent Configuration Section */}
         <Box
           sx={{
-            px: 2.5, // Keep comfortable padding
-            py: 2, // Keep comfortable padding
-            borderBottom: `1px solid ${colors.border.subtle}`,
-            background: isDark
-              ? `linear-gradient(135deg, ${alpha('#1a1a1a', 0.5)} 0%, ${alpha('#2a2a2a', 0.3)} 100%)`
-              : `linear-gradient(135deg, ${alpha('#f8fafc', 0.8)} 0%, ${alpha('#e2e8f0', 0.3)} 100%)`,
+            px: 2.5,
+            py: 2,
+            borderBottom: `2px solid ${colors.border.subtle}`,
+            backgroundColor: isDark 
+              ? alpha('#1f1f1f', 0.3) 
+              : alpha(theme.palette.background.default, 0.5),
           }}
         >
           {/* System Prompt */}
@@ -325,22 +313,31 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
             </Box>
             <Box
               sx={{
-                p: 1.5, // Keep comfortable padding
-                backgroundColor: colors.background.section,
+                p: 1.5,
+                backgroundColor: isDark 
+                  ? alpha('#2a2a2a', 0.5) 
+                  : alpha(theme.palette.background.paper, 0.9),
                 borderRadius: 1.5,
                 border: `1px solid ${colors.border.subtle}`,
-                minHeight: 60, // Keep comfortable height
-                maxHeight: 80, // Keep comfortable height
+                minHeight: 60,
+                maxHeight: 80,
                 overflow: 'auto',
                 transition: 'all 0.2s ease',
+                '&:hover': {
+                  backgroundColor: isDark 
+                    ? alpha('#2a2a2a', 0.7) 
+                    : theme.palette.background.paper,
+                  borderColor: colors.border.main,
+                  borderWidth: '1.5px',
+                },
               }}
             >
               <Typography
                 sx={{
-                  fontSize: '0.75rem', // Keep comfortable size
+                  fontSize: '0.75rem',
                   color: colors.text.primary,
                   fontWeight: 500,
-                  lineHeight: 1.4, // Keep comfortable line height
+                  lineHeight: 1.4,
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
                 }}
@@ -381,22 +378,30 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
             </Box>
             <Box
               sx={{
-                p: 1.5, // Keep comfortable padding
-                backgroundColor: colors.background.section,
+                p: 1.5,
+                backgroundColor: isDark 
+                  ? alpha('#2a2a2a', 0.5) 
+                  : alpha(theme.palette.background.paper, 0.9),
                 borderRadius: 1.5,
                 border: `1px solid ${colors.border.subtle}`,
-                minHeight: 40, // Keep comfortable height
-                maxHeight: 60, // Keep comfortable height
+                minHeight: 40,
+                maxHeight: 60,
                 overflow: 'auto',
                 transition: 'all 0.2s ease',
+                '&:hover': {
+                  backgroundColor: isDark 
+                    ? alpha('#2a2a2a', 0.7) 
+                    : theme.palette.background.paper,
+                  borderColor: colors.border.main,
+                },
               }}
             >
               <Typography
                 sx={{
-                  fontSize: '0.75rem', // Keep comfortable size
+                  fontSize: '0.75rem',
                   color: colors.text.primary,
                   fontWeight: 500,
-                  lineHeight: 1.4, // Keep comfortable line height
+                  lineHeight: 1.4,
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
                 }}
@@ -437,22 +442,30 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
             </Box>
             <Box
               sx={{
-                p: 1.5, // Keep comfortable padding
-                backgroundColor: colors.background.section,
+                p: 1.5,
+                backgroundColor: isDark 
+                  ? alpha('#2a2a2a', 0.5) 
+                  : alpha(theme.palette.background.paper, 0.9),
                 borderRadius: 1.5,
-                border: `1px solid ${colors.border.subtle}`,
-                minHeight: 40, // Keep comfortable height
-                maxHeight: 60, // Keep comfortable height
+                border: `2px solid ${colors.border.subtle}`,
+                minHeight: 40,
+                maxHeight: 60,
                 overflow: 'auto',
                 transition: 'all 0.2s ease',
+                '&:hover': {
+                  backgroundColor: isDark 
+                    ? alpha('#2a2a2a', 0.7) 
+                    : theme.palette.background.paper,
+                  borderColor: colors.border.main,
+                },
               }}
             >
               <Typography
                 sx={{
-                  fontSize: '0.75rem', // Keep comfortable size
+                  fontSize: '0.75rem',
                   color: colors.text.primary,
                   fontWeight: 500,
-                  lineHeight: 1.4, // Keep comfortable line height
+                  lineHeight: 1.4,
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
                 }}
@@ -489,7 +502,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 p: 1.5, // Keep comfortable padding
                 backgroundColor: colors.background.section,
                 borderRadius: 2,
-                border: `1px solid ${colors.border.subtle}`,
+                border: `2px solid ${colors.border.subtle}`,
                 position: 'relative',
                 transition: 'all 0.2s ease',
                 '&:hover': {
@@ -624,7 +637,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 p: 1.5, // Keep comfortable padding
                 backgroundColor: colors.background.section,
                 borderRadius: 2,
-                border: `1px solid ${colors.border.subtle}`,
+                border: `2px solid ${colors.border.subtle}`,
                 position: 'relative',
                 transition: 'all 0.2s ease',
                 '&:hover': {
@@ -881,7 +894,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 p: 1.5, // Keep comfortable padding
                 backgroundColor: colors.background.section,
                 borderRadius: 2,
-                border: `1px solid ${colors.border.subtle}`,
+                border: `2px solid ${colors.border.subtle}`,
                 position: 'relative',
                 transition: 'all 0.2s ease',
                 '&:hover': {
@@ -1044,7 +1057,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 p: 1.5, // Keep comfortable padding
                 backgroundColor: colors.background.section,
                 borderRadius: 2,
-                border: `1px solid ${colors.border.subtle}`,
+                border: `2px solid ${colors.border.subtle}`,
                 position: 'relative',
                 transition: 'all 0.2s ease',
                 '&:hover': {
@@ -1164,7 +1177,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 p: 1.5, // Keep comfortable padding
                 backgroundColor: colors.background.section,
                 borderRadius: 2,
-                border: `1px solid ${colors.border.subtle}`,
+                border: `2px solid ${colors.border.subtle}`,
                 position: 'relative',
                 transition: 'all 0.2s ease',
                 '&:hover': {
@@ -1291,13 +1304,36 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                   sx={{
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1,
-                      '&:hover .MuiOutlinedInput-notchedOutline': {
-                        borderColor: isDark
-                          ? theme.palette.primary.main
-                          : theme.palette.primary.main,
+                      backgroundColor: isDark 
+                        ? alpha('#2a2a2a', 0.5) 
+                        : alpha(theme.palette.background.paper, 0.9),
+                      color: colors.text.primary,
+                      '& fieldset': {
+                        borderColor: colors.border.subtle,
                       },
-                      '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                        borderWidth: 1,
+                      '&:hover': {
+                        backgroundColor: isDark 
+                          ? alpha('#2a2a2a', 0.7) 
+                          : theme.palette.background.paper,
+                        '& fieldset': {
+                          borderColor: colors.border.focus,
+                        },
+                      },
+                      '&.Mui-focused': {
+                        backgroundColor: isDark 
+                          ? alpha('#2a2a2a', 0.7) 
+                          : theme.palette.background.paper,
+                        '& fieldset': {
+                          borderColor: colors.border.focus,
+                          borderWidth: 1.5,
+                        },
+                      },
+                    },
+                    '& .MuiInputBase-input': {
+                      color: colors.text.primary,
+                      '&::placeholder': {
+                        color: colors.text.muted,
+                        opacity: 1,
                       },
                     },
                   }}
@@ -1318,13 +1354,36 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                   sx={{
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1,
-                      '&:hover .MuiOutlinedInput-notchedOutline': {
-                        borderColor: isDark
-                          ? theme.palette.primary.main
-                          : theme.palette.primary.main,
+                      backgroundColor: isDark 
+                        ? alpha('#2a2a2a', 0.5) 
+                        : alpha(theme.palette.background.paper, 0.9),
+                      color: colors.text.primary,
+                      '& fieldset': {
+                        borderColor: colors.border.subtle,
                       },
-                      '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                        borderWidth: 1,
+                      '&:hover': {
+                        backgroundColor: isDark 
+                          ? alpha('#2a2a2a', 0.7) 
+                          : theme.palette.background.paper,
+                        '& fieldset': {
+                          borderColor: colors.border.focus,
+                        },
+                      },
+                      '&.Mui-focused': {
+                        backgroundColor: isDark 
+                          ? alpha('#2a2a2a', 0.7) 
+                          : theme.palette.background.paper,
+                        '& fieldset': {
+                          borderColor: colors.border.focus,
+                          borderWidth: 1.5,
+                        },
+                      },
+                    },
+                    '& .MuiInputBase-input': {
+                      color: colors.text.primary,
+                      '&::placeholder': {
+                        color: colors.text.muted,
+                        opacity: 1,
                       },
                     },
                   }}
@@ -1345,13 +1404,36 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                   sx={{
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1,
-                      '&:hover .MuiOutlinedInput-notchedOutline': {
-                        borderColor: isDark
-                          ? theme.palette.primary.main
-                          : theme.palette.primary.main,
+                      backgroundColor: isDark 
+                        ? alpha('#2a2a2a', 0.5) 
+                        : alpha(theme.palette.background.paper, 0.9),
+                      color: colors.text.primary,
+                      '& fieldset': {
+                        borderColor: colors.border.subtle,
                       },
-                      '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                        borderWidth: 1,
+                      '&:hover': {
+                        backgroundColor: isDark 
+                          ? alpha('#2a2a2a', 0.7) 
+                          : theme.palette.background.paper,
+                        '& fieldset': {
+                          borderColor: colors.border.focus,
+                        },
+                      },
+                      '&.Mui-focused': {
+                        backgroundColor: isDark 
+                          ? alpha('#2a2a2a', 0.7) 
+                          : theme.palette.background.paper,
+                        '& fieldset': {
+                          borderColor: colors.border.focus,
+                          borderWidth: 1.5,
+                        },
+                      },
+                    },
+                    '& .MuiInputBase-input': {
+                      color: colors.text.primary,
+                      '&::placeholder': {
+                        color: colors.text.muted,
+                        opacity: 1,
                       },
                     },
                   }}
@@ -1440,23 +1522,24 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
       sx={{
         width,
         minHeight,
-        border: selected ? `2px solid ${colors.primary}` : `1px solid ${colors.border.main}`,
-        borderRadius: 3,
+        border: selected ? `2px solid ${colors.border.focus}` : `2px solid ${colors.border.main}`,
+        borderRadius: 1.5,
         backgroundColor: colors.background.card,
-        boxShadow: selected
-          ? `0 0 0 4px ${alpha(colors.primary, 0.1)}, 0 8px 25px ${alpha(isDark ? '#000' : colors.primary, isDark ? 0.4 : 0.15)}`
-          : `0 4px 6px ${alpha(isDark ? '#000' : '#0f172a', isDark ? 0.3 : 0.05)}, 0 1px 3px ${alpha(isDark ? '#000' : '#0f172a', isDark ? 0.2 : 0.1)}`,
+        boxShadow: selected 
+          ? (isDark ? `0 4px 12px rgba(0, 0, 0, 0.3)` : `0 4px 12px rgba(0, 0, 0, 0.1)`)
+          : isDark 
+            ? `0 2px 8px rgba(0, 0, 0, 0.15)`
+            : `0 2px 8px rgba(0, 0, 0, 0.08)`,
         cursor: 'pointer',
-        transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+        transition: 'all 0.2s ease',
         position: 'relative',
         overflow: 'visible',
-        backdropFilter: isDark ? 'blur(10px)' : 'none',
         '&:hover': {
-          transform: 'translateY(-2px)',
-          boxShadow: selected
-            ? `0 0 0 4px ${alpha(colors.primary, 0.15)}, 0 12px 35px ${alpha(isDark ? '#000' : colors.primary, isDark ? 0.5 : 0.2)}`
-            : `0 8px 25px ${alpha(isDark ? '#000' : '#0f172a', isDark ? 0.4 : 0.1)}, 0 4px 6px ${alpha(isDark ? '#000' : '#0f172a', isDark ? 0.3 : 0.05)}`,
-          borderColor: selected ? colors.primary : colors.border.focus,
+          borderColor: colors.border.focus,
+          borderWidth: '2.5px',
+          boxShadow: isDark 
+            ? `0 4px 12px rgba(0, 0, 0, 0.25)`
+            : `0 4px 12px rgba(0, 0, 0, 0.12)`,
         },
       }}
       onClick={(e) => {
@@ -1467,16 +1550,14 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
         e.stopPropagation();
       }}
     >
-      {/* Header */}
+      {/* Minimal Header */}
       <Box
         sx={{
-          p: 2.5,
-          borderBottom: `1px solid ${colors.border.subtle}`,
-          // background: isDark
-          //   ? `linear-gradient(135deg, ${alpha('#2a2a2a', 0.8)} 0%, ${alpha('#1e1e1e', 0.9)} 100%)`
-          //   : `linear-gradient(135deg, ${alpha('#f8fafc', 0.8)} 0%, ${alpha('#ffffff', 0.9)} 100%)`,
-          borderRadius: '12px 12px 0 0',
-          position: 'relative',
+          p: 2,
+          borderBottom: `1px solid ${colors.border.main}`,
+          backgroundColor: isDark 
+            ? alpha('#1f1f1f', 0.5) 
+            : alpha(theme.palette.background.default, 0.5),
         }}
       >
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -1573,7 +1654,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 p: 2,
                 backgroundColor: colors.background.section,
                 borderRadius: 2,
-                border: `1px solid ${colors.border.subtle}`,
+                border: `2px solid ${colors.border.subtle}`,
                 transition: 'all 0.2s ease',
                 minHeight: 45,
                 '&:hover': {
@@ -1631,7 +1712,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 p: 2,
                 backgroundColor: colors.background.section,
                 borderRadius: 2,
-                border: `1px solid ${colors.border.subtle}`,
+                border: `2px solid ${colors.border.subtle}`,
                 transition: 'all 0.2s ease',
                 minHeight: 45,
                 '&:hover': {
@@ -1699,7 +1780,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 p: 2,
                 backgroundColor: colors.background.section,
                 borderRadius: 2,
-                border: `1px solid ${colors.border.subtle}`,
+                border: `2px solid ${colors.border.subtle}`,
                 transition: 'all 0.2s ease',
                 minHeight: 45,
                 position: 'relative',
@@ -1838,7 +1919,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 p: 2,
                 backgroundColor: colors.background.section,
                 borderRadius: 2,
-                border: `1px solid ${colors.border.subtle}`,
+                border: `2px solid ${colors.border.subtle}`,
                 transition: 'all 0.2s ease',
                 '&:hover': {
                   backgroundColor: colors.background.hover,
@@ -2017,7 +2098,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 p: 2,
                 backgroundColor: colors.background.section,
                 borderRadius: 2,
-                border: `1px solid ${colors.border.subtle}`,
+                border: `2px solid ${colors.border.subtle}`,
                 transition: 'all 0.2s ease',
                 minHeight: 45,
                 '&:hover': {
@@ -2065,7 +2146,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 p: 2,
                 backgroundColor: colors.background.section,
                 borderRadius: 2,
-                border: `1px solid ${colors.border.subtle}`,
+                border: `2px solid ${colors.border.subtle}`,
                 transition: 'all 0.2s ease',
                 minHeight: 45,
                 '&:hover': {
@@ -2123,7 +2204,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 p: 2,
                 backgroundColor: colors.background.section,
                 borderRadius: 2,
-                border: `1px solid ${colors.border.subtle}`,
+                border: `2px solid ${colors.border.subtle}`,
                 transition: 'all 0.2s ease',
                 minHeight: 45,
                 '&:hover': {
@@ -2178,7 +2259,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 p: 2,
                 backgroundColor: colors.background.section,
                 borderRadius: 2,
-                border: `1px solid ${colors.border.subtle}`,
+                border: `2px solid ${colors.border.subtle}`,
                 transition: 'all 0.2s ease',
                 minHeight: 45,
                 '&:hover': {

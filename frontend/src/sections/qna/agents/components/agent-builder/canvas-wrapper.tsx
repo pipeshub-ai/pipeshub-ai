@@ -1,6 +1,6 @@
 // src/sections/qna/agents/components/flow-builder-canvas-wrapper.tsx
-import React from 'react';
-import { Box } from '@mui/material';
+import React, { memo } from 'react';
+import { Box, useTheme, alpha } from '@mui/material';
 import FlowBuilderSidebar from './sidebar';
 import AgentBuilderCanvas from './canvas';
 import type { AgentBuilderCanvasWrapperProps } from '../../types/agent';
@@ -27,15 +27,20 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
   onNodeEdit,
   onNodeDelete,
   onError,
-}) => (
-  <Box
-    sx={{
-      flex: 1,
-      display: 'flex',
-      overflow: 'hidden',
-      minHeight: 0,
-    }}
-  >
+}) => {
+  const theme = useTheme();
+  const isDark = theme.palette.mode === 'dark';
+
+  return (
+    <Box
+      sx={{
+        flex: 1,
+        display: 'flex',
+        overflow: 'hidden',
+        minHeight: 0,
+        backgroundColor: theme.palette.background.default,
+      }}
+    >
     <FlowBuilderSidebar
       sidebarOpen={sidebarOpen}
       nodeTemplates={nodeTemplates}
@@ -68,6 +73,7 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
       onError={onError}
     />
   </Box>
-);
+  );
+};
 
-export default AgentBuilderCanvasWrapper;
+export default memo(AgentBuilderCanvasWrapper);

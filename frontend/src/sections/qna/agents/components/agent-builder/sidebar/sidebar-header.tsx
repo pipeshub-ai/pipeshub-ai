@@ -22,6 +22,7 @@ import {
   IconButton,
   InputAdornment,
   useTheme,
+  alpha,
 } from '@mui/material';
 import { Icon } from '@iconify/react';
 import { UI_ICONS, CATEGORY_ICONS } from './sidebar.icons';
@@ -39,38 +40,20 @@ const SidebarHeaderComponent: React.FC<SidebarHeaderProps> = ({
 }) => {
   const theme = useTheme();
 
+  const isDark = theme.palette.mode === 'dark';
+
   return (
     <Box
       sx={{
-        p: SPACING.XL,
+        p: 2.5,
         borderBottom: `1px solid ${theme.palette.divider}`,
         backgroundColor: theme.palette.background.paper,
+        position: 'sticky',
+        top: 0,
+        zIndex: 10,
       }}
     >
-      {/* Title Row */}
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: SPACING.LG, mb: SPACING.XL }}>
-        <Box sx={getIconContainerStyles(ICON_SIZES.XXL)}>
-          <Icon
-            icon={CATEGORY_ICONS.bundle}
-            width={ICON_SIZES.XL}
-            height={ICON_SIZES.XL}
-            style={{ color: theme.palette.text.primary }}
-          />
-        </Box>
-        <Typography
-          variant="h6"
-          sx={{
-            fontWeight: 600,
-            color: theme.palette.text.primary,
-            fontSize: '1rem',
-            flex: 1,
-          }}
-        >
-          Components
-        </Typography>
-      </Box>
-
-      {/* Search Field */}
+      {/* Minimal Search Field */}
       <TextField
         fullWidth
         size="small"
@@ -86,7 +69,10 @@ const SidebarHeaderComponent: React.FC<SidebarHeaderProps> = ({
               <Icon
                 icon={UI_ICONS.search}
                 fontSize={ICON_SIZES.MD}
-                style={{ color: theme.palette.text.secondary }}
+                style={{ 
+                  color: theme.palette.text.secondary,
+                  transition: 'color 0.2s ease',
+                }}
               />
             </InputAdornment>
           ),
@@ -99,6 +85,11 @@ const SidebarHeaderComponent: React.FC<SidebarHeaderProps> = ({
                 sx={{
                   p: SPACING.XS,
                   color: theme.palette.text.secondary,
+                  transition: 'all 0.2s ease',
+                  '&:hover': {
+                    color: theme.palette.text.primary,
+                    backgroundColor: alpha(theme.palette.action.hover, 0.5),
+                  },
                 }}
               >
                 <Icon icon={UI_ICONS.clear} fontSize={ICON_SIZES.SM} />
@@ -106,24 +97,37 @@ const SidebarHeaderComponent: React.FC<SidebarHeaderProps> = ({
             </InputAdornment>
           ),
         }}
-        sx={getSearchFieldStyles(theme)}
+        sx={{
+          ...getSearchFieldStyles(theme),
+          '& .MuiOutlinedInput-root': {
+            backgroundColor: isDark ? alpha(theme.palette.background.paper, 0.5) : theme.palette.background.paper,
+            borderRadius: 1,
+            transition: 'all 0.2s ease',
+            '& fieldset': {
+              borderColor: theme.palette.divider,
+              borderWidth: '1px',
+            },
+            '&:hover': {
+              backgroundColor: isDark ? alpha(theme.palette.background.paper, 0.7) : theme.palette.background.paper,
+              '& fieldset': {
+                borderColor: theme.palette.divider,
+              },
+            },
+            '&.Mui-focused': {
+              backgroundColor: isDark ? theme.palette.background.paper : theme.palette.background.paper,
+              '& fieldset': {
+                borderColor: theme.palette.text.secondary,
+                borderWidth: '1px',
+              },
+            },
+          },
+          '& .MuiInputBase-input': {
+            fontSize: '0.8125rem',
+            fontWeight: 400,
+            padding: '8px 12px',
+          },
+        }}
       />
-
-      {/* Search Query Display */}
-      {searchQuery && (
-        <Typography
-          variant="caption"
-          sx={{
-            mt: SPACING.MD,
-            display: 'block',
-            fontSize: '0.7rem',
-            color: theme.palette.text.secondary,
-            opacity: 0.8,
-          }}
-        >
-          /{searchQuery}
-        </Typography>
-      )}
     </Box>
   );
 };

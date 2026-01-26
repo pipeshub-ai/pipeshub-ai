@@ -87,20 +87,34 @@ class Retrieval:
     )
     def search_internal_knowledge(
         self,
-        query: str,
+        query: Optional[str] = None,
+        text: Optional[str] = None,  # Accept 'text' as alias for 'query' (LLM sometimes uses this)
         limit: Optional[int] = None,
-        filters: Optional[Dict[str, Any]] = None
+        top_k: Optional[int] = None,  # Accept 'top_k' as alias for 'limit' (LLM sometimes uses this)
+        filters: Optional[Dict[str, Any]] = None,
+        **kwargs  # Accept any other args LLM might pass (e.g., context, sources)
     ) -> str:
         """Search internal knowledge bases and return formatted results.
 
         Args:
             query: The search query
+            text: Alternative parameter name for query (LLM sometimes uses 'text' instead)
             limit: Maximum number of results (defaults to state limit or 50)
+            top_k: Alias for limit (LLM sometimes uses 'top_k' instead)
             filters: Optional filters for apps/kb
 
         Returns:
             Formatted string with search results ready for LLM consumption
         """
+        # Accept both 'query' and 'text' parameters (LLM sometimes uses different names)
+        search_query = query or text
+
+        if not search_query:
+            return json.dumps({
+                "status": "error",
+                "message": "No search query provided (expected 'query' or 'text' parameter)"
+            })
+
         if not self.state:
             return json.dumps({
                 "status": "error",
@@ -111,7 +125,7 @@ class Retrieval:
 
         try:
             logger_instance = self.state.get("logger", logger)
-            logger_instance.info(f"🔍 Retrieval tool called with query: {query[:100]}")
+            logger_instance.info(f"🔍 Retrieval tool called with query: {search_query[:100]}")
 
             # Get services from state
             retrieval_service = self.state.get("retrieval_service")
@@ -128,7 +142,8 @@ class Retrieval:
             # Get configuration
             org_id = self.state.get("org_id", "")
             user_id = self.state.get("user_id", "")
-            base_limit = limit or self.state.get("limit", 50)
+            # Accept both 'limit' and 'top_k' (LLM uses different names)
+            base_limit = limit or top_k or self.state.get("limit", 50)
             adjusted_limit = min(base_limit, 100)  # Cap at 100
 
             # Use provided filters or state filters
@@ -137,7 +152,7 @@ class Retrieval:
             # Execute retrieval (run async operation synchronously)
             logger_instance.debug(f"Executing retrieval with limit: {adjusted_limit}")
             results = run_async(retrieval_service.search_with_filters(
-                queries=[query],
+                queries=[search_query],
                 org_id=org_id,
                 user_id=user_id,
                 limit=adjusted_limit,
@@ -219,7 +234,7 @@ class Retrieval:
             if should_rerank and reranker_service:
                 logger_instance.debug("Re-ranking results")
                 final_results = run_async(reranker_service.rerank(
-                    query=query,
+                    query=search_query,
                     documents=flattened_results,
                     top_k=adjusted_limit,
                 ))
@@ -278,7 +293,7 @@ class Retrieval:
                     final_results,
                     virtual_record_id_to_result,
                     "",  # user_data (not needed for agent)
-                    query,  # query
+                    search_query,  # query
                     logger_instance,
                     mode="json"  # Use JSON mode for proper formatting
                 )
@@ -335,7 +350,7 @@ class Retrieval:
                 final_results=final_results,  # All results for final response
                 virtual_record_id_to_result=virtual_record_id_to_result,
                 metadata={
-                    "query": query,
+                    "query": search_query,
                     "limit": limit,
                     "result_count": len(final_results),
                     "record_count": len(virtual_record_id_to_result)
