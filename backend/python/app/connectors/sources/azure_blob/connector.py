@@ -916,6 +916,38 @@ class AzureBlobConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"Error in _remove_old_parent_relationship: {e}")
 
+    def _get_azure_blob_revision_id(self, blob: Dict) -> str:
+        """
+        Determines a stable revision ID for an Azure Blob object.
+
+        It prioritizes the content_md5 hash as a content fingerprint, which is stable
+        across renames/copies. If not available, it falls back to the etag.
+
+        Note: Unlike S3's ETag (which is content-based), Azure Blob's etag changes on
+        every modification including metadata changes and renames. Therefore, content_md5
+        must be used for reliable move/rename detection.
+
+        Args:
+            blob: Azure Blob metadata dictionary
+
+        Returns:
+            Revision ID string (content_md5 or etag)
+        """
+        content_md5 = blob.get("content_md5")
+        if content_md5:
+            if isinstance(content_md5, (bytes, bytearray)):
+                return base64.b64encode(bytes(content_md5)).decode('utf-8')
+            elif isinstance(content_md5, str):
+                return content_md5
+
+        # Fall back to etag if no MD5 available
+        # Note: etag-based move detection won't work as Azure etag changes on copy
+        etag = blob.get("etag")
+        if etag:
+            return etag.strip('"')
+
+        return ""
+
     async def _process_azure_blob(
         self, blob: Dict, container_name: str
     ) -> Tuple[Optional[FileRecord], List[Permission]]:
@@ -965,10 +997,13 @@ class AzureBlobConnector(BaseConnector):
                 created_timestamp_ms = timestamp_ms
 
             external_record_id = f"{container_name}/{normalized_name}"
-            # Use etag as revision ID
-            current_etag = blob.get("etag", "").strip('"') if blob.get("etag") else ""
 
-            # Check for existing record
+            # Use a stable "content fingerprint" first (similar to GCS Md5Hash/S3 ETag usage).
+            # - `content_md5` changes when content changes and is stable across renames/copies when content is identical
+            # - fall back to etag when no md5 is available (note: etag-based move detection won't work in Azure)
+            current_revision_id = self._get_azure_blob_revision_id(blob)
+
+            # PRIMARY: Try lookup by path (externalRecordId)
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
                     connector_id=self.connector_id, external_id=external_record_id
@@ -977,33 +1012,43 @@ class AzureBlobConnector(BaseConnector):
             is_move = False
 
             if existing_record:
-                stored_etag = existing_record.external_revision_id or ""
-                if current_etag and stored_etag and current_etag == stored_etag:
+                stored_revision = existing_record.external_revision_id or ""
+                if current_revision_id and stored_revision and current_revision_id == stored_revision:
                     self.logger.debug(
-                        f"Skipping {normalized_name}: revision unchanged"
+                        f"Skipping {normalized_name}: externalRecordId and externalRevisionId unchanged"
                     )
                     return None, []
 
-                if current_etag != stored_etag:
+                # Content changed or missing revision - sync properly from Azure Blob
+                if current_revision_id and stored_revision and current_revision_id != stored_revision:
                     self.logger.info(
-                        f"Content change detected: {normalized_name}"
+                        f"Content change detected: {normalized_name} - externalRevisionId changed from {stored_revision} to {current_revision_id}"
                     )
-            elif current_etag:
-                # Try lookup by revision ID for move detection
+                elif not current_revision_id or not stored_revision:
+                    if not current_revision_id:
+                        self.logger.warning(
+                            f"Current revision missing for {normalized_name}, processing record"
+                        )
+                    if not stored_revision:
+                        self.logger.debug(
+                            f"Stored revision missing for {normalized_name}, processing record"
+                        )
+            elif current_revision_id:
+                # Not found by path - FALLBACK: try revision-based lookup (for move/rename detection)
                 async with self.data_store_provider.transaction() as tx_store:
                     existing_record = await tx_store.get_record_by_external_revision_id(
-                        connector_id=self.connector_id, external_revision_id=current_etag
+                        connector_id=self.connector_id, external_revision_id=current_revision_id
                     )
 
                 if existing_record:
                     is_move = True
                     self.logger.info(
-                        f"Move/rename detected: {normalized_name}"
+                        f"Move/rename detected: {normalized_name} - file moved from {existing_record.external_record_id} to {external_record_id}"
                     )
                 else:
                     self.logger.debug(f"New document: {normalized_name}")
             else:
-                self.logger.debug(f"New document: {normalized_name}")
+                self.logger.debug(f"New document: {normalized_name} (no revision available)")
 
             # Prepare record data
             record_type = RecordType.FOLDER if is_folder else RecordType.FILE
@@ -1029,7 +1074,7 @@ class AzureBlobConnector(BaseConnector):
             else:
                 version = existing_record.version + 1
 
-            # Get content MD5 hash
+            # Get content MD5 hash for md5_hash field
             content_md5 = blob.get("content_md5")
             if content_md5:
                 if isinstance(content_md5, (bytes, bytearray)):
@@ -1040,6 +1085,9 @@ class AzureBlobConnector(BaseConnector):
                     content_md5 = str(content_md5)
                 # If it's already a string, use it as-is
 
+            # Get raw etag for the etag field (separate from revision ID)
+            raw_etag = blob.get("etag", "").strip('"') if blob.get("etag") else ""
+
             file_record = FileRecord(
                 id=record_id,
                 record_name=record_name,
@@ -1047,7 +1095,7 @@ class AzureBlobConnector(BaseConnector):
                 record_group_type=RecordGroupType.BUCKET.value,
                 external_record_group_id=container_name,
                 external_record_id=external_record_id,
-                external_revision_id=current_etag,
+                external_revision_id=current_revision_id,
                 version=version,
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
@@ -1067,7 +1115,7 @@ class AzureBlobConnector(BaseConnector):
                 path=normalized_name,
                 mime_type=mime_type,
                 md5_hash=content_md5,
-                etag=current_etag,
+                etag=raw_etag,
             )
 
             if hasattr(self, 'indexing_filters') and self.indexing_filters:
