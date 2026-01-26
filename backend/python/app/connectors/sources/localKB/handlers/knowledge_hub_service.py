@@ -1042,6 +1042,7 @@ class KnowledgeHubService:
             webUrl=doc.get('webUrl'),
             hasChildren=doc.get('hasChildren', False),
             previewRenderable=doc.get('previewRenderable'),
+            sharingStatus=doc.get('sharingStatus'),
         )
 
         return item

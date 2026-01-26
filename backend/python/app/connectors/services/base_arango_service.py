@@ -1545,6 +1545,12 @@ class BaseArangoService:
                 )''' if include_connector_records else '[]'
             }
 
+            // Combine all connector/app record sources
+            // A record can appear in multiple permission paths:
+            // - Direct user permission
+            // - Group/role permission
+            // - Organization permission
+            // - Record group permissions (direct, nested, inherited)
             LET allConnectorRecordsNewPermission = UNION_DISTINCT(
                 connectorRecordsNewPermission,
                 groupConnectorRecordsNewPermission,
@@ -1554,6 +1560,9 @@ class BaseArangoService:
                 inheritedRecordGroupConnectorRecords,
                 directUserToRecordGroupRecords
             )
+            // Deduplicate connector/app records by record key
+            // Even if a record appears via multiple permission paths with different permission metadata,
+            // it should only appear once in the final result
             LET allConnectorRecordsDistinct = (
                 FOR item IN allConnectorRecordsNewPermission
                     COLLECT recordKey = item.record._key
@@ -1561,15 +1570,27 @@ class BaseArangoService:
                     RETURN FIRST(groups[*].item)
             )
 
-            //LET mergeRecords = APPEND(kbRecords, connectorRecords)
-            //LET mergeRecordsNewPermission = APPEND(mergeRecords, connectorRecordsNewPermission)
-            //LET allRecords = APPEND(mergeRecords, allConnectorRecordsDistinct)
-            LET allRecords = APPEND(kbRecords, allConnectorRecordsDistinct)
+            // Deduplicate KB records (a record can appear in multiple KBs)
+            LET kbRecordsDistinct = (
+                FOR item IN kbRecords
+                    COLLECT recordKey = item.record._key
+                    INTO groups
+                    RETURN FIRST(groups[*].item)
+            )
 
+            // Combine KB and connector records
+            // Note: These are mutually exclusive (KB records have origin="UPLOAD", connector records have origin="CONNECTOR")
+            // So no deduplication needed when combining them
+            LET allRecords = APPEND(kbRecordsDistinct, allConnectorRecordsDistinct)
+
+            // Sort with secondary key for deterministic ordering
+            // When sort_by values are equal, use record._key as tiebreaker
+            // For string fields (recordName), use case-insensitive sorting for consistent ordering across pages
             LET sortedRecords = (
                 FOR item IN allRecords
                     LET record = item.record
-                    SORT record.{sort_by} {sort_order.upper()}
+                    {f'LET sortValue = LOWER(record.{sort_by})' if sort_by == "recordName" else f'LET sortValue = record.{sort_by}'}
+                    SORT sortValue {sort_order.upper()}, record._key ASC
                     RETURN item
             )
 
@@ -1721,8 +1742,9 @@ class BaseArangoService:
                     RETURN access
             )
 
-            LET kbCount = {
-                f'''LENGTH(
+            // Get unique KB record keys (deduplicate records that appear in multiple KBs)
+            LET kbRecordKeys = {
+                f'''UNIQUE(
                     FOR access IN filteredKbAccess
                         LET kb = access.kb_doc
                         FOR belongsEdge IN @@belongs_to
@@ -1750,8 +1772,8 @@ class BaseArangoService:
 
                             FILTER isValidRecord
                             {record_filter}
-                            RETURN 1
-                )''' if include_kb_records else '0'
+                            RETURN record._key
+                )''' if include_kb_records else '[]'
             }
 
             LET connectorKeysNewPermission = {
@@ -1932,7 +1954,7 @@ class BaseArangoService:
                 )''' if include_connector_records else '[]'
             }
 
-            // Combine all keys and count unique ones
+            // Combine all connector record keys and deduplicate
             LET allNewPermissionKeys = UNION_DISTINCT(
                 connectorKeysNewPermission,
                 groupConnectorKeysNewPermission,
@@ -1943,8 +1965,13 @@ class BaseArangoService:
             )
             LET uniqueNewPermissionCount = LENGTH(UNIQUE(allNewPermissionKeys))
 
-            // RETURN kbCount + connectorCount + uniqueNewPermissionCount
-            RETURN kbCount + uniqueNewPermissionCount
+            // Combine KB and connector record keys
+            // Note: These are mutually exclusive (KB records have origin="UPLOAD", connector records have origin="CONNECTOR")
+            // So we can just add the counts directly
+            LET kbCount = LENGTH(kbRecordKeys)
+            LET totalCount = kbCount + uniqueNewPermissionCount
+
+            RETURN totalCount
             """
 
             # ===== FILTERS QUERY (Fixed) =====
