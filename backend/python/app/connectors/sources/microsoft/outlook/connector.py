@@ -58,6 +58,8 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
 )
+from kiota_abstractions.base_request_configuration import RequestConfiguration
+from msgraph.generated.users.item.mail_folders.item.messages.messages_request_builder import MessagesRequestBuilder
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.microsoft.microsoft import (
     GraphMode,
@@ -1682,7 +1684,7 @@ class OutlookConnector(BaseConnector):
             return []
 
     async def _process_single_folder_messages(self, org_id: str, user: AppUser, folder: Dict) -> tuple[int, List[Record]]:
-        """Process messages using batch processing with automatic pagination."""
+        """Process messages using batch processing with gap-fill optimization."""
         try:
             user_id = user.source_user_id
             folder_id = self._safe_get_attr(folder, 'id')
@@ -1695,54 +1697,90 @@ class OutlookConnector(BaseConnector):
             sync_point = await self.email_delta_sync_point.read_sync_point(sync_point_key)
             delta_link = sync_point.get('delta_link') if sync_point else None
 
-            # Get messages for this folder using delta sync
+            # --- OPTIMIZATION: Gap Fill Logic ---
+            
+            # 1. Determine Current Filter (e.g., Dec 1, 2025)
+            current_filter_start_ts = 0
+            received_date_filter = self.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+            current_filter_iso = None
+            
+            if received_date_filter and not received_date_filter.is_empty():
+                current_filter_iso, _ = received_date_filter.get_datetime_iso()
+                if current_filter_iso:
+                    dt = datetime.fromisoformat(current_filter_iso.replace('Z', '+00:00'))
+                    current_filter_start_ts = int(dt.timestamp())
+
+            # 2. Retrieve Stored Filter (e.g., Jan 1, 2026)
+            stored_filter_start_ts = sync_point.get('filter_start_ts') if sync_point else None
+            
+            processed_count = 0
+            mail_records = []
+
+            # 3. Detect Gap: If new filter is OLDER than stored filter, fill the gap
+            # (Use 60s buffer to ignore minor clock differences)
+            if delta_link and stored_filter_start_ts and current_filter_start_ts < (stored_filter_start_ts - 60):
+                self.logger.info(
+                    f"Filter expanded for '{folder_name}'. "
+                    f"Filling gap: {datetime.fromtimestamp(current_filter_start_ts, timezone.utc)} to "
+                    f"{datetime.fromtimestamp(stored_filter_start_ts, timezone.utc)}"
+                )
+                
+                try:
+                    # Fetch ONLY the missing historical emails
+                    gap_count, gap_records = await self._fetch_historical_gap(
+                        user_id, folder_id, folder_name, 
+                        org_id, user, 
+                        start_ts=current_filter_start_ts, 
+                        end_ts=stored_filter_start_ts
+                    )
+                    processed_count += gap_count
+                    mail_records.extend(gap_records)
+                except Exception as e:
+                    self.logger.error(f"Gap fill failed for '{folder_name}' (continuing with delta): {e}")
+
+            # --- END OPTIMIZATION ---
+
+            # 4. Standard Delta Sync (Fetch new emails since last run)
             result = await self._get_all_messages_delta_external(user_id, folder_id, delta_link)
             messages = result['messages']
 
-            self.logger.info(f"Retrieved {len(messages)} total message changes from folder '{folder_name}' for user {user.email}")
+            self.logger.info(f"Retrieved {len(messages)} new message changes from folder '{folder_name}'")
 
-            if not messages:
-                self.logger.info(f"No messages to process in folder '{folder_name}'")
-                return 0, []
+            if messages:
+                # Collect all updates
+                all_updates = []
+                for message in messages:
+                    record_updates = await self._process_single_message(org_id, user, message, folder_id, folder_name)
+                    all_updates.extend(record_updates)
 
-            # Collect all updates first for thread processing
-            all_updates = []
-            processed_count = 0
-            mail_records = []  # Collect mail records for thread processing
+                # Process records in batches
+                batch_records = []
+                batch_size = 50
 
-            for message in messages:
-                record_updates = await self._process_single_message(org_id, user, message, folder_id, folder_name)
-                all_updates.extend(record_updates)
+                for update in all_updates:
+                    if update and update.record:
+                        permissions = update.new_permissions or []
+                        batch_records.append((update.record, permissions))
 
-            # Process records in batches
-            batch_records = []
-            batch_size = 50
+                        if hasattr(update.record, 'record_type') and update.record.record_type == RecordType.MAIL:
+                            mail_records.append(update.record)
 
-            for update in all_updates:
-                if update and update.record:
-                    permissions = update.new_permissions or []
-                    batch_records.append((update.record, permissions))
+                    if len(batch_records) >= batch_size:
+                        await self.data_entities_processor.on_new_records(batch_records)
+                        processed_count += len(batch_records)
+                        batch_records = []
 
-                    # Collect mail records (not attachments) for thread processing
-                    if hasattr(update.record, 'record_type') and update.record.record_type == RecordType.MAIL:
-                        mail_records.append(update.record)
-
-                if len(batch_records) >= batch_size:
+                if batch_records:
                     await self.data_entities_processor.on_new_records(batch_records)
                     processed_count += len(batch_records)
-                    batch_records = []
 
-            # Process remaining records
-            if batch_records:
-                await self.data_entities_processor.on_new_records(batch_records)
-                processed_count += len(batch_records)
-
-            # Update folder-specific sync point only if all batches were processed successfully
+            # 5. Update Sync Point (Crucial: Save the NEW filter_start_ts)
             sync_point_data = {
                 'delta_link': result.get('delta_link'),
                 'last_sync_timestamp': int(datetime.now(timezone.utc).timestamp() * 1000),
                 'folder_id': folder_id,
-                'folder_name': folder_name
+                'folder_name': folder_name,
+                'filter_start_ts': current_filter_start_ts  # <--- Saving this enables the optimization next time
             }
 
             await self.email_delta_sync_point.update_sync_point(
@@ -1751,9 +1789,7 @@ class OutlookConnector(BaseConnector):
                 encrypt_fields=['delta_link']
             )
 
-            # Log final summary
-            self.logger.info(f"Folder '{folder_name}' completed: {processed_count} records processed from {len(messages)} messages")
-
+            self.logger.info(f"Folder '{folder_name}' completed: {processed_count} records processed")
             return processed_count, mail_records
 
         except Exception as e:
@@ -3064,6 +3100,105 @@ class OutlookConnector(BaseConnector):
         except Exception:
             return ""
 
+
+    async def _fetch_historical_gap(
+        self, user_id: str, folder_id: str, folder_name: str, org_id: str, user: AppUser, start_ts: int, end_ts: int
+    ) -> tuple[int, List[Record]]:
+        """
+        Fetches emails specifically between start_ts and end_ts using standard filtering (Gap Fill).
+        """
+        # Format timestamps to ISO for Graph API
+        start_iso = datetime.fromtimestamp(start_ts, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        end_iso = datetime.fromtimestamp(end_ts, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        
+        # Construct filter: >= start AND < end
+        gap_filter = f"receivedDateTime ge {start_iso} and receivedDateTime lt {end_iso}"
+        
+        all_gap_records = []
+        processed_count = 0
+        next_link = None
+        
+        self.logger.info(f"Gap Query: {gap_filter}")
+
+        while True:
+            # Fetch page of historical messages
+            result = await self._get_historical_messages_page(user_id, folder_id, gap_filter, next_link)
+            messages = result.get('messages', [])
+            next_link = result.get('next_link')
+            
+            if not messages:
+                break
+                
+            # Reuse existing processing logic
+            all_updates = []
+            for message in messages:
+                record_updates = await self._process_single_message(org_id, user, message, folder_id, folder_name)
+                all_updates.extend(record_updates)
+                
+            # Batch save
+            batch_records = []
+            for update in all_updates:
+                if update and update.record:
+                    batch_records.append((update.record, update.new_permissions or []))
+                    if hasattr(update.record, 'record_type') and update.record.record_type == RecordType.MAIL:
+                        all_gap_records.append(update.record)
+            
+            if batch_records:
+                await self.data_entities_processor.on_new_records(batch_records)
+                processed_count += len(batch_records)
+            
+            if not next_link:
+                break
+                
+        return processed_count, all_gap_records
+
+    async def _get_historical_messages_page(self, user_id: str, folder_id: str, filter_str: str, next_link: Optional[str] = None) -> Dict:
+        """
+        Direct API call to fetch messages with a specific filter (bypassing delta logic).
+        """
+        try:
+            # If we have a next_link, use it directly
+            if next_link:
+                # We use the raw client adapter to follow the next_link
+                # This assumes self.external_client.client exists (standard in this codebase)
+                from msgraph.generated.models.message_collection_response import MessageCollectionResponse
+                
+                request_info = self.external_client.client.request_adapter.request_info_factory.create_get_request_information(next_link)
+                response = await self.external_client.client.request_adapter.send_async(
+                    request_info, 
+                    MessageCollectionResponse, 
+                    {}
+                )
+            else:
+                # Initial request using the Request Builder
+                query_params = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
+                    filter=filter_str,
+                    select=['id', 'subject', 'receivedDateTime', 'from', 'toRecipients', 'ccRecipients', 'bccRecipients', 'body', 'hasAttachments', 'conversationId', 'internetMessageId', 'conversationIndex', 'webLink', 'createdDateTime', 'lastModifiedDateTime', 'eTag'],
+                    top=100,
+                    orderby=['receivedDateTime DESC']
+                )
+                
+                request_config = RequestConfiguration(query_parameters=query_params)
+                
+                response = await self.external_client.client.users.by_user_id(user_id).mail_folders.by_folder_id(folder_id).messages.get(
+                    request_configuration=request_config
+                )
+
+            # Parse response
+            messages = response.value if response and response.value else []
+            new_next_link = response.odata_next_link if response and response.odata_next_link else None
+            
+            # Convert objects to dicts if necessary (depends on how _process_single_message expects them)
+            # The existing code seems to handle objects or dicts via _safe_get_attr, so we pass objects directly.
+            
+            return {
+                'messages': messages,
+                'next_link': new_next_link
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error fetching historical page: {e}")
+            return {'messages': [], 'next_link': None}
 
     @classmethod
     async def create_connector(cls, logger: Logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> 'OutlookConnector':
