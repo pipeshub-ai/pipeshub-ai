@@ -61,13 +61,10 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
 )
-
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.microsoft.microsoft import (
     GraphMode,
     MSGraphClientWithClientIdSecretConfig,
-)
-from app.sources.client.microsoft.microsoft import (
     MSGraphClient as ExternalMSGraphClient,
 )
 from app.sources.external.microsoft.outlook.outlook import (
