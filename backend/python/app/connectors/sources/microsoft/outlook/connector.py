@@ -64,8 +64,8 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.microsoft.microsoft import (
     GraphMode,
-    MSGraphClientWithClientIdSecretConfig,
     MSGraphClient as ExternalMSGraphClient,
+    MSGraphClientWithClientIdSecretConfig,
 )
 from app.sources.external.microsoft.outlook.outlook import (
     OutlookCalendarContactsDataSource,
