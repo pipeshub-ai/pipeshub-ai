@@ -8,6 +8,9 @@ from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
 from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
+from kiota_abstractions.base_request_configuration import RequestConfiguration
+from msgraph.generated.models.message_collection_response import MessageCollectionResponse
+from msgraph.generated.users.item.mail_folders.item.messages.messages_request_builder import MessagesRequestBuilder
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -58,8 +61,7 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
 )
-from kiota_abstractions.base_request_configuration import RequestConfiguration
-from msgraph.generated.users.item.mail_folders.item.messages.messages_request_builder import MessagesRequestBuilder
+
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.microsoft.microsoft import (
     GraphMode,
@@ -1699,12 +1701,12 @@ class OutlookConnector(BaseConnector):
             delta_link = sync_point.get('delta_link') if sync_point else None
 
             # --- OPTIMIZATION: Gap Fill Logic ---
-            
+
             # 1. Determine Current Filter (Fix: Initialize to None)
             current_filter_start_ts = None
             received_date_filter = self.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
             current_filter_iso = None
-            
+
             if received_date_filter and not received_date_filter.is_empty():
                 current_filter_iso, _ = received_date_filter.get_datetime_iso()
                 if current_filter_iso:
@@ -1716,16 +1718,16 @@ class OutlookConnector(BaseConnector):
 
             # 2. Retrieve Stored Filter
             stored_filter_start_ts = sync_point.get('filter_start_ts') if sync_point else None
-            
+
             processed_count = 0
             mail_records = []
 
             # 3. Detect Gap: Only run if we have explicit filters for both current and stored state
             # Fix: Check for None to prevent unintended full history fetch
             should_fill_gap = (
-                delta_link and 
-                stored_filter_start_ts is not None and 
-                current_filter_start_ts is not None and 
+                delta_link and
+                stored_filter_start_ts is not None and
+                current_filter_start_ts is not None and
                 current_filter_start_ts < (stored_filter_start_ts - FILTER_TIMESTAMP_BUFFER_SECONDS)
             )
 
@@ -1735,13 +1737,13 @@ class OutlookConnector(BaseConnector):
                     f"Filling gap: {datetime.fromtimestamp(current_filter_start_ts, timezone.utc)} to "
                     f"{datetime.fromtimestamp(stored_filter_start_ts, timezone.utc)}"
                 )
-                
+
                 try:
                     # Fetch ONLY the missing historical emails
                     gap_count, gap_records = await self._fetch_historical_gap(
-                        user_id, folder_id, folder_name, 
-                        org_id, user, 
-                        start_ts=current_filter_start_ts, 
+                        user_id, folder_id, folder_name,
+                        org_id, user,
+                        start_ts=current_filter_start_ts,
                         end_ts=stored_filter_start_ts
                     )
                     processed_count += gap_count
@@ -3126,14 +3128,14 @@ class OutlookConnector(BaseConnector):
             # Format timestamps to ISO for Graph API
             start_iso = datetime.fromtimestamp(start_ts, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
             end_iso = datetime.fromtimestamp(end_ts, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-            
+
             # Construct filter: >= start AND < end
             gap_filter = f"receivedDateTime ge {start_iso} and receivedDateTime lt {end_iso}"
-            
+
             all_gap_records = []
             processed_count = 0
             next_link = None
-            
+
             self.logger.info(f"Gap Query: {gap_filter}")
 
             while True:
@@ -3141,16 +3143,16 @@ class OutlookConnector(BaseConnector):
                 result = await self._get_historical_messages_page(user_id, folder_id, gap_filter, next_link)
                 messages = result.get('messages', [])
                 next_link = result.get('next_link')
-                
+
                 if not messages:
                     break
-                    
+
                 # Reuse existing processing logic
                 all_updates = []
                 for message in messages:
                     record_updates = await self._process_single_message(org_id, user, message, folder_id, folder_name)
                     all_updates.extend(record_updates)
-                    
+
                 # Batch save
                 batch_records = []
                 for update in all_updates:
@@ -3158,14 +3160,14 @@ class OutlookConnector(BaseConnector):
                         batch_records.append((update.record, update.new_permissions or []))
                         if hasattr(update.record, 'record_type') and update.record.record_type == RecordType.MAIL:
                             all_gap_records.append(update.record)
-            
+
                 if batch_records:
                     await self.data_entities_processor.on_new_records(batch_records)
                     processed_count += len(batch_records)
-                
+
                 if not next_link:
                     break
-                    
+
             return processed_count, all_gap_records
         except Exception as e:
             self.logger.error(f"Error in gap fill fetch: {e}", exc_info=True)
@@ -3180,12 +3182,10 @@ class OutlookConnector(BaseConnector):
             if next_link:
                 # We use the raw client adapter to follow the next_link
                 # This assumes self.external_client.client exists (standard in this codebase)
-                from msgraph.generated.models.message_collection_response import MessageCollectionResponse
-                
                 request_info = self.external_client.client.request_adapter.request_info_factory.create_get_request_information(next_link)
                 response = await self.external_client.client.request_adapter.send_async(
-                    request_info, 
-                    MessageCollectionResponse, 
+                    request_info,
+                    MessageCollectionResponse,
                     {}
                 )
             else:
@@ -3196,9 +3196,9 @@ class OutlookConnector(BaseConnector):
                     top=100,
                     orderby=['receivedDateTime DESC']
                 )
-                
+
                 request_config = RequestConfiguration(query_parameters=query_params)
-                
+
                 response = await self.external_client.client.users.by_user_id(user_id).mail_folders.by_folder_id(folder_id).messages.get(
                     request_configuration=request_config
                 )
@@ -3206,15 +3206,12 @@ class OutlookConnector(BaseConnector):
             # Parse response
             messages = response.value if response and response.value else []
             new_next_link = response.odata_next_link if response and response.odata_next_link else None
-            
-            # Convert objects to dicts if necessary (depends on how _process_single_message expects them)
-            # The existing code seems to handle objects or dicts via _safe_get_attr, so we pass objects directly.
-            
+
             return {
                 'messages': messages,
                 'next_link': new_next_link
             }
-            
+
         except Exception as e:
             self.logger.error(f"Error fetching historical page: {e}", exc_info=True)
             return {'messages': [], 'next_link': None}
