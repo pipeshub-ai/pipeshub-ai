@@ -33,6 +33,7 @@ interface SharePointOAuthSectionProps {
   clientIdError: string | null;
   tenantIdError: string | null;
   sharepointDomainError: string | null;
+  hasAdminConsentError: string | null;
   
   // Certificate File
   certificateFile: File | null;
@@ -66,6 +67,9 @@ interface SharePointOAuthSectionProps {
   instanceNameError: string | null;
   onInstanceNameChange: (value: string) => void;
   connectorName: string;
+  
+  // Validation summary
+  showValidationSummary: boolean;
 }
 
 const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
@@ -76,6 +80,7 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
   clientIdError,
   tenantIdError,
   sharepointDomainError,
+  hasAdminConsentError,
   certificateFile,
   certificateFileName,
   certificateError,
@@ -99,8 +104,21 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
   instanceNameError,
   onInstanceNameChange,
   connectorName,
+  showValidationSummary,
 }) => {
   const theme = useTheme();
+
+  // Collect all validation errors for the summary card
+  const validationErrors: string[] = [];
+  if (clientIdError) validationErrors.push(clientIdError);
+  if (tenantIdError) validationErrors.push(tenantIdError);
+  if (sharepointDomainError) validationErrors.push(sharepointDomainError);
+  if (hasAdminConsentError) validationErrors.push(hasAdminConsentError);
+  if (certificateError) validationErrors.push(certificateError);
+  if (privateKeyError) validationErrors.push(privateKeyError);
+
+  const hasValidationErrors = validationErrors.length > 0;
+  const shouldShowSummary = showValidationSummary && hasValidationErrors;
 
   return (
     <Paper
@@ -155,6 +173,72 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
           </Typography>
         </Box>
       </Box>
+
+      {/* Validation Error Summary Card */}
+      {shouldShowSummary && (
+        <Paper
+          variant="outlined"
+          sx={{
+            p: 2,
+            mb: 2.5,
+            borderRadius: 1.25,
+            bgcolor: alpha(theme.palette.error.main, 0.08),
+            borderColor: alpha(theme.palette.error.main, 0.3),
+            borderWidth: '1.5px',
+          }}
+        >
+          <Box sx={{ display: 'flex', gap: 1.5 }}>
+            <Iconify
+              icon={alertCircleIcon}
+              width={20}
+              sx={{ 
+                color: theme.palette.error.main,
+                flexShrink: 0,
+                mt: 0.25,
+              }}
+            />
+            <Box sx={{ flex: 1 }}>
+              <Typography 
+                variant="subtitle2" 
+                sx={{ 
+                  mb: 1, 
+                  fontSize: '0.875rem',
+                  fontWeight: 600,
+                  color: theme.palette.error.main,
+                }}
+              >
+                Missing Required Fields
+              </Typography>
+              <Typography 
+                variant="body2" 
+                sx={{ 
+                  mb: 1,
+                  fontSize: '0.8125rem',
+                  color: theme.palette.text.primary,
+                }}
+              >
+                Please complete the following fields before saving:
+              </Typography>
+              <Box component="ul" sx={{ m: 0, pl: 2.5, '& li': { mb: 0.5 } }}>
+                {validationErrors.map((error, index) => (
+                  <Typography 
+                    key={index}
+                    component="li" 
+                    variant="body2" 
+                    sx={{ 
+                      fontSize: '0.8125rem',
+                      color: theme.palette.text.primary,
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    {error}
+                  </Typography>
+                ))}
+              </Box>
+            </Box>
+          </Box>
+        </Paper>
+      )}
 
       {/* Connector Name Field */}
       {isCreateMode && (
@@ -238,7 +322,7 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
           value={tenantId}
           onChange={(e) => onTenantIdChange(e.target.value)}
           error={!!tenantIdError}
-          helperText={tenantIdError || 'Azure AD Directory (Tenant) ID (Optional)'}
+          helperText={tenantIdError || 'Azure AD Directory (Tenant) ID (Required)'}
           placeholder="00000000-0000-0000-0000-000000000000"
           sx={{
             mb: 2,
@@ -324,30 +408,46 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
           }}
         />
 
-        <FormControlLabel
-          control={
-            <Checkbox
-              checked={hasAdminConsent}
-              onChange={(e) => onAdminConsentChange(e.target.checked)}
-              color="primary"
-              sx={{
-                '& .MuiSvgIcon-root': {
-                  fontSize: '1.25rem',
-                },
+        <Box>
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={hasAdminConsent}
+                onChange={(e) => onAdminConsentChange(e.target.checked)}
+                color="primary"
+                sx={{
+                  '& .MuiSvgIcon-root': {
+                    fontSize: '1.25rem',
+                  },
+                }}
+              />
+            }
+            label={
+              <Box>
+                <Typography variant="body2" sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
+                  Has Admin Consent
+                </Typography>
+                <Typography variant="caption" sx={{ fontSize: '0.75rem', color: theme.palette.text.secondary }}>
+                  Admin consent has been granted for the application
+                </Typography>
+              </Box>
+            }
+          />
+          {hasAdminConsentError && (
+            <Typography 
+              variant="caption" 
+              sx={{ 
+                color: theme.palette.error.main,
+                mt: 0.75,
+                ml: 4.5,
+                display: 'block',
+                fontSize: '0.75rem',
               }}
-            />
-          }
-          label={
-            <Box>
-              <Typography variant="body2" sx={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                Has Admin Consent
-              </Typography>
-              <Typography variant="caption" sx={{ fontSize: '0.75rem', color: theme.palette.text.secondary }}>
-                Admin consent has been granted for the application
-              </Typography>
-            </Box>
-          }
-        />
+            >
+              {hasAdminConsentError}
+            </Typography>
+          )}
+        </Box>
       </Box>
 
       <Divider sx={{ my: 2 }} />

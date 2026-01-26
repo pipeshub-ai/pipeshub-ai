@@ -58,6 +58,7 @@ interface UseConnectorConfigReturn {
   formErrors: FormErrors;
   saveError: string | null;
   conditionalDisplay: Record<string, boolean>;
+  saveAttempted: boolean;
 
   // Business OAuth state (Google Workspace)
   adminEmail: string;
@@ -155,6 +156,7 @@ export const useConnectorConfig = ({
   });
   const [saveError, setSaveError] = useState<string | null>(null);
   const [conditionalDisplay, setConditionalDisplay] = useState<Record<string, boolean>>({});
+  const [saveAttempted, setSaveAttempted] = useState(false);
 
   // Create mode state
   const [instanceName, setInstanceName] = useState(initialInstanceName);
@@ -620,8 +622,18 @@ export const useConnectorConfig = ({
         setCertificateContent(content);
         setCertificateError(null);
 
-        // Clear save error when user uploads a valid file
+        // Clear certificate error from formErrors when file is successfully uploaded
+        setFormErrors((prev) => {
+          const { certificate, ...restAuth } = prev.auth;
+          return {
+            ...prev,
+            auth: restAuth,
+          };
+        });
+
+        // Clear save error and saveAttempted when user uploads a valid file
         setSaveError(null);
+        setSaveAttempted(false);
 
         // Parse certificate information (basic parsing for display)
         try {
@@ -681,8 +693,18 @@ export const useConnectorConfig = ({
         setPrivateKeyData(content);
         setPrivateKeyError(null);
 
-        // Clear save error when user uploads a valid file
+        // Clear private key error from formErrors when file is successfully uploaded
+        setFormErrors((prev) => {
+          const { privateKey, ...restAuth } = prev.auth;
+          return {
+            ...prev,
+            auth: restAuth,
+          };
+        });
+
+        // Clear save error and saveAttempted when user uploads a valid file
         setSaveError(null);
+        setSaveAttempted(false);
 
         // Update form data with private key content
         setFormData((prev) => ({
@@ -1032,22 +1054,44 @@ export const useConnectorConfig = ({
         return newFormData;
       });
 
-      // Clear error for this field
-      setFormErrors((prev) => {
-        const currentSectionErrors = (prev[section as keyof FormErrors] || {}) as Record<string, string>;
-        return {
-          ...prev,
-          [section]: {
-            ...currentSectionErrors,
-            [fieldName]: '',
-          },
-        };
-      });
+      // Clear error for this field when value is provided
+      // For SharePoint fields, remove the error property entirely for consistency
+      if (section === 'auth' && isSharePointCertificateAuth && 
+          (fieldName === 'hasAdminConsent' || fieldName === 'certificate' || fieldName === 'privateKey')) {
+        // Remove the error property for SharePoint-specific fields
+        setFormErrors((prev) => {
+          const { [fieldName]: removed, ...restAuth } = prev.auth;
+          return {
+            ...prev,
+            auth: restAuth,
+          };
+        });
+      } else {
+        // For other fields, clear the error by setting to empty string
+        setFormErrors((prev) => {
+          const currentSectionErrors = (prev[section as keyof FormErrors] || {}) as Record<string, string>;
+          return {
+            ...prev,
+            [section]: {
+              ...currentSectionErrors,
+              [fieldName]: '',
+            },
+          };
+        });
+      }
 
       // Clear save error when user makes changes
       setSaveError(null);
+      
+      // Clear saveAttempted flag when user makes changes to SharePoint fields
+      // This will hide the validation summary card as user fixes issues
+      if (section === 'auth' && isSharePointCertificateAuth && 
+          (fieldName === 'clientId' || fieldName === 'tenantId' || fieldName === 'sharepointDomain' || 
+           fieldName === 'hasAdminConsent' || fieldName === 'certificate' || fieldName === 'privateKey')) {
+        setSaveAttempted(false);
+      }
     },
-    [connectorConfig]
+    [connectorConfig, isSharePointCertificateAuth]
   );
 
   const handleNext = useCallback(() => {
@@ -1138,12 +1182,27 @@ export const useConnectorConfig = ({
         const hasCertificate = !!(certificateContent || formData.auth.certificate);
         const hasPrivateKey = !!(privateKeyData || formData.auth.privateKey);
         
-        if (!hasCertificate) sharePointErrors.certificate = 'Certificate file is required';
-        if (!hasPrivateKey) sharePointErrors.privateKey = 'Private key file is required';
+        // Set certificate error in both formErrors and state
+        if (!hasCertificate) {
+          const certError = 'Certificate file is required';
+          sharePointErrors.certificate = certError;
+          if (!certificateError) {
+            setCertificateError(certError);
+          }
+        } else if (certificateError) {
+          sharePointErrors.certificate = certificateError;
+        }
         
-        // Check for file validation errors
-        if (certificateError) sharePointErrors.certificate = certificateError;
-        if (privateKeyError) sharePointErrors.privateKey = privateKeyError;
+        // Set private key error in both formErrors and state
+        if (!hasPrivateKey) {
+          const keyError = 'Private key file is required';
+          sharePointErrors.privateKey = keyError;
+          if (!privateKeyError) {
+            setPrivateKeyError(keyError);
+          }
+        } else if (privateKeyError) {
+          sharePointErrors.privateKey = privateKeyError;
+        }
         
         errors = sharePointErrors;
       } else {
@@ -1450,6 +1509,7 @@ export const useConnectorConfig = ({
     try {
       setSaving(true);
       setSaveError(null);
+      setSaveAttempted(true); // Mark that save was attempted
 
       const isNoAuthType = isNoneAuthType(connector.authType);
 
@@ -1495,11 +1555,27 @@ export const useConnectorConfig = ({
             const hasCertificate = !!(certificateContent || formData.auth.certificate);
             const hasPrivateKey = !!(privateKeyData || formData.auth.privateKey);
             
-            if (!hasCertificate) authErrors.certificate = 'Certificate file is required';
-            if (!hasPrivateKey) authErrors.privateKey = 'Private key file is required';
+            // Set certificate error in both formErrors and state
+            if (!hasCertificate) {
+              const certError = 'Certificate file is required';
+              authErrors.certificate = certError;
+              if (!certificateError) {
+                setCertificateError(certError);
+              }
+            } else if (certificateError) {
+              authErrors.certificate = certificateError;
+            }
             
-            if (certificateError) authErrors.certificate = certificateError;
-            if (privateKeyError) authErrors.privateKey = privateKeyError;
+            // Set private key error in both formErrors and state
+            if (!hasPrivateKey) {
+              const keyError = 'Private key file is required';
+              authErrors.privateKey = keyError;
+              if (!privateKeyError) {
+                setPrivateKeyError(keyError);
+              }
+            } else if (privateKeyError) {
+              authErrors.privateKey = privateKeyError;
+            }
           } else {
             // Use schema from existing auth type in edit mode (authOnly mode)
             const validationAuthType = connectorConfig.config.auth?.type || '';
@@ -1695,11 +1771,27 @@ export const useConnectorConfig = ({
             const hasCertificate = !!(certificateContent || formData.auth.certificate);
             const hasPrivateKey = !!(privateKeyData || formData.auth.privateKey);
             
-            if (!hasCertificate) authErrors.certificate = 'Certificate file is required';
-            if (!hasPrivateKey) authErrors.privateKey = 'Private key file is required';
+            // Set certificate error in both formErrors and state
+            if (!hasCertificate) {
+              const certError = 'Certificate file is required';
+              authErrors.certificate = certError;
+              if (!certificateError) {
+                setCertificateError(certError);
+              }
+            } else if (certificateError) {
+              authErrors.certificate = certificateError;
+            }
             
-            if (certificateError) authErrors.certificate = certificateError;
-            if (privateKeyError) authErrors.privateKey = privateKeyError;
+            // Set private key error in both formErrors and state
+            if (!hasPrivateKey) {
+              const keyError = 'Private key file is required';
+              authErrors.privateKey = keyError;
+              if (!privateKeyError) {
+                setPrivateKeyError(keyError);
+              }
+            } else if (privateKeyError) {
+              authErrors.privateKey = privateKeyError;
+            }
           } else {
             // Use schema from selected auth type in create mode
             const validationAuthType = selectedAuthType || connectorConfig.config.auth?.type || '';
@@ -1859,11 +1951,27 @@ export const useConnectorConfig = ({
           const hasCertificate = !!(certificateContent || formData.auth.certificate);
           const hasPrivateKey = !!(privateKeyData || formData.auth.privateKey);
           
-          if (!hasCertificate) authErrors.certificate = 'Certificate file is required';
-          if (!hasPrivateKey) authErrors.privateKey = 'Private key file is required';
+          // Set certificate error in both formErrors and state
+          if (!hasCertificate) {
+            const certError = 'Certificate file is required';
+            authErrors.certificate = certError;
+            if (!certificateError) {
+              setCertificateError(certError);
+            }
+          } else if (certificateError) {
+            authErrors.certificate = certificateError;
+          }
           
-          if (certificateError) authErrors.certificate = certificateError;
-          if (privateKeyError) authErrors.privateKey = privateKeyError;
+          // Set private key error in both formErrors and state
+          if (!hasPrivateKey) {
+            const keyError = 'Private key file is required';
+            authErrors.privateKey = keyError;
+            if (!privateKeyError) {
+              setPrivateKeyError(keyError);
+            }
+          } else if (privateKeyError) {
+            authErrors.privateKey = privateKeyError;
+          }
         } else {
           // Use schema from existing auth type in edit mode (cannot be changed)
           const editAuthType = connectorConfig.config.auth?.type || '';
@@ -2122,6 +2230,7 @@ export const useConnectorConfig = ({
     formErrors,
     saveError,
     conditionalDisplay,
+    saveAttempted,
 
     // Business OAuth state (Google Workspace)
     adminEmail,
