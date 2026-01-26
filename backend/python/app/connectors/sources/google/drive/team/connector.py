@@ -2233,11 +2233,17 @@ class GoogleDriveTeamConnector(BaseConnector):
                         detail=f"Error during {error_context}",
                     )
 
-            # Yield the entire file content - StreamingResponse will handle chunking
-            buffer.seek(0)
-            content = buffer.read()
-            if content:
-                yield content
+                buffer.seek(0)
+                content = buffer.read()
+                if content:
+                    yield content
+
+                # Clear buffer for next chunk
+                buffer.seek(0)
+                buffer.truncate(0)
+
+                # Yield control back to event loop
+                await asyncio.sleep(0)
         except Exception as stream_error:
             self.logger.error(f"Error in {error_context} stream: {str(stream_error)}")
             raise HTTPException(

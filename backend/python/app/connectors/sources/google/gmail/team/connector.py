@@ -2466,14 +2466,24 @@ class GoogleGmailTeamConnector(BaseConnector):
                                 self.logger.info(
                                     f"Download {int(status.progress() * 100)}%."
                                 )
+
+                                # 1. Read the chunk
+                                buffer.seek(0)
+                                content = buffer.read()
+                                if content:
+                                    yield content
+
+                                # 2. Clear buffer to save RAM
+                                buffer.seek(0)
+                                buffer.truncate(0)
+
+                                # 3. Allow other tasks to run
+                                await asyncio.sleep(0)
+
                             except Exception as chunk_error:
                                 self.logger.error(f"Error downloading chunk: {str(chunk_error)}")
                                 raise
 
-                        buffer.seek(0)
-                        content = buffer.read()
-                        if content:
-                            yield content
                     except Exception as stream_error:
                         self.logger.error(f"Error in file stream: {str(stream_error)}")
                         raise HTTPException(
