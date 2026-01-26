@@ -9,8 +9,12 @@ from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from kiota_abstractions.base_request_configuration import RequestConfiguration
-from msgraph.generated.models.message_collection_response import MessageCollectionResponse
-from msgraph.generated.users.item.mail_folders.item.messages.messages_request_builder import MessagesRequestBuilder
+from msgraph.generated.models.message_collection_response import (
+    MessageCollectionResponse,
+)
+from msgraph.generated.users.item.mail_folders.item.messages.messages_request_builder import (
+    MessagesRequestBuilder,
+)
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -64,8 +68,10 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.microsoft.microsoft import (
     GraphMode,
-    MSGraphClient as ExternalMSGraphClient,
     MSGraphClientWithClientIdSecretConfig,
+)
+from app.sources.client.microsoft.microsoft import (
+    MSGraphClient as ExternalMSGraphClient,
 )
 from app.sources.external.microsoft.outlook.outlook import (
     OutlookCalendarContactsDataSource,
