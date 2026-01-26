@@ -1442,9 +1442,9 @@ class DataSourceEntitiesProcessor:
 
                 if not user_group:
                     self.logger.warning(
-                        f"Cannot delete group: Group with external ID {external_group_id} not found in database"
+                        f"❕ Group with external ID {external_group_id} not in database, skipping deletion"
                     )
-                    return False
+                    return True
 
                 group_internal_id = user_group.id
                 group_name = user_group.name
