@@ -1080,7 +1080,7 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
   const syncFilters = filters?.sync;
   const indexingFilters = filters?.indexing;
 
-  // Get the manual sync field from indexing filters
+  // Get the manual indexing field from indexing filters
   const manualSyncField = indexingFilters?.schema?.fields?.find(
     (field) => field.name === 'enable_manual_sync'
   );
@@ -2409,7 +2409,7 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
         height: '100%',
       }}
     >
-      {/* Manual Sync Control - Only show if the connector has indexing filters */}
+      {/* Manual Indexing Control - Only show if the connector has indexing filters */}
       {hasIndexingFilters && manualSyncField && (
         <Paper
           elevation={0}

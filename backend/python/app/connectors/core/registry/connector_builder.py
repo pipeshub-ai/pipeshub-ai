@@ -732,10 +732,10 @@ class CommonFields:
 
     @staticmethod
     def enable_manual_sync_filter() -> FilterField:
-        """Standard manual sync control filter (master switch for indexing)"""
+        """Standard manual indexing control filter (master switch for indexing)"""
         return FilterField(
             name="enable_manual_sync",
-            display_name="Enable Manual Sync",
+            display_name="Enable Manual Indexing",
             filter_type=FilterType.BOOLEAN,
             category=FilterCategory.INDEXING,
             description="Disable automatic indexing for all synced records.",
