@@ -81,6 +81,7 @@ from app.utils.streaming import create_stream_record_response
 
 # Thread detection constants
 THREAD_ROOT_EMAIL_CONVERSATION_INDEX_LENGTH = 22  # Length (in bytes) of conversation_index for root email in a thread
+FILTER_TIMESTAMP_BUFFER_SECONDS = 60  # Buffer to handle minor clock skew comparisons
 
 # Standard Outlook folder names
 STANDARD_OUTLOOK_FOLDERS = [
@@ -1699,26 +1700,36 @@ class OutlookConnector(BaseConnector):
 
             # --- OPTIMIZATION: Gap Fill Logic ---
             
-            # 1. Determine Current Filter (e.g., Dec 1, 2025)
-            current_filter_start_ts = 0
+            # 1. Determine Current Filter (Fix: Initialize to None)
+            current_filter_start_ts = None
             received_date_filter = self.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
             current_filter_iso = None
             
             if received_date_filter and not received_date_filter.is_empty():
                 current_filter_iso, _ = received_date_filter.get_datetime_iso()
                 if current_filter_iso:
-                    dt = datetime.fromisoformat(current_filter_iso.replace('Z', '+00:00'))
-                    current_filter_start_ts = int(dt.timestamp())
+                    try:
+                        dt = datetime.fromisoformat(current_filter_iso.replace('Z', '+00:00'))
+                        current_filter_start_ts = int(dt.timestamp())
+                    except ValueError:
+                        self.logger.warning(f"Could not parse filter date: {current_filter_iso}")
 
-            # 2. Retrieve Stored Filter (e.g., Jan 1, 2026)
+            # 2. Retrieve Stored Filter
             stored_filter_start_ts = sync_point.get('filter_start_ts') if sync_point else None
             
             processed_count = 0
             mail_records = []
 
-            # 3. Detect Gap: If new filter is OLDER than stored filter, fill the gap
-            # (Use 60s buffer to ignore minor clock differences)
-            if delta_link and stored_filter_start_ts and current_filter_start_ts < (stored_filter_start_ts - 60):
+            # 3. Detect Gap: Only run if we have explicit filters for both current and stored state
+            # Fix: Check for None to prevent unintended full history fetch
+            should_fill_gap = (
+                delta_link and 
+                stored_filter_start_ts is not None and 
+                current_filter_start_ts is not None and 
+                current_filter_start_ts < (stored_filter_start_ts - FILTER_TIMESTAMP_BUFFER_SECONDS)
+            )
+
+            if should_fill_gap:
                 self.logger.info(
                     f"Filter expanded for '{folder_name}'. "
                     f"Filling gap: {datetime.fromtimestamp(current_filter_start_ts, timezone.utc)} to "
@@ -1736,7 +1747,8 @@ class OutlookConnector(BaseConnector):
                     processed_count += gap_count
                     mail_records.extend(gap_records)
                 except Exception as e:
-                    self.logger.error(f"Gap fill failed for '{folder_name}' (continuing with delta): {e}")
+                    # Fix: Use exc_info=True for better debugging
+                    self.logger.error(f"Gap fill failed for '{folder_name}' (continuing with delta): {e}", exc_info=True)
 
             # --- END OPTIMIZATION ---
 
@@ -1774,13 +1786,16 @@ class OutlookConnector(BaseConnector):
                     await self.data_entities_processor.on_new_records(batch_records)
                     processed_count += len(batch_records)
 
-            # 5. Update Sync Point (Crucial: Save the NEW filter_start_ts)
+            # 5. Update Sync Point
+            # Fix: Handle case where filter might be None
+            state_filter_ts = current_filter_start_ts if current_filter_start_ts is not None else 0
+
             sync_point_data = {
                 'delta_link': result.get('delta_link'),
                 'last_sync_timestamp': int(datetime.now(timezone.utc).timestamp() * 1000),
                 'folder_id': folder_id,
                 'folder_name': folder_name,
-                'filter_start_ts': current_filter_start_ts  # <--- Saving this enables the optimization next time
+                'filter_start_ts': state_filter_ts
             }
 
             await self.email_delta_sync_point.update_sync_point(
@@ -1793,7 +1808,7 @@ class OutlookConnector(BaseConnector):
             return processed_count, mail_records
 
         except Exception as e:
-            self.logger.error(f"Error processing messages in folder '{folder_name}' for user {user.email}: {e}")
+            self.logger.error(f"Error processing messages in folder '{folder_name}' for user {user.email}: {e}", exc_info=True)
             return 0, []
 
     async def _get_all_messages_delta_external(self, user_id: str, folder_id: str, delta_link: Optional[str] = None) -> Dict:
@@ -3107,50 +3122,54 @@ class OutlookConnector(BaseConnector):
         """
         Fetches emails specifically between start_ts and end_ts using standard filtering (Gap Fill).
         """
-        # Format timestamps to ISO for Graph API
-        start_iso = datetime.fromtimestamp(start_ts, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-        end_iso = datetime.fromtimestamp(end_ts, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-        
-        # Construct filter: >= start AND < end
-        gap_filter = f"receivedDateTime ge {start_iso} and receivedDateTime lt {end_iso}"
-        
-        all_gap_records = []
-        processed_count = 0
-        next_link = None
-        
-        self.logger.info(f"Gap Query: {gap_filter}")
+        try:
+            # Format timestamps to ISO for Graph API
+            start_iso = datetime.fromtimestamp(start_ts, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            end_iso = datetime.fromtimestamp(end_ts, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            
+            # Construct filter: >= start AND < end
+            gap_filter = f"receivedDateTime ge {start_iso} and receivedDateTime lt {end_iso}"
+            
+            all_gap_records = []
+            processed_count = 0
+            next_link = None
+            
+            self.logger.info(f"Gap Query: {gap_filter}")
 
-        while True:
-            # Fetch page of historical messages
-            result = await self._get_historical_messages_page(user_id, folder_id, gap_filter, next_link)
-            messages = result.get('messages', [])
-            next_link = result.get('next_link')
-            
-            if not messages:
-                break
+            while True:
+                # Fetch page of historical messages
+                result = await self._get_historical_messages_page(user_id, folder_id, gap_filter, next_link)
+                messages = result.get('messages', [])
+                next_link = result.get('next_link')
                 
-            # Reuse existing processing logic
-            all_updates = []
-            for message in messages:
-                record_updates = await self._process_single_message(org_id, user, message, folder_id, folder_name)
-                all_updates.extend(record_updates)
-                
-            # Batch save
-            batch_records = []
-            for update in all_updates:
-                if update and update.record:
-                    batch_records.append((update.record, update.new_permissions or []))
-                    if hasattr(update.record, 'record_type') and update.record.record_type == RecordType.MAIL:
-                        all_gap_records.append(update.record)
+                if not messages:
+                    break
+                    
+                # Reuse existing processing logic
+                all_updates = []
+                for message in messages:
+                    record_updates = await self._process_single_message(org_id, user, message, folder_id, folder_name)
+                    all_updates.extend(record_updates)
+                    
+                # Batch save
+                batch_records = []
+                for update in all_updates:
+                    if update and update.record:
+                        batch_records.append((update.record, update.new_permissions or []))
+                        if hasattr(update.record, 'record_type') and update.record.record_type == RecordType.MAIL:
+                            all_gap_records.append(update.record)
             
-            if batch_records:
-                await self.data_entities_processor.on_new_records(batch_records)
-                processed_count += len(batch_records)
-            
-            if not next_link:
-                break
+                if batch_records:
+                    await self.data_entities_processor.on_new_records(batch_records)
+                    processed_count += len(batch_records)
                 
-        return processed_count, all_gap_records
+                if not next_link:
+                    break
+                    
+            return processed_count, all_gap_records
+        except Exception as e:
+            self.logger.error(f"Error in gap fill fetch: {e}", exc_info=True)
+            raise e
 
     async def _get_historical_messages_page(self, user_id: str, folder_id: str, filter_str: str, next_link: Optional[str] = None) -> Dict:
         """
@@ -3197,7 +3216,7 @@ class OutlookConnector(BaseConnector):
             }
             
         except Exception as e:
-            self.logger.error(f"Error fetching historical page: {e}")
+            self.logger.error(f"Error fetching historical page: {e}", exc_info=True)
             return {'messages': [], 'next_link': None}
 
     @classmethod
