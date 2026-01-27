@@ -36,11 +36,15 @@ from app.modules.parsers.excel.prompt_template import (
     excel_header_detection_prompt,
     prompt,
     row_text_prompt,
+    row_text_prompt_for_csv,
     sheet_summary_prompt,
     table_summary_prompt,
 )
-from app.utils.indexing_helpers import generate_simple_row_text
-from app.utils.streaming import invoke_with_structured_output_and_reflection
+from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
+from app.utils.streaming import (
+    invoke_with_row_descriptions_and_reflection,
+    invoke_with_structured_output_and_reflection,
+)
 
 # Module-level constants for Excel processing (mirror CSV parser)
 NUM_SAMPLE_ROWS = 5  # Number of representative sample rows to select for header generation
@@ -1108,22 +1112,27 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 for row in rows
             ]
 
-            # Get natural language text from LLM with retry
-            messages = self.row_text_prompt.format_messages(
-                table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2)
+            # Get natural language text from LLM with count validation
+            # Use CSV prompt which includes explicit row count validation
+            messages = row_text_prompt_for_csv.format_messages(
+                table_summary=table_summary,
+                numbered_rows_data=format_rows_with_index(rows_data),
+                row_count=len(rows_data)
             )
 
-            # Default to string representations of rows
-            descriptions = [str(row) for row in rows_data]
+            # Default to simple text representations of rows
+            descriptions = [generate_simple_row_text(row) for row in rows_data]
 
-            # Use centralized utility with reflection
-            parsed_response = await invoke_with_structured_output_and_reflection(
-                self.llm, messages, RowDescriptions
+            # Use centralized utility with reflection and count validation
+            parsed_response = await invoke_with_row_descriptions_and_reflection(
+                self.llm, messages, expected_count=len(rows_data)
             )
 
             if parsed_response is not None and parsed_response.descriptions:
                 descriptions = parsed_response.descriptions
                 self.logger.info(f"Successfully generated natural language descriptions for {len(descriptions)} rows")
+            else:
+                self.logger.warning(f"LLM failed to generate descriptions, using fallback for {len(rows_data)} rows")
 
             return descriptions
         except Exception as e:
