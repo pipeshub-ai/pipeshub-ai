@@ -494,8 +494,7 @@ class Jira:
                         "accountId": cleaned_user.get("accountId"),
                         "displayName": cleaned_user.get("displayName"),
                         "emailAddress": cleaned_user.get("emailAddress")
-                    },
-                    "tip": "For 'my tickets' queries, use `assignee = currentUser()` in JQL - no need to use accountId"
+                    }
                 })
             else:
                 return self._handle_response(
@@ -919,29 +918,24 @@ class Jira:
                 name="jql",
                 type=ParameterType.STRING,
                 description=(
-                    "JQL query string. CRITICAL RULES:\n"
+                    "JQL query string.\n"
                     "\n"
-                    "FOR CURRENT USER (my tickets, assigned to me):\n"
-                    "- ✅ Use `assignee = currentUser()` - it automatically resolves to authenticated user\n"
-                    "- ❌ DO NOT call search_users to find yourself first\n"
-                    "- ❌ DO NOT use placeholder like `assignee = \"[accountId]\"`\n"
+                    "CURRENT USER QUERIES:\n"
+                    "- Use `assignee = currentUser()` for 'my tickets' or 'assigned to me'\n"
+                    "- Do NOT call search_users first - currentUser() auto-resolves\n"
                     "\n"
-                    "REQUIRED - TIME FILTER (to avoid unbounded query errors):\n"
-                    "- Always add: `AND updated >= -30d` or `AND created >= -7d`\n"
+                    "REQUIRED TIME FILTER (prevents unbounded query errors):\n"
+                    "- Always include: `AND updated >= -30d` or `AND created >= -7d`\n"
                     "\n"
-                    "JQL SYNTAX:\n"
-                    "- Unresolved: `resolution IS EMPTY` (NOT `resolution = Unresolved`)\n"
-                    "- Current user: `currentUser()` WITH parentheses (NOT `currentUser`)\n"
-                    "- Status: `status = \"Open\"` with quotes (NOT `status = Open`)\n"
+                    "JQL SYNTAX RULES:\n"
+                    "- Unresolved issues: `resolution IS EMPTY` (not `resolution = Unresolved`)\n"
+                    "- Current user: `currentUser()` with parentheses\n"
+                    "- Status values: `status = \"Open\"` with quotes\n"
                     "\n"
-                    "CORRECT EXAMPLES:\n"
+                    "EXAMPLES:\n"
                     "- `project = \"PA\" AND assignee = currentUser() AND resolution IS EMPTY AND updated >= -30d`\n"
                     "- `project = \"PA\" AND status = \"In Progress\" AND updated >= -7d`\n"
-                    "- `reporter = currentUser() AND created >= -30d ORDER BY created DESC`\n"
-                    "\n"
-                    "WRONG EXAMPLES:\n"
-                    "- `assignee = \"[accountId]\"` ❌ (use `currentUser()` for yourself)\n"
-                    "- `project = \"PA\" AND assignee = currentUser()` ❌ (missing time filter!)"
+                    "- `reporter = currentUser() AND created >= -30d ORDER BY created DESC`"
                 ),
                 required=True
             ),
@@ -1223,8 +1217,7 @@ class Jira:
 
                 return True, json.dumps({
                     "message": "Users fetched successfully",
-                    "data": cleaned_users,
-                    "tip": "Use the accountId value in JQL queries like: assignee = 'accountId_value'"
+                    "data": cleaned_users
                 })
             else:
                 return self._handle_response(
