@@ -298,6 +298,10 @@ class GraphTransactionStore(TransactionStore):
             connector_id, parent_external_record_id, record_type, transaction=self.txn
         )
 
+    async def get_app_creator_user(self, connector_id):
+        """Get the creator user for a connector/app by connectorId."""
+        return await self.graph_provider.get_app_creator_user(connector_id)
+
     async def batch_upsert_records(self, records: List[Record]) -> None:
         """
         Batch upsert records (base + specific type + IS_OF_TYPE edge).

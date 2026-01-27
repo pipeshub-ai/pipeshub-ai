@@ -129,9 +129,13 @@ async def main() -> None:
 
     repos_res = ds.list_user_repos(owner)
     repos = repos_res.data
-    if repos_res.success and repos:
-        repo_names = [r.name for r in repos][:50]
-        print(f"Sample repos for user {owner}:", repo_names)
+    print(f"Total repos fetched for user {owner}: {len(repos) if repos else 0}")
+    
+        
+    
+    # if repos_res.success and repos:
+    #     repo_names = [r.name for r in repos][:50]
+    #     print(f"Sample repos for user {owner}:", repo_names)
     # Get a repository
     # repo_res = ds.get_repo(owner, repo)
     # print_result(f"Get Repo ({owner}/{repo})", repo_res)

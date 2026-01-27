@@ -406,6 +406,12 @@ ticket_record_schema = {
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },
+            "assignee_source_id":{
+                "type": "array",
+                "items": {"type": "string", "minLength": 0},
+                "default": [],
+            },
+            "reporter_source_id":{"type": ["string", "null"]},
         },
     },
 }
