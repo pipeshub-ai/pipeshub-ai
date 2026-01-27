@@ -1,15 +1,18 @@
 # ruff: noqa
 import asyncio
 import os
-from typing import Dict
 
-from dotenv import load_dotenv
 from github.GithubException import GithubException
 
 from app.sources.client.github.github import GitHubClient, GitHubConfig
 from app.sources.external.github.github_ import GitHubDataSource, GitHubResponse
 from github.AuthenticatedUser import AuthenticatedUser  # type: ignore
 
+# Environment variables
+token = os.getenv("GITHUB_PAT")
+# In order to test Github organization specific APIs, you need to set the GITHUB_ORGANIZATION environment variable
+organization = os.getenv("GITHUB_ORGANIZATION")
+repo = os.getenv("GITHUB_REPO")
 
 def print_result(title: str, res) -> None:
     print(f"\n== {title} ==")
@@ -19,18 +22,13 @@ def print_result(title: str, res) -> None:
     print("ok")
     print(res.data)
 
-# Environment variables
-token = os.getenv("GITHUB_PAT")
-# In order to test Github organization specific APIs, you need to set the GITHUB_ORGANIZATION environment variable
-organization = os.getenv("GITHUB_ORGANIZATION")
-repo = os.getenv("GITHUB_REPO")
+
 async def main() -> None:
     if not token:
         raise RuntimeError("GITHUB_PAT is not set (load from .env or environment)")
     try:        
         # Initialize client and datasource
-        client = GitHubClient.build_with_config(GitHubConfig(token=token,
-                                                             per_page=100))
+        client = GitHubClient.build_with_config(GitHubConfig(token=token, per_page=100))
         # print(f"GitHub client created successfully: {client}")
     except Exception as e:
         print(f"Error: Failed to initialize GitHub client.")
@@ -131,8 +129,6 @@ async def main() -> None:
     repos = repos_res.data
     print(f"Total repos fetched for user {owner}: {len(repos) if repos else 0}")
     
-        
-    
     # if repos_res.success and repos:
     #     repo_names = [r.name for r in repos][:50]
     #     print(f"Sample repos for user {owner}:", repo_names)
@@ -161,7 +157,6 @@ async def main() -> None:
         #     if files_res.success and files_res.data:
         #         print(f"Fetched raw data : {files_res.data}")
         #         files = files_res.data
-
                 # create map for file name as key with bg_number as value
                 # in file data patch is present which is diff make another call for files content
                 # do other awy dict of filepath to list of  comments
@@ -234,8 +229,8 @@ async def main() -> None:
     #     print("tags:", names)
 
     # Rate limit
-    rate_res = ds.get_rate_limit()
-    print_result("Rate Limit", rate_res)
+    # rate_res = ds.get_rate_limit()
+    # print_result("Rate Limit", rate_res)
 
     # List pending invitations
     # invitations_res = ds.list_pending_invitations(owner, repo)
@@ -244,14 +239,14 @@ async def main() -> None:
     #     names = [i.login for i in (invitations_res.data or [])]
     #     print("invitations:", names)
 
-    # # List Dependabot alerts
+    # List Dependabot alerts
     # alerts_res = ds.list_dependabot_alerts(owner, repo)
     # print_result("List Dependabot Alerts", alerts_res)
     # if alerts_res.success:
     #     names = [a.number for a in (alerts_res.data or [])]
     #     print("alerts:", names)
 
-    # # Get Dependabot alert
+    # Get Dependabot alert
     # alert_res = ds.get_dependabot_alert(owner, repo, 1)
     # print_result("Get Dependabot Alert", alert_res)
     # if alert_res.success:
