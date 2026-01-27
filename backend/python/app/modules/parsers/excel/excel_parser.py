@@ -93,91 +93,128 @@ def format_excel_datetime(dt_value: Any, number_format: str) -> Any:
             if format_code in BUILTIN_DATE_FORMATS:
                 number_format = BUILTIN_DATE_FORMATS[format_code]
         
-        # Determine if format contains time components (for context-sensitive parsing)
-        has_time = any(x in number_format.lower() for x in ['h:', ':mm', 'h:mm', 'hh:', 'am/pm', 'a/p'])
+        # Determine if format contains time components
+        has_hour = bool(re.search(r'(?<![a-z])h+(?![a-z])', number_format, flags=re.IGNORECASE))
+        has_colon = ':' in number_format
         has_am_pm = 'am/pm' in number_format.lower() or 'a/p' in number_format.lower()
+        has_time = has_hour or has_am_pm
         
         python_format = number_format
         
-        # Map Excel format codes to Python strftime equivalents
-        # Process in specific order to avoid partial replacements
-        # Use regex with word boundaries or specific patterns to avoid double-replacement
+        # NEW STRATEGY: Pre-process to identify which 'mm' and 'm' tokens are in time vs date context
+        # Mark time-context mm/m tokens BEFORE doing any replacements
         
-        # 1. Handle full month/day names first (longest matches)
-        python_format = python_format.replace("mmmm", "%B")  # Full month name
-        python_format = python_format.replace("dddd", "%A")  # Full day name
+        # Find position of first hour indicator (h or hh) to split date/time sections
+        hour_pattern = re.search(r'(?<![a-z])h+(?![a-z])', python_format, flags=re.IGNORECASE)
+        hour_start_pos = hour_pattern.start() if hour_pattern else len(python_format)
+        
+        # Mark all 'mm' and 'm' positions and their contexts (date vs time)
+        def replace_mm_and_m_contextually(format_str, hour_boundary):
+            """Replace mm and m based on their position relative to hour marker."""
+            result = []
+            i = 0
+            while i < len(format_str):
+                # Check for 'mmmm' (full month name) - handle first
+                if format_str[i:i+4].lower() == 'mmmm':
+                    result.append('mmmm')  # Keep for later replacement
+                    i += 4
+                # Check for 'mmm' (abbreviated month name)
+                elif format_str[i:i+3].lower() == 'mmm':
+                    result.append('mmm')  # Keep for later replacement
+                    i += 3
+                # Check for 'mm'
+                elif format_str[i:i+2] == 'mm':
+                    # Determine context: before/after hour marker, or near colons
+                    # 1. Check if adjacent to colon (with optional spaces)
+                    has_colon_before = (i > 0 and format_str[i-1:i].strip() == '' and 
+                                       i > 1 and format_str[i-2] == ':') or (i > 0 and format_str[i-1] == ':')
+                    has_colon_after = (i+2 < len(format_str) and format_str[i+2:i+3].strip() == '' and
+                                      i+3 < len(format_str) and format_str[i+3] == ':') or (i+2 < len(format_str) and format_str[i+2] == ':')
+                    
+                    # 2. Check if in time section (after hour marker)
+                    in_time_section = i >= hour_boundary
+                    
+                    # 3. Decide: minute or month
+                    if has_colon_before or has_colon_after or (in_time_section and has_time):
+                        result.append('__MINUTE_MM__')  # Placeholder for minute
+                    elif has_colon and not has_hour:
+                        # Special case: "mm:ss" format (no hours) - mm is minutes
+                        result.append('__MINUTE_MM__')
+                    else:
+                        result.append('__MONTH_MM__')  # Placeholder for month
+                    i += 2
+                # Check for single 'm' (not part of mmm or mmmm)
+                elif (format_str[i] == 'm' and 
+                      (i == 0 or format_str[i-1:i+1].lower() not in ['mm', 'am']) and
+                      (i+1 >= len(format_str) or format_str[i:i+2].lower() not in ['mm', 'mp'])):
+                    # Similar logic for single 'm'
+                    has_colon_before = i > 0 and format_str[i-1] == ':'
+                    in_time_section = i >= hour_boundary
+                    
+                    if has_colon_before or (in_time_section and has_time):
+                        result.append('__MINUTE_M__')  # Placeholder for minute
+                    else:
+                        result.append('__MONTH_M__')  # Placeholder for month
+                    i += 1
+                else:
+                    result.append(format_str[i])
+                    i += 1
+            
+            return ''.join(result)
+        
+        # Apply contextual marking
+        python_format = replace_mm_and_m_contextually(python_format, hour_start_pos)
+        # DEBUG
+        import os
+        if os.getenv('DEBUG_FORMAT'):
+            print(f"DEBUG: After marking: '{python_format}'")
+        
+        # Now do standard replacements in order
+        # 1. Handle full month/day names
+        python_format = python_format.replace("mmmm", "%B")
+        python_format = python_format.replace("dddd", "%A")
         
         # 2. Handle abbreviated names
-        python_format = python_format.replace("mmm", "%b")   # Abbreviated month
-        python_format = python_format.replace("ddd", "%a")   # Abbreviated day
+        python_format = python_format.replace("mmm", "%b")
+        python_format = python_format.replace("ddd", "%a")
         
         # 3. Handle years
-        python_format = python_format.replace("yyyy", "%Y")  # 4-digit year
-        python_format = python_format.replace("yy", "%y")    # 2-digit year
+        python_format = python_format.replace("yyyy", "%Y")
+        python_format = python_format.replace("yy", "%y")
         
-        # 4. Handle AM/PM (before processing hours to avoid conflicts)
+        # 4. Handle AM/PM
         python_format = re.sub(r'AM/PM', '%p', python_format, flags=re.IGNORECASE)
         python_format = re.sub(r'A/P', '%p', python_format, flags=re.IGNORECASE)
         
-        # 5. Handle hours (context-sensitive: with/without AM/PM)
-        # Use regex to match 'hh' or 'h' not already part of a % code
+        # 5. Handle hours
         if 'hh' in python_format.lower():
             if has_am_pm:
-                python_format = re.sub(r'hh', '%I', python_format, flags=re.IGNORECASE)  # 12-hour
+                python_format = re.sub(r'hh', '%I', python_format, flags=re.IGNORECASE)
             else:
-                python_format = re.sub(r'hh', '%H', python_format, flags=re.IGNORECASE)  # 24-hour
+                python_format = re.sub(r'hh', '%H', python_format, flags=re.IGNORECASE)
         
-        # Single 'h' - must not be part of already-replaced format code
-        # Match 'h' that's not preceded by % and not followed by %
         if re.search(r'(?<!%)h(?![a-zA-Z])', python_format, flags=re.IGNORECASE):
             if has_am_pm:
                 python_format = re.sub(r'(?<!%)h(?![a-zA-Z])', '%I', python_format, flags=re.IGNORECASE)
             else:
                 python_format = re.sub(r'(?<!%)h(?![a-zA-Z])', '%H', python_format, flags=re.IGNORECASE)
         
-        # 6. Handle seconds (ss before single s)
+        # 6. Handle seconds
         python_format = python_format.replace("ss", "%S")
-        # Single 's' only if not part of %S or other % code
         python_format = re.sub(r'(?<!%)s(?![a-zA-Z])', '%S', python_format)
         
-        # 7. Handle 'mm' - could be month or minute (process before single m/d)
-        if 'mm' in python_format:
-            if has_time:
-                # In time context, check if 'mm' is after ':' (indicating minutes)
-                python_format = re.sub(r':mm', ':%M', python_format)
-                python_format = re.sub(r'mm:', '%M:', python_format)
-                # If 'mm' still exists in time format, assume minutes
-                if 'mm' in python_format:
-                    python_format = python_format.replace('mm', '%M')
-            else:
-                # In date-only context, 'mm' is month
-                python_format = python_format.replace('mm', '%m')
+        # 7. Replace placeholders for mm and m
+        python_format = python_format.replace('__MONTH_MM__', '%m')
+        python_format = python_format.replace('__MINUTE_MM__', '%M')
+        python_format = python_format.replace('__MONTH_M__', '%m')
+        python_format = python_format.replace('__MINUTE_M__', '%M')
         
-        # 8. Handle 'dd' - day with leading zero (before single d)
+        # 8. Handle 'dd' - day with leading zero
         python_format = python_format.replace("dd", "%d")
         
         # 9. Handle single 'd' - day without leading zero
-        # Only match 'd' that's not part of a % code
         if re.search(r'(?<!%)d(?![a-zA-Z])', python_format):
             python_format = re.sub(r'(?<!%)d(?![a-zA-Z])', '%d', python_format)
-        
-        # 10. Handle single 'm' - month or minute (context-dependent)
-        # Only match 'm' that's not part of a % code
-        # Strategy: 'm' before time separators (like ':') is month, 'm' after ':' is minute
-        if re.search(r'(?<!%)m(?![a-zA-Z])', python_format):
-            if has_time:
-                # Split on time-related patterns to identify date vs time context
-                # 'm' before ':' or between '/' and ':' is month
-                # 'm' after ':' or between ':' and other chars is minute
-                
-                # First replace 'm' that appears after ':' with minute
-                python_format = re.sub(r'(?<=:)(?<!%)m(?![a-zA-Z])', '%M', python_format)
-                
-                # Then replace any remaining 'm' with month (must be in date part)
-                python_format = re.sub(r'(?<!%)m(?![a-zA-Z])', '%m', python_format)
-            else:
-                # In date-only context, 'm' is month
-                python_format = re.sub(r'(?<!%)m(?![a-zA-Z])', '%m', python_format)
         
         # Apply the format
         formatted_value = dt_value.strftime(python_format)
@@ -409,8 +446,8 @@ class ExcelParser:
                     if not has_data:
                         break
 
-                max_row = start_row+1
-                for row in range(start_row+2, sheet.max_row + 1):
+                max_row = start_row
+                for row in range(start_row+1, sheet.max_row + 1):
                     has_data = False
                     for col in range(start_col, max_col + 1):
                         cell = sheet.cell(row=row, column=col)
@@ -418,7 +455,7 @@ class ExcelParser:
                             has_data = True
                             max_row = row
                             break
-                    if not has_data:
+                    if not has_data and row != start_row+1:
                         break
                 
                 # Step 1.5: Expand left to include additional columns
@@ -728,10 +765,10 @@ class ExcelParser:
                 self.logger.warning(f"Only {len(first_rows)} rows available, insufficient for header analysis (min: {MIN_ROWS_FOR_HEADER_ANALYSIS})")
                 # Not enough rows to analyze, assume single-row headers exist
                 return ExcelHeaderDetection(
-                    has_headers=True,
-                    num_header_rows=1,
+                    has_headers=False,
+                    num_header_rows=0,
                     confidence="low",
-                    reasoning="Insufficient rows for analysis, defaulting to single-row headers"
+                    reasoning="Insufficient rows for analysis, defaulting to no headers"
                 )
 
             # Prepare rows for prompt (convert to strings for display)
@@ -750,7 +787,7 @@ class ExcelParser:
             )
 
             if parsed_response is not None:
-                    self.logger.info(f"LLM header detection successful: {parsed_response.reasoning}")
+                self.logger.info(f"LLM header detection successful: {parsed_response.reasoning}")
                 # Validate num_header_rows is sensible
                 if parsed_response.num_header_rows < 0:
                     parsed_response.num_header_rows = 0
@@ -766,21 +803,21 @@ class ExcelParser:
                 return parsed_response
 
             # Fallback: assume single-row headers exist if LLM fails
-            self.logger.warning("Header detection LLM call failed, defaulting to single-row headers")
+            self.logger.warning("Header detection LLM call failed, defaulting to no headers")
             return ExcelHeaderDetection(
                 has_headers=False,
                 num_header_rows=0,
                 confidence="low",
-                reasoning="LLM call failed, defaulting to single-row headers"
+                reasoning="LLM call failed, defaulting to no headers"
             )
 
         except Exception as e:
-            self.logger.warning(f"Error in Excel header detection: {e}, defaulting to single-row headers")
+            self.logger.warning(f"Error in Excel header detection: {e}, defaulting to no headers")
             return ExcelHeaderDetection(
                 has_headers=False,
                 num_header_rows=0,
                 confidence="low",
-                reasoning=f"Error occurred: {str(e)}, defaulting to single-row headers"
+                reasoning=f"Error occurred: {str(e)}, defaulting to no headers"
             )
 
     async def generate_excel_headers_with_llm(
@@ -1295,6 +1332,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 rows = table.get("rows", [])
 
                 table_group_children: List[BlockContainerIndex] = []
+                table_markdown = self.to_markdown(headers, rows)
                 table_group = BlockGroup(
                     index=table_group_index,
                     name=None,
@@ -1311,6 +1349,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                         "column_headers": headers,
                         "sheet_number": sheet_idx,
                         "sheet_name": sheet_name,
+                        "table_markdown": table_markdown,
                     },
                     format=DataFormat.JSON,
                 )
@@ -1348,4 +1387,47 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
         self.logger.info(f"Workbook processing complete. Total: {len(blocks)} blocks, {len(block_groups)} block groups")
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
+    def to_markdown(self, headers: List[str], rows: List[Dict[str, Any]]) -> str:
+            """
+            Convert CSV data to markdown table format.
+            Args:
+                data: List of dictionaries from read_stream() method
+            Returns:
+                String containing markdown formatted table
+            """
+            if not headers and not rows:
+                return ""
+
+            # Get headers from the first row
+            headers = list(headers)
+
+            # Start building the markdown table
+            markdown_lines = []
+
+            # Add header row
+            header_row = "| " + " | ".join(str(header) for header in headers) + " |"
+            markdown_lines.append(header_row)
+
+            # Add separator row
+            separator_row = "|" + "|".join(" --- " for _ in headers) + "|"
+            markdown_lines.append(separator_row)
+            data = []
+            for row in rows:
+                data.append(row.get("raw_data", {}))
+            # Add data rows
+            for row in data:
+                # Handle None values and convert to string, escape pipe characters
+                formatted_values = []
+                for header in headers:
+                    value = row.get(header, "")
+                    if value is None:
+                        value = ""
+                    # Escape pipe characters and convert to string
+                    value_str = str(value).replace("|", "\\|")
+                    formatted_values.append(value_str)
+
+                data_row = "| " + " | ".join(formatted_values) + " |"
+                markdown_lines.append(data_row)
+
+            return "\n".join(markdown_lines)
 
