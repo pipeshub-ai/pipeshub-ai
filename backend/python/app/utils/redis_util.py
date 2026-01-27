@@ -14,8 +14,15 @@ def build_redis_url(redis_config: dict) -> str:
     scheme = "rediss" if tls else "redis"
 
     # Build auth part of URL
-    if username and username.strip() and password and password.strip():
-        return f"{scheme}://{username}:{password}@{host}:{port}/{db}"
+    auth_part = ""
+    if username and username.strip():
+        auth_part = username
+        if password and password.strip():
+            auth_part += f":{password}"
     elif password and password.strip():
-        return f"{scheme}://:{password}@{host}:{port}/{db}"
-    return f"{scheme}://{host}:{port}/{db}"
+        auth_part = f":{password}"
+
+    if auth_part:
+        auth_part += "@"
+
+    return f"{scheme}://{auth_part}{host}:{port}/{db}"
