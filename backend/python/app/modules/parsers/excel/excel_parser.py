@@ -46,7 +46,7 @@ from app.utils.streaming import invoke_with_structured_output_and_reflection
 NUM_SAMPLE_ROWS = 5  # Number of representative sample rows to select for header generation
 MAX_HEADER_GENERATION_ROWS = 10  # Maximum number of rows to use for header generation
 MAX_HEADER_DETECTION_ROWS = 4  # Check first 4 rows for multi-row headers
-MIN_ROWS_FOR_HEADER_ANALYSIS = 2  # Minimum number of rows required for header analysis
+MIN_ROWS_FOR_HEADER_ANALYSIS = 1  # Minimum number of rows required for header analysis
 MAX_HEADER_COUNT_RETRIES = 2  # Maximum retries when LLM returns wrong header count
 
 
@@ -63,13 +63,241 @@ BUILTIN_DATE_FORMATS = {
     22: "m/d/yy h:mm",
 }
 
+# Common Excel datetime format whitelist - maps Excel format to (Python strftime format, needs_leading_zero_strip)
+# Covers 80-90% of real-world usage with simple, maintainable mappings
+# Format: "excel_format": ("python_format", "strip_pattern")
+# strip_pattern: "d"=day, "m"=month, "h"=hour, "dm"=day+month, etc.
+COMMON_FORMAT_WHITELIST = {
+    # Date-only formats (no ambiguity - mm is always month)
+    "mm/dd/yyyy": ("%m/%d/%Y", ""),
+    "dd/mm/yyyy": ("%d/%m/%Y", ""),
+    "yyyy-mm-dd": ("%Y-%m-%d", ""),
+    "mm-dd": ("%m-%d", ""),
+    "mm/yy": ("%m/%y", ""),
+    "mm-yyyy": ("%m-%Y", ""),
+    "dd-mmm-yy": ("%d-%b-%y", ""),
+    "d-mmm-yy": ("%d-%b-%y", "d"),
+    "mmm-yyyy": ("%b-%Y", ""),
+    "mmm-yy": ("%b-%y", ""),
+    "d-mmm": ("%d-%b", "d"),
+    "mmmm yyyy": ("%B %Y", ""),
+    "mmmm d, yyyy": ("%B %d, %Y", "d"),
+    
+    # Time-only formats (no ambiguity - mm is always minute with colons)
+    "h:mm": ("%H:%M", "h"),
+    "hh:mm": ("%H:%M", ""),
+    "hh:mm:ss": ("%H:%M:%S", ""),
+    "h:mm:ss": ("%H:%M:%S", "h"),
+    "h:mm AM/PM": ("%I:%M %p", "h"),
+    "hh:mm AM/PM": ("%I:%M %p", ""),
+    "h:mm:ss AM/PM": ("%I:%M:%S %p", "h"),
+    "hh:mm:ss AM/PM": ("%I:%M:%S %p", ""),
+    
+    # Combined date-time formats (first mm=month, second mm=minute)
+    "mm/dd/yyyy h:mm": ("%m/%d/%Y %H:%M", "h"),
+    "mm/dd/yyyy hh:mm": ("%m/%d/%Y %H:%M", ""),
+    "dd/mm/yyyy h:mm": ("%d/%m/%Y %H:%M", "h"),
+    "dd/mm/yyyy hh:mm": ("%d/%m/%Y %H:%M", ""),
+    "dd-mm-yyyy hh:mm": ("%d-%m-%Y %H:%M", ""),
+    "mm/dd/yyyy hh:mm:ss": ("%m/%d/%Y %H:%M:%S", ""),
+    "mm/dd/yy, h:mm:ss": ("%m/%d/%y, %H:%M:%S", "h"),
+    "m/d/yy h:mm": ("%m/%d/%y %H:%M", "dmh"),
+    "m/d/yyyy h:m": ("%m/%d/%Y %H:%M", "dmh"),
+    "dd-mmm-yy hh:mm": ("%d-%b-%y %H:%M", ""),
+    "mmm dd, yyyy h:mm AM/PM": ("%b %d, %Y %I:%M %p", "dh"),
+    "mm/dd/yyyy h:mm AM/PM": ("%m/%d/%Y %I:%M %p", "h"),
+    "h:mm:ss AM/PM": ("%I:%M:%S %p", "h"),
+    
+    # Edge cases that are uncommon but appear in tests
+    "mm:ss": ("%M:%S", ""),  # Minutes:seconds format (no hours)
+    "hh : mm : ss": ("%H : %M : %S", ""),  # Spaces around colons
+}
+
+
+def _resolve_builtin_format(number_format: str) -> str:
+    """
+    Convert built-in Excel format codes (14-22) to format strings.
+    
+    Args:
+        number_format: Excel format code or string
+        
+    Returns:
+        Format string (either from BUILTIN_DATE_FORMATS or original)
+    """
+    if number_format.isdigit():
+        code = int(number_format)
+        return BUILTIN_DATE_FORMATS.get(code, number_format)
+    return number_format
+
+
+def _strip_leading_zeros(formatted: str, strip_pattern: str) -> str:
+    """
+    Strip leading zeros from formatted datetime string based on pattern.
+    
+    Args:
+        formatted: The formatted datetime string
+        strip_pattern: String indicating what to strip ("d"=day, "m"=month, "h"=hour, or combinations)
+        
+    Returns:
+        String with leading zeros stripped as specified
+    """
+    if not strip_pattern:
+        return formatted
+    
+    # Strip leading zeros from day (e.g., "05" -> "5")
+    if 'd' in strip_pattern:
+        formatted = re.sub(r'(?<![0-9])0([1-9])(?=[^0-9]|$)', r'\1', formatted)
+    
+    # Strip leading zeros from month (e.g., "03" -> "3")
+    # Be careful not to strip from other numbers
+    if 'm' in strip_pattern:
+        # This will strip first occurrence of 0X pattern (month typically comes first)
+        formatted = re.sub(r'(?<![0-9])0([1-9])', r'\1', formatted, count=1)
+    
+    # Strip leading zeros from hours (e.g., "02:30" -> "2:30")
+    if 'h' in strip_pattern:
+        formatted = re.sub(r'(?<![0-9])0([1-9])(?=:)', r'\1', formatted)
+    
+    return formatted
+
+
+def _apply_post_processing(formatted: str, original_format: str, strip_pattern: str = "") -> str:
+    """
+    Apply Excel-specific formatting nuances.
+    
+    Args:
+        formatted: The formatted datetime string
+        original_format: The original Excel format string
+        strip_pattern: Pattern for stripping leading zeros
+        
+    Returns:
+        Post-processed formatted string
+    """
+    # Strip leading zeros if needed
+    formatted = _strip_leading_zeros(formatted, strip_pattern)
+    
+    # Lowercase month abbreviations if original format had lowercase 'mmm'
+    if 'mmm' in original_format.lower() and 'mmmm' not in original_format.lower():
+        for month in ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']:
+            if month in formatted:
+                formatted = formatted.replace(month, month.lower(), 1)
+                break
+    
+    return formatted
+
+
+def _resolve_ambiguous_format(format_str: str) -> str:
+    """
+    Handle formats not in whitelist using simple regex heuristics.
+    
+    Key insight:
+    - 'mm' or 'm' adjacent to ':' (with colon) → minute
+    - 'mm' or 'm' in date context (no colons nearby) → month
+    - For combined formats, mark time-context 'mm'/'m' before replacing
+    
+    Args:
+        format_str: Excel format string
+        
+    Returns:
+        Python strftime format string
+    """
+    python_format = format_str
+    
+    # 1. Handle month/day names first (no ambiguity)
+    python_format = python_format.replace("mmmm", "%B")
+    python_format = python_format.replace("dddd", "%A")
+    python_format = python_format.replace("mmm", "%b")
+    python_format = python_format.replace("ddd", "%a")
+    
+    # 2. Handle years
+    python_format = python_format.replace("yyyy", "%Y")
+    python_format = python_format.replace("yy", "%y")
+    
+    # 3. Detect if format has time component
+    has_time = bool(re.search(r'(?<![a-z])h+(?![a-z])', format_str, re.IGNORECASE))
+    has_am_pm = 'am/pm' in format_str.lower() or 'a/p' in format_str.lower()
+    has_colon = ':' in format_str
+    
+    # 4. Handle AM/PM
+    python_format = re.sub(r'AM/PM', '%p', python_format, flags=re.IGNORECASE)
+    python_format = re.sub(r'A/P', '%p', python_format, flags=re.IGNORECASE)
+    
+    # 5. Handle hours (context-sensitive: 12-hour vs 24-hour based on AM/PM)
+    if 'hh' in python_format.lower():
+        if has_am_pm:
+            python_format = re.sub(r'hh', '%I', python_format, flags=re.IGNORECASE)
+        else:
+            python_format = re.sub(r'hh', '%H', python_format, flags=re.IGNORECASE)
+    
+    if re.search(r'(?<!%)h(?![a-zA-Z])', python_format, flags=re.IGNORECASE):
+        if has_am_pm:
+            python_format = re.sub(r'(?<!%)h(?![a-zA-Z])', '%I', python_format, flags=re.IGNORECASE)
+        else:
+            python_format = re.sub(r'(?<!%)h(?![a-zA-Z])', '%H', python_format, flags=re.IGNORECASE)
+    
+    # 6. Handle seconds
+    python_format = python_format.replace("ss", "%S")
+    python_format = re.sub(r'(?<!%)s(?![a-zA-Z])', '%S', python_format)
+    
+    # 7. Handle ambiguous 'mm' using context - IMPORTANT: Mark time-context mm FIRST
+    if has_time:
+        # Special case: mm:ss format (no hours) - mm is minutes
+        if not bool(re.search(r'[hH%]', python_format)):
+            python_format = python_format.replace('mm', '%M')
+        else:
+            # Mark time-context mm with placeholders to preserve them
+            # Match :mm or mm: (with optional spaces)
+            python_format = re.sub(r':\s*mm(?![m:])', ':__MINUTE_MM__', python_format)
+            python_format = re.sub(r'(?<![m:])mm\s*:', '__MINUTE_MM__:', python_format)
+            
+            # Now replace any remaining mm (date context) with month
+            python_format = python_format.replace('mm', '%m')
+            
+            # Replace placeholders with minute format
+            python_format = python_format.replace('__MINUTE_MM__', '%M')
+    else:
+        # Date-only: mm → month
+        python_format = python_format.replace('mm', '%m')
+    
+    # 8. Handle 'dd' - day with leading zero
+    python_format = python_format.replace("dd", "%d")
+    
+    # 9. Handle single 'd' - day (will strip leading zero in post-processing)
+    if re.search(r'(?<!%)d(?![a-zA-Z])', python_format):
+        python_format = re.sub(r'(?<!%)d(?![a-zA-Z])', '%d', python_format)
+    
+    # 10. Handle single 'm' - month or minute (context-dependent, will strip leading zero in post-processing)
+    if re.search(r'(?<!%)m(?![a-zA-Z])', python_format):
+        if has_time:
+            # Mark time-context m with placeholders
+            python_format = re.sub(r':\s*m(?![ma-zA-Z])', ':__MINUTE_M__', python_format)
+            python_format = re.sub(r'(?<![m:])m\s*:', '__MINUTE_M__:', python_format)
+            
+            # Remaining 'm' is month
+            python_format = re.sub(r'(?<!%)m(?![a-zA-Z_])', '%m', python_format)
+            
+            # Replace placeholders
+            python_format = python_format.replace('__MINUTE_M__', '%M')
+        else:
+            # Date-only: m → month
+            python_format = re.sub(r'(?<!%)m(?![a-zA-Z])', '%m', python_format)
+    
+    return python_format
+
 
 def format_excel_datetime(dt_value: Any, number_format: str) -> Any:
     """
-    Apply Excel number format to datetime value.
+    Apply Excel number format to datetime value using whitelist-based approach.
     
-    Converts Python datetime objects to formatted strings matching Excel display format.
-    Falls back to ISO format for unrecognized formats.
+    Supported formats:
+    - Built-in Excel codes: 14-22 (mm/dd/yyyy, h:mm, etc.)
+    - Common date formats: mm/dd/yyyy, dd/mm/yyyy, yyyy-mm-dd, m/d/yy, etc.
+    - Common time formats: h:mm, hh:mm:ss, h:mm AM/PM, etc.
+    - Mixed formats: mm/dd/yyyy h:mm, m/d/yy h:mm
+    - Month names: mmm-yyyy, dd-mmm-yy, mmmm yyyy
+    
+    Unsupported/edge case formats fall back to ISO format.
     
     Args:
         dt_value: The cell value (may or may not be a datetime)
@@ -78,183 +306,30 @@ def format_excel_datetime(dt_value: Any, number_format: str) -> Any:
     Returns:
         Formatted string if datetime with valid format, otherwise original value
     """
+    # Early returns for non-datetime values
     if not isinstance(dt_value, datetime):
         return dt_value
     
     if not number_format or number_format == "General":
-        # No specific format, use ISO format as fallback
         return dt_value.isoformat()
     
-    # Convert Excel format to Python strftime format
     try:
-        # Handle built-in numeric format codes
-        if number_format.isdigit():
-            format_code = int(number_format)
-            if format_code in BUILTIN_DATE_FORMATS:
-                number_format = BUILTIN_DATE_FORMATS[format_code]
+        # Step 1: Resolve built-in format codes (14-22) to format strings
+        format_str = _resolve_builtin_format(number_format)
         
-        # Determine if format contains time components
-        has_hour = bool(re.search(r'(?<![a-z])h+(?![a-z])', number_format, flags=re.IGNORECASE))
-        has_colon = ':' in number_format
-        has_am_pm = 'am/pm' in number_format.lower() or 'a/p' in number_format.lower()
-        has_time = has_hour or has_am_pm
+        # Step 2: Try whitelist first (covers 80-90% of cases with simple lookup)
+        if format_str in COMMON_FORMAT_WHITELIST:
+            python_fmt, strip_pattern = COMMON_FORMAT_WHITELIST[format_str]
+            formatted = dt_value.strftime(python_fmt)
+            return _apply_post_processing(formatted, format_str, strip_pattern)
         
-        python_format = number_format
-        
-        # NEW STRATEGY: Pre-process to identify which 'mm' and 'm' tokens are in time vs date context
-        # Mark time-context mm/m tokens BEFORE doing any replacements
-        
-        # Find position of first hour indicator (h or hh) to split date/time sections
-        hour_pattern = re.search(r'(?<![a-z])h+(?![a-z])', python_format, flags=re.IGNORECASE)
-        hour_start_pos = hour_pattern.start() if hour_pattern else len(python_format)
-        
-        # Mark all 'mm' and 'm' positions and their contexts (date vs time)
-        def replace_mm_and_m_contextually(format_str, hour_boundary):
-            """Replace mm and m based on their position relative to hour marker."""
-            result = []
-            i = 0
-            while i < len(format_str):
-                # Check for 'mmmm' (full month name) - handle first
-                if format_str[i:i+4].lower() == 'mmmm':
-                    result.append('mmmm')  # Keep for later replacement
-                    i += 4
-                # Check for 'mmm' (abbreviated month name)
-                elif format_str[i:i+3].lower() == 'mmm':
-                    result.append('mmm')  # Keep for later replacement
-                    i += 3
-                # Check for 'mm'
-                elif format_str[i:i+2] == 'mm':
-                    # Determine context: before/after hour marker, or near colons
-                    # 1. Check if adjacent to colon (with optional spaces)
-                    has_colon_before = (i > 0 and format_str[i-1:i].strip() == '' and 
-                                       i > 1 and format_str[i-2] == ':') or (i > 0 and format_str[i-1] == ':')
-                    has_colon_after = (i+2 < len(format_str) and format_str[i+2:i+3].strip() == '' and
-                                      i+3 < len(format_str) and format_str[i+3] == ':') or (i+2 < len(format_str) and format_str[i+2] == ':')
-                    
-                    # 2. Check if in time section (after hour marker)
-                    in_time_section = i >= hour_boundary
-                    
-                    # 3. Decide: minute or month
-                    if has_colon_before or has_colon_after or (in_time_section and has_time):
-                        result.append('__MINUTE_MM__')  # Placeholder for minute
-                    elif has_colon and not has_hour:
-                        # Special case: "mm:ss" format (no hours) - mm is minutes
-                        result.append('__MINUTE_MM__')
-                    else:
-                        result.append('__MONTH_MM__')  # Placeholder for month
-                    i += 2
-                # Check for single 'm' (not part of mmm or mmmm)
-                elif (format_str[i] == 'm' and 
-                      (i == 0 or format_str[i-1:i+1].lower() not in ['mm', 'am']) and
-                      (i+1 >= len(format_str) or format_str[i:i+2].lower() not in ['mm', 'mp'])):
-                    # Similar logic for single 'm'
-                    has_colon_before = i > 0 and format_str[i-1] == ':'
-                    in_time_section = i >= hour_boundary
-                    
-                    if has_colon_before or (in_time_section and has_time):
-                        result.append('__MINUTE_M__')  # Placeholder for minute
-                    else:
-                        result.append('__MONTH_M__')  # Placeholder for month
-                    i += 1
-                else:
-                    result.append(format_str[i])
-                    i += 1
-            
-            return ''.join(result)
-        
-        # Apply contextual marking
-        python_format = replace_mm_and_m_contextually(python_format, hour_start_pos)
-        # DEBUG
-        import os
-        if os.getenv('DEBUG_FORMAT'):
-            print(f"DEBUG: After marking: '{python_format}'")
-        
-        # Now do standard replacements in order
-        # 1. Handle full month/day names
-        python_format = python_format.replace("mmmm", "%B")
-        python_format = python_format.replace("dddd", "%A")
-        
-        # 2. Handle abbreviated names
-        python_format = python_format.replace("mmm", "%b")
-        python_format = python_format.replace("ddd", "%a")
-        
-        # 3. Handle years
-        python_format = python_format.replace("yyyy", "%Y")
-        python_format = python_format.replace("yy", "%y")
-        
-        # 4. Handle AM/PM
-        python_format = re.sub(r'AM/PM', '%p', python_format, flags=re.IGNORECASE)
-        python_format = re.sub(r'A/P', '%p', python_format, flags=re.IGNORECASE)
-        
-        # 5. Handle hours
-        if 'hh' in python_format.lower():
-            if has_am_pm:
-                python_format = re.sub(r'hh', '%I', python_format, flags=re.IGNORECASE)
-            else:
-                python_format = re.sub(r'hh', '%H', python_format, flags=re.IGNORECASE)
-        
-        if re.search(r'(?<!%)h(?![a-zA-Z])', python_format, flags=re.IGNORECASE):
-            if has_am_pm:
-                python_format = re.sub(r'(?<!%)h(?![a-zA-Z])', '%I', python_format, flags=re.IGNORECASE)
-            else:
-                python_format = re.sub(r'(?<!%)h(?![a-zA-Z])', '%H', python_format, flags=re.IGNORECASE)
-        
-        # 6. Handle seconds
-        python_format = python_format.replace("ss", "%S")
-        python_format = re.sub(r'(?<!%)s(?![a-zA-Z])', '%S', python_format)
-        
-        # 7. Replace placeholders for mm and m
-        python_format = python_format.replace('__MONTH_MM__', '%m')
-        python_format = python_format.replace('__MINUTE_MM__', '%M')
-        python_format = python_format.replace('__MONTH_M__', '%m')
-        python_format = python_format.replace('__MINUTE_M__', '%M')
-        
-        # 8. Handle 'dd' - day with leading zero
-        python_format = python_format.replace("dd", "%d")
-        
-        # 9. Handle single 'd' - day without leading zero
-        if re.search(r'(?<!%)d(?![a-zA-Z])', python_format):
-            python_format = re.sub(r'(?<!%)d(?![a-zA-Z])', '%d', python_format)
-        
-        # Apply the format
-        formatted_value = dt_value.strftime(python_format)
-        
-        # Post-process to handle format nuances
-        # 1. Strip leading zeros from single-digit representations
-        
-        # Check if original format had single 'd' (not 'dd')
-        if re.search(r'(?<!d)d(?!d)', number_format.lower()):
-            # Strip leading zero from day (e.g., "05" -> "5")
-            # Match day numbers with leading zero (01-09) at word boundaries
-            formatted_value = re.sub(r'(?<![0-9])0([1-9])(?=[^0-9]|$)', r'\1', formatted_value)
-        
-        # Check if original format had single 'm' for month (not 'mm', not in time context)
-        if not has_time and re.search(r'(?<!m)m(?!m)', number_format.lower()):
-            # Strip leading zero from month (e.g., "01" -> "1")
-            formatted_value = re.sub(r'(?<![0-9])0([1-9])(?=[^0-9]|$)', r'\1', formatted_value)
-        
-        # Check if original format had single 'h' for hours (not 'hh')
-        if re.search(r'(?<!h)h(?!h)', number_format.lower()):
-            # Strip leading zero from hours (e.g., "02" -> "2")
-            # This handles both 12-hour and 24-hour formats
-            formatted_value = re.sub(r'(?<![0-9])0([1-9])(?=:)', r'\1', formatted_value)
-        
-        # Excel typically uses lowercase for abbreviated months in formats like 'mmm-yyyy'
-        # Check if original format has lowercase 'mmm' (3-letter month)
-        if 'mmm' in number_format.lower() and 'mmmm' not in number_format.lower():
-            # Find and replace month abbreviations with lowercase
-            # Python's %b produces capitalized month names (Jan, Feb, etc.)
-            month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
-                          'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-            for month_name in month_names:
-                if month_name in formatted_value:
-                    formatted_value = formatted_value.replace(month_name, month_name.lower(), 1)
-                    break
-        
-        return formatted_value
+        # Step 3: Try simple regex resolution for non-whitelisted formats
+        python_fmt = _resolve_ambiguous_format(format_str)
+        formatted = dt_value.strftime(python_fmt)
+        return _apply_post_processing(formatted, format_str, "")
         
     except Exception:
-        # If formatting fails, fall back to ISO format
+        # Fallback to ISO for truly unsupported formats
         return dt_value.isoformat()
 
 
@@ -301,38 +376,6 @@ class ExcelParser:
                 self.logger.info("Closing workbook")
                 self.workbook.close()
 
-    async def parse(self, file_binary: bytes, llm: BaseChatModel) -> BlocksContainer:
-        """
-        Parse Excel file and extract all content including sheets, cells, formulas, etc.
-
-        For new code, prefer using load_workbook_from_binary() followed by create_blocks()
-        to allow yielding progress events between phases.
-
-        Returns:
-            Dict containing parsed content with structure:
-            {
-                'sheets': List[Dict],        # List of sheet data
-                'metadata': Dict,            # Workbook metadata
-                'text_content': str,         # All text content concatenated
-                'sheet_names': List[str],    # List of sheet names
-                'total_rows': int,           # Total rows across all sheets
-                'total_cells': int           # Total cells with content
-            }
-        """
-        self.logger.info("Starting Excel file parsing")
-        try:
-            self.load_workbook_from_binary(file_binary)
-            result = await self.get_blocks_from_workbook(llm)
-            self.logger.info(f"Excel file parsing completed successfully")
-            return result
-
-        except Exception as e:
-            self.logger.error(f"Error parsing Excel file: {e}", exc_info=True)
-            raise
-        finally:
-            if self.workbook:
-                self.logger.info("Closing workbook")
-                self.workbook.close()
 
     def _json_default(self, obj) -> str:
         if isinstance(obj, datetime):
@@ -761,24 +804,28 @@ class ExcelParser:
         """
         self.logger.info(f"Detecting headers with LLM for {len(first_rows)} rows")
         try:
-            if len(first_rows) < MIN_ROWS_FOR_HEADER_ANALYSIS:
-                self.logger.warning(f"Only {len(first_rows)} rows available, insufficient for header analysis (min: {MIN_ROWS_FOR_HEADER_ANALYSIS})")
-                # Not enough rows to analyze, assume single-row headers exist
+            # Handle edge case: no rows available
+            if not first_rows:
+                self.logger.warning("No rows available for header detection")
                 return ExcelHeaderDetection(
                     has_headers=False,
                     num_header_rows=0,
-                    confidence="low",
-                    reasoning="Insufficient rows for analysis, defaulting to no headers"
+                    confidence="high",
+                    reasoning="No rows available in the table"
                 )
 
-            # Prepare rows for prompt (convert to strings for display)
-            row1, row2, row3, row4 = self._convert_rows_to_strings(first_rows, 4)
+            # Build dynamic row text based on actual available rows
+            num_available_rows = len(first_rows)
+            rows_text_lines = []
+            for i, row in enumerate(first_rows[:4], start=1):  # Show up to 4 rows
+                row_str = [str(v) if v is not None else "" for v in row]
+                rows_text_lines.append(f"Row {i}: {row_str}")
+            
+            rows_text = "\n".join(rows_text_lines)
+            
             self.logger.info("Calling LLM for header detection")
             messages = excel_header_detection_prompt.format_messages(
-                row1=row1,
-                row2=row2,
-                row3=row3,
-                row4=row4,
+                rows_text=rows_text
             )
 
             # Use centralized utility with reflection
@@ -1080,7 +1127,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
         self.logger.info(f"Getting tables in sheet: {sheet_name}")
         try:
             if not self.workbook:
-                self.parse()
+                raise ValueError("Workbook not loaded")
 
             if sheet_name not in self.workbook.sheetnames:
                 self.logger.warning(f"Sheet '{sheet_name}' not found in workbook")

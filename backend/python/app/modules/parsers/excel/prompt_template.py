@@ -286,10 +286,7 @@ excel_header_detection_prompt = ChatPromptTemplate.from_messages(
         (
             "user",
             """Analyze these first rows of an Excel table:
-Row 1: {row1}
-Row 2: {row2}
-Row 3: {row3}
-Row 4: {row4}
+{rows_text}
 
 Determine:
 1. Does this table have headers? (true/false)
