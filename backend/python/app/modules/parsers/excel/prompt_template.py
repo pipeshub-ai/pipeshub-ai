@@ -48,6 +48,13 @@ class HeaderDetection(BaseModel):
     reasoning: str
 
 
+class ExcelHeaderDetection(BaseModel):
+    has_headers: bool
+    num_header_rows: int  # 0 if no headers, 1, 2, 3+ for multi-row
+    confidence: str  # "high" or "low"
+    reasoning: str
+
+
 # Prompt for converting row data into natural language
 row_text_prompt_for_csv = ChatPromptTemplate.from_messages(
     [
@@ -187,6 +194,199 @@ Respond with a JSON object:
 )
 
 # Prompt for generating headers from CSV data
+excel_header_generation_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """You are a data analysis expert. Generate descriptive, professional column headers based on the data patterns you observe.
+
+CRITICAL REQUIREMENT: You MUST return EXACTLY the number of headers specified. This is non-negotiable.
+- If asked for N headers, return exactly N headers - no more, no less
+- Count your headers before responding to ensure the count is correct
+- Returning the wrong number of headers will cause system failures""",
+        ),
+        (
+            "user",
+            """Analyze the following sample rows from a CSV file (no headers present):
+
+Sample Data (first {sample_count} rows):
+{sample_data}
+
+REQUIRED NUMBER OF COLUMNS: {column_count}
+
+Your task: Generate EXACTLY {column_count} descriptive, professional column headers.
+
+Guidelines:
+1. Analyze the data type, patterns, and content of each column
+2. Create clear, concise, and descriptive header names
+3. Use professional terminology appropriate for the data domain
+4. Ensure headers are unique
+5. Avoid special characters; use underscores or camelCase if needed
+6. Make headers specific enough to be meaningful but concise
+
+VALIDATION CHECKLIST (verify before responding):
+☐ Have you analyzed ALL {column_count} columns in the sample data?
+☐ Have you created EXACTLY {column_count} header names?
+☐ Have you counted the headers in your response to confirm it's {column_count}?
+
+Example for 3 columns:
+Sample: [["John", 30, "Engineer"], ["Jane", 25, "Designer"]]
+Correct Response: {{"headers": ["Name", "Age", "Occupation"]}}  ← 3 headers for 3 columns
+Wrong Response: {{"headers": ["Name", "Age"]}}  ← Only 2 headers (INVALID)
+Wrong Response: {{"headers": ["Name", "Age", "Occupation", "Department"]}}  ← 4 headers (INVALID)
+
+Respond with ONLY a JSON object with EXACTLY {column_count} headers:
+{{
+    "headers": ["Header1", "Header2", "Header3", ..., "Header{column_count}"]
+}}
+
+FINAL REMINDER: Your response must contain EXACTLY {column_count} headers. Count them before submitting.""",
+        ),
+    ]
+)
+
+row_text_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """You are a data analysis expert who converts structured data into natural language descriptions.
+Your task is to convert each row of data into a clear, concise and detailed natural language description.
+Use the provided table summary to make the descriptions more meaningful."""),
+        (
+            "user",
+            """Please convert these rows of data into natural language descriptions.
+
+Table Summary:
+{table_summary}
+
+Rows Data:
+{rows_data}
+
+Respond with ONLY a JSON object with the following structure:
+{{
+    "descriptions": [
+        "Description of first row",
+        "Description of second row",
+        "Description of third row"
+    ]
+}}
+
+Number of descriptions should be equal to the number of rows in the data. Do not include any other text or explanation in your response - only the JSON object.""",
+        ),
+    ]
+)
+
+# Prompt for detecting Excel headers and determining number of header rows
+excel_header_detection_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "You are a data analysis expert. Analyze Excel table rows to detect if headers exist and how many rows they span.",
+        ),
+        (
+            "user",
+            """Analyze these first rows of an Excel table:
+Row 1: {row1}
+Row 2: {row2}
+Row 3: {row3}
+Row 4: {row4}
+
+Determine:
+1. Does this table have headers? (true/false)
+2. If yes, how many rows do the headers span? (1, 2, 3, or more)
+
+CRITICAL RULE for header detection:
+- A row is a header row ONLY if ALL non-empty cells contain header-like values (category descriptors)
+- If even ONE cell contains a data value (specific measurement, number, amount, identifier), the ENTIRE row is NOT a header
+- You MUST check EVERY non-empty cell - do not stop after checking the first cell
+- Empty cells can be ignored
+
+COMMON MISTAKE to avoid:
+- Row where first cell looks like a label but remaining cells are numeric values
+- Example: ["Gross AOV", "$55.89", "$53.33", ...] 
+- This is NOT a header row - it's a DATA row with a row label in the first column
+- The values $55.89, $53.33 are specific measurements, not category descriptors
+
+CORE PRINCIPLE - Understanding Headers vs Data:
+
+HEADER-LIKE values describe CATEGORIES or TYPES:
+- They answer: "What TYPE/CATEGORY of information is in this column?"
+- They are DESCRIPTIVE LABELS that remain constant across rows
+- Examples: "Name", "Age", "Department", "Q1_Sales", "Region", "Month"
+- Think: Would this value describe what kind of data belongs here?
+
+DATA values are SPECIFIC INSTANCES or MEASUREMENTS:
+- They answer: "What is the SPECIFIC VALUE for this entry?"
+- They are ACTUAL MEASUREMENTS, OBSERVATIONS, or IDENTIFIERS
+- They vary from row to row (not constant labels)
+- Examples: "John Smith", 35, $55.89, 0.95, "jan-2024", "North", "ABC-123"
+- Think: Is this a specific number, amount, measurement, name, or identifier?
+
+KEY INSIGHT - Numbers and Measurements:
+- ANY specific numeric value, regardless of format, is DATA
+  * Plain numbers: 42, 1250.50, 0.95
+  * Currency: $55.89, €100, £75, ¥1000 (any currency symbol + number)
+  * Percentages: 95.5%, 42%, 0.93 (when representing a specific value)
+  * Dates: 2024-01-15, Jan-2024, 15-Jan
+- Numeric labels that describe columns could be headers: "Q1", "Q2", "2024", "Month1"
+  (But these must appear with OTHER header-like values, not mixed with data)
+
+Examples:
+
+Example 1 - Valid single-row header:
+Row 1: ["Name", "Age", "Department", "Salary"]
+Row 2: ["John Smith", 35, "Sales", 75000]
+→ Row 1 is a header (all cells are descriptive labels)
+→ has_headers: true, num_header_rows: 1
+
+Example 2 - Invalid header (contains data):
+Row 1: ["Name", "John Smith", "Age", 35]
+Row 2: ["Department", "Sales", "Salary", 75000]
+→ Row 1 is NOT a header (contains data values: "John Smith" and 35)
+→ Row 2 is NOT a header (contains data values: "Sales" as a specific value and 75000)
+→ has_headers: false, num_header_rows: 0
+
+Example 3 - Valid multi-row header:
+Row 1: ["Sales", "Sales", "Expenses", "Expenses"]
+Row 2: ["Q1", "Q2", "Q1", "Q2"]
+Row 3: [1250, 1430, 890, 920]
+→ Rows 1 and 2 are headers (all non-empty cells are descriptive labels)
+→ Row 3 is data (contains numbers)
+→ has_headers: true, num_header_rows: 2
+
+Example 4 - Invalid header (row labels + data values):
+Row 1: ["Gross AOV", "$55.89", "$53.33", "$58.22", "$55.44"]
+Row 2: ["Net AOV", "$73.28", "$74.65", "$74.00", "$75.36"]
+Row 3: ["New", 0.98, 0.95, 0.95, 0.93]
+Row 4: ["Repeat", 0.93, 0.94, 0.94, 0.93]
+→ Analysis: Row 1 has "Gross AOV" (descriptive) but $55.89, $53.33, etc. are SPECIFIC currency amounts (data)
+→ All rows follow pattern: descriptive label in col 1, specific numeric values in cols 2+
+→ This table has ROW LABELS in first column, not column headers in first row
+→ has_headers: false, num_header_rows: 0
+
+Consider:
+- Single-row headers: One row with descriptive column names (ALL cells must be header-like)
+- Multi-row headers: Headers spanning multiple rows (e.g., grouped categories in row 1, subcategories in row 2). Each header row must have ALL cells as header-like values
+- No headers: All rows appear to be data, or any potential header row contains at least one data value
+
+Excel-specific patterns to consider:
+- Merged cells often indicate multi-row headers
+- Bold/styled first rows often indicate headers
+- Text in first row(s) + numbers/data in subsequent rows suggests headers
+- BUT: Always apply the CRITICAL RULE - ALL non-empty cells must be header-like
+
+Respond with a JSON object:
+{{
+    "has_headers": true or false,
+    "num_header_rows": 0 or 1 or 2 or 3 (etc.),
+    "confidence": "high" or "low",
+    "reasoning": "Brief explanation of your decision"
+}}""",
+        ),
+    ]
+)
+
+
 csv_header_generation_prompt = ChatPromptTemplate.from_messages(
     [
         (
@@ -220,37 +420,6 @@ Respond with ONLY a JSON object:
 }}
 
 Ensure the number of headers matches {column_count} exactly.""",
-        ),
-    ]
-)
-
-row_text_prompt = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            """You are a data analysis expert who converts structured data into natural language descriptions.
-Your task is to convert each row of data into a clear, concise and detailed natural language description.
-Use the provided table summary to make the descriptions more meaningful."""),
-        (
-            "user",
-            """Please convert these rows of data into natural language descriptions.
-
-Table Summary:
-{table_summary}
-
-Rows Data:
-{rows_data}
-
-Respond with ONLY a JSON object with the following structure:
-{{
-    "descriptions": [
-        "Description of first row",
-        "Description of second row",
-        "Description of third row"
-    ]
-}}
-
-Number of descriptions should be equal to the number of rows in the data. Do not include any other text or explanation in your response - only the JSON object.""",
         ),
     ]
 )
